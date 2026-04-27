@@ -1,0 +1,181 @@
+import Testing
+import Foundation
+@testable import ASTRA
+import ASTRACore
+import SwiftData
+
+/// Phase 1 Functional Test — Single-Agent Baseline
+/// Tests the full pipeline: Workspace → AgentTask → ClaudeCodeWorker → TaskEvents + Artifacts + Files
+
+private func makeTestContainer() throws -> ModelContainer {
+    let schema = Schema(ASTRASchemaV1.models)
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
+
+@Suite("Phase 1 Functional — Worker E2E", .tags(.integration))
+struct Phase1FunctionalTest {
+
+    // MARK: - Workspace guard
+
+    @Test("Task without workspace fails gracefully")
+    @MainActor
+    func taskWithoutWorkspaceFails() async throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+
+        // Create task with NO workspace — effectiveWorkspacePath will be ""
+        let task = AgentTask(
+            title: "No workspace test",
+            goal: "This should fail because there is no workspace"
+        )
+        context.insert(task)
+        try context.save()
+
+        let worker = ClaudeCodeWorker()
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .failed, "Task without workspace should fail, got: \(task.status.rawValue)")
+
+        let errorEvents = task.events.filter { $0.type == "error" }
+        #expect(!errorEvents.isEmpty, "Should have an error event")
+        #expect(errorEvents.first?.payload.contains("not found") == true,
+                "Error should mention workspace not found")
+    }
+
+    @Test("Task with invalid workspace path fails gracefully")
+    @MainActor
+    func taskWithBadWorkspaceFails() async throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Bad", primaryPath: "/nonexistent/path/xyz123")
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Bad workspace test",
+            goal: "This should fail because workspace path doesn't exist",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let worker = ClaudeCodeWorker()
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .failed, "Task with bad workspace should fail, got: \(task.status.rawValue)")
+    }
+
+    // MARK: - Full E2E with workspace
+
+    @Test("Workspace → Task → Worker → Events → Files", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
+    @MainActor
+    func workerEndToEnd() async throws {
+        // 1. Create workspace directory
+        let testDir = "/tmp/phase1_worker_test_\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        // 2. Create SwiftData container and workspace
+        let container = try makeTestContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Phase1 Test Workspace", primaryPath: testDir)
+        context.insert(workspace)
+        #expect(workspace.primaryPath == testDir)
+        #expect(workspace.name == "Phase1 Test Workspace")
+
+        // 3. Create task attached to workspace
+        let task = AgentTask(
+            title: "Word counter test",
+            goal: """
+            Create a Python script named word_counter.py that takes a text file as an argument \
+            and prints the top 5 most frequent words. Then, create a file named sample.txt with \
+            three paragraphs of dummy text. Finally, execute the script on sample.txt and save \
+            the output to results.txt.
+            """,
+            workspace: workspace,
+            tokenBudget: 100000,
+            model: "claude-sonnet-4-6"
+        )
+        context.insert(task)
+        try context.save()
+
+        #expect(task.workspace === workspace, "Task should be linked to workspace")
+        #expect(task.effectiveWorkspacePath == testDir, "Task workspace path should match")
+        #expect(task.status == .queued, "Initial status should be queued")
+        #expect(workspace.tasks.contains(task), "Workspace should contain the task")
+
+        // 4. Run through ClaudeCodeWorker (same code path as the app)
+        let worker = ClaudeCodeWorker()
+        var receivedEvents: [ParsedEvent] = []
+
+        await worker.execute(task: task, modelContext: context) { event in
+            receivedEvents.append(event)
+        }
+
+        // 5. Verify task lifecycle
+        let isTerminal = task.isTerminal || task.status == .pendingUser
+        #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
+        #expect(task.status != .failed, "Task should not have failed, status: \(task.status.rawValue)")
+        #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
+        #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
+        #expect(task.sessionId != nil, "Session ID should be captured")
+
+        // 6. Verify TaskRun
+        #expect(task.runs.count >= 1, "Should have at least 1 run")
+        let run = task.runs.first!
+        #expect(run.tokensUsed > 0)
+        #expect(run.completedAt != nil)
+        #expect(run.exitCode == 0, "Exit code should be 0, got: \(run.exitCode)")
+
+        // 7. Verify TaskEvents in SwiftData (these are what the Activity tab renders)
+        let allEvents = task.events
+        let eventTypes = Set(allEvents.map(\.type))
+
+        #expect(eventTypes.contains("task.started"), "Missing task.started")
+        #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
+        #expect(eventTypes.contains("tool.use"), "Missing tool.use")
+        #expect(eventTypes.contains("agent.response"), "Missing agent.response")
+        #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        #expect(eventTypes.contains("task.completed"), "Missing task.completed")
+
+        // Verify Write and Bash tool usage recorded
+        let toolPayloads = allEvents.filter { $0.type == "tool.use" }.map(\.payload)
+        #expect(toolPayloads.contains { $0.contains("Write") }, "Should record Write tool use")
+        #expect(toolPayloads.contains { $0.contains("Bash") }, "Should record Bash tool use")
+
+        // 8. Verify Artifacts (these are what the Artifacts tab renders)
+        let artifacts = task.artifacts
+        #expect(!artifacts.isEmpty, "Should have artifacts")
+        let artifactPaths = artifacts.map(\.path)
+        #expect(artifactPaths.contains { $0.hasSuffix("word_counter.py") }, "Missing word_counter.py artifact")
+        #expect(artifactPaths.contains { $0.hasSuffix("sample.txt") }, "Missing sample.txt artifact")
+
+        // 9. Verify files on disk
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: "\(testDir)/word_counter.py"), "word_counter.py missing from disk")
+        #expect(fm.fileExists(atPath: "\(testDir)/sample.txt"), "sample.txt missing from disk")
+        #expect(fm.fileExists(atPath: "\(testDir)/results.txt"), "results.txt missing from disk")
+
+        let results = try String(contentsOfFile: "\(testDir)/results.txt", encoding: .utf8)
+        #expect(!results.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "results.txt should have content")
+
+        // 10. Verify callback events match SwiftData events
+        let parsedTypes = receivedEvents.map { "\($0)" }
+        #expect(parsedTypes.contains { $0.hasPrefix("systemInit") }, "Callback should include systemInit")
+        #expect(parsedTypes.contains { $0.hasPrefix("result") }, "Callback should include result")
+
+        // Summary
+        print("\n=== Phase 1 Worker E2E Results ===")
+        print("Workspace: \(workspace.name) → \(workspace.primaryPath)")
+        print("Status: \(task.status.rawValue)")
+        print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")
+        print("Cost: $\(String(format: "%.4f", task.costUSD))")
+        print("Session: \(task.sessionId ?? "nil")")
+        print("Events: \(allEvents.count) (\(eventTypes.sorted().joined(separator: ", ")))")
+        print("Artifacts: \(artifactPaths.joined(separator: ", "))")
+        print("results.txt: \(results.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))")
+        print("=================================\n")
+    }
+}

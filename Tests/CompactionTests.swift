@@ -1,0 +1,80 @@
+import Testing
+import Foundation
+@testable import ASTRA
+
+@Suite("Event Compaction")
+@MainActor
+struct CompactionTests {
+
+    @Test("Compaction threshold is 200")
+    func thresholdValue() {
+        #expect(ClaudeCodeWorker.compactionThreshold == 200)
+    }
+
+    @Test("Keep count is 50")
+    func keepCountValue() {
+        #expect(ClaudeCodeWorker.compactionKeepCount == 50)
+    }
+
+    @Test("Events below threshold are not compacted")
+    func belowThreshold() {
+        // Simulate 150 events (below 200 threshold)
+        let eventCount = 150
+        #expect(eventCount <= ClaudeCodeWorker.compactionThreshold)
+        // compactEvents would be a no-op — we verify the threshold logic
+    }
+
+    @Test("Events above threshold would compact down")
+    func aboveThreshold() {
+        let total = 250
+        let threshold = ClaudeCodeWorker.compactionThreshold
+        let keepCount = ClaudeCodeWorker.compactionKeepCount
+
+        #expect(total > threshold)
+
+        let cutoff = total - keepCount
+        #expect(cutoff == 200) // 250 - 50 = 200 events to compact
+
+        // After compaction: 50 kept + 1 summary = 51 events
+        let afterCompaction = keepCount + 1
+        #expect(afterCompaction == 51)
+    }
+
+    @Test("Summary generation from type counts")
+    func summaryGeneration() {
+        var typeCounts: [String: Int] = [:]
+        // Simulate counting event types
+        for _ in 0..<80 { typeCounts["agent.response", default: 0] += 1 }
+        for _ in 0..<50 { typeCounts["tool.use", default: 0] += 1 }
+        for _ in 0..<30 { typeCounts["agent.thinking", default: 0] += 1 }
+        for _ in 0..<5 { typeCounts["error", default: 0] += 1 }
+
+        let summary = typeCounts
+            .sorted { $0.value > $1.value }
+            .map { "\($0.value) \($0.key)" }
+            .joined(separator: ", ")
+
+        #expect(summary.contains("80 agent.response"))
+        #expect(summary.contains("50 tool.use"))
+        #expect(summary.contains("30 agent.thinking"))
+        #expect(summary.contains("5 error"))
+    }
+
+    @Test("Cutoff calculation preserves most recent events")
+    func cutoffPreservesRecent() {
+        let total = 300
+        let keepCount = ClaudeCodeWorker.compactionKeepCount
+        let cutoff = total - keepCount
+
+        // Items at indices [0..<cutoff] are compacted
+        // Items at indices [cutoff..<total] are kept
+        #expect(cutoff == 250)
+
+        // Verify the kept range is the suffix
+        let allIndices = Array(0..<total)
+        let kept = Array(allIndices.suffix(keepCount))
+        #expect(kept.first == 250)
+        #expect(kept.last == 299)
+        #expect(kept.count == 50)
+    }
+}

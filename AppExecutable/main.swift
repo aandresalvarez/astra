@@ -1,0 +1,3 @@
+import ASTRA
+
+ASTRAApp.main()

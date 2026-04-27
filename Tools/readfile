@@ -1,0 +1,251 @@
+#!/bin/bash
+# readfile — Universal document reader for Astra agents
+# Reads .docx, .pdf, .rtf, .html, .odt, .xlsx, .pptx, .csv, .gdoc, .gsheet, .txt, .md
+# Usage: readfile <path> [--metadata]
+#
+# Uses macOS built-in tools (textutil, python3 zipfile/xml) — no pip installs needed.
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "Usage: readfile <file_path> [--metadata]"
+    echo ""
+    echo "Supported formats:"
+    echo "  Documents: .docx .rtf .html .odt .txt .md .csv"
+    echo "  PDF:       .pdf"
+    echo "  Sheets:    .xlsx .csv"
+    echo "  Slides:    .pptx"
+    echo "  Google:    .gdoc .gsheet .gslides (shows link)"
+    echo "  Folders:   lists contents recursively"
+    exit 1
+fi
+
+FILE="$1"
+SHOW_META="${2:-}"
+
+# Handle folders
+if [ -d "$FILE" ]; then
+    echo "=== Directory: $(basename "$FILE") ==="
+    echo "Path: $FILE"
+    echo ""
+    # List with file types and sizes
+    find "$FILE" -maxdepth 3 -type f | while read -r f; do
+        size=$(stat -f%z "$f" 2>/dev/null || echo "?")
+        ext="${f##*.}"
+        rel="${f#$FILE/}"
+        printf "  %-60s %8s bytes  .%s\n" "$rel" "$size" "$ext"
+    done | sort
+    echo ""
+    total=$(find "$FILE" -type f | wc -l | tr -d ' ')
+    echo "Total: $total files"
+    exit 0
+fi
+
+if [ ! -f "$FILE" ]; then
+    echo "Error: File not found: $FILE"
+    exit 1
+fi
+
+EXT="${FILE##*.}"
+EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+BASENAME=$(basename "$FILE")
+
+# Show metadata if requested
+if [ "$SHOW_META" = "--metadata" ]; then
+    echo "=== Metadata: $BASENAME ==="
+    mdls "$FILE" 2>/dev/null || echo "(no metadata available)"
+    echo ""
+fi
+
+case "$EXT_LOWER" in
+    # Plain text formats
+    txt|md|csv|log|json|yaml|yml|toml|xml|ini|cfg|conf|sh|py|swift|js|ts|html|css)
+        echo "=== $BASENAME ==="
+        cat "$FILE"
+        ;;
+
+    # Word documents — textutil handles these natively on macOS
+    docx|doc)
+        echo "=== $BASENAME (Word Document) ==="
+        textutil -convert txt -stdout "$FILE" 2>/dev/null || {
+            # Fallback: extract text from docx XML directly
+            python3 -c "
+import zipfile, xml.etree.ElementTree as ET, sys
+try:
+    with zipfile.ZipFile('$FILE') as z:
+        with z.open('word/document.xml') as f:
+            tree = ET.parse(f)
+            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            for p in tree.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):
+                texts = [t.text for t in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t') if t.text]
+                if texts:
+                    print(''.join(texts))
+except Exception as e:
+    print(f'Error reading docx: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+        }
+        ;;
+
+    # RTF documents
+    rtf)
+        echo "=== $BASENAME (RTF Document) ==="
+        textutil -convert txt -stdout "$FILE"
+        ;;
+
+    # HTML
+    htm)
+        echo "=== $BASENAME (HTML) ==="
+        textutil -convert txt -stdout "$FILE" 2>/dev/null || cat "$FILE"
+        ;;
+
+    # OpenDocument
+    odt)
+        echo "=== $BASENAME (OpenDocument) ==="
+        textutil -convert txt -stdout "$FILE"
+        ;;
+
+    # PDF — use python3 to extract text
+    pdf)
+        echo "=== $BASENAME (PDF) ==="
+        python3 -c "
+import subprocess, sys
+
+# Try using macOS built-in: mdimport outputs spotlight text
+try:
+    result = subprocess.run(
+        ['mdimport', '-d2', '$FILE'],
+        capture_output=True, text=True, timeout=30
+    )
+    # mdimport -d2 outputs to stderr
+    text = result.stderr
+    # Extract kMDItemTextContent if present
+    import re
+    match = re.search(r'kMDItemTextContent\s*=\s*\"(.*?)\"', text, re.DOTALL)
+    if match:
+        content = match.group(1)
+        if len(content.strip()) > 20:
+            print(content)
+            sys.exit(0)
+except Exception:
+    pass
+
+# Fallback: try strings command for basic text extraction
+try:
+    result = subprocess.run(
+        ['strings', '$FILE'],
+        capture_output=True, text=True, timeout=30
+    )
+    lines = [l.strip() for l in result.stdout.split('\n') if len(l.strip()) > 3]
+    if lines:
+        print('\n'.join(lines[:500]))
+        if len(lines) > 500:
+            print(f'\n... ({len(lines) - 500} more lines)')
+        sys.exit(0)
+except Exception:
+    pass
+
+print('Could not extract text from PDF. Install pypdf for better results: pip3 install pypdf', file=sys.stderr)
+sys.exit(1)
+" 2>&1
+        ;;
+
+    # Excel — extract text from shared strings and sheet data
+    xlsx)
+        echo "=== $BASENAME (Excel Spreadsheet) ==="
+        python3 -c "
+import zipfile, xml.etree.ElementTree as ET, sys
+
+try:
+    with zipfile.ZipFile('$FILE') as z:
+        # Read shared strings
+        strings = []
+        try:
+            with z.open('xl/sharedStrings.xml') as f:
+                tree = ET.parse(f)
+                ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+                for si in tree.iter('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}si'):
+                    texts = [t.text for t in si.iter('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t') if t.text]
+                    strings.append(''.join(texts))
+        except KeyError:
+            pass
+
+        # Read sheets
+        sheet_files = [n for n in z.namelist() if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')]
+        for sheet_file in sorted(sheet_files):
+            sheet_name = sheet_file.split('/')[-1].replace('.xml', '')
+            print(f'--- {sheet_name} ---')
+            with z.open(sheet_file) as f:
+                tree = ET.parse(f)
+                ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+                for row in tree.iter(f'{{{ns}}}row'):
+                    cells = []
+                    for cell in row.iter(f'{{{ns}}}c'):
+                        v_elem = cell.find(f'{{{ns}}}v')
+                        if v_elem is not None and v_elem.text:
+                            cell_type = cell.get('t', '')
+                            if cell_type == 's' and v_elem.text.isdigit():
+                                idx = int(v_elem.text)
+                                cells.append(strings[idx] if idx < len(strings) else v_elem.text)
+                            else:
+                                cells.append(v_elem.text)
+                    if cells:
+                        print('\t'.join(cells))
+            print()
+except Exception as e:
+    print(f'Error reading xlsx: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+        ;;
+
+    # PowerPoint — extract text from slides
+    pptx)
+        echo "=== $BASENAME (PowerPoint) ==="
+        python3 -c "
+import zipfile, xml.etree.ElementTree as ET, sys
+
+try:
+    with zipfile.ZipFile('$FILE') as z:
+        slide_files = sorted([n for n in z.namelist() if n.startswith('ppt/slides/slide') and n.endswith('.xml')])
+        for i, slide_file in enumerate(slide_files, 1):
+            print(f'--- Slide {i} ---')
+            with z.open(slide_file) as f:
+                tree = ET.parse(f)
+                ns = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+                for p in tree.iter(f'{{{ns}}}p'):
+                    texts = [t.text for t in p.iter(f'{{{ns}}}t') if t.text]
+                    if texts:
+                        print(''.join(texts))
+            print()
+except Exception as e:
+    print(f'Error reading pptx: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+        ;;
+
+    # Google Docs/Sheets/Slides — these are just JSON link files
+    gdoc|gsheet|gslides)
+        echo "=== $BASENAME (Google ${EXT_LOWER#g} link) ==="
+        python3 -c "
+import json, sys
+try:
+    with open('$FILE') as f:
+        data = json.load(f)
+    url = data.get('url', data.get('doc_id', '(no URL found)'))
+    print(f'Google Docs URL: {url}')
+    print('Note: This is a link file. The actual content is in Google Drive.')
+    print('To read the content, use the Google Drive API or export it first.')
+except Exception as e:
+    print(f'Error reading: {e}', file=sys.stderr)
+"
+        ;;
+
+    # Unknown format — try textutil, then fall back to strings
+    *)
+        echo "=== $BASENAME (.${EXT_LOWER}) ==="
+        textutil -convert txt -stdout "$FILE" 2>/dev/null || {
+            echo "(Binary or unknown format — showing extractable text)"
+            strings "$FILE" | head -200
+        }
+        ;;
+esac
