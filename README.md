@@ -77,6 +77,89 @@ separate App Support, logs, Keychain namespace, and
 `~/Documents/Astra Dev/Workspaces`. Production releases keep `ASTRA`,
 `com.coral.ASTRA`, and `~/Documents/Astra/Workspaces`.
 
+## Development vs Production App
+
+ASTRA intentionally has two local app identities so you can develop the app while
+also using the real production copy for work.
+
+| Channel | App | Bundle ID | Workspaces | App Support | Updates |
+| --- | --- | --- | --- | --- | --- |
+| Development | `ASTRA Dev.app` | `com.coral.ASTRA.dev` | `~/Documents/Astra Dev/Workspaces` | `~/Library/Application Support/AstraDev` | Disabled |
+| Production | `ASTRA.app` | `com.coral.ASTRA` | `~/Documents/Astra/Workspaces` | `~/Library/Application Support/Astra` | Sparkle |
+
+Day-to-day development should use the development channel:
+
+```bash
+./script/build_and_run.sh
+```
+
+That builds and launches:
+
+```text
+dist/ASTRA Dev.app
+```
+
+Use the production channel only when testing release/update behavior:
+
+```bash
+ASTRA_CHANNEL=prod ./script/build_and_run.sh --verify
+```
+
+That builds and launches:
+
+```text
+dist/ASTRA.app
+```
+
+The production app is the only channel that talks to the Sparkle appcast. The
+development app never checks for updates, never writes production App Support
+data, and never uses the production Keychain namespace.
+
+If you want to verify the updater, the installed production app must have a
+lower `CFBundleVersion` than the GitHub Release appcast. For example, a local
+`ASTRA 0.1.0 (1)` build can discover and install `ASTRA 0.1.1 (2)`, but a local
+`ASTRA 0.1.1 (2)` build correctly reports that it is already up to date.
+
+## Development Cycle
+
+Use this cycle for normal feature work:
+
+1. Start from current `main`.
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c codex/<feature-name>
+```
+
+2. Build and run the isolated development app.
+
+```bash
+./script/build_and_run.sh --verify
+```
+
+3. Add focused tests for the changed behavior.
+
+```bash
+swift test --filter <RelevantSuiteOrTestName>
+```
+
+4. Run broader checks when the change touches shared behavior.
+
+```bash
+swift test
+git diff --check
+```
+
+5. Push the branch and open a draft PR.
+
+```bash
+git push -u origin codex/<feature-name>
+```
+
+Do not develop against the production app unless the work is specifically about
+release packaging, Sparkle, production data paths, or update behavior.
+
 ## Internal Test Releases
 
 ASTRA can be distributed internally with zero Apple cost during testing. The
@@ -95,7 +178,6 @@ ASTRA_VERSION=0.1.0 \
 ASTRA_BUILD=1 \
 ASTRA_SPARKLE_PUBLIC_ED_KEY="..." \
 SPARKLE_GENERATE_APPCAST=/path/to/Sparkle/bin/generate_appcast \
-SPARKLE_ED_KEY_FILE=/path/to/private-key \
 ./script/release_update.sh
 ```
 
@@ -112,6 +194,35 @@ Program, Developer ID, or notarization. The tradeoff is trust UX: the first
 manual install on each Mac may require a right-click Open or Security & Privacy
 approval because Apple has not notarized the app. After the app is trusted,
 Sparkle can handle signed updates from the appcast.
+
+The current release command should normally read the public key from Keychain:
+
+```bash
+SPARKLE_BIN="$PWD/.build/artifacts/sparkle/Sparkle/bin"
+PUBLIC_KEY="$($SPARKLE_BIN/generate_keys -p)"
+
+ASTRA_VERSION=0.1.1 \
+ASTRA_BUILD=2 \
+ASTRA_SPARKLE_PUBLIC_ED_KEY="$PUBLIC_KEY" \
+SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
+./script/release_update.sh
+```
+
+Then upload both generated files to the GitHub Release:
+
+```text
+dist/release/ASTRA-<version>.zip
+dist/release/appcast.xml
+```
+
+Sparkle reads the appcast from:
+
+```text
+https://github.com/susom/astra/releases/latest/download/appcast.xml
+```
+
+The private Sparkle key stays in Keychain. Do not commit or paste the private
+key into GitHub. The public key is safe to embed in `Info.plist`.
 
 If the project later needs the smoother Gatekeeper experience, use:
 

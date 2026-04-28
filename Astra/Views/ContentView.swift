@@ -717,52 +717,32 @@ struct ContentView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
-        panel.message = "Select workspace folders or a parent folder containing workspaces"
+        panel.message = "Select workspace folders, config files, or a parent Workspaces folder"
         panel.prompt = "Import"
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
 
         var imported: [Workspace] = []
-        let fm = FileManager.default
+        var knownWorkspaces = workspaces
 
-        for url in panel.urls {
-            var isDir: ObjCBool = false
-            fm.fileExists(atPath: url.path, isDirectory: &isDir)
+        for candidate in WorkspaceImportDiscovery.candidates(for: panel.urls) {
+            let workspace: Workspace?
+            if let configURL = candidate.configURL {
+                workspace = coordinator.importFromConfig(
+                    at: configURL,
+                    existingWorkspaces: knownWorkspaces,
+                    askDuplicateAction: askDuplicateAction
+                )
+            } else {
+                workspace = coordinator.createWorkspaceFromFolder(
+                    candidate.folderURL,
+                    existingWorkspaces: knownWorkspaces,
+                    askDuplicateAction: askDuplicateAction
+                )
+            }
 
-            if !isDir.boolValue && url.pathExtension == "json" {
-                if let ws = coordinator.importFromConfig(at: url, existingWorkspaces: workspaces,
-                                                        askDuplicateAction: askDuplicateAction) {
-                    imported.append(ws)
-                }
-            } else if isDir.boolValue {
-                let configURL = url.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
-                if fm.fileExists(atPath: configURL.path) {
-                    if let ws = coordinator.importFromConfig(at: configURL, existingWorkspaces: workspaces,
-                                                            askDuplicateAction: askDuplicateAction) {
-                        imported.append(ws)
-                    }
-                } else {
-                    var foundAny = false
-                    if let children = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey]) {
-                        for child in children {
-                            let childIsDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                            guard childIsDir else { continue }
-                            let childConfig = child.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
-                            if fm.fileExists(atPath: childConfig.path) {
-                                if let ws = coordinator.importFromConfig(at: childConfig, existingWorkspaces: workspaces,
-                                                                        askDuplicateAction: askDuplicateAction) {
-                                    imported.append(ws)
-                                    foundAny = true
-                                }
-                            }
-                        }
-                    }
-                    if !foundAny {
-                        if let ws = coordinator.createWorkspaceFromFolder(url, existingWorkspaces: workspaces,
-                                                                         askDuplicateAction: askDuplicateAction) {
-                            imported.append(ws)
-                        }
-                    }
-                }
+            if let workspace {
+                imported.append(workspace)
+                knownWorkspaces.append(workspace)
             }
         }
 
