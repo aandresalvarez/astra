@@ -81,7 +81,7 @@ struct ComposerToolbar: View {
             }
 
             Divider()
-            let userSkills = (workspace?.skills ?? []).filter { !$0.isBuiltIn }
+            let userSkills = (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
             if !userSkills.isEmpty {
                 Menu {
                     ForEach(userSkills.sorted { $0.name < $1.name }) { skill in

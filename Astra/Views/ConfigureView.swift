@@ -47,9 +47,9 @@ struct ConfigureView: View {
     @State private var selectedTab: ConfigureTab = .skills
 
     private var activeWorkspaceSkillCount: Int {
-        let workspaceSkills = workspace.skills.filter { !$0.isGlobal && !$0.isBuiltIn }
+        let workspaceSkills = workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn }
         let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
-        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) && !$0.isBuiltIn }
+        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) && !$0.isSystemBuiltIn }
         let dedupedGlobals = enabledGlobals.filter { globalSkill in
             !workspaceSkills.contains { $0.id == globalSkill.id }
         }
@@ -638,12 +638,12 @@ struct SkillsTabContent: View {
     private var globalSkills: [Skill]
 
     private var workspaceSkills: [Skill] {
-        workspace.skills.filter { !$0.isGlobal && !$0.isBuiltIn }.sorted { $0.name < $1.name }
+        workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn }.sorted { $0.name < $1.name }
     }
 
     private var sharedLibrarySkills: [Skill] {
         globalSkills.filter { globalSkill in
-            !globalSkill.isBuiltIn &&
+            !globalSkill.isSystemBuiltIn &&
             !workspaceSkills.contains { $0.id == globalSkill.id }
         }
         .sorted { $0.name < $1.name }

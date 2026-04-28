@@ -22,6 +22,22 @@ final class Skill {
     var isGlobal: Bool = false
     var isBuiltIn: Bool = false
 
+    static let builtInNames: Set<String> = [
+        "Read-Only",
+        "Safe Bash",
+        "Test Runner",
+        "Read-Only Explorer",
+        "Safe Executor"
+    ]
+
+    var isSystemBuiltIn: Bool {
+        isBuiltIn || Self.isBuiltInName(name)
+    }
+
+    static func isBuiltInName(_ name: String) -> Bool {
+        builtInNames.contains(name.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     var workspace: Workspace?
 
     @Relationship(inverse: \AgentTask.skills)
