@@ -11,7 +11,7 @@ struct SkillsManagerView: View {
     private var globalSkills: [Skill]
 
     private var workspaceSkills: [Skill] {
-        workspace.skills.filter { !$0.isGlobal && !$0.isBuiltIn }.sorted { $0.name < $1.name }
+        workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn }.sorted { $0.name < $1.name }
     }
 
     private var skills: [Skill] {
@@ -63,7 +63,7 @@ struct SkillsManagerView: View {
                                 }
                             }
                             let availableGlobals = globalSkills.filter { gs in
-                                !gs.isBuiltIn &&
+                                !gs.isSystemBuiltIn &&
                                 !workspaceSkills.contains { $0.id == gs.id }
                             }
                             if !availableGlobals.isEmpty {

@@ -339,6 +339,61 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.id == sourceWorkspace.id)
     }
 
+    @Test("import reuses built-in global skills by name")
+    @MainActor
+    func importReusesBuiltInGlobalSkillsByName() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let firstConfig = minimalWorkspaceConfig(
+            name: "First",
+            path: "/tmp/astra_import_first_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let secondConfig = minimalWorkspaceConfig(
+            name: "Second",
+            path: "/tmp/astra_import_second_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+
+        let first = WorkspaceConfigManager.importWorkspace(from: firstConfig, modelContext: context)
+        let second = WorkspaceConfigManager.importWorkspace(from: secondConfig, modelContext: context)
+        let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.name == "Read-Only" && $0.isGlobal })
+        let readOnlySkills = try context.fetch(descriptor)
+
+        #expect(readOnlySkills.count == 1)
+        #expect(readOnlySkills.first?.isSystemBuiltIn == true)
+        #expect(first.enabledGlobalSkillIDs == [readOnlySkills.first?.id.uuidString].compactMap { $0 })
+        #expect(second.enabledGlobalSkillIDs == [readOnlySkills.first?.id.uuidString].compactMap { $0 })
+    }
+
+    private func minimalWorkspaceConfig(name: String, path: String, skillID: String) -> WorkspaceConfigManager.WorkspaceConfig {
+        WorkspaceConfigManager.WorkspaceConfig(
+            id: UUID().uuidString,
+            name: name,
+            primaryPath: path,
+            additionalPaths: [],
+            icon: "folder.fill",
+            instructions: "",
+            skills: [
+                WorkspaceConfigManager.SkillConfig(
+                    id: skillID,
+                    name: "Read-Only",
+                    icon: "eye",
+                    description: "",
+                    allowedTools: ["Read", "Glob", "Grep"],
+                    disallowedTools: ["Write", "Edit", "Bash"],
+                    customTools: [],
+                    behaviorInstructions: "Read only.",
+                    environmentKeys: [],
+                    environmentValues: [],
+                    isGlobal: false
+                )
+            ],
+            sshConnections: [],
+            exportedAt: Date()
+        )
+    }
+
     @Test("workspace support files migrate under hidden astra folder")
     func workspaceSupportFilesUseHiddenFolder() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_layout_\(UUID().uuidString)")

@@ -187,8 +187,6 @@ public struct ASTRAApp: App {
 
     /// Mark universal skills as global so they're hidden from workspace skill lists
     private static func markBuiltInSkillsAsGlobal(modelContext: ModelContext) {
-        let builtInNames: Set<String> = ["Read-Only", "Safe Bash", "Test Runner",
-                                          "Read-Only Explorer", "Safe Executor"]
         let descriptor = FetchDescriptor<Skill>()
         let skills: [Skill]
         do {
@@ -202,7 +200,7 @@ public struct ASTRAApp: App {
             return
         }
         var updated = 0
-        for skill in skills where builtInNames.contains(skill.name) && !skill.isBuiltIn {
+        for skill in skills where Skill.isBuiltInName(skill.name) && !skill.isBuiltIn {
             skill.isGlobal = true
             skill.isBuiltIn = true
             updated += 1

@@ -398,10 +398,10 @@ struct ChatPanelView: View {
     private var globalSkills: [Skill]
 
     private var availableSkills: [Skill] {
-        let workspaceSkills = (workspace?.skills ?? []).filter { !$0.isBuiltIn }
+        let workspaceSkills = (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
         let enabledIDs = Set(workspace?.enabledGlobalSkillIDs ?? [])
         let enabledGlobals = globalSkills.filter { gs in
-            !gs.isBuiltIn &&
+            !gs.isSystemBuiltIn &&
             enabledIDs.contains(gs.id.uuidString) &&
             !workspaceSkills.contains { $0.id == gs.id }
         }
@@ -1687,7 +1687,7 @@ struct ChatPanelView: View {
 
         case "/schedule":
             let existingSchedules = (ws.schedules.map { "\($0.name) (\($0.frequencySummary))" }).joined(separator: ", ")
-            let skillList = (ws.skills.filter { !$0.isBuiltIn }.map { $0.name }).joined(separator: ", ")
+            let skillList = (ws.skills.filter { !$0.isSystemBuiltIn }.map { $0.name }).joined(separator: ", ")
             return """
             The user wants to create a new Schedule for their workspace. A Schedule runs a task automatically on a \
             recurring basis (daily, weekly, at intervals, or once). Have a natural conversation to understand what they need.

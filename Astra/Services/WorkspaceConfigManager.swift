@@ -757,7 +757,9 @@ enum WorkspaceConfigManager {
         skill.environmentKeys = config.environmentKeys
         let storedValues = Array(config.environmentValues.prefix(config.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, config.environmentKeys.count - storedValues.count))
-        skill.isGlobal = config.isGlobal ?? false
+        let builtIn = Skill.isBuiltInName(config.name)
+        skill.isBuiltIn = builtIn
+        skill.isGlobal = builtIn || (config.isGlobal ?? false)
         skill.createdAt = config.createdAt ?? skill.createdAt
         skill.updatedAt = config.updatedAt ?? skill.updatedAt
         skill.migrateSecretsToKeychain()
@@ -876,12 +878,21 @@ enum WorkspaceConfigManager {
     }
 
     private static func reusedGlobalSkill(for config: SkillConfig, modelContext: ModelContext) -> Skill? {
-        guard config.isGlobal == true,
-              let idString = config.id,
-              let id = UUID(uuidString: idString) else {
+        guard config.isGlobal == true || Skill.isBuiltInName(config.name) else {
             return nil
         }
-        let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == id && $0.isGlobal })
+
+        if let idString = config.id,
+           let id = UUID(uuidString: idString) {
+            let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == id && $0.isGlobal })
+            if let exact = (try? modelContext.fetch(descriptor))?.first {
+                return exact
+            }
+        }
+
+        guard Skill.isBuiltInName(config.name) else { return nil }
+        let name = config.name
+        let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.name == name && $0.isGlobal })
         return (try? modelContext.fetch(descriptor))?.first
     }
 

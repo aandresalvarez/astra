@@ -93,7 +93,7 @@ struct WorkspaceRightRailView: View {
     private var enabledGlobalSkills: [Skill] {
         let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
         return globalSkills
-            .filter { enabledIDs.contains($0.id.uuidString) && !$0.isBuiltIn }
+            .filter { enabledIDs.contains($0.id.uuidString) && !$0.isSystemBuiltIn }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -1097,7 +1097,7 @@ struct WorkspaceRightRailView: View {
             }
 
             let availableGlobals = globalSkills.filter { globalSkill in
-                !globalSkill.isBuiltIn &&
+                !globalSkill.isSystemBuiltIn &&
                 !workspaceSkills.contains { $0.id == globalSkill.id }
             }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 

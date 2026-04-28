@@ -1585,7 +1585,7 @@ struct TaskMainView: View {
 
         let conversationSnapshot = scheduleConversationContext
         let existingSchedules = ws.schedules.map { "\($0.name) (\($0.frequencySummary))" }.joined(separator: ", ")
-        let skillList = ws.skills.filter { !$0.isBuiltIn }.map { $0.name }.joined(separator: ", ")
+        let skillList = ws.skills.filter { !$0.isSystemBuiltIn }.map { $0.name }.joined(separator: ", ")
         let workspacePath = ws.primaryPath
 
         let systemPrompt = """
