@@ -202,6 +202,18 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
               !publicKey.isEmpty else {
             return "App updates need a Sparkle public key for release builds."
         }
+        guard isValidSparklePublicEDKey(publicKey) else {
+            return "App updates need a valid Sparkle public key for release builds."
+        }
         return nil
+    }
+
+    nonisolated static func isValidSparklePublicEDKey(_ key: String) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = Data(base64Encoded: trimmed) else {
+            return false
+        }
+        return data.count == 32
     }
 }
