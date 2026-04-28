@@ -9,11 +9,11 @@ import Security
 enum KeychainService {
 
     private static func connectorService(for connectorID: UUID) -> String {
-        "astra-\(connectorID.uuidString)"
+        "\(AppChannel.current.keychainConnectorPrefix)-\(connectorID.uuidString)"
     }
 
     private static func skillService(for skillID: UUID) -> String {
-        "astra-skill-\(skillID.uuidString)"
+        "\(AppChannel.current.keychainSkillPrefix)-\(skillID.uuidString)"
     }
 
     // MARK: - Save

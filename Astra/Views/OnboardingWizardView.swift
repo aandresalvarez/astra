@@ -250,7 +250,7 @@ struct OnboardingWizardView: View {
             calloutBox(
                 icon: "lightbulb.fill",
                 title: "Good defaults",
-                body: "~/Documents/ASTRA keeps things tidy and iCloud-backup-friendly. You can change this later in Settings.",
+                body: "\(AppChannel.current.defaultWorkspacesRoot) keeps things tidy and iCloud-backup-friendly. You can change this later in Settings.",
                 tint: Stanford.illuminating
             )
         }
@@ -625,9 +625,7 @@ struct OnboardingWizardView: View {
 
     private var resolvedWorkspaceRoot: String {
         if !workspacesRoot.isEmpty { return workspacesRoot }
-        // Default: ~/Documents/ASTRA
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("Documents/ASTRA").path
+        return AppChannel.current.defaultWorkspacesRoot
     }
 
     private func pickWorkspaceRoot() {

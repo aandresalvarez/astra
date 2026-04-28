@@ -65,6 +65,62 @@ Useful launch modes:
 ./script/build_and_run.sh --debug
 ```
 
+Local development builds are isolated from the production app by default:
+
+```bash
+./script/setup_local_channels.sh
+./script/build_and_run.sh
+```
+
+The local script launches `ASTRA Dev` with bundle ID `com.coral.ASTRA.dev`,
+separate App Support, logs, Keychain namespace, and
+`~/Documents/Astra Dev/Workspaces`. Production releases keep `ASTRA`,
+`com.coral.ASTRA`, and `~/Documents/Astra/Workspaces`.
+
+## Internal Test Releases
+
+ASTRA can be distributed internally with zero Apple cost during testing. The
+release helper defaults to this mode:
+
+```bash
+/path/to/Sparkle/bin/generate_keys
+```
+
+Copy the printed public key into `ASTRA_SPARKLE_PUBLIC_ED_KEY`. Keep the private
+key in your login Keychain, or export it and pass it to the release helper with
+`SPARKLE_ED_KEY_FILE=/path/to/private-key`.
+
+```bash
+ASTRA_VERSION=0.1.0 \
+ASTRA_BUILD=1 \
+ASTRA_SPARKLE_PUBLIC_ED_KEY="..." \
+SPARKLE_GENERATE_APPCAST=/path/to/Sparkle/bin/generate_appcast \
+SPARKLE_ED_KEY_FILE=/path/to/private-key \
+./script/release_update.sh
+```
+
+This produces:
+
+```text
+dist/release/ASTRA-0.1.0.zip
+dist/release/appcast.xml
+```
+
+The internal release path uses ad-hoc macOS code signing plus Sparkle EdDSA
+update signatures. It does not require the Mac App Store, Apple Developer
+Program, Developer ID, or notarization. The tradeoff is trust UX: the first
+manual install on each Mac may require a right-click Open or Security & Privacy
+approval because Apple has not notarized the app. After the app is trusted,
+Sparkle can handle signed updates from the appcast.
+
+If the project later needs the smoother Gatekeeper experience, use:
+
+```bash
+ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh
+```
+
+That future path requires Apple Developer ID signing and notarization.
+
 ## Project Structure
 
 ```text

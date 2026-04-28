@@ -30,6 +30,15 @@ final class TaskQueue {
         workers.filter(\.isRunning).count
     }
 
+    var hasActiveUpdateBlockingWork: Bool {
+        AppUpdateSafety.isInstallBlocked(
+            queueIsProcessing: isProcessing,
+            activeWorkerCount: activeCount,
+            activeTaskCount: activeTasks.count,
+            runningTaskCount: 0
+        )
+    }
+
     /// Whether any worker is available
     var hasAvailableWorker: Bool {
         workers.contains { !$0.isRunning }

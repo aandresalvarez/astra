@@ -82,10 +82,10 @@ struct KeychainSecretStore: SecretStore {
     }
 
     static func connectorEntityID(for connectorID: UUID) -> String {
-        "astra-\(connectorID.uuidString)"
+        "\(AppChannel.current.keychainConnectorPrefix)-\(connectorID.uuidString)"
     }
 
     static func skillEntityID(for skillID: UUID) -> String {
-        "astra-skill-\(skillID.uuidString)"
+        "\(AppChannel.current.keychainSkillPrefix)-\(skillID.uuidString)"
     }
 }

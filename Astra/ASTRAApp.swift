@@ -54,8 +54,20 @@ private struct ImportWorkspaceMenuItem: View {
     }
 }
 
+private struct CheckForUpdatesMenuItem: View {
+    @ObservedObject var appUpdateController: AppUpdateController
+
+    var body: some View {
+        Button("Check for Updates…") {
+            appUpdateController.checkForUpdates()
+        }
+        .disabled(!appUpdateController.canCheckForUpdates)
+    }
+}
+
 public struct ASTRAApp: App {
     public let modelContainer: ModelContainer
+    @StateObject private var appUpdateController = AppUpdateController()
 
     public init() {
         UserDefaults.standard.register(defaults: [AppLogger.sensitiveModeKey: true])
@@ -219,8 +231,8 @@ public struct ASTRAApp: App {
     }
 
     public var body: some Scene {
-        WindowGroup("ASTRA") {
-            ContentView()
+        WindowGroup(AppChannel.current.displayName) {
+            ContentView(appUpdateController: appUpdateController)
                 .frame(minWidth: 900, minHeight: 600)
                 .tint(Stanford.cardinalRed)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
@@ -248,6 +260,10 @@ public struct ASTRAApp: App {
                 }
             }
 
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesMenuItem(appUpdateController: appUpdateController)
+            }
+
             CommandGroup(after: .toolbar) {
                 Button("Increase Size") {
                     Stanford.uiScale = min(Stanford.uiScale + 0.1, 1.5)
@@ -267,7 +283,7 @@ public struct ASTRAApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(appUpdateController: appUpdateController)
                 .modelContainer(modelContainer)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
         }
