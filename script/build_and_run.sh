@@ -11,6 +11,13 @@ APP_BUILD="${ASTRA_BUILD:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
 SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
 
+validate_sparkle_public_ed_key() {
+  local key="$1"
+  local decoded_length
+  decoded_length="$(printf '%s' "$key" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c | /usr/bin/tr -d ' ')" || return 1
+  [[ "$decoded_length" == "32" ]]
+}
+
 case "$ASTRA_CHANNEL" in
   prod|production)
     ASTRA_CHANNEL="prod"
@@ -36,6 +43,11 @@ case "$ASTRA_CHANNEL" in
 esac
 
 SPARKLE_FEED_URL="${ASTRA_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
+
+if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARKLE_PUBLIC_ED_KEY"; then
+  echo "Invalid ASTRA_SPARKLE_PUBLIC_ED_KEY: expected a base64 Sparkle EdDSA public key that decodes to 32 bytes." >&2
+  exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"

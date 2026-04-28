@@ -4,6 +4,17 @@ import Testing
 
 @Suite("App Update Safety")
 struct AppUpdateSafetyTests {
+    @Test("validates Sparkle public EdDSA key format")
+    func validatesSparklePublicEDKeyFormat() {
+        let validKey = Data(repeating: 0, count: 32).base64EncodedString()
+
+        #expect(AppUpdateController.isValidSparklePublicEDKey(validKey))
+        #expect(!AppUpdateController.isValidSparklePublicEDKey(""))
+        #expect(!AppUpdateController.isValidSparklePublicEDKey("test"))
+        #expect(!AppUpdateController.isValidSparklePublicEDKey(Data(repeating: 0, count: 31).base64EncodedString()))
+        #expect(!AppUpdateController.isValidSparklePublicEDKey(Data(repeating: 0, count: 33).base64EncodedString()))
+    }
+
     @Test("idle queue allows install")
     func idleQueueAllowsInstall() {
         #expect(!AppUpdateSafety.isInstallBlocked(
