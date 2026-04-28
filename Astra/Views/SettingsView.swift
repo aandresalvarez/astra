@@ -143,6 +143,21 @@ struct SettingsView: View {
             Section("App Updates") {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
+                        Text("Installed Build")
+                            .font(Stanford.body(14))
+                        Text(AppBuildInfo.current.channelDisplayName)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(AppBuildInfo.current.installedBuildSummary)
+                        .font(Stanford.caption(12).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("Automatic update checks")
                             .font(Stanford.body(14))
                         Text(appUpdateController.statusMessage ?? "\(AppChannel.current.displayName) checks the signed Sparkle appcast for GitHub Release updates.")
