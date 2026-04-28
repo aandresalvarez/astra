@@ -114,6 +114,13 @@ enum AuditEvent: String, CaseIterable {
     case schedulerStarted = "scheduler.started"
     case schedulerStopped = "scheduler.stopped"
     case scheduleFired = "schedule.fired"
+
+    case appUpdateCheckStarted = "app_update.check_started"
+    case appUpdateAvailable = "app_update.available"
+    case appUpdateNotAvailable = "app_update.not_available"
+    case appUpdateBlocked = "app_update.blocked"
+    case appUpdateBackupCreated = "app_update.backup_created"
+    case appUpdateInstallRequested = "app_update.install_requested"
 }
 
 // MARK: - Log Sanitizer
@@ -226,18 +233,19 @@ enum AppLogger {
         let categories = [
             "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
             "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-            "Keychain", "General"
+            "Keychain", "Updater", "General"
         ]
         var dict: [String: os.Logger] = [:]
         for cat in categories {
-            dict[cat] = os.Logger(subsystem: "com.astra.mac", category: cat)
+            dict[cat] = os.Logger(subsystem: AppChannel.current.loggingSubsystem, category: cat)
         }
         return dict
     }()
 
     private static let logDir: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/Astra")
+            .appendingPathComponent("Library/Logs")
+            .appendingPathComponent(AppChannel.current.logsDirectoryName)
         ensureDirectory(at: dir)
         return dir
     }()

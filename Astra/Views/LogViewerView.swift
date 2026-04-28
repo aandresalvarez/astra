@@ -11,7 +11,7 @@ struct LogViewerView: View {
     private let categories = [
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-        "Keychain", "General"
+        "Keychain", "Updater", "General"
     ]
 
     var filteredEntries: [LogEntry] {

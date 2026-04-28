@@ -65,6 +65,18 @@ Useful launch modes:
 ./script/build_and_run.sh --debug
 ```
 
+Local development builds are isolated from the production app by default:
+
+```bash
+./script/setup_local_channels.sh
+./script/build_and_run.sh
+```
+
+The local script launches `ASTRA Dev` with bundle ID `com.coral.ASTRA.dev`,
+separate App Support, logs, Keychain namespace, and
+`~/Documents/Astra Dev/Workspaces`. Production releases keep `ASTRA`,
+`com.coral.ASTRA`, and `~/Documents/Astra/Workspaces`.
+
 ## Project Structure
 
 ```text

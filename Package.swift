@@ -7,6 +7,9 @@ let package = Package(
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.1")
+    ],
     targets: [
         .target(
             name: "ASTRACore",
@@ -14,7 +17,10 @@ let package = Package(
         ),
         .target(
             name: "ASTRA",
-            dependencies: ["ASTRACore"],
+            dependencies: [
+                "ASTRACore",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Astra",
             resources: [
                 .process("Assets.xcassets"),

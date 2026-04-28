@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var appUpdateController: AppUpdateController
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultTokenBudget") private var defaultTokenBudget = 50000
     @AppStorage("claudePath") private var claudePath = ""
@@ -17,6 +18,11 @@ struct SettingsView: View {
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
 
     @State private var detectedPath = ""
+
+    @MainActor
+    init(appUpdateController: AppUpdateController) {
+        self.appUpdateController = appUpdateController
+    }
 
     var body: some View {
         Form {
@@ -49,7 +55,7 @@ struct SettingsView: View {
 
                 HStack {
                     TextField("Workspaces Root", text: $workspacesRoot,
-                              prompt: Text("~/Documents/Astra/Workspaces"))
+                              prompt: Text(AppChannel.current.defaultWorkspacesRoot))
                     Button("Browse") {
                         browseFolder()
                     }
@@ -134,7 +140,29 @@ struct SettingsView: View {
                 }
             }
 
+            Section("App Updates") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Automatic update checks")
+                            .font(Stanford.body(14))
+                        Text(appUpdateController.statusMessage ?? "\(AppChannel.current.displayName) checks the signed Sparkle appcast for GitHub Release updates.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Check Now") {
+                        appUpdateController.checkForUpdates()
+                    }
+                    .disabled(!appUpdateController.canCheckForUpdates)
+                }
+                Text(AppUpdateController.defaultFeedURL)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             Section("Data Locations") {
+                dataLocationRow("App Channel", path: AppChannel.current.displayName, canOpen: false)
                 dataLocationRow("App Support", path: WorkspaceRecoveryService.applicationSupportDirectory.path)
                 dataLocationRow("SwiftData Store", path: WorkspaceRecoveryService.storeURL.path)
                 dataLocationRow("Workspaces", path: resolvedWorkspacesRoot)
@@ -159,7 +187,7 @@ struct SettingsView: View {
     }
 
     private var resolvedWorkspacesRoot: String {
-        workspacesRoot.isEmpty ? NSHomeDirectory() + "/Documents/Astra/Workspaces" : workspacesRoot
+        workspacesRoot.isEmpty ? AppChannel.current.defaultWorkspacesRoot : workspacesRoot
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {

@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
+    @ObservedObject var appUpdateController: AppUpdateController
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AgentTask.queuePosition) private var allTasks: [AgentTask]
     @Query(sort: \Skill.name) private var allSkills: [Skill]
@@ -45,6 +46,11 @@ struct ContentView: View {
     /// Shared preflight cache — one instance for the whole app run so the
     /// wizard's probe of `claude` warms the cache for the catalog badges
     /// (and vice versa).
+
+    @MainActor
+    init(appUpdateController: AppUpdateController) {
+        self.appUpdateController = appUpdateController
+    }
 
     private var filteredTasks: [AgentTask] {
         guard let ws = selectedWorkspace else { return [] }
@@ -116,6 +122,18 @@ struct ContentView: View {
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
+            if appUpdateController.shouldShowUpdateButton {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        appUpdateController.checkForUpdatesFromButton()
+                    } label: {
+                        Label(appUpdateController.buttonTitle, systemImage: "arrow.down.circle")
+                    }
+                    .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
+                    .accessibilityIdentifier("AppUpdateButton")
+                }
+            }
+
             if selectedWorkspace != nil {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -142,9 +160,7 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            if !recoveryNotice.isEmpty {
-                recoveryNoticeBanner
-            }
+            topNoticeBanners
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -260,18 +276,23 @@ struct ContentView: View {
             enterUITestComposerIfNeeded()
             runtime.startScheduler(modelContext: modelContext)
             runtime.loadPluginCatalog()
+            refreshUpdateSafetyHooks()
+            appUpdateController.probeForUpdatesOnce()
         }
         .onChange(of: claudePath) { applySettings() }
         .onChange(of: timeoutSeconds) { applySettings() }
         .onChange(of: validationModel) { applySettings() }
         .onChange(of: skipPermissions) { applySettings() }
+        .onChange(of: updateSafetySignature) { refreshUpdateSafetyHooks() }
         .onChange(of: workspaceSelectionSignature) {
             restoreWorkspaceSelection()
             enterUITestComposerIfNeeded()
         }
         .onChange(of: selectedWorkspace) {
             // Clear selected task when switching workspaces
-            if let task = selectedTask, task.workspace?.id != selectedWorkspace?.id {
+            let selectedWorkspaceID = selectedWorkspace?.id
+            let taskWorkspaceID = selectedTask?.workspace?.id
+            if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
                 selectedTask = nil
             }
             if isUITestingSeededLaunch {
@@ -303,6 +324,20 @@ struct ContentView: View {
 
     // MARK: - Onboarding
 
+    @ViewBuilder
+    private var topNoticeBanners: some View {
+        if !recoveryNotice.isEmpty || updateBlockNotice != nil {
+            VStack(spacing: 0) {
+                if !recoveryNotice.isEmpty {
+                    recoveryNoticeBanner
+                }
+                if let updateBlockNotice {
+                    updateNoticeBanner(updateBlockNotice)
+                }
+            }
+        }
+    }
+
     private var recoveryNoticeBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "externaldrive.badge.checkmark")
@@ -313,6 +348,36 @@ struct ContentView: View {
             Spacer()
             Button("Dismiss") {
                 recoveryNotice = ""
+            }
+            .font(Stanford.body(12))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Stanford.fog)
+        .overlay(alignment: .bottom) {
+            SoftHorizontalTransition(height: 12)
+                .rotationEffect(.degrees(180))
+                .offset(y: 8)
+        }
+    }
+
+    private var updateBlockNotice: String? {
+        if case .blocked(let message) = appUpdateController.status {
+            return message
+        }
+        return nil
+    }
+
+    private func updateNoticeBanner(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(Stanford.cardinalRed)
+            Text(message)
+                .font(Stanford.body(13))
+                .foregroundStyle(Stanford.black)
+            Spacer()
+            Button("Check Again") {
+                appUpdateController.checkForUpdatesFromButton()
             }
             .font(Stanford.body(12))
         }
@@ -519,6 +584,75 @@ struct ContentView: View {
         TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: runtime.taskQueue)
     }
 
+    private var updateSafetySignature: String {
+        let taskSignature = allTasks
+            .map { "\($0.id.uuidString):\($0.status.rawValue)" }
+            .joined(separator: ",")
+        return [
+            String(runtime.taskQueue.isProcessing),
+            String(runtime.taskQueue.activeCount),
+            String(runtime.taskQueue.activeTasks.count),
+            taskSignature
+        ].joined(separator: "|")
+    }
+
+    private var hasUpdateBlockingWork: Bool {
+        AppUpdateSafety.isInstallBlocked(
+            queueIsProcessing: runtime.taskQueue.isProcessing,
+            activeWorkerCount: runtime.taskQueue.activeCount,
+            activeTaskCount: runtime.taskQueue.activeTasks.count,
+            runningTaskCount: allTasks.filter { $0.status == .running }.count
+        )
+    }
+
+    private func refreshUpdateSafetyHooks() {
+        appUpdateController.configureSafety(
+            isWorkActive: { hasUpdateBlockingWork },
+            prepareForInstall: { prepareForAppUpdateInstall() }
+        )
+    }
+
+    private func prepareForAppUpdateInstall() -> Bool {
+        guard !hasUpdateBlockingWork else {
+            AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
+                "reason": "active_work_preinstall"
+            ], level: .warning)
+            return false
+        }
+
+        runtime.taskScheduler.stop()
+        for workspace in workspaces {
+            WorkspacePersistenceCoordinator.flushPendingExport(
+                workspace: workspace,
+                modelContext: modelContext
+            )
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
+                "reason": "swiftdata_save_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
+        }
+
+        do {
+            try WorkspaceRecoveryService.copyStoreBackup(
+                at: WorkspaceRecoveryService.storeURL,
+                label: "pre-update"
+            )
+            return true
+        } catch {
+            AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
+                "reason": "store_backup_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
+        }
+    }
+
     // MARK: - Workspace Management
 
     private func createWorkspace() {
@@ -558,7 +692,7 @@ struct ContentView: View {
 
     private var resolvedRoot: String {
         if !workspacesRoot.isEmpty { return workspacesRoot }
-        return NSHomeDirectory() + "/Documents/Astra/Workspaces"
+        return AppChannel.current.defaultWorkspacesRoot
     }
 
     private func finalizeNewWorkspace() {

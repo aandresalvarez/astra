@@ -6,7 +6,7 @@ enum WorkspaceRecoveryService {
 
     static var applicationSupportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Astra", isDirectory: true)
+            .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
     }
 
     static var storeURL: URL {
@@ -49,6 +49,39 @@ enum WorkspaceRecoveryService {
         AppLogger.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
             "result": "completed"
         ], level: .warning)
+    }
+
+    @discardableResult
+    static func copyStoreBackup(
+        at url: URL,
+        backupRoot: URL? = nil,
+        label: String = "pre-update"
+    ) throws -> [URL] {
+        let formatter = ISO8601DateFormatter()
+        let suffix = formatter.string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+        let root = backupRoot ?? applicationSupportDirectory.appendingPathComponent("Backups", isDirectory: true)
+        let backupDirectory = root.appendingPathComponent("\(label)-\(suffix)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: backupDirectory,
+            withIntermediateDirectories: true
+        )
+
+        var copied: [URL] = []
+        for storeSuffix in ["", "-shm", "-wal"] {
+            let source = URL(fileURLWithPath: url.path + storeSuffix)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let destination = backupDirectory.appendingPathComponent(url.lastPathComponent + storeSuffix)
+            try FileManager.default.copyItem(at: source, to: destination)
+            copied.append(destination)
+        }
+
+        AppLogger.audit(.appUpdateBackupCreated, category: "Updater", fields: [
+            "file_count": String(copied.count),
+            "label": label
+        ])
+        return copied
     }
 
     @discardableResult
@@ -115,7 +148,7 @@ enum WorkspaceRecoveryService {
             if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
                 roots.append(configured)
             }
-            roots.append(NSHomeDirectory() + "/Documents/Astra/Workspaces")
+            roots.append(AppChannel.current.defaultWorkspacesRoot)
         }
         roots.append(contentsOf: extraRoots)
 
@@ -134,6 +167,7 @@ enum WorkspaceRecoveryService {
     }
 
     private static func migrateLegacyStoreIfNeeded() {
+        guard AppChannel.current == .production else { return }
         let fileManager = FileManager.default
         guard !fileManager.fileExists(atPath: storeURL.path),
               fileManager.fileExists(atPath: legacyStoreURL.path),
