@@ -109,7 +109,7 @@ public struct ASTRAApp: App {
             ])
             if !isUITesting {
                 WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                PluginCatalog().seedBuiltInPlugins()
+                try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                 Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                 Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
             }
@@ -130,7 +130,7 @@ public struct ASTRAApp: App {
                 ])
                 if !isUITesting {
                     WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                    PluginCatalog().seedBuiltInPlugins()
+                    try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                     Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                     Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
                 }

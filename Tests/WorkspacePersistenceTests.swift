@@ -12,6 +12,8 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
 @MainActor
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
+    workspace.enabledCapabilityIDs = ["stanford.builder"]
+    workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
     context.insert(workspace)
 
     let connector = Connector(
@@ -99,18 +101,18 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v5")
+@Suite("Workspace Persistence v7")
 struct WorkspacePersistenceTests {
-    @Test("v5 export and import preserve IDs, history, artifacts, and redacted credentials")
+    @Test("v7 export and import preserve IDs, history, artifacts, and redacted credentials")
     @MainActor
-    func v5RoundTripPreservesDurableIDs() throws {
+    func v7RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
         let workspace = try makeRichWorkspace(in: context, root: tempRoot)
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
-        #expect(config.version == 5)
+        #expect(config.version == 7)
         #expect(config.id == workspace.id.uuidString)
         #expect(config.skills.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.connectors?.first?.id == workspace.connectors.first?.id.uuidString)
@@ -122,6 +124,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.artifacts?.first?.id == workspace.tasks.first?.artifacts.first?.id.uuidString)
         #expect(config.tasks?.first?.skillIDs == [workspace.skills.first?.id.uuidString].compactMap { $0 })
         #expect(config.tasks?.first?.skillSnapshots?.first?.id == workspace.skills.first?.id.uuidString)
+        #expect(config.enabledCapabilityIDs == ["stanford.builder"])
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -141,6 +144,8 @@ struct WorkspacePersistenceTests {
         #expect(imported.connectors.first?.id == workspace.connectors.first?.id)
         #expect(imported.connectors.first?.credentialKeys == ["API_TOKEN"])
         #expect(imported.connectors.first?.credentialValues == [""])
+        #expect(imported.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)

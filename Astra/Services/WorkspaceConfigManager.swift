@@ -8,12 +8,12 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v4 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v6 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v5)
+    // MARK: - Config Schema (v7)
 
-    static let currentVersion = 5
+    static let currentVersion = 7
 
     struct WorkspaceConfig: Codable {
         var version: Int = WorkspaceConfigManager.currentVersion
@@ -26,6 +26,8 @@ enum WorkspaceConfigManager {
         var lastUsedSkillNames: [String]?
         var enabledGlobalSkillIDs: [String]?
         var enabledGlobalConnectorIDs: [String]?
+        var enabledGlobalToolIDs: [String]?
+        var enabledCapabilityIDs: [String]?
         var memories: [String]?
         var createdAt: Date?
         var updatedAt: Date?
@@ -211,21 +213,44 @@ enum WorkspaceConfigManager {
     // MARK: - Export
 
     static func export(workspace: Workspace) -> WorkspaceConfig? {
-        export(workspace: workspace, globalSkills: [])
+        guard let modelContext = workspace.modelContext else {
+            return export(workspace: workspace, globalSkills: [])
+        }
+        return export(workspace: workspace, modelContext: modelContext)
     }
 
     static func export(workspace: Workspace, modelContext: ModelContext) -> WorkspaceConfig? {
         let globalSkills = fetchGlobalSkills(modelContext: modelContext)
-        return export(workspace: workspace, globalSkills: globalSkills)
+        let globalConnectors = fetchGlobalConnectors(modelContext: modelContext)
+        let globalTools = fetchGlobalTools(modelContext: modelContext)
+        return export(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        )
     }
 
-    static func export(workspace: Workspace, globalSkills: [Skill]) -> WorkspaceConfig? {
+    static func export(
+        workspace: Workspace,
+        globalSkills: [Skill],
+        globalConnectors: [Connector] = [],
+        globalTools: [LocalTool] = []
+    ) -> WorkspaceConfig? {
         // Guard against faulted/deleted workspace during dealloc
         guard !workspace.isDeleted, workspace.modelContext != nil else { return nil }
 
         let skills = skillsForExport(workspace: workspace, globalSkills: globalSkills)
-        let connectors = uniqueByID(workspace.connectors + skills.flatMap(\.connectors)) { $0.id }
-        let localTools = uniqueByID(workspace.localTools + skills.flatMap(\.localTools)) { $0.id }
+        let connectors = connectorsForExport(
+            workspace: workspace,
+            skills: skills,
+            globalConnectors: globalConnectors
+        )
+        let localTools = toolsForExport(
+            workspace: workspace,
+            skills: skills,
+            globalTools: globalTools
+        )
 
         let skillConfigs = skills.compactMap(skillConfig)
         let connectorConfigs = connectors.compactMap(connectorConfig)
@@ -252,6 +277,8 @@ enum WorkspaceConfigManager {
             lastUsedSkillNames: workspace.lastUsedSkillNames,
             enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
+            enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
+            enabledCapabilityIDs: workspace.enabledCapabilityIDs,
             memories: workspace.memories,
             createdAt: workspace.createdAt,
             updatedAt: workspace.updatedAt,
@@ -330,6 +357,8 @@ enum WorkspaceConfigManager {
         workspace.lastUsedSkillNames = config.lastUsedSkillNames ?? []
         workspace.enabledGlobalSkillIDs = config.enabledGlobalSkillIDs ?? []
         workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
+        workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
+        workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
         workspace.memories = config.memories ?? []
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
@@ -342,9 +371,14 @@ enum WorkspaceConfigManager {
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         for cc in config.connectors ?? [] {
-            let connector = makeConnector(from: cc)
+            let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc)
             connector.workspace = (connector.isGlobal ? nil : workspace)
-            modelContext.insert(connector)
+            if connector.isGlobal {
+                appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
+            }
+            if connector.modelContext == nil {
+                modelContext.insert(connector)
+            }
             connectorsByID[connector.id.uuidString] = connector
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
@@ -354,9 +388,14 @@ enum WorkspaceConfigManager {
         var toolsByID: [String: LocalTool] = [:]
         var toolsByName: [String: LocalTool] = [:]
         for tc in config.localTools ?? [] {
-            let tool = makeLocalTool(from: tc)
+            let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc)
             tool.workspace = (tool.isGlobal ? nil : workspace)
-            modelContext.insert(tool)
+            if tool.isGlobal {
+                appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+            }
+            if tool.modelContext == nil {
+                modelContext.insert(tool)
+            }
             toolsByID[tool.id.uuidString] = tool
             if toolsByName[tool.name] == nil {
                 toolsByName[tool.name] = tool
@@ -443,11 +482,43 @@ enum WorkspaceConfigManager {
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
+    private static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
+        let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func fetchGlobalTools(modelContext: ModelContext) -> [LocalTool] {
+        let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
     private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
         let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals) { $0.id }
+        return all.filter { !$0.isDeleted && $0.modelContext != nil }
+    }
+
+    private static func connectorsForExport(
+        workspace: Workspace,
+        skills: [Skill],
+        globalConnectors: [Connector]
+    ) -> [Connector] {
+        let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
+        let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
+        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals) { $0.id }
+        return all.filter { !$0.isDeleted && $0.modelContext != nil }
+    }
+
+    private static func toolsForExport(
+        workspace: Workspace,
+        skills: [Skill],
+        globalTools: [LocalTool]
+    ) -> [LocalTool] {
+        let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
+        let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
+        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
@@ -893,6 +964,58 @@ enum WorkspaceConfigManager {
         guard Skill.isBuiltInName(config.name) else { return nil }
         let name = config.name
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.name == name && $0.isGlobal })
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    private static func reusedGlobalConnector(for config: ConnectorConfig, modelContext: ModelContext) -> Connector? {
+        guard config.isGlobal == true else { return nil }
+
+        if let idString = config.id,
+           let id = UUID(uuidString: idString) {
+            let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id && $0.isGlobal })
+            if let exact = (try? modelContext.fetch(descriptor))?.first {
+                return exact
+            }
+        }
+
+        let name = config.name
+        let serviceType = config.serviceType
+        let baseURL = config.baseURL
+        let descriptor = FetchDescriptor<Connector>(
+            predicate: #Predicate {
+                $0.name == name &&
+                $0.serviceType == serviceType &&
+                $0.baseURL == baseURL &&
+                $0.isGlobal
+            }
+        )
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    private static func reusedGlobalTool(for config: LocalToolConfig, modelContext: ModelContext) -> LocalTool? {
+        guard config.isGlobal == true else { return nil }
+
+        if let idString = config.id,
+           let id = UUID(uuidString: idString) {
+            let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.id == id && $0.isGlobal })
+            if let exact = (try? modelContext.fetch(descriptor))?.first {
+                return exact
+            }
+        }
+
+        let name = config.name
+        let toolType = config.toolType
+        let command = config.command
+        let arguments = config.arguments
+        let descriptor = FetchDescriptor<LocalTool>(
+            predicate: #Predicate {
+                $0.name == name &&
+                $0.toolType == toolType &&
+                $0.command == command &&
+                $0.arguments == arguments &&
+                $0.isGlobal
+            }
+        )
         return (try? modelContext.fetch(descriptor))?.first
     }
 

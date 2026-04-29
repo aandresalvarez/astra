@@ -42,7 +42,7 @@ final class AppRuntimeController {
     }
 
     func loadPluginCatalog() {
-        pluginCatalog.loadCatalog()
+        pluginCatalog.loadApprovedCapabilities()
     }
 
     func backfillThreadTitlesIfNeeded(

@@ -21,11 +21,11 @@ enum CatalogFocus: String {
 
     var subtitle: String {
         switch self {
-        case .all: "Everything available for this workspace"
-        case .skills: "Skill packages for this workspace"
-        case .connectors: "Connector packages for this workspace"
-        case .tools: "Tool packages for this workspace"
-        case .templates: "Template packages for this workspace"
+        case .all: "Approved capabilities for this workspace"
+        case .skills: "Approved capabilities with skills"
+        case .connectors: "Approved capabilities with connectors"
+        case .tools: "Approved capabilities with tools"
+        case .templates: "Approved capabilities with templates"
         }
     }
 
@@ -41,11 +41,11 @@ enum CatalogFocus: String {
 
     var emptyTitle: String {
         switch self {
-        case .all: "No catalog items found"
-        case .skills: "No skill packages found"
-        case .connectors: "No connector packages found"
-        case .tools: "No tool packages found"
-        case .templates: "No template packages found"
+        case .all: "No approved capabilities found"
+        case .skills: "No approved skill capabilities found"
+        case .connectors: "No approved connector capabilities found"
+        case .tools: "No approved tool capabilities found"
+        case .templates: "No approved template capabilities found"
         }
     }
 
@@ -78,6 +78,8 @@ struct PluginCatalogView: View {
     @State private var selectedCategory: String?
     @State private var expandedPackageID: String?
     @State private var installingPackage: PluginPackage?
+    @State private var installError: String?
+    @State private var showCreateWizard = false
     /// Cached prereq status per package id, aggregated from the badges.
     /// `nil` = not yet probed; `true` = all green; `false` = at least one
     /// red/amber. Drives the install button's disabled state.
@@ -151,20 +153,32 @@ struct PluginCatalogView: View {
         .frame(width: 740, height: 600)
         .onAppear {
             if catalog.packages.isEmpty {
-                catalog.loadCatalog()
+                catalog.loadApprovedCapabilities()
+            }
+        }
+        .sheet(isPresented: $showCreateWizard) {
+            CapabilityCreationWizardView(workspace: workspace) { package, enableHere in
+                createCapability(package, enableHere: enableHere)
             }
         }
         .sheet(item: $installingPackage) { package in
             PluginInstallSheet(
                 package: package,
                 workspace: workspace,
-                catalog: catalog,
                 onDismiss: { installingPackage = nil },
                 onInstalled: { pkg in
                     installingPackage = nil
                     onInstall?(pkg)
                 }
             )
+        }
+        .alert("Capability could not be installed", isPresented: Binding(
+            get: { installError != nil },
+            set: { if !$0 { installError = nil } }
+        )) {
+            Button("OK", role: .cancel) { installError = nil }
+        } message: {
+            Text(installError ?? "")
         }
     }
 
@@ -189,6 +203,14 @@ struct PluginCatalogView: View {
             }
 
             Spacer()
+
+            Button {
+                showCreateWizard = true
+            } label: {
+                Label("New Capability", systemImage: "plus")
+                    .font(Stanford.body(13))
+            }
+            .buttonStyle(.bordered)
 
             Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
@@ -392,8 +414,7 @@ struct PluginCatalogView: View {
             if package.requiresSetup {
                 installingPackage = package
             } else {
-                catalog.install(package, into: workspace, modelContext: modelContext)
-                onInstall?(package)
+                installCapability(package)
             }
         } label: {
             HStack(spacing: 4) {
@@ -413,6 +434,45 @@ struct PluginCatalogView: View {
         .help(prereqBlocks
               ? "Some prerequisites aren't ready. Installation will still add the package, but tasks using it may fail until you fix them."
               : "Install \(package.name)")
+    }
+
+    private func installCapability(
+        _ package: PluginPackage,
+        credentialInputs: [String: String] = [:],
+        configInputs: [String: String] = [:],
+        baseURLOverrides: [String: String] = [:]
+    ) {
+        do {
+            try CapabilityInstaller().install(
+                package,
+                into: workspace,
+                modelContext: modelContext,
+                credentialInputs: credentialInputs,
+                configInputs: configInputs,
+                baseURLOverrides: baseURLOverrides
+            )
+            onInstall?(package)
+        } catch {
+            installError = error.localizedDescription
+        }
+    }
+
+    private func createCapability(_ package: PluginPackage, enableHere: Bool) {
+        do {
+            if enableHere {
+                try CapabilityInstaller().install(
+                    package,
+                    into: workspace,
+                    modelContext: modelContext
+                )
+                onInstall?(package)
+            } else {
+                try CapabilityLibrary().install(package)
+            }
+            catalog.loadApprovedCapabilities()
+        } catch {
+            installError = error.localizedDescription
+        }
     }
 
     // MARK: - Prerequisite Section
@@ -635,7 +695,6 @@ struct PluginCatalogView: View {
 struct PluginInstallSheet: View {
     let package: PluginPackage
     let workspace: Workspace
-    let catalog: PluginCatalog
     let onDismiss: () -> Void
     let onInstalled: (PluginPackage) -> Void
 
@@ -643,6 +702,7 @@ struct PluginInstallSheet: View {
     @State private var credentialValues: [String: String] = [:]
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
+    @State private var installError: String?
 
     private var allConnectorHints: [(connector: PluginConnector, credentials: [PluginConnector.CredentialHint], configs: [PluginConnector.ConfigHint])] {
         package.connectors.map { ($0, $0.credentialHints, $0.configHints) }
@@ -784,15 +844,7 @@ struct PluginInstallSheet: View {
                 .keyboardShortcut(.cancelAction)
 
                 Button("Install") {
-                    catalog.install(
-                        package,
-                        into: workspace,
-                        modelContext: modelContext,
-                        credentialInputs: credentialValues,
-                        configInputs: configValues,
-                        baseURLOverrides: baseURLValues
-                    )
-                    onInstalled(package)
+                    installCapability()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Stanford.lagunita)
@@ -808,6 +860,30 @@ struct PluginInstallSheet: View {
                     baseURLValues[conn.name] = conn.baseURL
                 }
             }
+        }
+        .alert("Capability could not be installed", isPresented: Binding(
+            get: { installError != nil },
+            set: { if !$0 { installError = nil } }
+        )) {
+            Button("OK", role: .cancel) { installError = nil }
+        } message: {
+            Text(installError ?? "")
+        }
+    }
+
+    private func installCapability() {
+        do {
+            try CapabilityInstaller().install(
+                package,
+                into: workspace,
+                modelContext: modelContext,
+                credentialInputs: credentialValues,
+                configInputs: configValues,
+                baseURLOverrides: baseURLValues
+            )
+            onInstalled(package)
+        } catch {
+            installError = error.localizedDescription
         }
     }
 

@@ -277,6 +277,35 @@ struct ScheduleFireLogicTests {
         #expect(task.skills[0].name == "Test Skill")
     }
 
+    @Test("Schedule skill resolution includes only enabled shared skills")
+    func scheduleSharedSkillResolution() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Shared Schedule", primaryPath: "/tmp/shared-schedule")
+        ctx.insert(ws)
+
+        let enabledShared = Skill(name: "Enabled Shared", allowedTools: ["Read"])
+        enabledShared.isGlobal = true
+        ctx.insert(enabledShared)
+        ws.enabledGlobalSkillIDs = [enabledShared.id.uuidString]
+
+        let disabledShared = Skill(name: "Disabled Shared", allowedTools: ["Read"])
+        disabledShared.isGlobal = true
+        ctx.insert(disabledShared)
+
+        let schedule = TaskSchedule(name: "Skilled", goal: "G", workspace: ws)
+        schedule.skillIDs = [enabledShared.id.uuidString, disabledShared.id.uuidString]
+        ctx.insert(schedule)
+        try ctx.save()
+
+        let resolved = TaskScheduler.resolvedSkills(
+            for: schedule,
+            globalSkills: [enabledShared, disabledShared]
+        )
+
+        #expect(resolved.map(\.name) == ["Enabled Shared"])
+    }
+
     @Test("Due vs future filtering logic")
     func dueFiltering() throws {
         let container = try makeContainer()

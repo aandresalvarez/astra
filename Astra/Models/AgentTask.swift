@@ -331,7 +331,7 @@ final class AgentTask {
     }
 
     func makeSkillResolver() -> SkillResolver {
-        let standaloneTools = workspace?.localTools.filter { $0.skill == nil } ?? []
+        let standaloneTools = allLocalTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
 
         let liveCLICommands = Set(
@@ -394,11 +394,21 @@ final class AgentTask {
         return all.filter { seen.insert($0.id).inserted }
     }
 
-    /// All local tools: from attached skills + standalone workspace tools (not attached to any skill)
+    /// All local tools: from attached skills + standalone workspace tools + enabled global tools
     var allLocalTools: [LocalTool] {
         let fromSkills = skills.flatMap(\.localTools)
         let standalone = workspace?.localTools.filter { $0.skill == nil } ?? []
+        var all = fromSkills + standalone
+
+        if let ws = workspace, !ws.enabledGlobalToolIDs.isEmpty, let ctx = modelContext {
+            let enabledIDs = Set(ws.enabledGlobalToolIDs)
+            let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
+            if let globals = try? ctx.fetch(descriptor) {
+                all += globals.filter { enabledIDs.contains($0.id.uuidString) }
+            }
+        }
+
         var seen = Set<UUID>()
-        return (fromSkills + standalone).filter { seen.insert($0.id).inserted }
+        return all.filter { seen.insert($0.id).inserted }
     }
 }

@@ -19,6 +19,8 @@ struct TaskMainView: View {
     var onToggleDone: ((AgentTask) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
+    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
+    private var globalSkills: [Skill]
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
@@ -36,6 +38,11 @@ struct TaskMainView: View {
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
+
+    private var availableSkills: [Skill] {
+        guard let workspace = task.workspace else { return [] }
+        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1308,6 +1315,7 @@ struct TaskMainView: View {
                     model: task.model,
                     budget: task.tokenBudget,
                     skills: task.skills,
+                    availableSkills: availableSkills,
                     workspace: task.workspace,
                     isRunning: task.status == .running,
                     hasInput: hasInput,
@@ -1585,7 +1593,7 @@ struct TaskMainView: View {
 
         let conversationSnapshot = scheduleConversationContext
         let existingSchedules = ws.schedules.map { "\($0.name) (\($0.frequencySummary))" }.joined(separator: ", ")
-        let skillList = ws.skills.filter { !$0.isSystemBuiltIn }.map { $0.name }.joined(separator: ", ")
+        let skillList = availableSkills.map { $0.name }.joined(separator: ", ")
         let workspacePath = ws.primaryPath
 
         let systemPrompt = """

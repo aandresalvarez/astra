@@ -52,6 +52,8 @@ struct SchemaVersionTests {
 
         let workspace = Workspace(name: "Test", primaryPath: "/tmp/schema-test")
         context.insert(workspace)
+        #expect(workspace.enabledGlobalToolIDs.isEmpty)
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
 
         let skill = Skill(name: "Reader", allowedTools: ["Read"])
         skill.workspace = workspace

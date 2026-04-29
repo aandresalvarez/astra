@@ -1,0 +1,133 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+    {
+      "authMethod" : "none",
+      "baseURL" : "",
+      "configHints" : [
+        {
+          "hint" : "Default GCP project ID",
+          "isList" : false,
+          "key" : "GCP_PROJECT"
+        },
+        {
+          "hint" : "Default region (e.g. us-central1)",
+          "isList" : false,
+          "key" : "GCP_REGION"
+        }
+      ],
+      "credentialHints" : [
+
+      ],
+      "description" : "GCP via gcloud CLI (must be installed locally)",
+      "icon" : "cloud",
+      "name" : "Google Cloud",
+      "notes" : "Uses locally installed gcloud CLI. Run `gcloud auth login` to authenticate.",
+      "serviceType" : "gcloud"
+    }
+  ],
+  "description" : "Manage GCP resources, BigQuery, and deployments",
+  "formatVersion" : 2,
+  "icon" : "cloud",
+  "id" : "gcloud-workflow",
+  "isTrusted" : false,
+  "localTools" : [
+    {
+      "arguments" : "",
+      "command" : "gcloud",
+      "description" : "Google Cloud CLI — manage GCP resources",
+      "icon" : "terminal",
+      "name" : "gcloud",
+      "toolType" : "cli"
+    },
+    {
+      "arguments" : "",
+      "command" : "bq",
+      "description" : "Query and manage BigQuery datasets and tables",
+      "icon" : "terminal",
+      "name" : "bq — BigQuery CLI",
+      "toolType" : "cli"
+    },
+    {
+      "arguments" : "storage",
+      "command" : "gcloud",
+      "description" : "Cloud Storage operations (upload, download, list)",
+      "icon" : "terminal",
+      "name" : "gsutil",
+      "toolType" : "cli"
+    }
+  ],
+  "name" : "Google Cloud",
+  "prerequisites" : [
+    {
+      "authHint" : "Run `gcloud auth login` to sign in.",
+      "binary" : "gcloud",
+      "displayName" : "Google Cloud CLI",
+      "installHint" : "Install via Homebrew: `brew install --cask google-cloud-sdk`",
+      "installURL" : "https:\/\/cloud.google.com\/sdk\/docs\/install",
+      "livenessArgs" : [
+        "--version"
+      ],
+      "purpose" : "Invokes GCP APIs for the Google Cloud skill."
+    },
+    {
+      "authHint" : "Run `gcloud auth login` to sign in.",
+      "binary" : "gcloud",
+      "displayName" : "Google Cloud login",
+      "installHint" : "",
+      "livenessArgs" : [
+        "auth",
+        "list",
+        "--format=value(account)"
+      ],
+      "purpose" : "At least one active account is required for API calls.",
+      "semantic" : "stdoutNonEmpty"
+    }
+  ],
+  "setupGuide" : "Connect your workspace to Google Cloud Platform using the gcloud CLI. Requires gcloud to be installed and authenticated on your machine (run `gcloud auth login` first).\n\nWhat you can do:\n• Query BigQuery datasets and tables\n• Manage Cloud Run services and deployments\n• List and manage GCS buckets and objects\n• Check IAM permissions and service accounts\n• Monitor logs and resource usage\n• Deploy and manage Cloud Functions\n\nSetup:\n• Install gcloud CLI: https:\/\/cloud.google.com\/sdk\/docs\/install\n• Authenticate: `gcloud auth login`\n• Set project: configure your default GCP project ID",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a Google Cloud Platform specialist. Use the gcloud and bq CLI tools to interact with GCP resources.\n\nTOOLS AVAILABLE\n• gcloud — main CLI for GCP resource management\n• bq — BigQuery command-line tool\n• gsutil \/ gcloud storage — Cloud Storage operations\n\nCOMMON OPERATIONS\n• List projects: gcloud projects list\n• Set project: gcloud config set project PROJECT_ID\n• BigQuery query: bq query --use_legacy_sql=false 'SELECT ...'\n• List BQ datasets: bq ls\n• List BQ tables: bq ls dataset_name\n• Cloud Run services: gcloud run services list\n• Deploy Cloud Run: gcloud run deploy SERVICE --image IMAGE\n• GCS: gcloud storage ls gs:\/\/bucket\/\n• Logs: gcloud logging read \"resource.type=...\" --limit=20\n• IAM: gcloud projects get-iam-policy PROJECT_ID\n\nRULES\n• Use the GCP_PROJECT environment variable when set\n• Always confirm with the user before deploying or deleting resources\n• Use --format=json for structured output when parsing results\n• Default to --quiet flag for non-interactive commands\n• For BigQuery, prefer Standard SQL over Legacy SQL",
+      "customTools" : [
+
+      ],
+      "description" : "Manage GCP resources using gcloud and bq CLI tools",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+        "GCP_PROJECT"
+      ],
+      "environmentValues" : [
+        ""
+      ],
+      "icon" : "cloud",
+      "name" : "GCloud Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "gcp",
+    "google-cloud",
+    "bigquery",
+    "cloud-run",
+    "devops"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "1.0.0"
+}

@@ -1,0 +1,113 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+    {
+      "authMethod" : "bearer",
+      "baseURL" : "https:\/\/api.github.com",
+      "configHints" : [
+        {
+          "hint" : "Repositories in owner\/repo format, comma-separated",
+          "isList" : true,
+          "key" : "GITHUB_REPOS"
+        },
+        {
+          "hint" : "Organization name (optional)",
+          "isList" : false,
+          "key" : "GITHUB_ORG"
+        }
+      ],
+      "credentialHints" : [
+        {
+          "hint" : "Personal access token from github.com\/settings\/tokens",
+          "key" : "GITHUB_TOKEN"
+        }
+      ],
+      "description" : "GitHub REST API",
+      "icon" : "chevron.left.forwardslash.chevron.right",
+      "name" : "GitHub",
+      "notes" : "Uses GitHub REST API. Auth: Bearer token.",
+      "serviceType" : "github"
+    }
+  ],
+  "description" : "Manage issues, PRs, and CI from your workspace",
+  "formatVersion" : 2,
+  "icon" : "chevron.left.forwardslash.chevron.right",
+  "id" : "github-workflow",
+  "isTrusted" : false,
+  "localTools" : [
+    {
+      "arguments" : "",
+      "command" : "gh",
+      "description" : "Run GitHub CLI commands (issues, PRs, repos, actions)",
+      "icon" : "terminal",
+      "name" : "gh — GitHub CLI",
+      "toolType" : "cli"
+    },
+    {
+      "arguments" : "pr list",
+      "command" : "gh",
+      "description" : "List pull requests in the current repo",
+      "icon" : "terminal",
+      "name" : "gh pr list",
+      "toolType" : "cli"
+    },
+    {
+      "arguments" : "issue list",
+      "command" : "gh",
+      "description" : "List issues in the current repo",
+      "icon" : "terminal",
+      "name" : "gh issue list",
+      "toolType" : "cli"
+    }
+  ],
+  "name" : "GitHub Workflow",
+  "prerequisites" : [
+
+  ],
+  "setupGuide" : "Connect your workspace to GitHub. The agent uses the GitHub REST API to interact with your repositories.\n\nWhat you can do:\n• List and search issues and pull requests\n• Read PR diffs, review comments, and CI status\n• Create issues with labels and assignees\n• Post comments on issues and PRs\n• Check workflow runs and deployment status\n\nSetup:\n• Token — a Personal Access Token from github.com\/settings\/tokens\n• Repos — the repositories you work with (owner\/repo format)",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a GitHub integration agent. Use curl via Bash to interact with the GitHub REST API.\n\nAUTHENTICATION\nUse the GITHUB_TOKEN environment variable:\ncurl -s -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application\/vnd.github+json\" \"https:\/\/api.github.com\/...\"\n\nCOMMON OPERATIONS\n• List issues: GET \/repos\/{owner}\/{repo}\/issues?state=open\n• Get issue: GET \/repos\/{owner}\/{repo}\/issues\/{number}\n• Create issue: POST \/repos\/{owner}\/{repo}\/issues with {\"title\":\"...\",\"body\":\"...\",\"labels\":[\"bug\"]}\n• List PRs: GET \/repos\/{owner}\/{repo}\/pulls?state=open\n• Get PR diff: GET \/repos\/{owner}\/{repo}\/pulls\/{number} with Accept: application\/vnd.github.diff\n• PR reviews: GET \/repos\/{owner}\/{repo}\/pulls\/{number}\/reviews\n• Comment: POST \/repos\/{owner}\/{repo}\/issues\/{number}\/comments with {\"body\":\"...\"}\n• Workflow runs: GET \/repos\/{owner}\/{repo}\/actions\/runs?per_page=5\n• Check CI status: GET \/repos\/{owner}\/{repo}\/commits\/{sha}\/check-runs\n\nFORMATTING\n• Issues\/PRs: show number, title, state, author, labels, created date\n• PR diffs: summarize changes by file, highlight key modifications\n• CI: show workflow name, status, conclusion, duration\n\nRULES\n• Always confirm with the user before creating issues or posting comments\n• Default to the configured GITHUB_REPOS unless told otherwise\n• Paginate large result sets (use per_page and page params)\n• Include links to issues\/PRs in your responses",
+      "customTools" : [
+
+      ],
+      "description" : "Manage issues, PRs, and CI via GitHub REST API",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+
+      ],
+      "environmentValues" : [
+
+      ],
+      "icon" : "chevron.left.forwardslash.chevron.right",
+      "name" : "GitHub Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "github",
+    "git",
+    "pull-requests",
+    "issues",
+    "ci"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "2.0.0"
+}

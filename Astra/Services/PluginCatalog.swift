@@ -41,6 +41,11 @@ final class PluginCatalog {
         packages = loaded.sorted { $0.category < $1.category || ($0.category == $1.category && $0.name < $1.name) }
     }
 
+    func loadApprovedCapabilities(library: CapabilityLibrary = CapabilityLibrary()) {
+        try? library.syncApprovedPackages(Self.builtInPackages)
+        packages = library.installedPackages()
+    }
+
     var categories: [String] {
         let cats = packages.map(\.category)
         return Array(NSOrderedSet(array: cats)) as? [String] ?? Array(Set(cats)).sorted()
@@ -49,6 +54,9 @@ final class PluginCatalog {
     // MARK: - Install
 
     func isInstalled(_ packageID: String, in workspace: Workspace) -> Bool {
+        if workspace.enabledCapabilityIDs.contains(packageID) || workspace.installedPluginIDSet.contains(packageID) {
+            return true
+        }
         guard let pkg = packages.first(where: { $0.id == packageID }) else { return false }
         let skillNames = Set(pkg.skills.map(\.name))
         let connectorNames = Set(pkg.connectors.map(\.name))
@@ -285,7 +293,12 @@ final class PluginCatalog {
 
     // MARK: - Built-in Package Definitions (Curated)
 
-    static let builtInPackages: [PluginPackage] = [
+    static var builtInPackages: [PluginPackage] {
+        let bundledPackages = ApprovedCapabilityBundle.packages()
+        return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
+    }
+
+    private static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // ────────────────────────────────────────────
         // 1. Code Reviewer — zero config

@@ -41,8 +41,10 @@ struct ToolsManagerView: View {
 
                 // Editor
                 if let tool = selectedTool {
-                    LocalToolEditorView(tool: tool, onDelete: {
+                    LocalToolEditorView(tool: tool, workspace: workspace, onDelete: {
                         deleteTool(tool)
+                    }, onDuplicate: { copy in
+                        selectedTool = copy
                     })
                 } else {
                     ContentUnavailableView(
@@ -90,6 +92,7 @@ struct ToolsManagerView: View {
         if selectedTool?.id == tool.id {
             selectedTool = nil
         }
+        workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
         modelContext.delete(tool)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
@@ -99,7 +102,9 @@ struct ToolsManagerView: View {
 
 struct LocalToolEditorView: View {
     @Bindable var tool: LocalTool
+    var workspace: Workspace? = nil
     let onDelete: () -> Void
+    var onDuplicate: ((LocalTool) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @FocusState private var isNameFocused: Bool
 
@@ -205,6 +210,67 @@ struct LocalToolEditorView: View {
                     }
                 }
 
+                // Sharing
+                if workspace != nil || tool.isGlobal {
+                    GroupBox("Sharing") {
+                        if tool.isGlobal {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle(isOn: Binding(
+                                    get: {
+                                        guard let workspace else { return false }
+                                        return workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+                                    },
+                                    set: { enabled in
+                                        guard let workspace else { return }
+                                        if enabled {
+                                            CapabilitySharing.enableShared(tool, in: workspace)
+                                        } else {
+                                            CapabilitySharing.disableShared(tool, in: workspace)
+                                        }
+                                        saveSharingChange()
+                                    }
+                                )) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Enabled in this workspace")
+                                            .font(Stanford.body(14))
+                                        Text("The shared tool stays installed for other workspaces.")
+                                            .font(Stanford.caption(12))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .disabled(workspace == nil)
+
+                                Button {
+                                    duplicateForWorkspace()
+                                } label: {
+                                    Label("Duplicate for this workspace", systemImage: "doc.on.doc")
+                                        .font(Stanford.body(13))
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(workspace == nil)
+                            }
+                        } else {
+                            Toggle(isOn: Binding(
+                                get: { tool.isGlobal },
+                                set: { newValue in
+                                    if newValue {
+                                        CapabilitySharing.promoteToShared(tool, in: workspace)
+                                    }
+                                    saveSharingChange()
+                                }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Shared across all workspaces")
+                                        .font(Stanford.body(14))
+                                    Text("Enable this tool in any workspace's plug-ins panel")
+                                        .font(Stanford.caption(12))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Delete
                 HStack {
                     Spacer()
@@ -220,7 +286,7 @@ struct LocalToolEditorView: View {
         .onAppear { if tool.name == "New Tool" { isNameFocused = true } }
         .onDisappear {
             tool.updatedAt = Date()
-            WorkspacePersistenceCoordinator.flushPendingExport(workspace: tool.workspace, modelContext: modelContext)
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? tool.workspace, modelContext: modelContext)
         }
     }
 
@@ -252,5 +318,24 @@ struct LocalToolEditorView: View {
             tool.command = url.path
             tool.updatedAt = Date()
         }
+    }
+
+    private func duplicateForWorkspace() {
+        guard let workspace else { return }
+        let copy = CapabilitySharing.duplicateForWorkspace(tool, in: workspace)
+        modelContext.insert(copy)
+        onDuplicate?(copy)
+        saveSharingChange()
+    }
+
+    private func saveSharingChange() {
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace ?? tool.workspace,
+            modelContext: modelContext
+        )
+        AppLogger.audit(.localToolUpdated, category: "UI", fields: [
+            "tool_id": tool.id.uuidString,
+            "is_global": String(tool.isGlobal)
+        ])
     }
 }

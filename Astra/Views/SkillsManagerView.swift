@@ -304,10 +304,23 @@ struct SkillEditorView: View {
                                 if newValue {
                                     // Detach from workspace so cascade delete won't remove it
                                     skill.workspace = nil
+                                    if let ws = workspace {
+                                        let idString = skill.id.uuidString
+                                        if !ws.enabledGlobalSkillIDs.contains(idString) {
+                                            ws.enabledGlobalSkillIDs.append(idString)
+                                        }
+                                        ws.updatedAt = Date()
+                                    }
                                 } else if let ws = workspace {
                                     skill.workspace = ws
+                                    ws.enabledGlobalSkillIDs.removeAll { $0 == skill.id.uuidString }
+                                    ws.updatedAt = Date()
                                 }
                                 skill.updatedAt = Date()
+                                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                                    workspace: workspace ?? skill.workspace,
+                                    modelContext: modelContext
+                                )
                             }
                         )) {
                             VStack(alignment: .leading, spacing: 2) {

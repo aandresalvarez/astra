@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var showingDashboard = false
     @State private var showingLogs = false
     @State private var showingConfigure = false
-    @State private var configureInitialTab: ConfigureTab = .skills
+    @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
@@ -399,7 +399,7 @@ struct ContentView: View {
                     WorkspaceRightRailView(
                         workspace: workspace,
                         selectedTask: selectedTask,
-                        onConfigure: { configureInitialTab = .skills; configureFocusItemID = nil; showingConfigure = true },
+                        onConfigure: { configureInitialTab = .capabilities; configureFocusItemID = nil; showingConfigure = true },
                         onEditWorkspace: { showingWorkspaceEditor = true },
                         onShowDashboard: { showingDashboard = true },
                         onShowLogs: { showingLogs = true },
@@ -516,7 +516,7 @@ struct ContentView: View {
                     setDoneState(task, to: isDone)
                 },
                 onRunQueue: { runQueue() },
-                onConfigure: { configureInitialTab = .skills; configureFocusItemID = nil; showingConfigure = true },
+                onConfigure: { configureInitialTab = .capabilities; configureFocusItemID = nil; showingConfigure = true },
                 onShowDashboard: { showingDashboard = true },
                 onShowLogs: { showingLogs = true },
                 onNewSchedule: { showingNewSchedule = true },

@@ -46,6 +46,7 @@ struct PluginPackagePrereqTests {
         let pkg = try JSONDecoder().decode(PluginPackage.self, from: legacy)
         #expect(pkg.id == "legacy-pkg")
         #expect(pkg.prerequisites.isEmpty)
+        #expect(pkg.sourceMetadata == nil)
     }
 
     @Test("Encoded JSON round-trips with prerequisites preserved")
@@ -64,6 +65,27 @@ struct PluginPackagePrereqTests {
         let decoded = try JSONDecoder().decode(PluginPackage.self, from: data)
         #expect(decoded.prerequisites.count == 2)
         #expect(decoded.prerequisites.first?.binary == "gcloud")
+    }
+
+    @Test("Encoded JSON round-trips source metadata")
+    func roundTripWithSourceMetadata() throws {
+        let source = CapabilitySourceMetadata.remoteApproved(
+            id: "stanford-approved",
+            displayName: "Stanford Approved",
+            url: URL(string: "https://capabilities.stanford.edu")
+        )
+        let pkg = PluginPackage(
+            id: "rt-source", name: "RT Source", icon: "circle", description: "d",
+            author: "a", category: "c", tags: [],
+            version: "1.0.0",
+            skills: [], connectors: [], localTools: [], templates: [],
+            sourceMetadata: source
+        )
+        let data = try JSONEncoder().encode(pkg)
+        let decoded = try JSONDecoder().decode(PluginPackage.self, from: data)
+
+        #expect(decoded.sourceMetadata == source)
+        #expect(decoded.sourceMetadata?.trustLevel == "remote-approved")
     }
 
     @Test("Built-in Google Cloud package has gcloud + auth prereqs")

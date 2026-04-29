@@ -7,6 +7,7 @@ struct ComposerToolbar: View {
     let model: String
     let budget: Int
     var skills: [Skill] = []
+    var availableSkills: [Skill] = []
     var workspace: Workspace?
     let isRunning: Bool
     let hasInput: Bool
@@ -81,7 +82,9 @@ struct ComposerToolbar: View {
             }
 
             Divider()
-            let userSkills = (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
+            let userSkills = availableSkills.isEmpty
+                ? (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
+                : availableSkills
             if !userSkills.isEmpty {
                 Menu {
                     ForEach(userSkills.sorted { $0.name < $1.name }) { skill in

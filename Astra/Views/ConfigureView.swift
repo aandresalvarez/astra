@@ -1,7 +1,9 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 
 enum ConfigureTab: String, CaseIterable {
+    case capabilities = "Capabilities"
     case connectors = "Connectors"
     case tools = "Tools"
     case skills = "Skills"
@@ -9,6 +11,7 @@ enum ConfigureTab: String, CaseIterable {
 
     var icon: String {
         switch self {
+        case .capabilities: return "square.grid.2x2"
         case .connectors: return "bolt.horizontal.circle"
         case .tools: return "wrench.and.screwdriver"
         case .skills: return "puzzlepiece.extension"
@@ -18,6 +21,7 @@ enum ConfigureTab: String, CaseIterable {
 
     var color: Color {
         switch self {
+        case .capabilities: return Stanford.cardinalRed
         case .connectors: return Stanford.paloAltoGreen
         case .tools: return Stanford.tools
         case .skills: return Stanford.lagunita
@@ -27,6 +31,7 @@ enum ConfigureTab: String, CaseIterable {
 
     var subtitle: String {
         switch self {
+        case .capabilities: return "Install & Enable"
         case .connectors: return "APIs & Services"
         case .tools: return "Scripts & MCP"
 
@@ -39,31 +44,36 @@ enum ConfigureTab: String, CaseIterable {
 
 struct ConfigureView: View {
     var workspace: Workspace
-    var initialTab: ConfigureTab = .skills
+    var initialTab: ConfigureTab = .capabilities
     var focusItemID: UUID?
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
-    @State private var selectedTab: ConfigureTab = .skills
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+    @State private var selectedTab: ConfigureTab = .capabilities
 
-    private var activeWorkspaceSkillCount: Int {
-        let workspaceSkills = workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn }
-        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
-        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) && !$0.isSystemBuiltIn }
-        let dedupedGlobals = enabledGlobals.filter { globalSkill in
-            !workspaceSkills.contains { $0.id == globalSkill.id }
-        }
-        return workspaceSkills.count + dedupedGlobals.count
+    private var capabilities: WorkspaceCapabilities {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        )
     }
 
     private func count(for tab: ConfigureTab) -> Int {
         switch tab {
+        case .capabilities:
+            workspace.enabledCapabilityIDs.count
         case .connectors:
-            workspace.connectors.count
+            capabilities.activeConnectors.count
         case .tools:
-            workspace.localTools.count
+            capabilities.activeTools.count
         case .skills:
-            activeWorkspaceSkillCount
+            capabilities.activeSkills.count
         case .templates:
             workspace.templates.count
         }
@@ -104,6 +114,8 @@ struct ConfigureView: View {
             } detail: {
                 ZStack(alignment: .topLeading) {
                     switch selectedTab {
+                    case .capabilities:
+                        CapabilitiesTabContent(workspace: workspace)
                     case .connectors:
                         ConnectorsTabContent(workspace: workspace, focusItemID: focusItemID)
                     case .tools:
@@ -258,6 +270,809 @@ private struct ConfigureCardChip: View {
     }
 }
 
+// MARK: - Capabilities Tab
+
+struct CapabilitiesTabContent: View {
+    var workspace: Workspace
+    @Environment(\.modelContext) private var modelContext
+    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
+    private var globalSkills: [Skill]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+    @State private var packages: [PluginPackage] = []
+    @State private var showCreateWizard = false
+    @State private var installError: String?
+
+    private let library = CapabilityLibrary()
+
+    private var availablePackages: [PluginPackage] {
+        uniquePackages(packages)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Capabilities")
+                        .font(Stanford.heading(18))
+                    Text("Install, create, and enable reusable bundles")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button { showCreateWizard = true } label: {
+                    Label("New Capability", systemImage: "plus")
+                        .font(Stanford.body(13))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            if availablePackages.isEmpty {
+                emptyState
+            } else {
+                ConfigureSelectionList(maxContentWidth: 980) {
+                    ConfigureSelectionSection("Installed & Built-in") {
+                        ForEach(availablePackages) { package in
+                            capabilityCard(package)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear(perform: refreshPackages)
+        .sheet(isPresented: $showCreateWizard) {
+            CapabilityCreationWizardView(workspace: workspace) { package, enableHere in
+                if enableHere {
+                    installOrEnable(package)
+                } else {
+                    do {
+                        try library.install(package)
+                        refreshPackages()
+                    } catch {
+                        installError = error.localizedDescription
+                    }
+                }
+            }
+        }
+        .alert("Capability could not be installed", isPresented: Binding(
+            get: { installError != nil },
+            set: { if !$0 { installError = nil } }
+        )) {
+            Button("OK", role: .cancel) { installError = nil }
+        } message: {
+            Text(installError ?? "")
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: ConfigureTab.capabilities.icon)
+                .font(Stanford.ui(36))
+                .foregroundStyle(ConfigureTab.capabilities.color.opacity(0.5))
+            Text("No Capabilities Installed")
+                .font(Stanford.heading(18))
+                .foregroundStyle(Stanford.black)
+            Button { showCreateWizard = true } label: {
+                Label("Create Capability", systemImage: "plus")
+                    .font(Stanford.body(14))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(ConfigureTab.capabilities.color)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func capabilityCard(_ package: PluginPackage) -> some View {
+        let installed = packages.contains { $0.id == package.id } || workspace.installedPluginIDSet.contains(package.id)
+        let enabled = workspace.enabledCapabilityIDs.contains(package.id) || workspace.installedPluginIDSet.contains(package.id)
+        let source = package.sourceMetadata?.displayName ?? "Unknown source"
+
+        return ConfigureSelectionCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    ConfigureCardIcon(systemName: package.icon, color: ConfigureTab.capabilities.color)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(package.name)
+                            .font(Stanford.body(14))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Stanford.black)
+                            .lineLimit(1)
+                        Text(package.description.isEmpty ? source : package.description)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 6) {
+                    ConfigureCardChip(title: package.version)
+                    ConfigureCardChip(title: source, color: ConfigureTab.capabilities.color)
+                    if enabled {
+                        ConfigureCardChip(title: "Enabled here")
+                    } else if installed {
+                        ConfigureCardChip(title: "Installed")
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(package.contentParts, id: \.self) { part in
+                        ConfigureCardChip(title: part)
+                    }
+                    Spacer()
+                    Button {
+                        if enabled {
+                            disable(package)
+                        } else {
+                            installOrEnable(package)
+                        }
+                    } label: {
+                        Label(
+                            enabled ? "Disable" : installed ? "Enable" : "Install",
+                            systemImage: enabled ? "minus.circle" : "plus.circle"
+                        )
+                            .font(Stanford.caption(12))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func refreshPackages() {
+        try? library.seedApprovedPackages(PluginCatalog.builtInPackages)
+        packages = library.installedPackages()
+    }
+
+    private func installOrEnable(_ package: PluginPackage) {
+        do {
+            try CapabilityInstaller(library: library).install(
+                package,
+                into: workspace,
+                modelContext: modelContext
+            )
+            refreshPackages()
+        } catch {
+            installError = error.localizedDescription
+        }
+    }
+
+    private func disable(_ package: PluginPackage) {
+        let skillNames = Set(package.skills.map(\.name))
+        let connectorNames = Set(package.connectors.map(\.name))
+        let toolNames = Set(package.localTools.map(\.name))
+        let skillIDs = Set(globalSkills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString })
+        let connectorIDs = Set(globalConnectors.filter { connectorNames.contains($0.name) }.map { $0.id.uuidString })
+        let toolIDs = Set(globalTools.filter { toolNames.contains($0.name) }.map { $0.id.uuidString })
+
+        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
+        workspace.enabledGlobalSkillIDs.removeAll { skillIDs.contains($0) }
+        workspace.enabledGlobalConnectorIDs.removeAll { connectorIDs.contains($0) }
+        workspace.enabledGlobalToolIDs.removeAll { toolIDs.contains($0) }
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        refreshPackages()
+    }
+
+    private func uniquePackages(_ values: [PluginPackage]) -> [PluginPackage] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.id).inserted }
+            .sorted {
+                if $0.category != $1.category { return $0.category < $1.category }
+                return $0.name < $1.name
+            }
+    }
+}
+
+// MARK: - Capability Creation Wizard
+
+struct CapabilityCreationWizardView: View {
+    enum Step: String, CaseIterable {
+        case tools = "Tools"
+        case connectors = "Connectors"
+        case behavior = "Behavior"
+        case scope = "Scope"
+        case validate = "Validate"
+    }
+
+    var workspace: Workspace
+    var onCreated: (PluginPackage, Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+
+    @State private var selectedStep: Step = .tools
+    @State private var name = "New Capability"
+    @State private var capabilityDescription = ""
+    @State private var behaviorInstructions = ""
+    @State private var selectedToolIDs: Set<UUID> = []
+    @State private var selectedDetectedCLIIDs: Set<String> = []
+    @State private var detectedCLIStatuses: [String: HealthStatus] = [:]
+    @State private var isDetectingCLIs = false
+    @State private var selectedConnectorIDs: Set<UUID> = []
+    @State private var draftConnectors: [Connector] = []
+    @State private var draftConnectorName = ""
+    @State private var draftConnectorDescription = ""
+    @State private var draftConnectorServiceType = "custom"
+    @State private var draftConnectorAuthMethod = "none"
+    @State private var draftConnectorBaseURL = ""
+    @State private var draftConnectorCredentialKeys = ""
+    @State private var draftConnectorConfigLines = ""
+    @State private var allowedTools = "Read, Grep"
+    @State private var installEnabled = true
+
+    private var availableTools: [LocalTool] {
+        uniqueTools(workspace.localTools + globalTools)
+    }
+
+    private var availableCLICandidates: [CapabilityToolDetector.Candidate] {
+        let existingCommands = Set(availableTools.map { $0.command.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return CapabilityToolDetector.knownCandidates.filter { !existingCommands.contains($0.command) }
+    }
+
+    private var availableConnectors: [Connector] {
+        uniqueConnectors(workspace.connectors + globalConnectors + draftConnectors)
+    }
+
+    private var canCreate: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (!selectedToolIDs.isEmpty ||
+         !selectedDetectedCLIIDs.isEmpty ||
+         !selectedConnectorIDs.isEmpty ||
+         !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                ConfigureCardIcon(systemName: "puzzlepiece.extension", color: ConfigureTab.capabilities.color)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("New Capability")
+                        .font(Stanford.heading(18))
+                    Text(name)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(18)
+
+            Divider()
+
+            Picker("", selection: $selectedStep) {
+                ForEach(Step.allCases, id: \.self) { step in
+                    Text(step.rawValue).tag(step)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(14)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch selectedStep {
+                    case .tools:
+                        selectableTools
+                    case .connectors:
+                        selectableConnectors
+                    case .behavior:
+                        behaviorStep
+                    case .scope:
+                        scopeStep
+                    case .validate:
+                        validateStep
+                    }
+                }
+                .padding(18)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Create") {
+                    createCapability()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ConfigureTab.capabilities.color)
+                .disabled(!canCreate)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(18)
+        }
+        .frame(width: 620, height: 620)
+    }
+
+    private var selectableTools: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            identityFields
+            selectionSection(
+                title: "Local Tools",
+                empty: "No tools available",
+                items: availableTools,
+                isSelected: { selectedToolIDs.contains($0.id) },
+                toggle: { toggle($0.id, in: &selectedToolIDs) },
+                title: { $0.name.isEmpty ? "Untitled Tool" : $0.name },
+                subtitle: { $0.displayCommand.isEmpty ? $0.toolType.uppercased() : $0.displayCommand },
+                icon: { LocalTool.iconForType($0.toolType) }
+            )
+            detectedCLISection
+        }
+    }
+
+    private var selectableConnectors: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            selectionSection(
+                title: "Connectors",
+                empty: "No connectors available",
+                items: availableConnectors,
+                isSelected: { selectedConnectorIDs.contains($0.id) },
+                toggle: { toggle($0.id, in: &selectedConnectorIDs) },
+                title: { $0.name.isEmpty ? "Untitled Connector" : $0.name },
+                subtitle: { $0.displaySummary },
+                icon: { $0.icon }
+            )
+            connectorCreationSection
+        }
+    }
+
+    private var detectedCLISection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Detected CLI Tools")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+                Button {
+                    detectCLIs()
+                } label: {
+                    Label(isDetectingCLIs ? "Checking" : "Check CLIs", systemImage: "magnifyingglass")
+                        .font(Stanford.caption(12))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isDetectingCLIs || availableCLICandidates.isEmpty)
+            }
+
+            if availableCLICandidates.isEmpty {
+                Text("Known CLI tools are already defined in this workspace or shared library.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(availableCLICandidates) { candidate in
+                        let selected = selectedDetectedCLIIDs.contains(candidate.id)
+                        let status = detectedCLIStatuses[candidate.id]
+                        let unavailable = isMissing(status)
+
+                        Button {
+                            toggle(candidate.id, in: &selectedDetectedCLIIDs)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "terminal")
+                                    .font(Stanford.ui(14))
+                                    .foregroundStyle(ConfigureTab.tools.color)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.name)
+                                        .font(Stanford.body(13).weight(.medium))
+                                    Text(candidate.description)
+                                        .font(Stanford.caption(11))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                ConfigureCardChip(
+                                    title: statusLabel(status),
+                                    color: statusColor(status)
+                                )
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected ? ConfigureTab.tools.color : Color.secondary.opacity(0.45))
+                            }
+                            .padding(10)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(unavailable)
+                    }
+                }
+            }
+        }
+    }
+
+    private var connectorCreationSection: some View {
+        DisclosureGroup("Create Connector") {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Connector name", text: $draftConnectorName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Description", text: $draftConnectorDescription)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack(spacing: 10) {
+                    Picker("Type", selection: $draftConnectorServiceType) {
+                        ForEach(connectorServiceOptions, id: \.0) { value, label in
+                            Text(label).tag(value)
+                        }
+                    }
+                    Picker("Auth", selection: $draftConnectorAuthMethod) {
+                        ForEach(connectorAuthOptions, id: \.0) { value, label in
+                            Text(label).tag(value)
+                        }
+                    }
+                }
+
+                TextField("Base URL", text: $draftConnectorBaseURL)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Stanford.ui(13, design: .monospaced))
+                TextField("Credential keys, comma-separated", text: $draftConnectorCredentialKeys)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Stanford.ui(13, design: .monospaced))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Config values")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $draftConnectorConfigLines)
+                        .font(Stanford.ui(13, design: .monospaced))
+                        .frame(minHeight: 70)
+                        .padding(6)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        addDraftConnector()
+                    } label: {
+                        Label("Add Connector", systemImage: "plus")
+                            .font(Stanford.body(13))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(draftConnectorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(.top, 8)
+        }
+        .font(Stanford.body(13).weight(.medium))
+    }
+
+    private var behaviorStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            identityFields
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Allowed Tools")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                TextField("Read, Grep, Bash", text: $allowedTools)
+                    .textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Behavior Instructions")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $behaviorInstructions)
+                    .font(Stanford.ui(13, design: .monospaced))
+                    .frame(minHeight: 160)
+                    .padding(6)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+            }
+        }
+    }
+
+    private var scopeStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Install in app-local capability library", isOn: .constant(true))
+                .disabled(true)
+            Toggle("Enable in this workspace", isOn: $installEnabled)
+            HStack(spacing: 6) {
+                ConfigureCardChip(title: CapabilityLibrary.capabilitiesDirectory().lastPathComponent, color: ConfigureTab.capabilities.color)
+                ConfigureCardChip(title: workspace.name)
+            }
+        }
+    }
+
+    private var validateStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            validationRow("Name", name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Missing" : "Ready")
+            validationRow("Tools", "\(selectedToolIDs.count + selectedDetectedCLIIDs.count) selected")
+            if !selectedDetectedCLIIDs.isEmpty {
+                ForEach(availableCLICandidates.filter { selectedDetectedCLIIDs.contains($0.id) }) { candidate in
+                    validationRow(candidate.command, statusLabel(detectedCLIStatuses[candidate.id]))
+                }
+            }
+            validationRow("Connectors", "\(selectedConnectorIDs.count) selected")
+            validationRow("Behavior", behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "None" : "Ready")
+            validationRow("Scope", installEnabled ? "Install and enable here" : "Install only")
+        }
+    }
+
+    private var identityFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Capability name", text: $name)
+                .textFieldStyle(.roundedBorder)
+            TextField("Description", text: $capabilityDescription)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private var connectorServiceOptions: [(String, String)] {
+        [
+            ("custom", "Custom"),
+            ("jira", "Jira"),
+            ("github", "GitHub"),
+            ("slack", "Slack"),
+            ("database", "Database"),
+            ("rest_api", "REST API"),
+            ("confluence", "Confluence"),
+            ("redcap", "REDCap")
+        ]
+    }
+
+    private var connectorAuthOptions: [(String, String)] {
+        [
+            ("none", "None"),
+            ("basic", "Basic"),
+            ("bearer", "Bearer"),
+            ("api_key", "API Key")
+        ]
+    }
+
+    private func selectionSection<Item: Identifiable>(
+        title: String,
+        empty: String,
+        items: [Item],
+        isSelected: @escaping (Item) -> Bool,
+        toggle: @escaping (Item) -> Void,
+        title titleText: @escaping (Item) -> String,
+        subtitle: @escaping (Item) -> String,
+        icon: @escaping (Item) -> String
+    ) -> some View where Item.ID == UUID {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(12).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            if items.isEmpty {
+                Text(empty)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(items) { item in
+                        Button { toggle(item) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: icon(item))
+                                    .font(Stanford.ui(14))
+                                    .foregroundStyle(ConfigureTab.capabilities.color)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(titleText(item))
+                                        .font(Stanford.body(13).weight(.medium))
+                                    Text(subtitle(item).isEmpty ? "No details" : subtitle(item))
+                                        .font(Stanford.caption(11))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: isSelected(item) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(isSelected(item) ? ConfigureTab.capabilities.color : Color.secondary.opacity(0.45))
+                            }
+                            .padding(10)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func validationRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(Stanford.body(13).weight(.medium))
+            Spacer()
+            Text(value)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func createCapability() {
+        let selectedExistingTools = availableTools.filter { selectedToolIDs.contains($0.id) }
+        let selectedCandidates = availableCLICandidates.filter { selectedDetectedCLIIDs.contains($0.id) }
+        let detectedTools = selectedCandidates.map(CapabilityToolDetector.makeTool)
+        let selectedTools = selectedExistingTools + detectedTools
+        let selectedConnectors = availableConnectors.filter { selectedConnectorIDs.contains($0.id) }
+        let prerequisites = uniquePrerequisites(
+            selectedCandidates.map(\.prerequisite) +
+            selectedExistingTools.compactMap { CapabilityToolDetector.prerequisite(forCommand: $0.command) }
+        )
+        let package = CapabilityPackageFactory.makePackage(
+            name: name,
+            description: capabilityDescription,
+            behaviorInstructions: behaviorInstructions,
+            allowedTools: allowedTools.split(separator: ",").map(String.init),
+            connectors: selectedConnectors,
+            localTools: selectedTools,
+            prerequisites: prerequisites
+        )
+
+        onCreated(package, installEnabled)
+        dismiss()
+    }
+
+    private func detectCLIs() {
+        let candidates = availableCLICandidates
+        isDetectingCLIs = true
+        Task {
+            let statuses = await CapabilityToolDetector().detect(candidates)
+            await MainActor.run {
+                detectedCLIStatuses = statuses
+                selectedDetectedCLIIDs = selectedDetectedCLIIDs.filter { id in
+                    !isMissing(statuses[id])
+                }
+                isDetectingCLIs = false
+            }
+        }
+    }
+
+    private func toggle(_ id: UUID, in ids: inout Set<UUID>) {
+        if ids.contains(id) {
+            ids.remove(id)
+        } else {
+            ids.insert(id)
+        }
+    }
+
+    private func toggle(_ id: String, in ids: inout Set<String>) {
+        if ids.contains(id) {
+            ids.remove(id)
+        } else {
+            ids.insert(id)
+        }
+    }
+
+    private func addDraftConnector() {
+        let connector = Connector(
+            name: draftConnectorName.trimmingCharacters(in: .whitespacesAndNewlines),
+            serviceType: draftConnectorServiceType,
+            icon: connectorIcon(for: draftConnectorServiceType),
+            connectorDescription: draftConnectorDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+            baseURL: draftConnectorBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            authMethod: draftConnectorAuthMethod
+        )
+        let credentialKeys = parseCredentialKeys(draftConnectorCredentialKeys)
+        connector.credentialKeys = credentialKeys
+        connector.credentialValues = Array(repeating: "", count: credentialKeys.count)
+        let config = parseConfigLines(draftConnectorConfigLines)
+        connector.configKeys = config.keys
+        connector.configValues = config.values
+        draftConnectors.append(connector)
+        selectedConnectorIDs.insert(connector.id)
+        draftConnectorName = ""
+        draftConnectorDescription = ""
+        draftConnectorServiceType = "custom"
+        draftConnectorAuthMethod = "none"
+        draftConnectorBaseURL = ""
+        draftConnectorCredentialKeys = ""
+        draftConnectorConfigLines = ""
+    }
+
+    private func statusLabel(_ status: HealthStatus?) -> String {
+        switch status {
+        case .some(.healthy):
+            return "Ready"
+        case .some(.unauthenticated):
+            return "Needs auth"
+        case .some(.unresponsive):
+            return "Issue"
+        case .some(.missingBinary):
+            return "Not found"
+        case nil:
+            return "Not checked"
+        }
+    }
+
+    private func statusColor(_ status: HealthStatus?) -> Color {
+        switch status {
+        case .some(.healthy):
+            return Stanford.paloAltoGreen
+        case .some(.unauthenticated):
+            return Stanford.poppy
+        case .some(.unresponsive), .some(.missingBinary):
+            return Stanford.cardinalRed
+        case nil:
+            return Stanford.coolGrey
+        }
+    }
+
+    private func isMissing(_ status: HealthStatus?) -> Bool {
+        if case .some(.missingBinary) = status {
+            return true
+        }
+        return false
+    }
+
+    private func connectorIcon(for serviceType: String) -> String {
+        switch serviceType {
+        case "jira": return "list.bullet.rectangle"
+        case "github": return "arrow.triangle.branch"
+        case "slack": return "bubble.left.and.bubble.right"
+        case "database": return "cylinder.split.1x2"
+        case "rest_api": return "network"
+        case "confluence": return "doc.richtext"
+        case "redcap": return "cross.case"
+        default: return "network"
+        }
+    }
+
+    private func parseCredentialKeys(_ value: String) -> [String] {
+        var seen = Set<String>()
+        return value
+            .split { $0 == "," || $0 == "\n" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private func parseConfigLines(_ value: String) -> (keys: [String], values: [String]) {
+        var keys: [String] = []
+        var values: [String] = []
+        for rawLine in value.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = parts.first.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+            guard !key.isEmpty else { continue }
+            let configValue = parts.dropFirst().first.map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+            keys.append(key)
+            values.append(configValue)
+        }
+        return (keys, values)
+    }
+
+    private func uniquePrerequisites(_ prerequisites: [CLIPrerequisite]) -> [CLIPrerequisite] {
+        var seen = Set<String>()
+        return prerequisites.filter { seen.insert($0.id).inserted }
+    }
+
+    private func uniqueTools(_ tools: [LocalTool]) -> [LocalTool] {
+        Dictionary(grouping: tools, by: \.id)
+            .compactMap { $0.value.first }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func uniqueConnectors(_ connectors: [Connector]) -> [Connector] {
+        Dictionary(grouping: connectors, by: \.id)
+            .compactMap { $0.value.first }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
 // MARK: - Connectors Tab
 
 struct ConnectorsTabContent: View {
@@ -266,9 +1081,26 @@ struct ConnectorsTabContent: View {
     @Environment(\.modelContext) private var modelContext
     @State private var selectedConnector: Connector?
     @State private var showCatalog = false
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+
+    private var capabilities: WorkspaceCapabilities {
+        WorkspaceCapabilities(workspace: workspace, globalConnectors: globalConnectors)
+    }
+
+    private var workspaceConnectors: [Connector] {
+        capabilities.workspaceConnectors
+    }
+
+    private var sharedLibraryConnectors: [Connector] {
+        capabilities.availableGlobalConnectors
+    }
+
+    private var hasVisibleConnectors: Bool {
+        !workspaceConnectors.isEmpty || !sharedLibraryConnectors.isEmpty
+    }
 
     var body: some View {
-        let connectors = workspace.connectors.sorted(by: { $0.name < $1.name })
         let showingDetail = selectedConnector != nil
 
         VStack(spacing: 0) {
@@ -321,28 +1153,58 @@ struct ConnectorsTabContent: View {
                 } else if let connector = selectedConnector {
                     ConnectorEditorView(connector: connector, workspace: workspace, onDelete: {
                         deleteConnector(connector)
+                    }, onDuplicate: { copy in
+                        selectedConnector = copy
                     })
-                } else if connectors.isEmpty {
+                } else if !hasVisibleConnectors {
                     emptyState
                 } else {
                     ConfigureSelectionList(maxContentWidth: 980) {
-                        ConfigureSelectionSection("Connectors") {
-                            ForEach(connectors) { connector in
-                                ConfigureSelectionCard {
-                                    Button {
-                                        selectedConnector = connector
-                                    } label: {
+                        if !workspaceConnectors.isEmpty {
+                            ConfigureSelectionSection("Workspace Connectors") {
+                                ForEach(workspaceConnectors) { connector in
+                                    connectorCard(connector)
+                                }
+                            }
+                        }
+
+                        if !sharedLibraryConnectors.isEmpty {
+                            ConfigureSelectionSection("Shared Library") {
+                                ForEach(sharedLibraryConnectors) { connector in
+                                    let enabled = workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+
+                                    ConfigureSelectionCard {
                                         HStack(spacing: 12) {
-                                            connectorRow(connector)
-                                            Spacer(minLength: 0)
-                                            Image(systemName: "chevron.right")
-                                                .font(Stanford.ui(11, weight: .semibold))
-                                                .foregroundStyle(.tertiary)
+                                            Button {
+                                                selectedConnector = connector
+                                            } label: {
+                                                HStack(spacing: 12) {
+                                                    connectorRow(connector)
+                                                    Spacer(minLength: 0)
+                                                    Image(systemName: "chevron.right")
+                                                        .font(Stanford.ui(11, weight: .semibold))
+                                                        .foregroundStyle(.tertiary)
+                                                }
+                                                .contentShape(Rectangle())
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .buttonStyle(.plain)
+
+                                            Button("Duplicate") {
+                                                duplicateConnector(connector)
+                                            }
+                                            .font(Stanford.caption(12))
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+
+                                            Button(enabled ? "Disable" : "Enable") {
+                                                toggleGlobalConnector(connector)
+                                            }
+                                            .font(Stanford.caption(12))
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
                                         }
-                                        .contentShape(Rectangle())
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -354,9 +1216,28 @@ struct ConnectorsTabContent: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if let focusItemID,
-               let conn = workspace.connectors.first(where: { $0.id == focusItemID }) {
+               let conn = (workspaceConnectors + sharedLibraryConnectors).first(where: { $0.id == focusItemID }) {
                 selectedConnector = conn
             }
+        }
+    }
+
+    private func connectorCard(_ connector: Connector) -> some View {
+        ConfigureSelectionCard {
+            Button {
+                selectedConnector = connector
+            } label: {
+                HStack(spacing: 12) {
+                    connectorRow(connector)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(Stanford.ui(11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
         }
     }
 
@@ -425,6 +1306,9 @@ struct ConnectorsTabContent: View {
                 if !connector.credentialKeys.isEmpty {
                     ConfigureCardChip(title: "\(connector.credentialKeys.count) secret\(connector.credentialKeys.count == 1 ? "" : "s")")
                 }
+                if connector.isGlobal {
+                    ConfigureCardChip(title: "Shared", color: Stanford.poppy)
+                }
             }
         }
     }
@@ -441,10 +1325,32 @@ struct ConnectorsTabContent: View {
         ])
     }
 
+    private func toggleGlobalConnector(_ connector: Connector) {
+        if workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString) {
+            CapabilitySharing.disableShared(connector, in: workspace)
+        } else {
+            CapabilitySharing.enableShared(connector, in: workspace)
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.connectorUpdated, category: "UI", fields: [
+            "connector_id": connector.id.uuidString,
+            "workspace_id": workspace.id.uuidString,
+            "enabled_global": String(workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+        ])
+    }
+
+    private func duplicateConnector(_ connector: Connector) {
+        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
+        modelContext.insert(copy)
+        selectedConnector = copy
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
     private func deleteConnector(_ connector: Connector) {
         if selectedConnector?.id == connector.id {
             selectedConnector = nil
         }
+        workspace.enabledGlobalConnectorIDs.removeAll { $0 == connector.id.uuidString }
         connector.cleanupKeychain()
         modelContext.delete(connector)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
@@ -458,9 +1364,26 @@ struct ToolsTabContent: View {
     var focusItemID: UUID?
     @Environment(\.modelContext) private var modelContext
     @State private var selectedTool: LocalTool?
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+
+    private var capabilities: WorkspaceCapabilities {
+        WorkspaceCapabilities(workspace: workspace, globalTools: globalTools)
+    }
+
+    private var workspaceTools: [LocalTool] {
+        capabilities.workspaceTools
+    }
+
+    private var sharedLibraryTools: [LocalTool] {
+        capabilities.availableGlobalTools
+    }
+
+    private var hasVisibleTools: Bool {
+        !workspaceTools.isEmpty || !sharedLibraryTools.isEmpty
+    }
 
     var body: some View {
-        let tools = workspace.localTools.sorted(by: { $0.name < $1.name })
         let showingDetail = selectedTool != nil
 
         VStack(spacing: 0) {
@@ -496,30 +1419,79 @@ struct ToolsTabContent: View {
 
             ZStack(alignment: .topLeading) {
                 if let tool = selectedTool {
-                    LocalToolEditorView(tool: tool, onDelete: {
+                    LocalToolEditorView(tool: tool, workspace: workspace, onDelete: {
                         deleteTool(tool)
+                    }, onDuplicate: { copy in
+                        selectedTool = copy
                     })
-                } else if tools.isEmpty {
+                } else if !hasVisibleTools {
                     emptyState
                 } else {
                     ConfigureSelectionList(maxContentWidth: 980) {
-                        ConfigureSelectionSection("Tools") {
-                            ForEach(tools) { tool in
-                                ConfigureSelectionCard {
-                                    Button {
-                                        selectedTool = tool
-                                    } label: {
-                                        HStack(spacing: 12) {
-                                            toolRow(tool)
-                                            Spacer(minLength: 0)
-                                            Image(systemName: "chevron.right")
-                                                .font(Stanford.ui(11, weight: .semibold))
-                                                .foregroundStyle(.tertiary)
+                        if !workspaceTools.isEmpty {
+                            ConfigureSelectionSection("Workspace Tools") {
+                                ForEach(workspaceTools) { tool in
+                                    ConfigureSelectionCard {
+                                        Button {
+                                            selectedTool = tool
+                                        } label: {
+                                            HStack(spacing: 12) {
+                                                toolRow(tool)
+                                                Spacer(minLength: 0)
+                                                Image(systemName: "chevron.right")
+                                                    .font(Stanford.ui(11, weight: .semibold))
+                                                    .foregroundStyle(.tertiary)
+                                            }
+                                            .contentShape(Rectangle())
                                         }
-                                        .contentShape(Rectangle())
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .buttonStyle(.plain)
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        if !sharedLibraryTools.isEmpty {
+                            ConfigureSelectionSection("Shared Library") {
+                                ForEach(sharedLibraryTools) { tool in
+                                    let enabled = workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+                                    ConfigureSelectionCard {
+                                        HStack(spacing: 12) {
+                                            Button {
+                                                selectedTool = tool
+                                            } label: {
+                                                HStack(spacing: 12) {
+                                                    toolRow(tool)
+                                                    Spacer(minLength: 0)
+                                                    Image(systemName: "chevron.right")
+                                                        .font(Stanford.ui(11, weight: .semibold))
+                                                        .foregroundStyle(.tertiary)
+                                                }
+                                                .contentShape(Rectangle())
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .buttonStyle(.plain)
+
+                                            Button {
+                                                duplicateTool(tool)
+                                            } label: {
+                                                Label("Duplicate", systemImage: "doc.on.doc")
+                                                    .font(Stanford.body(12))
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+
+                                            Button {
+                                                toggleGlobalTool(tool)
+                                            } label: {
+                                                Label(enabled ? "Disable" : "Enable", systemImage: enabled ? "checkmark.circle.fill" : "plus.circle")
+                                                    .font(Stanford.body(12))
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                            .tint(enabled ? ConfigureTab.tools.color : nil)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -531,7 +1503,7 @@ struct ToolsTabContent: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if let focusItemID,
-               let tool = workspace.localTools.first(where: { $0.id == focusItemID }) {
+               let tool = (workspace.localTools + globalTools).first(where: { $0.id == focusItemID }) {
                 selectedTool = tool
             }
         }
@@ -596,6 +1568,12 @@ struct ToolsTabContent: View {
                 if !tool.command.isEmpty {
                     ConfigureCardChip(title: "Configured")
                 }
+                if tool.isGlobal {
+                    ConfigureCardChip(title: "Shared", color: ConfigureTab.tools.color)
+                    if workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
+                        ConfigureCardChip(title: "Enabled here")
+                    }
+                }
             }
         }
     }
@@ -616,12 +1594,34 @@ struct ToolsTabContent: View {
         if selectedTool?.id == tool.id {
             selectedTool = nil
         }
+        workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
         modelContext.delete(tool)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.localToolDeleted, category: "UI", fields: [
             "tool_id": tool.id.uuidString,
             "workspace_id": workspace.id.uuidString
         ])
+    }
+
+    private func toggleGlobalTool(_ tool: LocalTool) {
+        if workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
+            CapabilitySharing.disableShared(tool, in: workspace)
+        } else {
+            CapabilitySharing.enableShared(tool, in: workspace)
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.localToolUpdated, category: "UI", fields: [
+            "tool_id": tool.id.uuidString,
+            "workspace_id": workspace.id.uuidString,
+            "enabled_global": String(workspace.enabledGlobalToolIDs.contains(tool.id.uuidString))
+        ])
+    }
+
+    private func duplicateTool(_ tool: LocalTool) {
+        let copy = CapabilitySharing.duplicateForWorkspace(tool, in: workspace)
+        modelContext.insert(copy)
+        selectedTool = copy
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 }
 

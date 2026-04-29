@@ -53,6 +53,8 @@ struct ConnectorsManagerView: View {
                     if let connector = selectedConnector {
                         ConnectorEditorView(connector: connector, workspace: workspace, onDelete: {
                             deleteConnector(connector)
+                        }, onDuplicate: { copy in
+                            selectedConnector = copy
                         })
                     } else {
                         ContentUnavailableView(
@@ -117,6 +119,7 @@ struct ConnectorEditorView: View {
     @Bindable var connector: Connector
     var workspace: Workspace?
     let onDelete: () -> Void
+    var onDuplicate: ((Connector) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @State private var newCredKey = ""
     @State private var newCredValue = ""
@@ -473,24 +476,59 @@ struct ConnectorEditorView: View {
 
                 // Sharing
                 GroupBox("Sharing") {
-                    Toggle(isOn: Binding(
-                        get: { connector.isGlobal },
-                        set: { newValue in
-                            connector.isGlobal = newValue
-                            if newValue {
-                                connector.workspace = nil
-                            } else if let ws = workspace {
-                                connector.workspace = ws
+                    if connector.isGlobal {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: Binding(
+                                get: {
+                                    guard let workspace else { return false }
+                                    return workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+                                },
+                                set: { enabled in
+                                    guard let workspace else { return }
+                                    if enabled {
+                                        CapabilitySharing.enableShared(connector, in: workspace)
+                                    } else {
+                                        CapabilitySharing.disableShared(connector, in: workspace)
+                                    }
+                                    saveSharingChange()
+                                }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Enabled in this workspace")
+                                        .font(Stanford.body(14))
+                                    Text("The shared connector stays installed for other workspaces.")
+                                        .font(Stanford.caption(12))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            connector.updatedAt = Date()
+                            .disabled(workspace == nil)
+
+                            Button {
+                                duplicateForWorkspace()
+                            } label: {
+                                Label("Duplicate for this workspace", systemImage: "doc.on.doc")
+                                    .font(Stanford.body(13))
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(workspace == nil)
                         }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Shared across all workspaces")
-                                .font(Stanford.body(14))
-                            Text("Enable this connector in any workspace's plug-ins panel")
-                                .font(Stanford.caption(12))
-                                .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(isOn: Binding(
+                            get: { connector.isGlobal },
+                            set: { newValue in
+                                if newValue {
+                                    CapabilitySharing.promoteToShared(connector, in: workspace)
+                                }
+                                saveSharingChange()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Shared across all workspaces")
+                                    .font(Stanford.body(14))
+                                Text("Enable this connector in any workspace's plug-ins panel")
+                                    .font(Stanford.caption(12))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -528,7 +566,10 @@ struct ConnectorEditorView: View {
         }
         .onDisappear {
             connector.updatedAt = Date()
-            WorkspacePersistenceCoordinator.flushPendingExport(workspace: connector.workspace, modelContext: modelContext)
+            WorkspacePersistenceCoordinator.flushPendingExport(
+                workspace: workspace ?? connector.workspace,
+                modelContext: modelContext
+            )
         }
     }
 
@@ -577,6 +618,21 @@ struct ConnectorEditorView: View {
         case "github": return "GitHub"
         default: return type.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private func duplicateForWorkspace() {
+        guard let workspace else { return }
+        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
+        modelContext.insert(copy)
+        onDuplicate?(copy)
+        saveSharingChange()
+    }
+
+    private func saveSharingChange() {
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace ?? connector.workspace,
+            modelContext: modelContext
+        )
     }
 
     private func applyServiceDefaults(for type: String) {
