@@ -27,6 +27,13 @@ struct ClaudePermissionPolicyTests {
         worker.permissionPolicy = .interactive
         #expect(worker.permissionPolicy.cliArguments.isEmpty)
     }
+
+    @Test("Workers default to restricted permissions")
+    func workerDefaultsRestricted() {
+        let worker = AgentRuntimeWorker()
+        #expect(worker.skipPermissions == false)
+        #expect(worker.permissionPolicy == .restricted)
+    }
 }
 
 @Suite("ProcessMonitor — Budget, Repetition, and Idle Timeout")

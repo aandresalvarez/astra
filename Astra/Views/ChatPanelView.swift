@@ -384,7 +384,7 @@ struct ChatPanelView: View {
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
-    @AppStorage("skipPermissions") private var skipPermissions = true
+    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
     @State private var useAgentTeam = false
@@ -915,6 +915,7 @@ struct ChatPanelView: View {
                     submitIcon: submitButtonIcon,
                     submitTitle: submitButtonTitle,
                     submitColor: submitButtonColor,
+                    showSecurityGate: true,
                     showPermissionControls: true,
                     sshConnections: sshConnections
                 )

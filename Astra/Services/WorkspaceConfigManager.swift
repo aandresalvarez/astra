@@ -153,6 +153,7 @@ enum WorkspaceConfigManager {
         var title: String
         var goal: String
         var status: String
+        var isPinned: Bool?
         var inputs: [String]
         var constraints: [String]
         var acceptanceCriteria: [String]
@@ -691,6 +692,7 @@ enum WorkspaceConfigManager {
             title: task.title,
             goal: task.goal,
             status: task.status.rawValue,
+            isPinned: task.isPinned ? true : nil,
             inputs: task.inputs,
             constraints: task.constraints,
             acceptanceCriteria: task.acceptanceCriteria,
@@ -1084,6 +1086,7 @@ enum WorkspaceConfigManager {
             task.id = id
         }
         task.status = TaskStatus(rawValue: config.status) ?? .completed
+        task.isPinned = config.isPinned ?? false
         task.inputs = config.inputs
         task.constraints = config.constraints
         task.acceptanceCriteria = config.acceptanceCriteria

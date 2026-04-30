@@ -37,6 +37,7 @@ struct TaskMainView: View {
     @State private var showCopyConfirmation = false
     @State private var pasteMonitor: Any?
     @State private var threadViewModel = TaskThreadViewModel()
+    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -1372,10 +1373,11 @@ struct TaskMainView: View {
                         task.updatedAt = Date()
                     },
                     onManageSkills: onManageSkills,
-                    skipPermissions: .constant(false),
+                    skipPermissions: $skipPermissions,
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
-                    isPlanMode: .constant(false)
+                    isPlanMode: .constant(false),
+                    showSecurityGate: true
                 )
             }
             .background(Stanford.cardBackground)

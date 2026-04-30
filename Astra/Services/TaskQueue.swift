@@ -62,7 +62,7 @@ final class TaskQueue {
         defaultRuntimeID: AgentRuntimeID = .claudeCode,
         timeoutSeconds: TimeInterval,
         validationModel: String,
-        skipPermissions: Bool = true
+        skipPermissions: Bool = false
     ) {
         for worker in workers {
             if let path = claudePath, !path.isEmpty {

@@ -931,10 +931,10 @@ final class AgentRuntimeWorker {
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 
-    /// Review and planning happen in the composer flow before a task is created.
-    /// Once work is running as an AgentTask, execution is always autonomous.
-    var skipPermissions: Bool = true
-    var permissionPolicy: PermissionPolicy = .autonomous
+    /// Permission policy applied to CLI runs. Review/restricted is the safe default;
+    /// the composer security gate can opt into autonomous runs for trusted work.
+    var skipPermissions: Bool = false
+    var permissionPolicy: PermissionPolicy = .restricted
 
     // MARK: - Error enrichment
 

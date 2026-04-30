@@ -41,6 +41,7 @@ struct ComposerToolbar: View {
     var submitIcon: String = "arrow.up.circle.fill"
     var submitTitle: String?          // nil = icon-only send button
     var submitColor: Color = Stanford.cardinalRed
+    var showSecurityGate: Bool = false
     var showPermissionControls: Bool = false
 
     // MARK: - SSH connections
@@ -54,6 +55,10 @@ struct ComposerToolbar: View {
             plusMenu
 
             modelBudgetPill
+
+            if showSecurityGate || showPermissionControls {
+                permissionModeButton
+            }
 
             if showPermissionControls {
                 teamModeButton
@@ -206,22 +211,37 @@ struct ComposerToolbar: View {
     // MARK: - Permission Controls
 
     private var permissionModeButton: some View {
-        Button { skipPermissions.toggle() } label: {
+        Menu {
+            Button {
+                skipPermissions = false
+            } label: {
+                Label("Review: restricted tools", systemImage: "lock.fill")
+            }
+
+            Button {
+                skipPermissions = true
+            } label: {
+                Label("Auto: full access", systemImage: "lock.open.fill")
+            }
+        } label: {
             HStack(spacing: 3) {
                 Image(systemName: skipPermissions ? "lock.open.fill" : "lock.fill")
                     .font(Stanford.ui(11))
                 Text(skipPermissions ? "Auto" : "Review")
                     .font(Stanford.caption(13))
             }
-            .foregroundStyle(skipPermissions ? Stanford.paloAltoGreen : Stanford.poppy)
+            .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(skipPermissions ? Stanford.paloAltoGreen.opacity(0.12) : Stanford.poppy.opacity(0.12))
+            .background(skipPermissions ? Stanford.poppy.opacity(0.12) : Stanford.paloAltoGreen.opacity(0.12))
             .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .help(skipPermissions ? "Quick run tasks immediately" : "Switch the composer into plan and review flow before creating a runnable task")
-        .accessibilityIdentifier("PermissionToggle")
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help(skipPermissions ? "Auto mode skips CLI permission prompts. Use only for trusted tasks." : "Review mode keeps agents on restricted tools by default.")
+        .accessibilityIdentifier("SecurityGate")
+        .accessibilityLabel("Security Gate")
+        .accessibilityValue(skipPermissions ? "Auto" : "Review")
     }
 
     private var teamModeButton: some View {

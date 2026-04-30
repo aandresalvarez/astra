@@ -35,7 +35,8 @@ struct ContentView: View {
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
-    @AppStorage("skipPermissions") private var skipPermissions = true
+    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -776,8 +777,15 @@ struct ContentView: View {
 
     // MARK: - Task Actions
 
-    private func runQueue() { coordinator.runQueue() }
-    private func runSingleTask(_ task: AgentTask) { coordinator.runSingleTask(task) }
+    private func runQueue() {
+        applySettings()
+        coordinator.runQueue()
+    }
+
+    private func runSingleTask(_ task: AgentTask) {
+        applySettings()
+        coordinator.runSingleTask(task)
+    }
     private func cancelTask(_ task: AgentTask) { coordinator.cancelTask(task) }
 
     private func retryTask(_ task: AgentTask) { coordinator.retryTask(task) }
@@ -872,6 +880,7 @@ struct ContentView: View {
     }
 
     private func handleAppear() {
+        applySecurityGateDefaultIfNeeded()
         applySettings()
         seedTestDataIfNeeded()
         migrateConnectorCredentials()
@@ -883,6 +892,12 @@ struct ContentView: View {
         runtime.loadPluginCatalog()
         refreshUpdateSafetyHooks()
         appUpdateController.probeForUpdatesOnce()
+    }
+
+    private func applySecurityGateDefaultIfNeeded() {
+        guard !securityGateDefaultedToReview else { return }
+        skipPermissions = false
+        securityGateDefaultedToReview = true
     }
 
     // MARK: - Seeding

@@ -69,8 +69,9 @@ struct TaskSidebarView: View {
                 .padding(.top, 6)
             }
 
+            pinnedDock(using: taskIndex)
+
             List {
-                pinnedSection(using: taskIndex)
                 workspaceSection(using: taskIndex)
                 schedulesSection
             }
@@ -135,79 +136,33 @@ struct TaskSidebarView: View {
 
     // MARK: - Pinned Section
 
-    private func pinnedSection(using taskIndex: SidebarTaskIndex) -> some View {
-        Section {
-            if isPinnedExpanded {
-                if taskIndex.pinnedTasks.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
-                            .font(Stanford.ui(11))
-                            .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.4))
-                        Text(isPinnedDropTargeted ? "Drop to pin" : "Drag tasks here to pin")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : .secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(isPinnedDropTargeted ? Stanford.poppy.opacity(0.08) : .clear)
-                    )
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(isPinnedDropTargeted ? Stanford.poppy.opacity(0.5) : Color.primary.opacity(0.06), style: StrokeStyle(lineWidth: isPinnedDropTargeted ? 1.5 : 1, dash: [5, 3]))
-                    )
-                    .animation(.easeInOut(duration: 0.15), value: isPinnedDropTargeted)
-                    .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                    .listRowBackground(Color.clear)
-                } else {
-                    ForEach(taskIndex.pinnedTasks) { task in
-                        pinnedTaskRow(for: task)
-                    }
-                    if isPinnedDropTargeted {
-                        HStack(spacing: 6) {
-                            Image(systemName: "pin.fill")
-                                .font(Stanford.ui(10))
-                                .foregroundStyle(Stanford.poppy)
-                            Text("Drop to pin")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(Stanford.poppy)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Stanford.poppy.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                        .listRowBackground(Color.clear)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                    }
-                }
-            }
-        } header: {
-            HStack(spacing: 10) {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                        isPinnedExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Pinned")
-                            .font(Stanford.caption(14))
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+    private func pinnedDock(using taskIndex: SidebarTaskIndex) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            pinnedHeader
 
-                Spacer()
+            if isPinnedExpanded {
+                ScrollView(.vertical, showsIndicators: taskIndex.pinnedTasks.count > 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if taskIndex.pinnedTasks.isEmpty {
+                            pinnedEmptyDropTarget
+                        } else {
+                            ForEach(taskIndex.pinnedTasks) { task in
+                                pinnedTaskRow(for: task)
+                            }
+
+                            if isPinnedDropTargeted {
+                                pinnedInlineDropTarget
+                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 2)
+                }
+                .frame(height: pinnedContentHeight(using: taskIndex))
             }
-            .padding(.horizontal, 8)
-            .padding(.top, 20)
-            .padding(.bottom, 4)
-            .textCase(nil)
         }
+        .padding(.bottom, 8)
         .onDrop(of: [.text], isTargeted: $isPinnedDropTargeted) { providers in
             guard let provider = providers.first else { return false }
             provider.loadItem(forTypeIdentifier: "public.text", options: nil) { data, _ in
@@ -217,14 +172,85 @@ struct TaskSidebarView: View {
                 DispatchQueue.main.async {
                     if let task = tasks.first(where: { $0.id == uuid }) {
                         withAnimation {
-                            task.isPinned = true
-                            try? modelContext.save()
+                            setPinned(true, for: task)
                         }
                     }
                 }
             }
             return true
         }
+    }
+
+    private var pinnedHeader: some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                    isPinnedExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Pinned")
+                        .font(Stanford.caption(14))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .padding(.bottom, 4)
+    }
+
+    private var pinnedEmptyDropTarget: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
+                .font(Stanford.ui(11))
+                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.4))
+            Text(isPinnedDropTargeted ? "Drop to pin" : "Drag tasks here to pin")
+                .font(Stanford.caption(12))
+                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : .secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isPinnedDropTargeted ? Stanford.poppy.opacity(0.08) : .clear)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(isPinnedDropTargeted ? Stanford.poppy.opacity(0.5) : Color.primary.opacity(0.06), style: StrokeStyle(lineWidth: isPinnedDropTargeted ? 1.5 : 1, dash: [5, 3]))
+        )
+        .animation(.easeInOut(duration: 0.15), value: isPinnedDropTargeted)
+    }
+
+    private var pinnedInlineDropTarget: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pin.fill")
+                .font(Stanford.ui(10))
+                .foregroundStyle(Stanford.poppy)
+            Text("Drop to pin")
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.poppy)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.poppy.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func pinnedContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
+        guard isPinnedExpanded else { return 0 }
+        if taskIndex.pinnedTasks.isEmpty { return 36 }
+
+        let rowHeight = Stanford.sidebarThreadRowHeight + 2
+        let taskHeight = CGFloat(taskIndex.pinnedTasks.count) * rowHeight
+        let dropTargetHeight: CGFloat = isPinnedDropTargeted ? 30 : 0
+        return min(taskHeight + dropTargetHeight + 2, 220)
     }
 
     private func pinnedTaskRow(for task: AgentTask) -> some View {
@@ -245,8 +271,7 @@ struct TaskSidebarView: View {
             if hoveredTaskID == task.id {
                 Button {
                     withAnimation {
-                        task.isPinned = false
-                        try? modelContext.save()
+                        setPinned(false, for: task)
                     }
                 } label: {
                     Image(systemName: "pin.slash.fill")
@@ -264,8 +289,7 @@ struct TaskSidebarView: View {
         .contextMenu {
             Button {
                 withAnimation {
-                    task.isPinned = false
-                    try? modelContext.save()
+                    setPinned(false, for: task)
                 }
             } label: {
                 Label("Unpin", systemImage: "pin.slash")
@@ -579,58 +603,30 @@ struct TaskSidebarView: View {
             }
             .buttonStyle(.plain)
 
+            workspaceRowActions(for: workspace, isHovered: isHovered)
         }
         .padding(.leading, 6)
-        .padding(.trailing, isHovered ? 30 : 6)
+        .padding(.trailing, 4)
         .padding(.vertical, 6)
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .onHover { hovering in hoveredWorkspaceID = hovering ? workspace.id : nil }
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(selectedWorkspace?.id == workspace.id && selectedTask == nil ? Color.primary.opacity(0.10) : .clear)
         )
-        .overlay(alignment: .trailing) {
-            if isHovered {
-                Menu {
-                    Button {
-                        selectedWorkspace = workspace
-                        onEditWorkspace?(workspace)
-                    } label: {
-                        Label("Workspace Details", systemImage: "info.circle")
-                    }
-
-                    Button {
-                        onRenameWorkspace?(workspace)
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        onDeleteWorkspace?(workspace)
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(Stanford.ui(14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Workspace options")
-                .accessibilityLabel("Options for \(workspace.name)")
-                .padding(.trailing, 4)
-            }
-        }
         .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
         .contextMenu {
+            Button {
+                startNewTask(in: workspace)
+            } label: {
+                Label("New Task", systemImage: "square.and.pencil")
+            }
+
+            Divider()
+
             Button {
                 selectedWorkspace = workspace
                 onEditWorkspace?(workspace)
@@ -652,6 +648,69 @@ struct TaskSidebarView: View {
                 Label("Remove", systemImage: "trash")
             }
         }
+    }
+
+    private func workspaceRowActions(for workspace: Workspace, isHovered: Bool) -> some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button {
+                    selectedWorkspace = workspace
+                    onEditWorkspace?(workspace)
+                } label: {
+                    Label("Workspace Details", systemImage: "info.circle")
+                }
+
+                Button {
+                    onRenameWorkspace?(workspace)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onDeleteWorkspace?(workspace)
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(Stanford.ui(14, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Workspace options")
+            .accessibilityLabel("Options for \(workspace.name)")
+
+            Button {
+                startNewTask(in: workspace)
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Start new chat in Astra")
+            .accessibilityLabel("Start new chat in \(workspace.name)")
+        }
+        .frame(width: 50, alignment: .trailing)
+        .opacity(isHovered ? 1 : 0)
+        .allowsHitTesting(isHovered)
+        .accessibilityHidden(!isHovered)
+    }
+
+    private func startNewTask(in workspace: Workspace) {
+        selectedWorkspace = workspace
+        selectedTask = nil
+        collapsedWorkspaceIDs.remove(workspace.id)
+        expandedWorkspaceIDs.insert(workspace.id)
+        onNewTask()
     }
 
     @ViewBuilder
@@ -729,8 +788,7 @@ struct TaskSidebarView: View {
                 Menu {
                     Button {
                         withAnimation {
-                            task.isPinned.toggle()
-                            try? modelContext.save()
+                            togglePinned(for: task)
                         }
                     } label: {
                         Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
@@ -801,8 +859,7 @@ struct TaskSidebarView: View {
         .contextMenu {
             Button {
                 withAnimation {
-                    task.isPinned.toggle()
-                    try? modelContext.save()
+                    togglePinned(for: task)
                 }
             } label: {
                 Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
@@ -932,6 +989,16 @@ struct TaskSidebarView: View {
         } label: {
             Label("Delete", systemImage: "trash")
         }
+    }
+
+    private func togglePinned(for task: AgentTask) {
+        setPinned(!task.isPinned, for: task)
+    }
+
+    private func setPinned(_ isPinned: Bool, for task: AgentTask) {
+        guard task.isPinned != isPinned else { return }
+        task.isPinned = isPinned
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 }
 
