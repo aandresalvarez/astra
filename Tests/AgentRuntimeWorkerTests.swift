@@ -12,13 +12,13 @@ private func makeContainer() throws -> ModelContainer {
 
 // MARK: - Cancel
 
-@Suite("ClaudeCodeWorker Cancel")
+@Suite("AgentRuntimeWorker Cancel")
 @MainActor
 struct WorkerCancelTests {
 
     @Test("Cancel on idle worker is safe")
     func cancelIdle() {
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         #expect(worker.isRunning == false)
         worker.cancel()
         #expect(worker.isRunning == false)
@@ -36,7 +36,7 @@ struct SubAgentPermissionsTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        ClaudeCodeWorker.ensureSubAgentPermissions(
+        AgentRuntimeWorker.ensureSubAgentPermissions(
             at: dir, policy: .autonomous, allowedTools: []
         )
 
@@ -57,7 +57,7 @@ struct SubAgentPermissionsTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        ClaudeCodeWorker.ensureSubAgentPermissions(
+        AgentRuntimeWorker.ensureSubAgentPermissions(
             at: dir, policy: .restricted, allowedTools: ["Read", "Grep"]
         )
 
@@ -78,7 +78,7 @@ struct SubAgentPermissionsTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        ClaudeCodeWorker.ensureSubAgentPermissions(
+        AgentRuntimeWorker.ensureSubAgentPermissions(
             at: dir, policy: .interactive, allowedTools: ["Read"]
         )
 
@@ -87,7 +87,7 @@ struct SubAgentPermissionsTests {
         #expect(!FileManager.default.fileExists(atPath: settingsPath))
     }
 
-    @Test("Existing settings file is not overwritten")
+    @Test("Existing settings file is merged with permissions")
     @MainActor func existingFilePreserved() throws {
         let dir = NSTemporaryDirectory() + "subagent-existing-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -98,13 +98,66 @@ struct SubAgentPermissionsTests {
         let original = "{\"custom\": true}".data(using: .utf8)!
         try original.write(to: URL(fileURLWithPath: settingsPath))
 
-        ClaudeCodeWorker.ensureSubAgentPermissions(
+        AgentRuntimeWorker.ensureSubAgentPermissions(
             at: dir, policy: .autonomous, allowedTools: []
         )
 
         let data = try Data(contentsOf: URL(fileURLWithPath: settingsPath))
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(json?["custom"] as? Bool == true)
+        let perms = json?["permissions"] as? [String: Any]
+        let allow = perms?["allow"] as? [String] ?? []
+        #expect(allow.contains("Bash(*)"))
+    }
+
+    @Test("Template hooks and permissions coexist in settings file")
+    @MainActor func templateHooksMergeWithPermissions() throws {
+        let dir = NSTemporaryDirectory() + "subagent-hooks-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let hooksJSON = """
+        {
+          "PostToolUse": [
+            {
+              "matcher": "Write",
+              "hooks": [
+                { "type": "command", "command": "echo ok" }
+              ]
+            }
+          ]
+        }
+        """
+        let backup = ClaudeSettingsStore.injectTemplateHooks(hooksJSON: hooksJSON, workspacePath: dir)
+        #expect(backup == nil)
+
+        AgentRuntimeWorker.ensureSubAgentPermissions(
+            at: dir, policy: .restricted, allowedTools: ["Read", "Grep"]
+        )
+
+        let settingsPath = (dir as NSString)
+            .appendingPathComponent(".claude/settings.local.json")
+        let data = try Data(contentsOf: URL(fileURLWithPath: settingsPath))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let perms = json?["permissions"] as? [String: Any]
+        let allow = perms?["allow"] as? [String] ?? []
+        #expect(allow.contains("Read(*)"))
+        #expect(allow.contains("Grep(*)"))
+
+        let hooks = json?["hooks"] as? [String: [[String: Any]]]
+        let postToolUse = hooks?["PostToolUse"] ?? []
+        #expect(postToolUse.count == 1)
+        #expect(postToolUse.first?["_astra_template"] as? Bool == true)
+
+        ClaudeSettingsStore.restoreTemplateHooks(hooksJSON: hooksJSON, workspacePath: dir, backup: backup)
+
+        let restoredData = try Data(contentsOf: URL(fileURLWithPath: settingsPath))
+        let restoredJSON = try JSONSerialization.jsonObject(with: restoredData) as? [String: Any]
+        let restoredPerms = restoredJSON?["permissions"] as? [String: Any]
+        let restoredAllow = restoredPerms?["allow"] as? [String] ?? []
+        #expect(restoredAllow.contains("Read(*)"))
+        #expect(restoredAllow.contains("Grep(*)"))
+        #expect(restoredJSON?["hooks"] == nil)
     }
 }
 
@@ -129,7 +182,7 @@ struct CompactionSwiftDataTests {
         }
         try ctx.save()
 
-        ClaudeCodeWorker.compactEvents(for: task, modelContext: ctx)
+        AgentRuntimeWorker.compactEvents(for: task, modelContext: ctx)
         #expect(task.events.count == 100)
     }
 
@@ -149,7 +202,7 @@ struct CompactionSwiftDataTests {
         }
         try ctx.save()
 
-        ClaudeCodeWorker.compactEvents(for: task, modelContext: ctx)
+        AgentRuntimeWorker.compactEvents(for: task, modelContext: ctx)
         try ctx.save()
 
         let remaining = task.events
@@ -176,7 +229,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Goal: Fix the login bug"))
     }
@@ -191,7 +244,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Workspace Context:"))
         #expect(prompt.contains("Use Swift 6 strict concurrency"))
@@ -208,7 +261,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("YOUR MEMORIES"))
         #expect(prompt.contains("User prefers tabs over spaces"))
@@ -227,7 +280,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Constraints:"))
         #expect(prompt.contains("No external dependencies"))
@@ -248,7 +301,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Create an agent team with 3 teammates"))
         #expect(prompt.contains("Focus on security"))

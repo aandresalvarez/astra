@@ -5,11 +5,11 @@ import ASTRACore
 @Observable
 final class TaskQueue {
     let poolSize: Int
-    private(set) var workers: [ClaudeCodeWorker]
+    private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
 
     /// Track which worker is running which task (by task ID)
-    private(set) var taskWorkerMap: [UUID: ClaudeCodeWorker] = [:]
+    private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
 
     /// Track active task IDs for status reporting
     var activeTasks: Set<UUID> = []
@@ -22,7 +22,7 @@ final class TaskQueue {
     @MainActor
     init(poolSize: Int = 3) {
         self.poolSize = poolSize
-        self.workers = (0..<poolSize).map { _ in ClaudeCodeWorker() }
+        self.workers = (0..<poolSize).map { _ in AgentRuntimeWorker() }
     }
 
     /// Number of currently busy workers
@@ -45,12 +45,12 @@ final class TaskQueue {
     }
 
     /// Get the first available (idle) worker, or nil if all busy
-    private func nextAvailableWorker() -> ClaudeCodeWorker? {
+    private func nextAvailableWorker() -> AgentRuntimeWorker? {
         workers.first { !$0.isRunning }
     }
 
     /// Get the worker assigned to a specific task
-    func worker(for task: AgentTask) -> ClaudeCodeWorker? {
+    func worker(for task: AgentTask) -> AgentRuntimeWorker? {
         taskWorkerMap[task.id]
     }
 
@@ -388,7 +388,7 @@ final class TaskQueue {
         if newSize > workers.count {
             let toAdd = newSize - workers.count
             for _ in 0..<toAdd {
-                workers.append(ClaudeCodeWorker())
+                workers.append(AgentRuntimeWorker())
             }
             AppLogger.audit(.taskStats, category: "Queue", fields: [
                 "event": "pool_resized",
@@ -418,7 +418,7 @@ final class TaskQueue {
         }
     }
 
-    private func workerIndex(_ worker: ClaudeCodeWorker) -> Int {
+    private func workerIndex(_ worker: AgentRuntimeWorker) -> Int {
         workers.firstIndex(where: { $0 === worker }) ?? 0
     }
 
@@ -427,79 +427,30 @@ final class TaskQueue {
     /// Injects template hooks into .claude/settings.local.json before task execution.
     /// Returns the original file data for restoration, or nil if no hooks to inject.
     private func injectTemplateHooks(for task: AgentTask) -> Data? {
-        let hooksJSON = task.templateHooksJSON
-        guard !hooksJSON.isEmpty, hooksJSON != "{}" else { return nil }
-
-        let workspacePath = task.effectiveWorkspacePath
-        guard !workspacePath.isEmpty else { return nil }
-
-        let settingsDir = (workspacePath as NSString).appendingPathComponent(".claude")
-        let settingsPath = (settingsDir as NSString).appendingPathComponent("settings.local.json")
-        let fm = FileManager.default
-
-        // Read existing settings
-        var settings: [String: Any] = [:]
-        let backup: Data?
-        if let existingData = fm.contents(atPath: settingsPath) {
-            backup = existingData
-            settings = (try? JSONSerialization.jsonObject(with: existingData) as? [String: Any]) ?? [:]
-        } else {
-            backup = nil
-        }
-
-        // Parse template hooks
-        guard let hooksData = hooksJSON.data(using: .utf8),
-              let hooks = try? JSONSerialization.jsonObject(with: hooksData) as? [String: Any] else {
-            return nil
-        }
-
-        // Merge hooks into settings
-        var existingHooks = settings["hooks"] as? [String: [[String: Any]]] ?? [:]
-        for (hookType, entries) in hooks {
-            guard let entries = entries as? [[String: Any]] else { continue }
-            var current = existingHooks[hookType] ?? []
-            for entry in entries {
-                // Tag injected hooks so we can clean them up
-                var taggedEntry = entry
-                taggedEntry["_astra_template"] = true
-                current.append(taggedEntry)
-            }
-            existingHooks[hookType] = current
-        }
-        settings["hooks"] = existingHooks
-
-        // Write back
-        try? fm.createDirectory(atPath: settingsDir, withIntermediateDirectories: true)
-        if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: URL(fileURLWithPath: settingsPath))
+        let backup = ClaudeSettingsStore.injectTemplateHooks(
+            hooksJSON: task.templateHooksJSON,
+            workspacePath: task.effectiveWorkspacePath
+        )
+        if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
                 "event": "template_hooks_injected"
             ])
         }
-
         return backup
     }
 
     /// Restores .claude/settings.local.json after task execution.
     private func restoreTemplateHooks(for task: AgentTask, backup: Data?) {
-        guard backup != nil || !task.templateHooksJSON.isEmpty else { return }
-        guard task.templateHooksJSON != "{}", !task.templateHooksJSON.isEmpty else { return }
-
-        let workspacePath = task.effectiveWorkspacePath
-        guard !workspacePath.isEmpty else { return }
-
-        let settingsPath = (workspacePath as NSString)
-            .appendingPathComponent(".claude/settings.local.json")
-
-        if let backup {
-            // Restore original
-            try? backup.write(to: URL(fileURLWithPath: settingsPath))
+        ClaudeSettingsStore.restoreTemplateHooks(
+            hooksJSON: task.templateHooksJSON,
+            workspacePath: task.effectiveWorkspacePath,
+            backup: backup
+        )
+        if backup != nil {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
                 "event": "template_hooks_restored"
             ])
-        } else {
-            // No original file existed — remove the injected one
-            try? FileManager.default.removeItem(atPath: settingsPath)
+        } else if !task.templateHooksJSON.isEmpty, task.templateHooksJSON != "{}" {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
                 "event": "template_hooks_removed"
             ])

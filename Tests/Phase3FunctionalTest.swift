@@ -65,8 +65,8 @@ struct Phase3FunctionalTest {
         #expect(task.useAgentTeam == true)
         #expect(task.teamSize == 3)
 
-        // 4. Run through ClaudeCodeWorker
-        let worker = ClaudeCodeWorker()
+        // 4. Run through AgentRuntimeWorker
+        let worker = AgentRuntimeWorker()
         var receivedEvents: [ParsedEvent] = []
 
         await worker.execute(task: task, modelContext: context) { event in
@@ -190,7 +190,7 @@ struct Phase3FunctionalTest {
         try context.save()
 
         // 3. Run
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         // 4. Verify task reached a terminal state without crashing

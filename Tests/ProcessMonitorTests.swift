@@ -9,21 +9,21 @@ struct ClaudePermissionPolicyTests {
 
     @Test("Autonomous policy produces skip-permissions flag")
     func autonomousPolicyFlags() {
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         worker.permissionPolicy = .autonomous
         #expect(worker.permissionPolicy.cliArguments == ["--dangerously-skip-permissions"])
     }
 
     @Test("Restricted policy produces no CLI flags")
     func restrictedPolicyFlags() {
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         worker.permissionPolicy = .restricted
         #expect(worker.permissionPolicy.cliArguments.isEmpty)
     }
 
     @Test("Interactive policy produces no CLI flags")
     func interactivePolicyFlags() {
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         worker.permissionPolicy = .interactive
         #expect(worker.permissionPolicy.cliArguments.isEmpty)
     }
@@ -36,7 +36,7 @@ struct ProcessMonitorTests {
 
     @Test("Budget exceeded via estimated tokens")
     func budgetExceededEstimated() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: 100)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 100)
 
         // 500 chars of text ≈ 125 estimated tokens, exceeds budget of 100
         let event = ParsedEvent.text(text: String(repeating: "x", count: 500))
@@ -49,7 +49,7 @@ struct ProcessMonitorTests {
 
     @Test("Budget not exceeded when under limit")
     func budgetNotExceeded() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: 10000)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 10000)
 
         let event = ParsedEvent.text(text: "Hello world")
         let shouldKill = monitor.processEvent(event, process: nil)
@@ -60,7 +60,7 @@ struct ProcessMonitorTests {
 
     @Test("Budget exceeded via result event exact count")
     func budgetExceededFromResult() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: 1000)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1000)
 
         let event = ParsedEvent.result(
             text: "done",
@@ -79,7 +79,7 @@ struct ProcessMonitorTests {
 
     @Test("Unlimited budget never exceeds")
     func unlimitedBudget() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
 
         // Massive text with varying content to avoid repetition breaker
         for i in 0..<100 {
@@ -91,7 +91,7 @@ struct ProcessMonitorTests {
 
     @Test("Tool use and tool result add to token estimate")
     func toolTokenEstimation() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: 10000)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 10000)
 
         let _ = monitor.processEvent(.toolUse(name: "Read", id: "t1", input: nil), process: nil)
         #expect(monitor.estimatedTokens == 100)
@@ -102,7 +102,7 @@ struct ProcessMonitorTests {
 
     @Test("Team events add to token estimate")
     func teamTokenEstimation() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: 10000)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 10000)
 
         let _ = monitor.processEvent(.teammateStarted(taskId: "t1", name: "agent", prompt: "do stuff"), process: nil)
         #expect(monitor.estimatedTokens == 50)
@@ -115,7 +115,7 @@ struct ProcessMonitorTests {
 
     @Test("Repetition kills after max identical events")
     func repetitionKill() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
 
         let event = ParsedEvent.toolUse(name: "Read", id: "t1", input: nil)
         let _ = monitor.processEvent(event, process: nil) // 1
@@ -132,7 +132,7 @@ struct ProcessMonitorTests {
 
     @Test("Different events reset repetition counter")
     func repetitionResets() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
 
         let _ = monitor.processEvent(.toolUse(name: "Read", id: "t1", input: nil), process: nil)
         let _ = monitor.processEvent(.toolUse(name: "Read", id: "t1", input: nil), process: nil)
@@ -147,7 +147,7 @@ struct ProcessMonitorTests {
 
     @Test("Default max repetitions is 8")
     func defaultMaxRepetitions() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
         let event = ParsedEvent.toolUse(name: "Glob", id: "t1", input: nil)
 
         for i in 1...7 {
@@ -165,12 +165,12 @@ struct ProcessMonitorTests {
     @Test("Event signatures are distinct per type")
     func eventSignatures() {
         let sigs = [
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.text(text: "hello")),
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.thinking(text: "hello")),
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.toolUse(name: "Read", id: "t1", input: nil)),
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.toolResult(toolId: "t1", content: "")),
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.systemInit(model: "sonnet", sessionId: "s1")),
-            ClaudeCodeWorker.ProcessMonitor.eventSignature(.result(text: nil, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.text(text: "hello")),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.thinking(text: "hello")),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.toolUse(name: "Read", id: "t1", input: nil)),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.toolResult(toolId: "t1", content: "")),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.systemInit(model: "sonnet", sessionId: "s1")),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.result(text: nil, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)),
         ]
         // All signatures should be unique
         #expect(Set(sigs).count == sigs.count)
@@ -179,7 +179,7 @@ struct ProcessMonitorTests {
     @Test("Text signatures truncate at 80 chars")
     func signatureTruncation() {
         let longText = String(repeating: "a", count: 200)
-        let sig = ClaudeCodeWorker.ProcessMonitor.eventSignature(.text(text: longText))
+        let sig = AgentRuntimeWorker.ProcessMonitor.eventSignature(.text(text: longText))
         #expect(sig.count <= 85) // "text:" prefix + 80 chars
     }
 
@@ -187,7 +187,7 @@ struct ProcessMonitorTests {
 
     @Test("ProcessResult defaults")
     func processResultDefaults() {
-        let result = ClaudeCodeWorker.ProcessResult(exitCode: 0)
+        let result = AgentRuntimeWorker.ProcessResult(exitCode: 0)
         #expect(result.exitCode == 0)
         #expect(result.error == nil)
         #expect(result.budgetExceeded == false)
@@ -197,7 +197,7 @@ struct ProcessMonitorTests {
 
     @Test("ProcessResult with all flags")
     func processResultFlags() {
-        let result = ClaudeCodeWorker.ProcessResult(
+        let result = AgentRuntimeWorker.ProcessResult(
             exitCode: 137,
             error: "killed",
             budgetExceeded: true,
@@ -220,7 +220,7 @@ struct ProcessMonitorTests {
         let remaining = max(1000, totalBudget - used)
         #expect(remaining == 3000)
 
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: remaining)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: remaining)
         // 12004 chars / 4 = 3001 estimated tokens → exceeds budget of 3000
         let event = ParsedEvent.text(text: String(repeating: "x", count: 12004))
         let shouldKill = monitor.processEvent(event, process: nil)
@@ -234,7 +234,7 @@ struct ProcessMonitorTests {
         let remaining = max(1000, totalBudget - used)
         #expect(remaining == 1000) // Floor of 1000
 
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: remaining)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: remaining)
         // Small text should not exceed 1000
         let shouldKill = monitor.processEvent(.text(text: "hello"), process: nil)
         #expect(shouldKill == false)
@@ -256,7 +256,7 @@ struct ProcessMonitorTests {
 
     @Test("Turn count increments on result events")
     func turnCountIncrementsOnResult() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 10)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 10)
 
         let result = ParsedEvent.result(
             text: "done",
@@ -273,7 +273,7 @@ struct ProcessMonitorTests {
 
     @Test("Non-result events do not increment turn count")
     func nonResultEventsNoTurnIncrement() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 10)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 10)
 
         let _ = monitor.processEvent(.text(text: "hello"), process: nil)
         let _ = monitor.processEvent(.toolUse(name: "Read", id: "t1", input: nil), process: nil)
@@ -285,7 +285,7 @@ struct ProcessMonitorTests {
 
     @Test("Max turns exceeded kills process")
     func maxTurnsExceeded() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 3)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 3)
 
         let result = ParsedEvent.result(
             text: "done",
@@ -308,7 +308,7 @@ struct ProcessMonitorTests {
 
     @Test("Unlimited turns (0) never exceeds")
     func unlimitedTurns() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 0)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxTurns: 0)
 
         for i in 0..<50 {
             let result = ParsedEvent.result(
@@ -328,7 +328,7 @@ struct ProcessMonitorTests {
 
     @Test("ProcessResult maxTurnsExceeded flag")
     func processResultMaxTurnsFlag() {
-        let result = ClaudeCodeWorker.ProcessResult(
+        let result = AgentRuntimeWorker.ProcessResult(
             exitCode: 137,
             error: "max turns",
             budgetExceeded: false,

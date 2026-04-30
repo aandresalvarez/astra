@@ -8,27 +8,27 @@ struct CompactionTests {
 
     @Test("Compaction threshold is 200")
     func thresholdValue() {
-        #expect(ClaudeCodeWorker.compactionThreshold == 200)
+        #expect(AgentRuntimeWorker.compactionThreshold == 200)
     }
 
     @Test("Keep count is 50")
     func keepCountValue() {
-        #expect(ClaudeCodeWorker.compactionKeepCount == 50)
+        #expect(AgentRuntimeWorker.compactionKeepCount == 50)
     }
 
     @Test("Events below threshold are not compacted")
     func belowThreshold() {
         // Simulate 150 events (below 200 threshold)
         let eventCount = 150
-        #expect(eventCount <= ClaudeCodeWorker.compactionThreshold)
+        #expect(eventCount <= AgentRuntimeWorker.compactionThreshold)
         // compactEvents would be a no-op — we verify the threshold logic
     }
 
     @Test("Events above threshold would compact down")
     func aboveThreshold() {
         let total = 250
-        let threshold = ClaudeCodeWorker.compactionThreshold
-        let keepCount = ClaudeCodeWorker.compactionKeepCount
+        let threshold = AgentRuntimeWorker.compactionThreshold
+        let keepCount = AgentRuntimeWorker.compactionKeepCount
 
         #expect(total > threshold)
 
@@ -63,7 +63,7 @@ struct CompactionTests {
     @Test("Cutoff calculation preserves most recent events")
     func cutoffPreservesRecent() {
         let total = 300
-        let keepCount = ClaudeCodeWorker.compactionKeepCount
+        let keepCount = AgentRuntimeWorker.compactionKeepCount
         let cutoff = total - keepCount
 
         // Items at indices [0..<cutoff] are compacted

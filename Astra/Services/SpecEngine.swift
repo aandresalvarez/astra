@@ -209,18 +209,7 @@ enum SpecEngine {
 
     /// Auto-detect the Claude CLI path, checking common install locations.
     static var detectedClaudePath: String {
-        let candidates = [
-            "\(NSHomeDirectory())/.local/bin/claude",
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
-            "\(NSHomeDirectory())/.npm-global/bin/claude"
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        return "/usr/local/bin/claude"
+        RuntimePathResolver.detectClaudePath()
     }
 
     static let jsonSchema = """
@@ -273,7 +262,7 @@ enum SpecEngine {
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
 
         process.environment = env
 
@@ -365,7 +354,7 @@ enum SpecEngine {
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
 
         process.environment = env
 
@@ -413,7 +402,7 @@ enum SpecEngine {
             process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
             var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
             process.environment = env
 
             let stdoutPipe = Pipe()
@@ -482,7 +471,7 @@ enum SpecEngine {
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
 
         process.environment = env
 
@@ -547,7 +536,7 @@ enum SpecEngine {
             process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
             var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
 
             process.environment = env
 
@@ -647,7 +636,7 @@ enum SpecEngine {
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
         process.environment = env
 
         let stdoutPipe = Pipe()

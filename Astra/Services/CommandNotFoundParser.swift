@@ -2,7 +2,7 @@ import Foundation
 
 /// Parses a stderr blob for "command not found" patterns and returns the
 /// offending binary name. Used to rewrite opaque task failures into
-/// actionable "Install `gcloud`" errors in `ClaudeCodeWorker`.
+/// actionable "Install `gcloud`" errors in `AgentRuntimeWorker`.
 ///
 /// Shells and tools print this message in a handful of predictable forms;
 /// we match the common ones and return nil when none fit — the caller

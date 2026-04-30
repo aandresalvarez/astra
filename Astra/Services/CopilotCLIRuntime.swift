@@ -56,27 +56,7 @@ enum CopilotCLIRuntime {
     static let executableName = "copilot"
 
     static func detectPath() -> String {
-        let candidates = [
-            "\(NSHomeDirectory())/.local/bin/copilot",
-            "/opt/homebrew/bin/copilot",
-            "/usr/local/bin/copilot",
-            "\(NSHomeDirectory())/.npm-global/bin/copilot"
-        ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            return path
-        }
-
-        let which = Process()
-        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        which.arguments = [executableName]
-        let pipe = Pipe()
-        which.standardOutput = pipe
-        try? which.run()
-        which.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let path = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return path
+        RuntimePathResolver.detectCopilotPath()
     }
 
     static func capabilities(executablePath: String) -> CopilotCLICapabilities {
@@ -166,7 +146,7 @@ enum CopilotCLIRuntime {
         }
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin:\(NSHomeDirectory())/.astra/tools"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
         env["COPILOT_HOME"] = copilotHome
         env["NO_COLOR"] = "1"
         env["TERM"] = env["TERM"] ?? "xterm-256color"

@@ -26,7 +26,7 @@ enum ValidationService {
         process.currentDirectoryURL = URL(fileURLWithPath: task.effectiveWorkspacePath)
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         process.environment = env
 
@@ -93,7 +93,7 @@ enum ValidationService {
         process.currentDirectoryURL = URL(fileURLWithPath: task.effectiveWorkspacePath)
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         process.environment = env
 

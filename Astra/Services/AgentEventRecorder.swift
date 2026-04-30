@@ -1,0 +1,320 @@
+import Foundation
+import SwiftData
+import ASTRACore
+
+enum AgentEventRecorder {
+    @MainActor
+    static func recordClaudeRunEvent(
+        _ parsed: ParsedEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        switch parsed {
+        case .thinking(let text):
+            modelContext.insert(TaskEvent(task: task, type: "agent.thinking", payload: text, run: run))
+
+        case .text(let text):
+            run.output += text
+            modelContext.insert(TaskEvent(task: task, type: "agent.response", payload: text, run: run))
+
+        case .toolUse(let name, _, _):
+            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)", run: run))
+            if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
+                run.appendFileChange(StoredFileChange(from: fileChange))
+                let existingVersion = task.artifacts
+                    .filter { $0.path == fileChange.path }
+                    .map(\.version)
+                    .max() ?? 0
+                modelContext.insert(Artifact(
+                    task: task,
+                    type: fileChange.changeType.rawValue,
+                    path: fileChange.path,
+                    version: existingVersion + 1
+                ))
+            }
+
+        case .toolResult(_, let content):
+            if !content.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+            }
+
+        case .result(let text, let costUSD, let totalInput, let totalOutput, let durationMs, let numTurns, let isError):
+            let totalTokens = totalInput + totalOutput
+            task.tokensUsed = totalTokens
+            run.tokensUsed = totalTokens
+            run.inputTokens = totalInput
+            run.outputTokens = totalOutput
+
+            if let cost = costUSD {
+                task.costUSD = cost
+                run.costUSD = cost
+            }
+            if let text, run.output.isEmpty {
+                run.output = text
+            }
+
+            let details = [
+                "tokens: \(totalTokens) (in: \(totalInput), out: \(totalOutput))",
+                costUSD.map { String(format: "cost: $%.4f", $0) },
+                durationMs.map { "duration: \($0)ms" },
+                numTurns.map { "turns: \($0)" }
+            ].compactMap { $0 }.joined(separator: " | ")
+            modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
+
+            AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+                "tokens_total": String(totalTokens),
+                "tokens_input": String(totalInput),
+                "tokens_output": String(totalOutput),
+                "turns": numTurns.map(String.init) ?? "unknown",
+                "duration_ms": durationMs.map(String.init) ?? "unknown",
+                "has_error": String(isError)
+            ])
+            if isError {
+                AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+                    "reason": "agent_reported_error"
+                ], level: .warning)
+            }
+
+        case .systemInit(let model, let sessionId):
+            if let sessionId {
+                task.sessionId = sessionId
+                AppLogger.audit(.workerSessionStarted, category: "Worker", taskID: task.id, fields: [
+                    "session_id_prefix": String(sessionId.prefix(8))
+                ], level: .debug)
+            }
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "stream": "started",
+                "model": model ?? "unknown"
+            ])
+
+        case .teammateStarted(let taskId, let name, let prompt):
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "team.agent.started",
+                payload: "\(name) spawned: \(String(prompt.prefix(200)))",
+                run: run,
+                agentName: name,
+                agentId: taskId
+            ))
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "team_event": "teammate_started",
+                "agent_id": taskId
+            ])
+
+        case .teammateCompleted(let taskId, let name):
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "team.agent.completed",
+                payload: "\(name) finished",
+                run: run,
+                agentName: name,
+                agentId: taskId
+            ))
+            AppLogger.audit(.taskCompleted, category: "Worker", taskID: task.id, fields: [
+                "team_event": "teammate_completed",
+                "agent_id": taskId
+            ])
+
+        case .teamCreated(let name, let description):
+            modelContext.insert(TaskEvent(task: task, type: "team.created", payload: "Team '\(name)' created: \(description)", run: run, teamName: name))
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "team_event": "team_created"
+            ])
+
+        case .teamDeleted(let name):
+            modelContext.insert(TaskEvent(task: task, type: "team.deleted", payload: "Team '\(name)' disbanded", run: run, teamName: name))
+            AppLogger.audit(.taskCompleted, category: "Worker", taskID: task.id, fields: [
+                "team_event": "team_deleted"
+            ])
+
+        case .teamMessage(let from, let to, let content):
+            modelContext.insert(TaskEvent(task: task, type: "team.message", payload: content, run: run, agentName: from, agentId: to))
+
+        case .permissionDenied(let tool, let reason):
+            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
+                "tool": tool
+            ], level: .warning)
+
+        case .unknown(let type):
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "event": "unknown_stream_event",
+                "event_type": type
+            ], level: .debug)
+        }
+    }
+
+    @MainActor
+    static func recordClaudeFollowUpEvent(
+        _ parsed: ParsedEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        switch parsed {
+        case .thinking(let text):
+            modelContext.insert(TaskEvent(task: task, type: "agent.thinking", payload: text, run: run))
+        case .text(let text):
+            run.output += text
+            modelContext.insert(TaskEvent(task: task, type: "agent.response", payload: text, run: run))
+        case .toolUse(let name, _, _):
+            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)", run: run))
+            if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
+                run.appendFileChange(StoredFileChange(from: fileChange))
+            }
+        case .result(_, let costUSD, let totalInput, let totalOutput, _, _, _):
+            let totalTokens = totalInput + totalOutput
+            task.tokensUsed += totalTokens
+            run.tokensUsed = totalTokens
+            run.inputTokens = totalInput
+            run.outputTokens = totalOutput
+            if let cost = costUSD {
+                task.costUSD += cost
+                run.costUSD = cost
+            }
+        case .systemInit(_, let sessionId):
+            if let sessionId { task.sessionId = sessionId }
+        case .toolResult(_, let content):
+            if !content.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+            }
+        case .permissionDenied(let tool, let reason):
+            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
+                "tool": tool
+            ], level: .warning)
+        default:
+            break
+        }
+    }
+
+    @MainActor
+    static func recordCopilotEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        switch event {
+        case .started(let sessionID, let model):
+            if let sessionID {
+                task.sessionId = sessionID
+                run.providerSessionId = sessionID
+            }
+            let payload = model.map { "Copilot stream started with model \($0)." } ?? "Copilot stream started."
+            modelContext.insert(TaskEvent(task: task, type: "task.started", payload: payload, run: run))
+
+        case .thinking(let text):
+            modelContext.insert(TaskEvent(task: task, type: "agent.thinking", payload: text, run: run))
+
+        case .text(let text):
+            run.output += text
+            modelContext.insert(TaskEvent(task: task, type: "agent.response", payload: text, run: run))
+
+        case .toolUse(let name, _, let inputSummary):
+            let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
+            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)\(suffix)", run: run))
+
+        case .toolResult(_, let content):
+            if !content.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+            }
+
+        case .fileChange(let path, let kind, let summary):
+            appendFileChange(path: path, kind: kind, summary: summary, task: task, run: run, modelContext: modelContext)
+
+        case .permissionRequested(let tool, let reason):
+            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+
+        case .stats(let input, let output, let cost, let duration, let turns):
+            let total = input + output
+            if total > 0 {
+                task.tokensUsed = total
+                run.tokensUsed = total
+                run.inputTokens = input
+                run.outputTokens = output
+            }
+            if let cost {
+                task.costUSD = cost
+                run.costUSD = cost
+            }
+            let details = [
+                total > 0 ? "tokens: \(total) (in: \(input), out: \(output))" : nil,
+                cost.map { String(format: "cost: $%.4f", $0) },
+                duration.map { "duration: \($0)ms" },
+                turns.map { "turns: \($0)" }
+            ].compactMap { $0 }.joined(separator: " | ")
+            if !details.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
+            }
+
+        case .completed(let summary):
+            if let summary, run.output.isEmpty {
+                run.output = summary
+            }
+
+        case .failed(let message):
+            modelContext.insert(TaskEvent(task: task, type: "error", payload: message, run: run))
+
+        case .unknown(_, let type, _):
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "event": "unknown_copilot_stream_event",
+                "event_type": type
+            ], level: .debug)
+        }
+    }
+
+    static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
+        switch event {
+        case .started(let sessionID, let model):
+            return .systemInit(model: model, sessionId: sessionID)
+        case .thinking(let text):
+            return .thinking(text: text)
+        case .text(let text):
+            return .text(text: text)
+        case .toolUse(let name, let id, _):
+            return .toolUse(name: name, id: id, input: nil)
+        case .toolResult(let id, let content):
+            return .toolResult(toolId: id, content: content)
+        case .permissionRequested(let tool, let reason):
+            return .permissionDenied(tool: tool, reason: reason)
+        case .stats(let input, let output, let cost, let duration, let turns):
+            return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .completed(let summary):
+            return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
+        case .failed(let message):
+            return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
+        case .fileChange, .unknown:
+            return nil
+        }
+    }
+
+    @MainActor
+    private static func appendFileChange(
+        path: String,
+        kind: String,
+        summary: String?,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        guard !path.isEmpty else { return }
+        guard !run.fileChanges.contains(where: { $0.path == path }) else { return }
+        let changeType: FileChange.FileChangeType = kind.lowercased().contains("write") ? .write : .edit
+        let change = FileChange(
+            path: path,
+            changeType: changeType,
+            content: summary,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )
+        run.appendFileChange(StoredFileChange(from: change))
+        let existingVersion = task.artifacts
+            .filter { $0.path == path }
+            .map(\.version)
+            .max() ?? 0
+        modelContext.insert(Artifact(task: task, type: changeType.rawValue, path: path, content: summary, version: existingVersion + 1))
+    }
+}

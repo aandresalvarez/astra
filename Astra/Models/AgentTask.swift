@@ -83,47 +83,35 @@ final class AgentTask {
     @Relationship
     var skills: [Skill] = []
 
+    var workspaceAccess: TaskWorkspaceAccess {
+        TaskWorkspaceAccess(task: self)
+    }
+
     var effectiveWorkspacePath: String {
-        workspace?.primaryPath ?? ""
+        workspaceAccess.effectiveWorkspacePath
     }
 
     /// The directory where the Claude CLI process should actually run.
     /// Prefers the first additional path (where the actual code lives) over the
     /// Astra workspace folder (which is for metadata/task outputs).
     var codeWorkingDirectory: String {
-        if let first = workspace?.additionalPaths.first,
-           !first.isEmpty,
-           FileManager.default.fileExists(atPath: first) {
-            return first
-        }
-        return effectiveWorkspacePath
+        workspaceAccess.codeWorkingDirectory
     }
 
     /// Per-task subfolder within the workspace for task-specific outputs
     var taskFolder: String {
-        WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: id)
+        workspaceAccess.taskFolder
     }
 
     var canonicalTaskFolder: String {
-        WorkspaceFileLayout.taskFolder(workspacePath: effectiveWorkspacePath, taskID: id)
+        workspaceAccess.canonicalTaskFolder
     }
 
     /// Ensures the task folder exists on disk, creating it if needed.
     /// Throws if the directory cannot be created.
     @discardableResult
     func ensureTaskFolder(fileSystem: FileSystem = RealFileSystem()) throws -> String {
-        let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
-            workspacePath: effectiveWorkspacePath,
-            taskID: id
-        )
-        guard !path.isEmpty else {
-            AppLogger.audit(.taskFailed, category: "General", taskID: id, fields: [
-                "reason": "task_folder_empty_path"
-            ], level: .error)
-            return ""
-        }
-        try fileSystem.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: true)
-        return path
+        try workspaceAccess.ensureTaskFolder(fileSystem: fileSystem)
     }
 
     init(
@@ -189,118 +177,10 @@ final class AgentTask {
         skillSnapshots = skills.map(SkillSnapshotConfig.init(skill:))
     }
 
-    private var effectiveSkillSnapshots: [SkillSnapshotConfig] {
-        let liveSnapshots = skills.map(SkillSnapshotConfig.init(skill:))
-        guard !skillSnapshots.isEmpty else { return liveSnapshots }
-        guard !liveSnapshots.isEmpty else { return skillSnapshots }
-
-        var combined = liveSnapshots
-        var seenIDs = Set(liveSnapshots.compactMap(\.id))
-        var seenNames = Set(liveSnapshots.map { $0.name.lowercased() })
-
-        for snapshot in skillSnapshots {
-            let hasMatchingID = snapshot.id.map { seenIDs.contains($0) } ?? false
-            let nameKey = snapshot.name.lowercased()
-            guard !hasMatchingID && !seenNames.contains(nameKey) else { continue }
-            combined.append(snapshot)
-            if let id = snapshot.id {
-                seenIDs.insert(id)
-            }
-            seenNames.insert(nameKey)
-        }
-
-        return combined
-    }
-
-    private var detachedSkillSnapshots: [SkillSnapshotConfig] {
-        guard !skillSnapshots.isEmpty else { return [] }
-        guard !skills.isEmpty else { return skillSnapshots }
-
-        let liveIDs = Set(skills.map { $0.id.uuidString })
-        let liveNames = Set(skills.map { $0.name.lowercased() })
-
-        return skillSnapshots.filter { snapshot in
-            if let id = snapshot.id, liveIDs.contains(id) {
-                return false
-            }
-            return !liveNames.contains(snapshot.name.lowercased())
-        }
-    }
-
     var isForked: Bool { forkedFromID != nil }
 
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
-        let forked = AgentTask(
-            title: "Fork of \(source.title)",
-            goal: source.goal,
-            workspace: source.workspace,
-            tokenBudget: source.tokenBudget,
-            model: source.model,
-            isolationStrategy: source.isolationStrategy,
-            validationStrategy: source.validationStrategy
-        )
-        forked.inputs = source.inputs
-        forked.constraints = source.constraints
-        forked.acceptanceCriteria = source.acceptanceCriteria
-        forked.forkedFromID = source.id
-        forked.skills = source.skills
-        forked.skillSnapshotsJSON = source.skillSnapshotsJSON
-        forked.runtimeID = source.runtimeID
-
-        let sortedRuns = source.runs.sorted { $0.startedAt < $1.startedAt }
-        guard let cutoffIndex = sortedRuns.firstIndex(where: { $0.id == targetRun.id }) else {
-            context.insert(forked)
-            return forked
-        }
-
-        forked.forkedAtRunIndex = cutoffIndex
-        forked.status = .completed
-
-        let runsToFork = sortedRuns.prefix(through: cutoffIndex)
-        var totalTokens = 0
-        var totalCost = 0.0
-
-        for sourceRun in runsToFork {
-            let newRun = TaskRun(task: forked)
-            newRun.status = sourceRun.status
-            newRun.startedAt = sourceRun.startedAt
-            newRun.completedAt = sourceRun.completedAt
-            newRun.tokensUsed = sourceRun.tokensUsed
-            newRun.inputTokens = sourceRun.inputTokens
-            newRun.outputTokens = sourceRun.outputTokens
-            newRun.output = sourceRun.output
-            newRun.costUSD = sourceRun.costUSD
-            newRun.fileChangesJSON = sourceRun.fileChangesJSON
-            newRun.stopReason = sourceRun.stopReason
-            newRun.exitCode = sourceRun.exitCode
-            context.insert(newRun)
-            totalTokens += sourceRun.tokensUsed
-            totalCost += sourceRun.costUSD
-        }
-
-        forked.tokensUsed = totalTokens
-        forked.costUSD = totalCost
-
-        let cutoffDate = targetRun.completedAt ?? targetRun.startedAt
-        let eventsToFork = source.events
-            .filter { $0.timestamp <= cutoffDate }
-            .sorted { $0.timestamp < $1.timestamp }
-
-        for sourceEvent in eventsToFork {
-            let newEvent = TaskEvent(
-                task: forked,
-                type: sourceEvent.type,
-                payload: sourceEvent.payload
-            )
-            newEvent.timestamp = sourceEvent.timestamp
-            newEvent.agentName = sourceEvent.agentName
-            newEvent.agentId = sourceEvent.agentId
-            newEvent.teamName = sourceEvent.teamName
-            context.insert(newEvent)
-        }
-
-        context.insert(forked)
-        return forked
+        AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
     }
 
     var isTerminal: Bool {
@@ -325,50 +205,11 @@ final class AgentTask {
     }
 
     var statusColor: String {
-        switch status {
-        case .draft: return "purple"
-        case .queued: return "gray"
-        case .running: return "blue"
-        case .pendingUser: return "orange"
-        case .completed: return "green"
-        case .failed: return "red"
-        case .cancelled: return "gray"
-        case .budgetExceeded: return "red"
-        }
+        TaskPresentationState.statusColor(for: status)
     }
 
     func makeSkillResolver() -> SkillResolver {
-        let standaloneTools = allLocalTools.filter { $0.skill == nil }
-        let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
-
-        let liveCLICommands = Set(
-            allLocalTools
-                .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
-                .map(\.command)
-        )
-
-        var liveEnvVars: [String: String] = [:]
-        for skill in skills {
-            for (key, value) in skill.resolvedAllEnvironmentVariables {
-                liveEnvVars[key] = value
-            }
-        }
-
-        var connEnvVars: [String: String] = [:]
-        for connector in allConnectors {
-            for (key, value) in connector.allEnvironmentVariables {
-                connEnvVars[key] = value
-            }
-        }
-
-        return SkillResolver(
-            effectiveSnapshots: effectiveSkillSnapshots,
-            detachedSnapshots: detachedSkillSnapshots,
-            standaloneToolSnapshots: standaloneSnapshots,
-            liveLocalToolCommands: liveCLICommands,
-            liveSkillEnvVars: liveEnvVars,
-            connectorEnvVars: connEnvVars
-        )
+        TaskCapabilityResolver(task: self).resolver
     }
 
     var resolvedAllowedTools: [String] { makeSkillResolver().resolvedAllowedTools }
@@ -385,37 +226,11 @@ final class AgentTask {
 
     /// All connectors: from attached skills + standalone workspace connectors + enabled global connectors
     var allConnectors: [Connector] {
-        let fromSkills = skills.flatMap(\.connectors)
-        let standalone = workspace?.connectors.filter { $0.skill == nil } ?? []
-        var all = fromSkills + standalone
-
-        if let ws = workspace, !ws.enabledGlobalConnectorIDs.isEmpty, let ctx = modelContext {
-            let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
-            let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
-            if let globals = try? ctx.fetch(descriptor) {
-                all += globals.filter { enabledIDs.contains($0.id.uuidString) }
-            }
-        }
-
-        var seen = Set<UUID>()
-        return all.filter { seen.insert($0.id).inserted }
+        TaskCapabilityResolver(task: self).allConnectors
     }
 
     /// All local tools: from attached skills + standalone workspace tools + enabled global tools
     var allLocalTools: [LocalTool] {
-        let fromSkills = skills.flatMap(\.localTools)
-        let standalone = workspace?.localTools.filter { $0.skill == nil } ?? []
-        var all = fromSkills + standalone
-
-        if let ws = workspace, !ws.enabledGlobalToolIDs.isEmpty, let ctx = modelContext {
-            let enabledIDs = Set(ws.enabledGlobalToolIDs)
-            let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
-            if let globals = try? ctx.fetch(descriptor) {
-                all += globals.filter { enabledIDs.contains($0.id.uuidString) }
-            }
-        }
-
-        var seen = Set<UUID>()
-        return all.filter { seen.insert($0.id).inserted }
+        TaskCapabilityResolver(task: self).allLocalTools
     }
 }

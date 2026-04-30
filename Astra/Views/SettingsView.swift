@@ -265,18 +265,10 @@ struct SettingsView: View {
     }
 
     private func detectClaudeCLI() {
-        let candidates = [
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
-            "\(NSHomeDirectory())/.npm-global/bin/claude",
-            "\(NSHomeDirectory())/.local/bin/claude"
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                detectedPath = path
-                if claudePath.isEmpty { claudePath = path }
-                return
-            }
+        let path = RuntimePathResolver.detectClaudePath()
+        if FileManager.default.isExecutableFile(atPath: path) {
+            detectedPath = path
+            if claudePath.isEmpty { claudePath = path }
         }
     }
 

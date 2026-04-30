@@ -5,7 +5,7 @@ import ASTRACore
 import SwiftData
 
 /// Phase 1 Functional Test — Single-Agent Baseline
-/// Tests the full pipeline: Workspace → AgentTask → ClaudeCodeWorker → TaskEvents + Artifacts + Files
+/// Tests the full pipeline: Workspace → AgentTask → AgentRuntimeWorker → TaskEvents + Artifacts + Files
 
 private func makeTestContainer() throws -> ModelContainer {
     let schema = ASTRASchema.current
@@ -32,7 +32,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task without workspace should fail, got: \(task.status.rawValue)")
@@ -60,7 +60,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task with bad workspace should fail, got: \(task.status.rawValue)")
@@ -106,8 +106,8 @@ struct Phase1FunctionalTest {
         #expect(task.status == .queued, "Initial status should be queued")
         #expect(workspace.tasks.contains(task), "Workspace should contain the task")
 
-        // 4. Run through ClaudeCodeWorker (same code path as the app)
-        let worker = ClaudeCodeWorker()
+        // 4. Run through AgentRuntimeWorker (same code path as the app)
+        let worker = AgentRuntimeWorker()
         var receivedEvents: [ParsedEvent] = []
 
         await worker.execute(task: task, modelContext: context) { event in

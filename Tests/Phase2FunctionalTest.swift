@@ -60,8 +60,8 @@ struct Phase2FunctionalTest {
         #expect(task.useAgentTeam == true, "Task should have teams enabled")
         #expect(task.teamSize == 2, "Team size should be 2")
 
-        // 4. Run through ClaudeCodeWorker
-        let worker = ClaudeCodeWorker()
+        // 4. Run through AgentRuntimeWorker
+        let worker = AgentRuntimeWorker()
         var receivedEvents: [ParsedEvent] = []
 
         await worker.execute(task: task, modelContext: context) { event in

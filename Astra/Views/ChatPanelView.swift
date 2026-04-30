@@ -1302,17 +1302,17 @@ struct ChatPanelView: View {
             let allowed = allowedRaw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let blocked = blockedRaw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 
-            let skill = Skill(
+            let skill = WorkspaceCommandService.createSkill(
                 name: name,
-                allowedTools: allowed.isEmpty ? Skill.defaultAllowed : allowed,
+                behaviorInstructions: behavior,
+                allowedTools: allowed,
                 disallowedTools: blocked,
-                behaviorInstructions: behavior
+                workspace: ws,
+                modelContext: modelContext,
+                source: "wizard"
             )
-            skill.workspace = ws
-            modelContext.insert(skill)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
 
-            messages.append(ChatMessage(role: "assistant", content: "Skill **\(name)** created with \(allowed.isEmpty ? Skill.defaultAllowed.count : allowed.count) allowed tools.\n\nYou can further customize it in **Configure > Skills**."))
+            messages.append(ChatMessage(role: "assistant", content: "Skill **\(name)** created with \(skill.allowedTools.count) allowed tools.\n\nYou can further customize it in **Configure > Skills**."))
 
         case .tool:
             let name = wizard.collected["name"] ?? "New Tool"
@@ -1320,14 +1320,15 @@ struct ChatPanelView: View {
             let command = wizard.collected["command"] ?? ""
             let desc = wizard.collected["description"] ?? ""
 
-            let tool = LocalTool(name: name)
-            tool.toolType = toolType
-            tool.command = command
-            tool.toolDescription = desc
-            tool.icon = LocalTool.iconForType(toolType)
-            tool.workspace = ws
-            modelContext.insert(tool)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
+            WorkspaceCommandService.createTool(
+                name: name,
+                toolType: toolType,
+                command: command,
+                description: desc,
+                workspace: ws,
+                modelContext: modelContext,
+                source: "wizard"
+            )
 
             let typeLabel = toolType == "cli" ? "CLI Command" : toolType == "script" ? "Script File" : "MCP Tool"
             messages.append(ChatMessage(role: "assistant", content: "Tool **\(name)** (\(typeLabel)) created.\nCommand: `\(command)`\n\nYou can edit it in **Configure > Tools** and attach it to skills."))
@@ -1338,28 +1339,22 @@ struct ChatPanelView: View {
             let baseURL = wizard.collected["baseURL"] ?? ""
             let authMethod = wizard.collected["authMethod"] ?? "none"
 
-            let iconMap = ["jira": "list.bullet.rectangle", "github": "cat", "slack": "number",
-                          "database": "cylinder", "rest_api": "arrow.left.arrow.right", "confluence": "book"]
-            let icon = iconMap[serviceType] ?? "bolt.horizontal.circle"
-
-            let connector = Connector(
-                name: name,
-                serviceType: serviceType,
-                icon: icon,
-                baseURL: baseURL,
-                authMethod: authMethod
-            )
-            connector.workspace = ws
-
             // Add credentials to Keychain
             let credKeys = (wizard.collected["credKeys"] ?? "").split(separator: ",").map(String.init)
             let credVals = (wizard.collected["credVals"] ?? "").split(separator: ",").map(String.init)
-            for (key, val) in zip(credKeys, credVals) {
-                connector.saveCredential(key: key, value: val)
+            let credentials = zip(credKeys, credVals).reduce(into: [String: String]()) { result, pair in
+                result[pair.0] = pair.1
             }
-
-            modelContext.insert(connector)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
+            WorkspaceCommandService.createConnector(
+                name: name,
+                serviceType: serviceType,
+                baseURL: baseURL,
+                authMethod: authMethod,
+                credentials: credentials,
+                workspace: ws,
+                modelContext: modelContext,
+                source: "wizard"
+            )
 
             let credCount = credKeys.count
             messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nAuth: \(authMethod.replacingOccurrences(of: "_", with: " "))\nCredentials: \(credCount)\n\nYou can edit it in **Configure > Connectors** and attach it to skills."))
@@ -1383,73 +1378,18 @@ struct ChatPanelView: View {
                 values[name] = value
             }
 
-            // Create main task
             let mainGoal = tmpl.resolveGoal(tmpl.mainGoal, with: values)
-            let mainTask = AgentTask(
-                title: taskTitle,
-                goal: mainGoal,
+            let creation = WorkspaceCommandService.createTemplateTasks(
+                template: tmpl,
+                taskTitle: taskTitle,
+                variables: values,
+                selectedSkills: selectedSkills,
+                defaultModel: defaultModel,
+                defaultRuntimeID: defaultRuntimeID,
                 workspace: ws,
-                tokenBudget: tmpl.mainBudget,
-                model: tmpl.mainModel.isEmpty ? defaultModel : tmpl.mainModel
+                modelContext: modelContext,
+                source: "wizard_template"
             )
-            mainTask.runtimeID = defaultRuntimeID
-            mainTask.status = .queued
-            mainTask.templateID = tmpl.id
-            mainTask.templateHooksJSON = tmpl.hooksJSON
-
-            // Attach template default skills, or all workspace skills if none specified
-            if !tmpl.defaultSkillIDs.isEmpty {
-                let idSet = Set(tmpl.defaultSkillIDs)
-                let templateSkills = selectedSkills.filter { idSet.contains($0.id.uuidString) }
-                mainTask.skills = templateSkills
-            } else {
-                mainTask.skills = selectedSkills
-            }
-            mainTask.captureSkillSnapshots()
-
-            // If there's an after phase, chain it from the main task
-            if tmpl.hasAfterPhase {
-                let afterGoal = tmpl.resolveGoal(tmpl.afterGoal, with: values)
-                var chainGoal = afterGoal
-                if tmpl.passContextToAfter {
-                    chainGoal = "Previous task output will be provided as context.\n\n" + afterGoal
-                }
-                mainTask.chainedGoal = chainGoal
-            }
-
-            // If there's a before phase, create it first and chain to main
-            if tmpl.hasBeforePhase {
-                let beforeGoal = tmpl.resolveGoal(tmpl.beforeGoal, with: values)
-                let beforeTask = AgentTask(
-                    title: "\(taskTitle) — Before",
-                    goal: beforeGoal,
-                    workspace: ws,
-                    tokenBudget: tmpl.beforeBudget,
-                    model: tmpl.beforeModel.isEmpty ? defaultModel : tmpl.beforeModel
-                )
-                beforeTask.runtimeID = defaultRuntimeID
-                beforeTask.status = .queued
-                beforeTask.templateID = tmpl.id
-                beforeTask.templateHooksJSON = tmpl.hooksJSON
-                beforeTask.skills = mainTask.skills
-                beforeTask.captureSkillSnapshots()
-
-                // Chain: before → main
-                var chainedMainGoal = mainGoal
-                if tmpl.passContextToMain {
-                    chainedMainGoal = "Previous task output will be provided as context.\n\n" + mainGoal
-                }
-                beforeTask.chainedGoal = chainedMainGoal
-
-                modelContext.insert(beforeTask)
-
-                // Main task is spawned from before
-                mainTask.chainedFromID = beforeTask.id
-                mainTask.status = .draft // Will be created by chain mechanism
-            }
-
-            modelContext.insert(mainTask)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
 
             // Build summary
             var summary = "Template task created:\n\n"
@@ -1470,7 +1410,7 @@ struct ChatPanelView: View {
             summary += "\n\nThe task is queued and ready to run."
             messages.append(ChatMessage(role: "assistant", content: summary))
 
-            onTaskCreated?(mainTask)
+            onTaskCreated?(creation.mainTask)
 
         case .schedule:
             break // Schedule uses Claude-driven conversation, not wizard steps
@@ -1785,22 +1725,17 @@ struct ChatPanelView: View {
             let behavior = json["behavior"] as? String ?? ""
             let allowed = json["allowed"] as? [String] ?? Skill.defaultAllowed
 
-            let skill = Skill(
+            let skill = WorkspaceCommandService.createSkill(
                 name: name,
+                behaviorInstructions: behavior,
                 allowedTools: allowed,
                 disallowedTools: [],
-                behaviorInstructions: behavior
+                workspace: ws,
+                modelContext: modelContext,
+                source: "conversation"
             )
-            skill.workspace = ws
-            modelContext.insert(skill)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
             activeSlashContext = nil
-            messages.append(ChatMessage(role: "assistant", content: "Skill **\(name)** created with \(allowed.count) allowed tools.\n\nYou can customize it in **Configure > Skills**."))
-            AppLogger.audit(.skillCreated, category: "UI", fields: [
-                "source": "conversation",
-                "workspace_id": ws.id.uuidString,
-                "allowed_tools_count": String(allowed.count)
-            ])
+            messages.append(ChatMessage(role: "assistant", content: "Skill **\(name)** created with \(skill.allowedTools.count) allowed tools.\n\nYou can customize it in **Configure > Skills**."))
 
         case "create_tool":
             let name = json["name"] as? String ?? "New Tool"
@@ -1808,22 +1743,18 @@ struct ChatPanelView: View {
             let command = json["command"] as? String ?? ""
             let desc = json["description"] as? String ?? ""
 
-            let tool = LocalTool(name: name)
-            tool.toolType = toolType
-            tool.command = command
-            tool.toolDescription = desc
-            tool.icon = LocalTool.iconForType(toolType)
-            tool.workspace = ws
-            modelContext.insert(tool)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
+            WorkspaceCommandService.createTool(
+                name: name,
+                toolType: toolType,
+                command: command,
+                description: desc,
+                workspace: ws,
+                modelContext: modelContext,
+                source: "conversation"
+            )
             activeSlashContext = nil
             let typeLabel = toolType == "cli" ? "CLI Command" : toolType == "script" ? "Script File" : "MCP Tool"
             messages.append(ChatMessage(role: "assistant", content: "Tool **\(name)** (\(typeLabel)) created.\nCommand: `\(command)`\n\nYou can edit it in **Configure > Tools**."))
-            AppLogger.audit(.localToolCreated, category: "UI", fields: [
-                "source": "conversation",
-                "workspace_id": ws.id.uuidString,
-                "tool_type": toolType
-            ])
 
         case "create_connector":
             let name = json["name"] as? String ?? "New Connector"
@@ -1832,32 +1763,18 @@ struct ChatPanelView: View {
             let authMethod = json["authMethod"] as? String ?? "none"
             let credentials = json["credentials"] as? [String: String] ?? [:]
 
-            let iconMap = ["jira": "list.bullet.rectangle", "github": "cat", "slack": "number",
-                          "database": "cylinder", "rest_api": "arrow.left.arrow.right", "confluence": "book"]
-            let icon = iconMap[serviceType] ?? "bolt.horizontal.circle"
-
-            let connector = Connector(
+            WorkspaceCommandService.createConnector(
                 name: name,
                 serviceType: serviceType,
-                icon: icon,
                 baseURL: baseURL,
-                authMethod: authMethod
+                authMethod: authMethod,
+                credentials: credentials,
+                workspace: ws,
+                modelContext: modelContext,
+                source: "conversation"
             )
-            connector.workspace = ws
-            // Store credentials in Keychain, only keys in SwiftData
-            for (key, val) in credentials {
-                connector.saveCredential(key: key, value: val)
-            }
-            modelContext.insert(connector)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
             activeSlashContext = nil
             messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nCredentials: \(credentials.count) keys stored in Keychain.\n\nYou can edit it in **Configure > Connectors**."))
-            AppLogger.audit(.connectorCreated, category: "UI", fields: [
-                "source": "conversation",
-                "workspace_id": ws.id.uuidString,
-                "service_type": serviceType,
-                "credential_count": String(credentials.count)
-            ])
 
         case "use_template":
             guard let templateIDStr = json["templateID"] as? String,
@@ -1869,72 +1786,19 @@ struct ChatPanelView: View {
             let taskTitle = json["taskTitle"] as? String ?? tmpl.name
             let variables = json["variables"] as? [String: String] ?? [:]
 
-            let mainGoal = tmpl.resolveGoal(tmpl.mainGoal, with: variables)
-            let mainTask = AgentTask(
-                title: taskTitle,
-                goal: mainGoal,
+            let creation = WorkspaceCommandService.createTemplateTasks(
+                template: tmpl,
+                taskTitle: taskTitle,
+                variables: variables,
+                selectedSkills: selectedSkills,
+                defaultModel: defaultModel,
+                defaultRuntimeID: defaultRuntimeID,
                 workspace: ws,
-                tokenBudget: tmpl.mainBudget,
-                model: tmpl.mainModel.isEmpty ? defaultModel : tmpl.mainModel
+                modelContext: modelContext,
+                source: "template"
             )
-            mainTask.runtimeID = defaultRuntimeID
-            mainTask.status = .queued
-            mainTask.templateID = tmpl.id
-            mainTask.templateHooksJSON = tmpl.hooksJSON
-
-            // Attach template default skills, or all workspace skills if none specified
-            if !tmpl.defaultSkillIDs.isEmpty {
-                let idSet = Set(tmpl.defaultSkillIDs)
-                let templateSkills = selectedSkills.filter { idSet.contains($0.id.uuidString) }
-                mainTask.skills = templateSkills
-            } else {
-                mainTask.skills = selectedSkills
-            }
-            mainTask.captureSkillSnapshots()
-
-            if tmpl.hasAfterPhase {
-                let afterGoal = tmpl.resolveGoal(tmpl.afterGoal, with: variables)
-                var chainGoal = afterGoal
-                if tmpl.passContextToAfter {
-                    chainGoal = "Previous task output will be provided as context.\n\n" + afterGoal
-                }
-                mainTask.chainedGoal = chainGoal
-            }
-
-            if tmpl.hasBeforePhase {
-                let beforeGoal = tmpl.resolveGoal(tmpl.beforeGoal, with: variables)
-                let beforeTask = AgentTask(
-                    title: "\(taskTitle) — Before",
-                    goal: beforeGoal,
-                    workspace: ws,
-                    tokenBudget: tmpl.beforeBudget,
-                    model: tmpl.beforeModel.isEmpty ? defaultModel : tmpl.beforeModel
-                )
-                beforeTask.runtimeID = defaultRuntimeID
-                beforeTask.status = .queued
-                beforeTask.templateID = tmpl.id
-                beforeTask.templateHooksJSON = tmpl.hooksJSON
-                beforeTask.skills = mainTask.skills
-                beforeTask.captureSkillSnapshots()
-
-                var chainedMainGoal = mainGoal
-                if tmpl.passContextToMain {
-                    chainedMainGoal = "Previous task output will be provided as context.\n\n" + mainGoal
-                }
-                beforeTask.chainedGoal = chainedMainGoal
-                modelContext.insert(beforeTask)
-                mainTask.chainedFromID = beforeTask.id
-                mainTask.status = .draft
-            }
-
-            modelContext.insert(mainTask)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
             activeSlashContext = nil
-            onTaskCreated?(mainTask)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: mainTask.id, fields: [
-                "source": "template",
-                "template_id": tmpl.id.uuidString
-            ])
+            onTaskCreated?(creation.mainTask)
 
         case "create_schedule":
             let name = json["name"] as? String ?? "New Schedule"

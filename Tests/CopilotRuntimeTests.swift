@@ -226,7 +226,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -288,7 +288,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = ClaudeCodeWorker()
+        let worker = AgentRuntimeWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
