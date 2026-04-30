@@ -36,6 +36,8 @@ struct TaskMainView: View {
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
     @State private var pasteMonitor: Any?
+    @State private var threadSnapshot: TaskThreadSnapshot?
+    @State private var generatedFilePaths: [String] = []
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -43,6 +45,18 @@ struct TaskMainView: View {
     private var availableSkills: [Skill] {
         guard let workspace = task.workspace else { return [] }
         return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
+
+    private var currentThreadSnapshot: TaskThreadSnapshot {
+        threadSnapshot ?? TaskThreadSnapshot(task: task)
+    }
+
+    private var threadSnapshotTrigger: TaskThreadSnapshotTrigger {
+        TaskThreadSnapshotTrigger(task: task)
+    }
+
+    private var generatedFilesTrigger: TaskGeneratedFilesTrigger {
+        TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
     }
 
     var body: some View {
@@ -98,6 +112,8 @@ struct TaskMainView: View {
             selectedTab = .summary
         }
         .onAppear {
+            refreshThreadSnapshot()
+            refreshGeneratedFilePaths()
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.modifierFlags.contains(.command),
                    event.charactersIgnoringModifiers == "v" {
@@ -112,6 +128,20 @@ struct TaskMainView: View {
                 pasteMonitor = nil
             }
         }
+        .onChange(of: threadSnapshotTrigger) { _, _ in
+            refreshThreadSnapshot()
+        }
+        .onChange(of: generatedFilesTrigger) { _, _ in
+            refreshGeneratedFilePaths()
+        }
+    }
+
+    private func refreshThreadSnapshot() {
+        threadSnapshot = TaskThreadSnapshot(task: task)
+    }
+
+    private func refreshGeneratedFilePaths() {
+        generatedFilePaths = TaskGeneratedFiles.files(in: task.taskFolder)
     }
 
     // MARK: - Toolbar Stats
@@ -297,7 +327,7 @@ struct TaskMainView: View {
     private var scheduleConversationContext: String {
         var lines: [String] = []
 
-        for item in conversationItems {
+        for item in currentThreadSnapshot.conversationItems {
             switch item {
             case .userMessage(let text, _):
                 lines.append("User: \(text)")
@@ -365,51 +395,6 @@ struct TaskMainView: View {
         .help("More actions")
     }
 
-    /// Build a chronological conversation from events, runs, and the original goal.
-    private var conversationItems: [ConversationItem] {
-        var items: [ConversationItem] = []
-
-        // 1. Original user goal
-        items.append(.userMessage(text: task.goal, timestamp: task.createdAt))
-
-        // 2. Collect conversation events and runs chronologically
-        let conversationEvents = sortedEvents.filter {
-            $0.type == "user.message" || $0.type == "agent.response" || $0.type == "schedule.result" || $0.type == "system.info" || $0.type == "recap.result"
-        }
-        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-
-        // Track which runs we've added
-        var addedRunIDs = Set<UUID>()
-
-        for event in conversationEvents {
-            // Before this event, add any run output that completed
-            for run in runs where !addedRunIDs.contains(run.id) {
-                if let completed = run.completedAt, completed <= event.timestamp, !run.output.isEmpty {
-                    items.append(.agentResponse(run: run))
-                    addedRunIDs.insert(run.id)
-                }
-            }
-
-            if event.type == "user.message" {
-                items.append(.userMessage(text: event.payload, timestamp: event.timestamp))
-            } else if event.type == "schedule.result" {
-                items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
-            } else if event.type == "system.info" {
-                items.append(.systemInfo(text: event.payload, timestamp: event.timestamp))
-            } else if event.type == "recap.result" {
-                items.append(.recapResult(text: event.payload, timestamp: event.timestamp))
-            }
-            // Skip agent.response events — we show the full run output instead
-        }
-
-        // 3. Add any remaining runs not yet added
-        for run in runs where !addedRunIDs.contains(run.id) && !run.output.isEmpty {
-            items.append(.agentResponse(run: run))
-        }
-
-        return items
-    }
-
     private var summaryContent: some View {
         ScrollViewReader { proxy in
         ScrollView {
@@ -429,7 +414,7 @@ struct TaskMainView: View {
                     .padding(.horizontal, 14)
                 }
 
-                ForEach(conversationItems) { item in
+                ForEach(currentThreadSnapshot.conversationItems) { item in
                     switch item {
                     case .userMessage(let text, let timestamp):
                         chatUserBubble(text: text, timestamp: timestamp)
@@ -588,7 +573,7 @@ struct TaskMainView: View {
             .frame(maxWidth: .infinity)
         }
         .onAppear { proxy.scrollTo("chatBottom", anchor: .bottom) }
-        .onChange(of: conversationItems.count) { _, _ in
+        .onChange(of: currentThreadSnapshot.conversationItems.count) { _, _ in
             withAnimation(.easeOut(duration: 0.3)) {
                 proxy.scrollTo("chatBottom", anchor: .bottom)
             }
@@ -604,24 +589,6 @@ struct TaskMainView: View {
     private var isScheduleStatusError: Bool {
         guard let msg = scheduleStatusMessage else { return false }
         return msg.hasPrefix("Failed") || msg.hasPrefix("Could not") || msg.hasPrefix("Invalid")
-    }
-
-    private enum ConversationItem: Identifiable {
-        case userMessage(text: String, timestamp: Date)
-        case agentResponse(run: TaskRun)
-        case scheduleResult(text: String, timestamp: Date)
-        case systemInfo(text: String, timestamp: Date)
-        case recapResult(text: String, timestamp: Date)
-
-        var id: String {
-            switch self {
-            case .userMessage(_, let timestamp): return "user-\(timestamp.timeIntervalSince1970)"
-            case .agentResponse(let run): return "agent-\(run.id)"
-            case .scheduleResult(_, let timestamp): return "schedule-\(timestamp.timeIntervalSince1970)"
-            case .systemInfo(_, let timestamp): return "system-\(timestamp.timeIntervalSince1970)"
-            case .recapResult(_, let timestamp): return "recap-\(timestamp.timeIntervalSince1970)"
-            }
-        }
     }
 
     // MARK: - Chat Bubbles
@@ -760,7 +727,8 @@ struct TaskMainView: View {
     }
 
     private func chatAgentBubble(run: TaskRun) -> some View {
-        let toolEvents = runToolEvents(for: run)
+        let activity = currentThreadSnapshot.activity(for: run)
+        let toolEvents = activity.tools
         let isExpanded = expandedRunActivity.contains(run.id)
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -788,7 +756,7 @@ struct TaskMainView: View {
                 .buttonStyle(.plain)
 
                 if isExpanded {
-                    toolActivityList(toolEvents, results: runToolResults(for: run))
+                    toolActivityList(toolEvents, results: activity.toolResults)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(Stanford.fog.opacity(0.4))
@@ -825,9 +793,9 @@ struct TaskMainView: View {
                 .textSelection(.enabled)
 
             // Generated files
-            if !generatedFiles.isEmpty && run.id == latestRun?.id {
+            if run.id == latestRun?.id && !generatedFilePaths.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(generatedFiles, id: \.self) { path in
+                    ForEach(generatedFilePaths, id: \.self) { path in
                         Button {
                             NSWorkspace.shared.open(URL(fileURLWithPath: path))
                         } label: {
@@ -858,14 +826,14 @@ struct TaskMainView: View {
                 .foregroundStyle(Stanford.coolGrey.opacity(0.7))
                 .help("Copy")
 
-                if !run.fileChanges.isEmpty {
+                if !activity.fileChanges.isEmpty {
                     Button { selectedTab = .files } label: {
                         Image(systemName: "doc.text")
                             .font(Stanford.ui(12))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                    .help("\(run.fileChanges.count) changed files")
+                    .help("\(activity.fileChanges.count) changed files")
                 }
 
                 Button {
@@ -902,39 +870,10 @@ struct TaskMainView: View {
         .accessibilityLabel("Agent response")
     }
 
-    // MARK: - Run Tool Events
-
-    /// Get tool events for a specific run, deduped and counted.
-    private func runToolEvents(for run: TaskRun) -> [(name: String, count: Int)] {
-        let events = task.events
-            .filter { $0.run?.id == run.id && $0.type == "tool.use" }
-            .sorted { $0.timestamp < $1.timestamp }
-
-        var seen: [String: Int] = [:]
-        var order: [String] = []
-        for event in events {
-            let name = event.payload.replacingOccurrences(of: "Using tool: ", with: "")
-            if seen[name] != nil {
-                seen[name]! += 1
-            } else {
-                seen[name] = 1
-                order.append(name)
-            }
-        }
-        return order.map { (name: $0, count: seen[$0]!) }
-    }
-
-    /// Get tool result events for a specific run, ordered chronologically.
-    private func runToolResults(for run: TaskRun) -> [TaskEvent] {
-        task.events
-            .filter { $0.run?.id == run.id && $0.type == "tool.result" && !$0.payload.isEmpty }
-            .sorted { $0.timestamp < $1.timestamp }
-    }
-
     @ViewBuilder
-    private func toolActivityList(_ tools: [(name: String, count: Int)], results: [TaskEvent]) -> some View {
+    private func toolActivityList(_ tools: [TaskToolSummary], results: [TaskEvent]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(tools, id: \.name) { item in
+            ForEach(tools) { item in
                 HStack(spacing: 6) {
                     Image(systemName: toolIcon(item.name))
                         .font(Stanford.ui(11))
@@ -1020,11 +959,11 @@ struct TaskMainView: View {
     // MARK: - Chat Thread
 
     private var sortedEvents: [TaskEvent] {
-        task.events.sorted { $0.timestamp < $1.timestamp }
+        currentThreadSnapshot.sortedEvents
     }
 
     private var latestRun: TaskRun? {
-        task.runs.sorted { $0.startedAt > $1.startedAt }.first
+        currentThreadSnapshot.latestRun
     }
 
     private var isFinished: Bool {
@@ -1038,9 +977,10 @@ struct TaskMainView: View {
     @ViewBuilder
     private var resultSummaryView: some View {
         if let run = latestRun {
-            let fileCount = run.fileChanges.count
-            let writeCount = run.fileChanges.filter { $0.changeType == "Write" }.count
-            let editCount = run.fileChanges.filter { $0.changeType == "Edit" }.count
+            let fileChanges = currentThreadSnapshot.activity(for: run).fileChanges
+            let fileCount = fileChanges.count
+            let writeCount = fileChanges.filter { $0.changeType == "Write" }.count
+            let editCount = fileChanges.filter { $0.changeType == "Edit" }.count
 
             VStack(alignment: .leading, spacing: 6) {
                 if task.status == .pendingUser {
@@ -1865,22 +1805,6 @@ struct TaskMainView: View {
         .overlay(Capsule().stroke(Stanford.sandstone.opacity(0.4), lineWidth: 0.5))
     }
 
-    /// Files in the task folder (excluding session_history.md and outputs/)
-    private var generatedFiles: [String] {
-        let folder = task.taskFolder
-        guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
-        guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
-        var files: [String] = []
-        while let rel = enumerator.nextObject() as? String {
-            if rel.hasPrefix("outputs/") || rel == "session_history.md" { continue }
-            let full = (folder as NSString).appendingPathComponent(rel)
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(atPath: full, isDirectory: &isDir)
-            if !isDir.boolValue { files.append(full) }
-        }
-        return files
-    }
-
     private func attachFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -2300,38 +2224,7 @@ struct MarkdownTextView: View {
     }
 
     static func markdownAttributed(_ text: String) -> AttributedString {
-        var attributed: AttributedString
-        if let parsed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            attributed = parsed
-        } else {
-            attributed = AttributedString(text)
-        }
-
-        // Auto-detect bare URLs and make them clickable
-        let plain = String(attributed.characters)
-        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
-            let matches = detector.matches(in: plain, range: NSRange(location: 0, length: (plain as NSString).length))
-            for match in matches {
-                guard let url = match.url,
-                      let swiftRange = Range(match.range, in: plain) else { continue }
-                let start = attributed.characters.index(
-                    attributed.startIndex,
-                    offsetBy: plain.distance(from: plain.startIndex, to: swiftRange.lowerBound)
-                )
-                let end = attributed.characters.index(
-                    start,
-                    offsetBy: plain.distance(from: swiftRange.lowerBound, to: swiftRange.upperBound)
-                )
-                if attributed[start..<end].runs.allSatisfy({ $0.link == nil }) {
-                    attributed[start..<end].link = url
-                }
-            }
-        }
-
-        return attributed
+        MarkdownLinkifier.markdownAttributed(text)
     }
 }
 

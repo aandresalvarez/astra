@@ -9,16 +9,33 @@ private func makeTask(
     title: String = "Test Task",
     goal: String = "Do something",
     status: TaskStatus = .queued,
+    workspace: Workspace? = nil,
     tokensUsed: Int = 0,
     tokenBudget: Int = 50000,
     costUSD: Double = 0,
     model: String = "claude-sonnet-4-6"
 ) -> AgentTask {
-    let task = AgentTask(title: title, goal: goal, tokenBudget: tokenBudget, model: model)
+    let task = AgentTask(title: title, goal: goal, workspace: workspace, tokenBudget: tokenBudget, model: model)
     task.status = status
     task.tokensUsed = tokensUsed
     task.costUSD = costUSD
     return task
+}
+
+private func makeWorkspace(name: String = "Workspace") -> Workspace {
+    Workspace(name: name, primaryPath: "/tmp/\(name)")
+}
+
+private func makeEvent(
+    task: AgentTask,
+    type: String,
+    payload: String,
+    timestamp: Date,
+    run: TaskRun? = nil
+) -> TaskEvent {
+    let event = TaskEvent(task: task, type: type, payload: payload, run: run)
+    event.timestamp = timestamp
+    return event
 }
 
 // MARK: - MarkdownTextView
@@ -33,6 +50,129 @@ struct MarkdownTextViewTests {
         let attributed = MarkdownTextView.markdownAttributed(malformed)
 
         #expect(String(attributed.characters) == malformed)
+    }
+
+    @Test("Bare URLs are linked with the shared markdown linkifier")
+    func bareURLsAreLinked() {
+        let attributed = MarkdownTextView.markdownAttributed("Visit https://example.com/docs")
+        let links = attributed.runs.compactMap(\.link)
+        let expected = URL(string: "https://example.com/docs")!
+
+        #expect(links.contains(expected))
+    }
+}
+
+// MARK: - TaskThreadSnapshot
+
+@Suite("TaskThreadSnapshot")
+struct TaskThreadSnapshotTests {
+
+    @Test("Conversation snapshot preserves chronological run and message behavior")
+    func conversationSnapshotOrdering() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = createdAt
+
+        let firstRun = TaskRun(task: task)
+        firstRun.startedAt = Date(timeIntervalSince1970: 110)
+        firstRun.completedAt = Date(timeIntervalSince1970: 130)
+        firstRun.output = "First run output"
+
+        let secondRun = TaskRun(task: task)
+        secondRun.startedAt = Date(timeIntervalSince1970: 140)
+        secondRun.output = "Second run output"
+
+        let userFollowUp = makeEvent(
+            task: task,
+            type: "user.message",
+            payload: "Continue",
+            timestamp: Date(timeIntervalSince1970: 150)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [userFollowUp],
+            runs: [secondRun, firstRun]
+        )
+
+        #expect(snapshot.conversationItems.count == 4)
+
+        if case .userMessage(let text, _) = snapshot.conversationItems[0] {
+            #expect(text == "Original goal")
+        } else {
+            Issue.record("Expected original goal as first conversation item")
+        }
+
+        if case .agentResponse(let run) = snapshot.conversationItems[1] {
+            #expect(run === firstRun)
+        } else {
+            Issue.record("Expected completed first run before the follow-up")
+        }
+
+        if case .userMessage(let text, _) = snapshot.conversationItems[2] {
+            #expect(text == "Continue")
+        } else {
+            Issue.record("Expected follow-up user message")
+        }
+
+        if case .agentResponse(let run) = snapshot.conversationItems[3] {
+            #expect(run === secondRun)
+        } else {
+            Issue.record("Expected remaining run output at the end")
+        }
+    }
+
+    @Test("Tool activity is grouped once per run")
+    func toolActivityGrouping() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Read", timestamp: Date(timeIntervalSince1970: 1), run: run),
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Bash", timestamp: Date(timeIntervalSince1970: 2), run: run),
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Read", timestamp: Date(timeIntervalSince1970: 3), run: run),
+            makeEvent(task: task, type: "tool.result", payload: "result", timestamp: Date(timeIntervalSince1970: 4), run: run),
+            makeEvent(task: task, type: "tool.result", payload: "", timestamp: Date(timeIntervalSince1970: 5), run: run)
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.tools == [
+            TaskToolSummary(name: "Read", count: 2),
+            TaskToolSummary(name: "Bash", count: 1)
+        ])
+        #expect(activity.toolResults.count == 1)
+        #expect(activity.toolResults.first?.payload == "result")
+    }
+
+    @Test("Generated file scan excludes internal task files")
+    func generatedFileScanExcludesInternalFiles() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generated-files-\(UUID().uuidString)")
+        let nested = root.appendingPathComponent("nested")
+        let outputs = root.appendingPathComponent("outputs")
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        try "internal".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
+        try "output".write(to: outputs.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+        try "nested".write(to: nested.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
+
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = Set(TaskGeneratedFiles.files(in: root.path))
+
+        #expect(paths.contains(root.appendingPathComponent("visible.txt").path))
+        #expect(paths.contains(nested.appendingPathComponent("session_history.md").path))
+        #expect(!paths.contains(root.appendingPathComponent("session_history.md").path))
+        #expect(!paths.contains(outputs.appendingPathComponent("result.txt").path))
     }
 }
 
@@ -464,6 +604,55 @@ struct SidebarGroupingTests {
         let queued = tasks.filter { $0.status == .queued }
         #expect(running.isEmpty)
         #expect(queued.isEmpty)
+    }
+
+    @Test("SidebarTaskIndex groups review tasks by workspace")
+    func sidebarTaskIndexGroupsReviewTasks() {
+        let firstWorkspace = makeWorkspace(name: "First")
+        let secondWorkspace = makeWorkspace(name: "Second")
+
+        let pinnedReview = makeTask(title: "Pinned review", status: .completed, workspace: firstWorkspace)
+        pinnedReview.isPinned = true
+        pinnedReview.updatedAt = Date(timeIntervalSince1970: 200)
+
+        let archived = makeTask(title: "Archived", status: .completed, workspace: firstWorkspace)
+        archived.isDone = true
+
+        let running = makeTask(title: "Running", status: .running, workspace: secondWorkspace)
+
+        let index = SidebarTaskIndex(tasks: [archived, running, pinnedReview], searchText: "")
+
+        #expect(index.reviewTasks(for: firstWorkspace).map(\.id) == [pinnedReview.id])
+        #expect(index.reviewTasks(for: secondWorkspace).map(\.id) == [running.id])
+        #expect(index.pinnedTasks.map(\.id) == [pinnedReview.id])
+        #expect(index.hasAnyTask(in: firstWorkspace))
+    }
+
+    @Test("SidebarTaskIndex applies search unless the workspace itself matches")
+    func sidebarTaskIndexSearchBehavior() {
+        let matchingWorkspace = makeWorkspace(name: "Deployments")
+        let nonmatchingWorkspace = makeWorkspace(name: "Bugs")
+
+        let workspaceMatchedTask = makeTask(title: "Unrelated", status: .completed, workspace: matchingWorkspace)
+        let taskMatchedTask = makeTask(title: "Deploy fix", status: .completed, workspace: nonmatchingWorkspace)
+        let taskFilteredOut = makeTask(title: "Investigate crash", status: .completed, workspace: nonmatchingWorkspace)
+
+        let index = SidebarTaskIndex(
+            tasks: [workspaceMatchedTask, taskMatchedTask, taskFilteredOut],
+            searchText: "deploy"
+        )
+
+        #expect(index.reviewTasks(
+            for: matchingWorkspace,
+            matchingSearch: true,
+            workspaceMatchesSearch: true
+        ).map(\.id) == [workspaceMatchedTask.id])
+
+        #expect(index.reviewTasks(
+            for: nonmatchingWorkspace,
+            matchingSearch: true,
+            workspaceMatchesSearch: false
+        ).map(\.id) == [taskMatchedTask.id])
     }
 }
 

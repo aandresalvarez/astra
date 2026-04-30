@@ -1,0 +1,68 @@
+import Foundation
+
+struct SidebarTaskIndex {
+    private let searchText: String
+    private let reviewTasksByWorkspaceID: [UUID: [AgentTask]]
+    private let matchingReviewTasksByWorkspaceID: [UUID: [AgentTask]]
+    private let anyTaskWorkspaceIDs: Set<UUID>
+
+    let pinnedTasks: [AgentTask]
+
+    init(tasks: [AgentTask], searchText: String) {
+        self.searchText = searchText
+
+        var reviewGroups: [UUID: [AgentTask]] = [:]
+        var matchingGroups: [UUID: [AgentTask]] = [:]
+        var workspaceIDs = Set<UUID>()
+        var pinned: [AgentTask] = []
+
+        for task in tasks {
+            guard let workspaceID = task.workspace?.id else { continue }
+            workspaceIDs.insert(workspaceID)
+
+            guard Self.isSidebarReviewTask(task) else { continue }
+
+            reviewGroups[workspaceID, default: []].append(task)
+            if task.isPinned {
+                pinned.append(task)
+            }
+            if searchText.isEmpty || Self.taskMatchesSearch(task, searchText: searchText) {
+                matchingGroups[workspaceID, default: []].append(task)
+            }
+        }
+
+        reviewTasksByWorkspaceID = reviewGroups
+        matchingReviewTasksByWorkspaceID = matchingGroups
+        anyTaskWorkspaceIDs = workspaceIDs
+        pinnedTasks = pinned.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func reviewTasks(
+        for workspace: Workspace,
+        matchingSearch: Bool = false,
+        workspaceMatchesSearch: Bool = false
+    ) -> [AgentTask] {
+        let workspaceID = workspace.id
+        let allWorkspaceTasks = reviewTasksByWorkspaceID[workspaceID] ?? []
+
+        guard matchingSearch || !searchText.isEmpty else { return allWorkspaceTasks }
+        guard !workspaceMatchesSearch else { return allWorkspaceTasks }
+        return matchingReviewTasksByWorkspaceID[workspaceID] ?? []
+    }
+
+    func hasAnyTask(in workspace: Workspace) -> Bool {
+        anyTaskWorkspaceIDs.contains(workspace.id)
+    }
+
+    static func isSidebarReviewTask(_ task: AgentTask) -> Bool {
+        !task.isDone && (
+            task.status == .running ||
+            KanbanCategory.review.includes(task)
+        )
+    }
+
+    static func taskMatchesSearch(_ task: AgentTask, searchText: String) -> Bool {
+        task.title.localizedCaseInsensitiveContains(searchText) ||
+            task.goal.localizedCaseInsensitiveContains(searchText)
+    }
+}

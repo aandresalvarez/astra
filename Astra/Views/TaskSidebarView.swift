@@ -41,26 +41,13 @@ struct TaskSidebarView: View {
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
 
-    private var visibleWorkspaces: [Workspace] {
-        let sorted = workspaces.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        guard !searchText.isEmpty else { return sorted }
-        return sorted.filter {
-            workspaceMatchesSearch($0) ||
-            tasksForWorkspace($0, matchingSearch: true).isEmpty == false
-        }
-    }
-
-    private var pinnedTasks: [AgentTask] {
-        tasks
-            .filter { $0.isPinned && isSidebarReviewTask($0) }
-            .sorted { $0.updatedAt > $1.updatedAt }
-    }
-
     private var allSchedules: [TaskSchedule] {
         workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
     }
 
     var body: some View {
+        let taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
+
         VStack(spacing: 0) {
             // Top new task button — lightweight inline style
             if selectedWorkspace != nil {
@@ -83,8 +70,8 @@ struct TaskSidebarView: View {
             }
 
             List {
-                pinnedSection
-                workspaceSection
+                pinnedSection(using: taskIndex)
+                workspaceSection(using: taskIndex)
                 schedulesSection
             }
             .listStyle(.sidebar)
@@ -148,10 +135,10 @@ struct TaskSidebarView: View {
 
     // MARK: - Pinned Section
 
-    private var pinnedSection: some View {
+    private func pinnedSection(using taskIndex: SidebarTaskIndex) -> some View {
         Section {
             if isPinnedExpanded {
-                if pinnedTasks.isEmpty {
+                if taskIndex.pinnedTasks.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
                             .font(Stanford.ui(11))
@@ -175,7 +162,7 @@ struct TaskSidebarView: View {
                     .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
                     .listRowBackground(Color.clear)
                 } else {
-                    ForEach(pinnedTasks) { task in
+                    ForEach(taskIndex.pinnedTasks) { task in
                         pinnedTaskRow(for: task)
                     }
                     if isPinnedDropTargeted {
@@ -457,8 +444,24 @@ struct TaskSidebarView: View {
 
     // MARK: - Workspace Section
 
-    private var workspaceSection: some View {
-        Section {
+    private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
+        let sorted = workspaces.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard !searchText.isEmpty else { return sorted }
+
+        return sorted.filter { workspace in
+            workspaceMatchesSearch(workspace) ||
+                taskIndex.reviewTasks(
+                    for: workspace,
+                    matchingSearch: true,
+                    workspaceMatchesSearch: false
+                ).isEmpty == false
+        }
+    }
+
+    private func workspaceSection(using taskIndex: SidebarTaskIndex) -> some View {
+        let visibleWorkspaces = visibleWorkspaces(using: taskIndex)
+
+        return Section {
             if isWorkspacesExpanded && visibleWorkspaces.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No workspaces yet")
@@ -470,9 +473,9 @@ struct TaskSidebarView: View {
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
                 ForEach(visibleWorkspaces) { workspace in
-                    workspaceRow(for: workspace)
-                    if isWorkspaceExpanded(workspace) {
-                        workspaceTaskGroups(for: workspace)
+                    workspaceRow(for: workspace, using: taskIndex)
+                    if isWorkspaceExpanded(workspace, using: taskIndex) {
+                        workspaceTaskGroups(for: workspace, using: taskIndex)
                     }
                 }
             }
@@ -527,15 +530,15 @@ struct TaskSidebarView: View {
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
 
-    private func workspaceRow(for workspace: Workspace) -> some View {
-        let isExpanded = isWorkspaceExpanded(workspace)
+    private func workspaceRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
         return HStack(alignment: .center, spacing: 6) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    toggleWorkspaceExpansion(workspace)
+                    toggleWorkspaceExpansion(workspace, using: taskIndex)
                 }
             } label: {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -551,7 +554,7 @@ struct TaskSidebarView: View {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                     if isExpanded && isSelected {
                         // Already open and selected → collapse
-                        toggleWorkspaceExpansion(workspace)
+                        toggleWorkspaceExpansion(workspace, using: taskIndex)
                     } else if !isExpanded {
                         // Collapsed → expand and select
                         collapsedWorkspaceIDs.remove(workspace.id)
@@ -652,14 +655,14 @@ struct TaskSidebarView: View {
     }
 
     @ViewBuilder
-    private func workspaceTaskGroups(for workspace: Workspace) -> some View {
-        let workspaceTasks = tasksForWorkspace(workspace).sorted { lhs, rhs in
+    private func workspaceTaskGroups(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex).sorted { lhs, rhs in
             lhs.updatedAt > rhs.updatedAt
         }
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
 
-        if workspaceTasks.isEmpty && !hasAnyTask(in: workspace) {
+        if workspaceTasks.isEmpty && !hasAnyTask(in: workspace, using: taskIndex) {
             emptyWorkspaceRow(for: workspace)
         } else if !workspaceTasks.isEmpty {
             ForEach(visibleTasks) { task in
@@ -831,18 +834,18 @@ struct TaskSidebarView: View {
         .listRowBackground(Color.clear)
     }
 
-    private func isWorkspaceExpanded(_ workspace: Workspace) -> Bool {
+    private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
         if collapsedWorkspaceIDs.contains(workspace.id) {
             return false
         }
 
         return selectedWorkspace?.id == workspace.id ||
             expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true).isEmpty)
+            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty)
     }
 
-    private func toggleWorkspaceExpansion(_ workspace: Workspace) {
-        if isWorkspaceExpanded(workspace) {
+    private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
+        if isWorkspaceExpanded(workspace, using: taskIndex) {
             expandedWorkspaceIDs.remove(workspace.id)
             collapsedWorkspaceIDs.insert(workspace.id)
             expandedWorkspaceTaskLists.remove(workspace.id)
@@ -852,34 +855,25 @@ struct TaskSidebarView: View {
         }
     }
 
-    private func tasksForWorkspace(_ workspace: Workspace, matchingSearch: Bool = false) -> [AgentTask] {
-        let workspaceTasks = tasks.filter {
-            $0.workspace?.id == workspace.id && isSidebarReviewTask($0)
-        }
-        guard matchingSearch || !searchText.isEmpty else { return workspaceTasks }
-        guard !workspaceMatchesSearch(workspace) else { return workspaceTasks }
-        return workspaceTasks.filter(taskMatchesSearch)
-    }
-
-    private func hasAnyTask(in workspace: Workspace) -> Bool {
-        tasks.contains { $0.workspace?.id == workspace.id }
-    }
-
-    private func isSidebarReviewTask(_ task: AgentTask) -> Bool {
-        !task.isDone && (
-            task.status == .running ||
-            KanbanCategory.review.includes(task)
+    private func tasksForWorkspace(
+        _ workspace: Workspace,
+        matchingSearch: Bool = false,
+        using taskIndex: SidebarTaskIndex
+    ) -> [AgentTask] {
+        taskIndex.reviewTasks(
+            for: workspace,
+            matchingSearch: matchingSearch,
+            workspaceMatchesSearch: workspaceMatchesSearch(workspace)
         )
+    }
+
+    private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
+        taskIndex.hasAnyTask(in: workspace)
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {
         workspace.name.localizedCaseInsensitiveContains(searchText) ||
             workspace.primaryPath.localizedCaseInsensitiveContains(searchText)
-    }
-
-    private func taskMatchesSearch(_ task: AgentTask) -> Bool {
-        task.title.localizedCaseInsensitiveContains(searchText) ||
-            task.goal.localizedCaseInsensitiveContains(searchText)
     }
 
     @ViewBuilder
