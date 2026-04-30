@@ -202,17 +202,17 @@ struct WorkspacePluginTrackingTests {
     @Test("Record and retrieve installed plugin version")
     @MainActor func recordAndRetrieve() {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
-        ws.recordInstalledPlugin(id: "code-reviewer", version: "2.0.0")
-        #expect(ws.installedVersion(of: "code-reviewer") == "2.0.0")
+        ws.recordInstalledPlugin(id: "example-plugin", version: "2.0.0")
+        #expect(ws.installedVersion(of: "example-plugin") == "2.0.0")
     }
 
     @Test("Update existing plugin version")
     @MainActor func updateVersion() {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
-        ws.recordInstalledPlugin(id: "code-reviewer", version: "1.0.0")
-        ws.recordInstalledPlugin(id: "code-reviewer", version: "2.0.0")
-        #expect(ws.installedVersion(of: "code-reviewer") == "2.0.0")
-        #expect(ws.installedPluginIDs.filter { $0 == "code-reviewer" }.count == 1)
+        ws.recordInstalledPlugin(id: "example-plugin", version: "1.0.0")
+        ws.recordInstalledPlugin(id: "example-plugin", version: "2.0.0")
+        #expect(ws.installedVersion(of: "example-plugin") == "2.0.0")
+        #expect(ws.installedPluginIDs.filter { $0 == "example-plugin" }.count == 1)
     }
 
     @Test("Unknown plugin returns nil")
@@ -237,12 +237,12 @@ struct ExportProvenanceTests {
 
     @Test("InstalledPluginRef round-trips through JSON")
     func refCodable() throws {
-        let ref = WorkspaceConfigManager.InstalledPluginRef(id: "code-reviewer", version: "2.0.0", name: "Code Reviewer")
+        let ref = WorkspaceConfigManager.InstalledPluginRef(id: "example-plugin", version: "2.0.0", name: "Example Plugin")
         let data = try JSONEncoder().encode(ref)
         let decoded = try JSONDecoder().decode(WorkspaceConfigManager.InstalledPluginRef.self, from: data)
-        #expect(decoded.id == "code-reviewer")
+        #expect(decoded.id == "example-plugin")
         #expect(decoded.version == "2.0.0")
-        #expect(decoded.name == "Code Reviewer")
+        #expect(decoded.name == "Example Plugin")
     }
 
     @Test("Config without installedPlugins decodes cleanly")

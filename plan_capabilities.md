@@ -116,7 +116,7 @@ Examples:
 - `BigQuery Analyst`: behavior plus `bq` and `gcloud` tools
 - `Jira`: connector only or connector plus behavior
 - `REDCap Data QA`: connector plus secrets, tools, behavior, and templates
-- `Docker Manager`: tools plus behavior and preflight checks
+- `GitHub Workflow`: tools plus behavior and preflight checks
 
 ### Capability Library
 

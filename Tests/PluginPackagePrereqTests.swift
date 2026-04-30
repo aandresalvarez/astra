@@ -109,15 +109,6 @@ struct PluginPackagePrereqTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
     }
 
-    @Test("Built-in Docker package has docker prereq")
-    func builtInDockerHasPrereq() {
-        let docker = PluginCatalog.builtInPackages.first { $0.id == "docker-manager" }
-        #expect(docker != nil)
-        #expect(docker?.prerequisites.count == 1)
-        #expect(docker?.prerequisites.first?.binary == "docker")
-        #expect(docker?.prerequisites.first?.semantic == .stderrNoDaemonError)
-    }
-
     @Test("Zero-config built-ins have no prerequisites")
     func builtInZeroConfigHasNoPrereqs() {
         // `test-runner` and `read-only-explorer` used to live here but
@@ -125,7 +116,6 @@ struct PluginPackagePrereqTests {
         // every workspace already ships with (see PluginCatalog's
         // `deprecated` list).
         let zeroConfigIDs = [
-            "code-reviewer",
             "security-auditor"
         ]
         for id in zeroConfigIDs {
@@ -136,14 +126,16 @@ struct PluginPackagePrereqTests {
 
     @Test("Deprecated package IDs no longer ship in the catalog")
     func deprecatedPackagesAreGone() {
-        // Guardrail: if anyone re-adds `test-runner` or
-        // `read-only-explorer`, this test fires. Those names collide with
-        // skills auto-seeded by TaskLifecycleCoordinator, so installing
-        // them would create a duplicate in the workspace sidebar.
-        let removed = ["test-runner", "read-only-explorer"]
+        // Guardrail: if anyone re-adds these removed packages, this test
+        // fires so they stay out of the approved catalog.
+        let removed = [
+            "test-runner", "read-only-explorer",
+            "code-reviewer", "docker-manager",
+            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt"
+        ]
         for id in removed {
             let pkg = PluginCatalog.builtInPackages.first { $0.id == id }
-            #expect(pkg == nil, "\(id) must not be in the catalog — duplicates an auto-seeded workspace skill")
+            #expect(pkg == nil, "\(id) must not be in the catalog")
         }
     }
 }

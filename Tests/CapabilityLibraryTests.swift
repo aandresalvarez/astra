@@ -178,8 +178,6 @@ struct CapabilityLibraryTests {
     func bundledApprovedCapabilityFolder() throws {
         let packages = ApprovedCapabilityBundle.packages()
         let expectedIDs: Set<String> = [
-            "code-reviewer",
-            "docker-manager",
             "gcloud-workflow",
             "github-workflow",
             "jira-workflow",

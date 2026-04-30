@@ -258,16 +258,16 @@ final class PluginCatalog {
         let dir = catalogDirectory
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        // Remove deprecated seeds. `test-runner` and `read-only-explorer`
-        // were removed because they duplicated the `Test Runner` and
-        // `Read-Only` skills already auto-seeded into every workspace by
-        // `TaskLifecycleCoordinator`; installing the catalog version just
-        // produced a confusing second copy in the sidebar.
+        // Remove deprecated seeds. These packages either duplicated skills
+        // auto-seeded into every workspace or are no longer approved for the
+        // built-in catalog.
         let deprecated = [
             "safe-executor", "refactorer", "data-analyst", "research-assistant",
             "devops", "documentation-writer", "database-connector", "rest-api-connector",
             "slack-connector", "confluence-connector",
-            "test-runner", "read-only-explorer"
+            "test-runner", "read-only-explorer",
+            "code-reviewer", "docker-manager",
+            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt"
         ]
         for oldID in deprecated {
             let path = (dir as NSString).appendingPathComponent("\(oldID).json")
@@ -300,66 +300,6 @@ final class PluginCatalog {
 
     private static let fallbackBuiltInPackages: [PluginPackage] = [
 
-        // ────────────────────────────────────────────
-        // 1. Code Reviewer — zero config
-        // ────────────────────────────────────────────
-        PluginPackage(
-            id: "code-reviewer",
-            name: "Code Reviewer",
-            icon: "magnifyingglass",
-            description: "Thorough code review with actionable findings",
-            author: "ASTRA",
-            category: "Development",
-            tags: ["review", "quality", "bugs", "security"],
-            version: "2.0.0",
-            setupGuide: """
-            Assign this skill to a task and ask it to review specific files, \
-            directories, or your entire project. The agent reads code and \
-            reports findings — it never makes changes.
-
-            What you can do:
-            • Review a pull request or set of changes
-            • Audit an entire module for bugs and code smells
-            • Get specific feedback on naming, structure, or patterns
-            • Check for security issues and performance problems
-            """,
-            skills: [PluginSkill(
-                name: "Code Reviewer",
-                icon: "magnifyingglass",
-                description: "Thorough code review with actionable findings",
-                allowedTools: ["Read", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit", "Bash"],
-                customTools: [],
-                behaviorInstructions: """
-                You are a senior code reviewer. Perform a thorough, systematic review.
-
-                REVIEW PROCESS
-                1. Understand the project — scan for README, package files, entry points
-                2. Identify the language, framework, and architecture patterns in use
-                3. Review the files or areas the user specifies
-
-                WHAT TO CHECK
-                • Bugs: logic errors, off-by-one, null/nil dereferences, race conditions
-                • Security: injection (SQL, XSS, command), hardcoded secrets, insecure handling
-                • Performance: unnecessary allocations, N+1 queries, blocking calls, missing caching
-                • Maintainability: functions over 40 lines, deep nesting, unclear names, missing error handling
-                • Style: inconsistencies with the project's own conventions
-
-                OUTPUT FORMAT
-                For each finding:
-                - File path and line number
-                - Severity: Critical / Warning / Suggestion
-                - What the issue is and why it matters
-                - Specific fix recommendation with code when helpful
-
-                Group findings by severity. End with a brief summary of overall code health.
-                Do NOT modify any files.
-                """,
-                environmentKeys: [], environmentValues: []
-            )],
-            connectors: [], localTools: [], templates: []
-        ),
-
         // NOTE: `test-runner` and `read-only-explorer` used to live here as
         // zero-config packages. Both duplicated skills that every workspace
         // already gets for free from `TaskLifecycleCoordinator.seedSkills`
@@ -369,7 +309,7 @@ final class PluginCatalog {
         // `deprecated` in `seedBuiltInPlugins`.
 
         // ────────────────────────────────────────────
-        // 2. Security Auditor — zero config
+        // 1. Security Auditor — zero config
         // ────────────────────────────────────────────
         PluginPackage(
             id: "security-auditor",
@@ -444,7 +384,7 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 3. Jira Workflow — requires setup
+        // 2. Jira Workflow — requires setup
         // ────────────────────────────────────────────
         PluginPackage(
             id: "jira-workflow",
@@ -527,7 +467,7 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 4. GitHub Workflow — requires gh CLI
+        // 3. GitHub Workflow — requires gh CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "github-workflow",
@@ -628,7 +568,7 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 5. GCloud Workflow — requires setup + gcloud CLI
+        // 4. GCloud Workflow — requires setup + gcloud CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "gcloud-workflow",
@@ -743,83 +683,5 @@ final class PluginCatalog {
             ]
         ),
 
-        // ────────────────────────────────────────────
-        // 6. Docker Manager — requires docker CLI
-        // ────────────────────────────────────────────
-        PluginPackage(
-            id: "docker-manager",
-            name: "Docker Manager",
-            icon: "shippingbox",
-            description: "Build, run, and manage Docker containers",
-            author: "ASTRA",
-            category: "DevOps",
-            tags: ["docker", "containers", "devops", "deployment"],
-            version: "1.0.0",
-            setupGuide: """
-            Manage Docker containers and images from your workspace. \
-            Requires Docker Desktop or Docker Engine to be installed \
-            and running.
-
-            What you can do:
-            • Build images from Dockerfiles
-            • Run, stop, and manage containers
-            • View logs and inspect container state
-            • Manage images, volumes, and networks
-            • Work with docker-compose stacks
-            """,
-            skills: [PluginSkill(
-                name: "Docker Agent",
-                icon: "shippingbox",
-                description: "Build, run, and manage Docker containers and images",
-                allowedTools: ["Read", "Bash", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit"],
-                customTools: [],
-                behaviorInstructions: """
-                You are a Docker management specialist.
-
-                COMMON OPERATIONS
-                • List containers: docker ps -a
-                • Run container: docker run -d --name NAME IMAGE
-                • Stop/start: docker stop/start CONTAINER
-                • Logs: docker logs --tail 50 CONTAINER
-                • Build: docker build -t TAG .
-                • Images: docker images
-                • Compose up: docker compose up -d
-                • Compose logs: docker compose logs -f SERVICE
-
-                RULES
-                • Always confirm before removing containers, images, or volumes
-                • Use --format for structured output when parsing
-                • Show resource usage with docker stats when relevant
-                • Prefer docker compose for multi-container setups
-                """,
-                environmentKeys: [], environmentValues: []
-            )],
-            connectors: [],
-            localTools: [
-                PluginLocalTool(
-                    name: "docker",
-                    description: "Docker CLI — manage containers and images",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "docker",
-                    arguments: ""
-                ),
-                PluginLocalTool(
-                    name: "docker compose",
-                    description: "Manage multi-container Docker applications",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "docker",
-                    arguments: "compose"
-                ),
-            ], templates: [],
-            // Docker has a single prereq that doubles as its own auth
-            // check — the `stderrNoDaemonError` semantic classifies
-            // "binary installed but daemon not running" as unauthenticated
-            // so the user sees "start Docker Desktop" instead of
-            // "install Docker" when that's the real issue.
-            prerequisites: [CommonCLIPrerequisites.docker]
-        ),
     ]
 }

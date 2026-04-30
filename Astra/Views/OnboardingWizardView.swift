@@ -278,7 +278,6 @@ struct OnboardingWizardView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("Catalog: zero-config add-ons", color: Stanford.lagunita)
-                catalogRow("doc.text.magnifyingglass", "Code Reviewer", "read-only code audits")
                 catalogRow("lock.shield.fill", "Security Auditor", "OWASP-style vuln-spotting pass")
             }
 
@@ -286,7 +285,6 @@ struct OnboardingWizardView: View {
                 sectionLabel("Catalog: needs credentials or a CLI", color: Stanford.poppy)
                 catalogRow("list.bullet.clipboard", "Jira / GitHub", "API token")
                 catalogRow("cloud.fill", "Google Cloud", "gcloud CLI")
-                catalogRow("shippingbox.fill", "Docker Manager", "docker CLI")
             }
 
             calloutBox(

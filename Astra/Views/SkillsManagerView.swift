@@ -1127,7 +1127,7 @@ enum SkillDescriptionParser {
             instructions.append("Focus on running tests and reporting results clearly.")
         }
         if lower.contains("review") || lower.contains("code review") {
-            if name.isEmpty { name = "Code Reviewer" }
+            if name.isEmpty { name = "Review Assistant" }
             icon = "magnifyingglass"
             instructions.append("Review code for quality, bugs, and maintainability. Provide actionable suggestions.")
         }
