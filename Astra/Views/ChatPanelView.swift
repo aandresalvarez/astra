@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 
 /// Chat message for the conversation
 struct ChatMessage: Identifiable {
@@ -381,6 +382,7 @@ struct ChatPanelView: View {
     @State private var isDragOver = false
     @State private var sshConnections: [SSHConnection] = []
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
     @AppStorage("skipPermissions") private var skipPermissions = true
     @State private var chainedGoal = ""
@@ -408,6 +410,11 @@ struct ChatPanelView: View {
 
     private var hasInput: Bool {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var planningModel: String {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        return runtime == .claudeCode ? defaultModel : AgentRuntimeID.claudeCode.defaultModel
     }
 
     private var showSlashMenu: Bool {
@@ -871,6 +878,7 @@ struct ChatPanelView: View {
 
                 ComposerToolbar(
                     model: defaultModel,
+                    runtimeID: defaultRuntimeID,
                     budget: defaultBudget,
                     skills: selectedSkills,
                     availableSkills: availableSkills,
@@ -881,6 +889,13 @@ struct ChatPanelView: View {
                     onPasteClipboard: { smartPaste() },
                     onSend: { submitComposer() },
                     onModelChange: { defaultModel = $0 },
+                    onRuntimeChange: { runtime in
+                        defaultRuntimeID = runtime
+                        let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
+                        if !resolved.defaultModels.contains(defaultModel) {
+                            defaultModel = resolved.defaultModel
+                        }
+                    },
                     onBudgetChange: { defaultBudget = $0 },
                     onRemoveSkill: { skill in excludedSkillIDs.insert(skill.id) },
                     onToggleSkill: { skill, enable in
@@ -1071,7 +1086,7 @@ struct ChatPanelView: View {
                 messages: conversationHistory,
                 workspacePath: ws,
                 skillContext: skillCtx,
-                model: defaultModel
+                model: planningModel
             )
             await MainActor.run {
                 isThinking = false
@@ -1099,6 +1114,7 @@ struct ChatPanelView: View {
             tokenBudget: defaultBudget,
             model: defaultModel
         )
+        task.runtimeID = defaultRuntimeID
         task.status = .queued
         task.inputs = attachedFiles
         task.skills = selectedSkills
@@ -1135,7 +1151,7 @@ struct ChatPanelView: View {
             let result = await SpecEngine.extractFromConversation(
                 messages: conversationHistory,
                 workspacePath: ws,
-                model: defaultModel
+                model: planningModel
             )
             await MainActor.run {
                 isThinking = false
@@ -1162,6 +1178,7 @@ struct ChatPanelView: View {
             tokenBudget: defaultBudget,
             model: defaultModel
         )
+        task.runtimeID = defaultRuntimeID
         task.status = .queued
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
@@ -1375,6 +1392,7 @@ struct ChatPanelView: View {
                 tokenBudget: tmpl.mainBudget,
                 model: tmpl.mainModel.isEmpty ? defaultModel : tmpl.mainModel
             )
+            mainTask.runtimeID = defaultRuntimeID
             mainTask.status = .queued
             mainTask.templateID = tmpl.id
             mainTask.templateHooksJSON = tmpl.hooksJSON
@@ -1409,6 +1427,7 @@ struct ChatPanelView: View {
                     tokenBudget: tmpl.beforeBudget,
                     model: tmpl.beforeModel.isEmpty ? defaultModel : tmpl.beforeModel
                 )
+                beforeTask.runtimeID = defaultRuntimeID
                 beforeTask.status = .queued
                 beforeTask.templateID = tmpl.id
                 beforeTask.templateHooksJSON = tmpl.hooksJSON
@@ -1858,6 +1877,7 @@ struct ChatPanelView: View {
                 tokenBudget: tmpl.mainBudget,
                 model: tmpl.mainModel.isEmpty ? defaultModel : tmpl.mainModel
             )
+            mainTask.runtimeID = defaultRuntimeID
             mainTask.status = .queued
             mainTask.templateID = tmpl.id
             mainTask.templateHooksJSON = tmpl.hooksJSON
@@ -1890,6 +1910,7 @@ struct ChatPanelView: View {
                     tokenBudget: tmpl.beforeBudget,
                     model: tmpl.beforeModel.isEmpty ? defaultModel : tmpl.beforeModel
                 )
+                beforeTask.runtimeID = defaultRuntimeID
                 beforeTask.status = .queued
                 beforeTask.templateID = tmpl.id
                 beforeTask.templateHooksJSON = tmpl.hooksJSON
@@ -2012,6 +2033,7 @@ struct ChatPanelView: View {
                 tokenBudget: defaultBudget,
                 model: defaultModel
             )
+            draft.runtimeID = defaultRuntimeID
             draft.status = .draft
             draft.draftMessages = json
             modelContext.insert(draft)

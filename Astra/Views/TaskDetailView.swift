@@ -52,6 +52,10 @@ struct TaskDetailView: View {
                 }
 
                 HStack(spacing: 16) {
+                    Label(task.resolvedRuntimeID.displayName, systemImage: "server.rack")
+                        .font(Stanford.caption())
+                        .foregroundStyle(Stanford.coolGrey)
+
                     Label(task.model, systemImage: "cpu")
                         .font(Stanford.caption())
                         .foregroundStyle(Stanford.coolGrey)

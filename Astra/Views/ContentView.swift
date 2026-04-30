@@ -29,6 +29,8 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
@@ -60,6 +62,17 @@ struct ContentView: View {
         workspaces
             .map { "\($0.id.uuidString)|\($0.primaryPath)" }
             .joined(separator: ",")
+    }
+
+    private var executionSettingsSignature: String {
+        [
+            claudePath,
+            copilotPath,
+            defaultRuntimeID,
+            String(timeoutSeconds),
+            validationModel,
+            String(skipPermissions)
+        ].joined(separator: "|")
     }
 
     private var rightRailInspectorBinding: Binding<Bool> {
@@ -261,41 +274,15 @@ struct ContentView: View {
         }
         .id(uiScale)
         .onAppear {
-            applySettings()
-            seedTestDataIfNeeded()
-            migrateConnectorCredentials()
-            migrateSkillSecrets()
-            restoreWorkspaceSelection()
-            backfillThreadTitlesIfNeeded()
-            enterUITestComposerIfNeeded()
-            runtime.startScheduler(modelContext: modelContext)
-            runtime.loadPluginCatalog()
-            refreshUpdateSafetyHooks()
-            appUpdateController.probeForUpdatesOnce()
+            handleAppear()
         }
-        .onChange(of: claudePath) { applySettings() }
-        .onChange(of: timeoutSeconds) { applySettings() }
-        .onChange(of: validationModel) { applySettings() }
-        .onChange(of: skipPermissions) { applySettings() }
+        .onChange(of: executionSettingsSignature) { applySettings() }
         .onChange(of: updateSafetySignature) { refreshUpdateSafetyHooks() }
         .onChange(of: workspaceSelectionSignature) {
-            restoreWorkspaceSelection()
-            enterUITestComposerIfNeeded()
+            handleWorkspaceSelectionSignatureChanged()
         }
         .onChange(of: selectedWorkspace) {
-            // Clear selected task when switching workspaces
-            let selectedWorkspaceID = selectedWorkspace?.id
-            let taskWorkspaceID = selectedTask?.workspace?.id
-            if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
-                selectedTask = nil
-            }
-            if isUITestingSeededLaunch {
-                selectedTask = nil
-                isComposingTask = selectedWorkspace != nil
-            } else {
-                isComposingTask = false
-            }
-            persistWorkspaceSelection()
+            handleSelectedWorkspaceChanged()
         }
         .environment(\.preflightCache, runtime.preflightCache)
         // Publish window-scoped actions so File menu commands (New /
@@ -864,6 +851,40 @@ struct ContentView: View {
         )
     }
 
+    private func handleSelectedWorkspaceChanged() {
+        let selectedWorkspaceID: UUID? = selectedWorkspace?.id
+        let taskWorkspaceID: UUID? = selectedTask?.workspace?.id
+        if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
+            selectedTask = nil
+        }
+        if isUITestingSeededLaunch {
+            selectedTask = nil
+            isComposingTask = selectedWorkspace != nil
+        } else {
+            isComposingTask = false
+        }
+        persistWorkspaceSelection()
+    }
+
+    private func handleWorkspaceSelectionSignatureChanged() {
+        restoreWorkspaceSelection()
+        enterUITestComposerIfNeeded()
+    }
+
+    private func handleAppear() {
+        applySettings()
+        seedTestDataIfNeeded()
+        migrateConnectorCredentials()
+        migrateSkillSecrets()
+        restoreWorkspaceSelection()
+        backfillThreadTitlesIfNeeded()
+        enterUITestComposerIfNeeded()
+        runtime.startScheduler(modelContext: modelContext)
+        runtime.loadPluginCatalog()
+        refreshUpdateSafetyHooks()
+        appUpdateController.probeForUpdatesOnce()
+    }
+
     // MARK: - Seeding
 
     private var isUITestingSeededLaunch: Bool {
@@ -937,6 +958,8 @@ struct ContentView: View {
     private func applySettings() {
         runtime.applySettings(
             claudePath: claudePath,
+            copilotPath: copilotPath,
+            defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
             skipPermissions: skipPermissions

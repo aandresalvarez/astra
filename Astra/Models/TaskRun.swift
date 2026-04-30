@@ -21,6 +21,9 @@ final class TaskRun {
     var tokensUsed: Int
     var inputTokens: Int         // Input tokens for this run (context window usage)
     var outputTokens: Int        // Output tokens for this run
+    var runtimeID: String?
+    var providerSessionId: String?
+    var providerVersion: String?
     var exitCode: Int?
     var output: String
     var costUSD: Double
@@ -35,6 +38,9 @@ final class TaskRun {
         self.tokensUsed = 0
         self.inputTokens = 0
         self.outputTokens = 0
+        self.runtimeID = task.runtimeID
+        self.providerSessionId = task.sessionId
+        self.providerVersion = nil
         self.output = ""
         self.costUSD = 0
         self.fileChangesJSON = "[]"

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import ASTRACore
 
 enum TaskMainTab: String, CaseIterable {
     case summary = "Chat"
@@ -1313,6 +1314,7 @@ struct TaskMainView: View {
 
                 ComposerToolbar(
                     model: task.model,
+                    runtimeID: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
                     budget: task.tokenBudget,
                     skills: task.skills,
                     availableSkills: availableSkills,
@@ -1324,6 +1326,14 @@ struct TaskMainView: View {
                     onSend: { sendMessage() },
                     onStop: { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
+                    onRuntimeChange: { runtime in
+                        task.runtimeID = runtime
+                        let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
+                        if !resolved.defaultModels.contains(task.model) {
+                            task.model = resolved.defaultModel
+                        }
+                        task.updatedAt = Date()
+                    },
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
                         task.skills.removeAll { $0.id == skill.id }

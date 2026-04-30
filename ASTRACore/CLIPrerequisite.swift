@@ -86,6 +86,16 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`."
     )
 
+    public static let copilot = CLIPrerequisite(
+        binary: "copilot",
+        livenessArgs: ["--version"],
+        displayName: "GitHub Copilot CLI",
+        purpose: "Runs tasks through the user's GitHub Copilot subscription.",
+        installURL: URL(string: "https://github.com/features/copilot/cli"),
+        installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
+        authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access."
+    )
+
     public static let gcloud = CLIPrerequisite(
         binary: "gcloud",
         livenessArgs: ["--version"],

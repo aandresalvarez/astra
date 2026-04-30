@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Observable @MainActor
 final class TaskScheduler {
@@ -78,6 +79,7 @@ final class TaskScheduler {
             )
         }
 
+        task.runtimeID = UserDefaults.standard.string(forKey: "defaultRuntimeID") ?? AgentRuntimeID.claudeCode.rawValue
         task.status = .queued
         task.originScheduleID = schedule.id
         modelContext.insert(task)

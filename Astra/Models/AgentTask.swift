@@ -46,6 +46,7 @@ final class AgentTask {
     var tokenBudget: Int
     var tokensUsed: Int
     var model: String
+    var runtimeID: String?
     var testCommand: String
     var costUSD: Double
     var queuePosition: Int
@@ -147,6 +148,7 @@ final class AgentTask {
         self.tokenBudget = tokenBudget
         self.tokensUsed = 0
         self.model = model
+        self.runtimeID = AgentRuntimeID.claudeCode.rawValue
         self.testCommand = ""
         self.costUSD = 0
         self.queuePosition = 0
@@ -163,6 +165,10 @@ final class AgentTask {
         self.isDone = false
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    var resolvedRuntimeID: AgentRuntimeID {
+        AgentRuntimeID(rawValue: runtimeID ?? "") ?? .claudeCode
     }
 
     var skillSnapshots: [SkillSnapshotConfig] {
@@ -239,6 +245,7 @@ final class AgentTask {
         forked.forkedFromID = source.id
         forked.skills = source.skills
         forked.skillSnapshotsJSON = source.skillSnapshotsJSON
+        forked.runtimeID = source.runtimeID
 
         let sortedRuns = source.runs.sorted { $0.startedAt < $1.startedAt }
         guard let cutoffIndex = sortedRuns.firstIndex(where: { $0.id == targetRun.id }) else {

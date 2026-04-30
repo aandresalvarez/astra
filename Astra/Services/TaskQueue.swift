@@ -55,14 +55,30 @@ final class TaskQueue {
     }
 
     /// Apply settings to all workers in the pool
-    func applySettings(claudePath: String?, timeoutSeconds: TimeInterval, validationModel: String, skipPermissions: Bool = true) {
+    func applySettings(
+        claudePath: String?,
+        copilotPath: String? = nil,
+        copilotHome: String? = nil,
+        defaultRuntimeID: AgentRuntimeID = .claudeCode,
+        timeoutSeconds: TimeInterval,
+        validationModel: String,
+        skipPermissions: Bool = true
+    ) {
         for worker in workers {
             if let path = claudePath, !path.isEmpty {
                 worker.claudePath = path
             }
+            if let path = copilotPath, !path.isEmpty {
+                worker.copilotPath = path
+            }
+            if let home = copilotHome, !home.isEmpty {
+                worker.copilotHome = home
+            }
+            worker.defaultRuntimeID = defaultRuntimeID
             worker.timeoutSeconds = timeoutSeconds
             worker.validationModel = validationModel
             worker.skipPermissions = skipPermissions
+            worker.permissionPolicy = skipPermissions ? .autonomous : .restricted
         }
     }
 

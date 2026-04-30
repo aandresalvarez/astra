@@ -1,16 +1,19 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 
 struct NewTaskView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
     var workspace: Workspace?
 
     @State private var title = ""
     @State private var goal = ""
+    @State private var runtimeID = AgentRuntimeID.claudeCode.rawValue
     @State private var model = "claude-sonnet-4-6"
     @State private var tokenBudget = 50000
     @State private var isolationStrategy: IsolationStrategy = .sameDirectory
@@ -22,7 +25,6 @@ struct NewTaskView: View {
     @State private var constraintsText = ""
     @State private var criteriaText = ""
 
-    private let models = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
     private let turnPresets = [0, 5, 10, 25, 50, 100]
 
@@ -70,8 +72,20 @@ struct NewTaskView: View {
                 }
 
                 Section("Execution") {
+                    Picker("Provider", selection: $runtimeID) {
+                        ForEach(AgentRuntimeID.allCases) { runtime in
+                            Text(runtime.displayName).tag(runtime.rawValue)
+                        }
+                    }
+                    .onChange(of: runtimeID) {
+                        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+                        if !runtime.defaultModels.contains(model) {
+                            model = runtime.defaultModel
+                        }
+                    }
+
                     Picker("Model", selection: $model) {
-                        ForEach(models, id: \.self) { m in
+                        ForEach(runtimeModels, id: \.self) { m in
                             Text(m).tag(m)
                         }
                     }
@@ -155,9 +169,18 @@ struct NewTaskView: View {
         }
         .frame(width: 520, height: 680)
         .onAppear {
+            runtimeID = defaultRuntimeID
             model = defaultModel
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            if !runtime.defaultModels.contains(model) {
+                model = runtime.defaultModel
+            }
             tokenBudget = defaultBudget
         }
+    }
+
+    private var runtimeModels: [String] {
+        (AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode).defaultModels
     }
 
     private func addInputFile() {
@@ -184,6 +207,7 @@ struct NewTaskView: View {
             isolationStrategy: isolationStrategy,
             validationStrategy: validationStrategy
         )
+        task.runtimeID = runtimeID
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText

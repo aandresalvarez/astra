@@ -52,6 +52,9 @@ final class ClaudeCodeWorker {
 
     /// Path to the claude CLI. Auto-detected or set manually.
     var claudePath: String = "/usr/local/bin/claude"
+    var copilotPath: String = CopilotCLIRuntime.detectPath()
+    var copilotHome: String = CopilotCLIRuntime.channelHome()
+    var defaultRuntimeID: AgentRuntimeID = .claudeCode
 
     @MainActor
     init() {
@@ -96,6 +99,11 @@ final class ClaudeCodeWorker {
         modelContext: ModelContext,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
+        if selectedRuntime(for: task) == .copilotCLI {
+            await executeCopilot(task: task, modelContext: modelContext, onEvent: onEvent)
+            return
+        }
+
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
             "model": task.model,
@@ -519,6 +527,7 @@ final class ClaudeCodeWorker {
             )
             nextTask.status = .queued
             nextTask.chainedFromID = task.id
+            nextTask.runtimeID = task.runtimeID
             // Pipe previous output as input context
             if !output.isEmpty {
                 nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
@@ -583,6 +592,20 @@ final class ClaudeCodeWorker {
         modelContext: ModelContext,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
+        if selectedRuntime(for: task) == .copilotCLI {
+            let prompt = Self.buildFreshFollowUpPrompt(message: message, task: task)
+            await executeCopilot(
+                task: task,
+                modelContext: modelContext,
+                onEvent: onEvent,
+                promptOverride: prompt,
+                startEventType: "user.message",
+                startEventPayload: message,
+                auditPhase: "resume"
+            )
+            return
+        }
+
         guard !isRunning else {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "worker_already_running"
@@ -774,6 +797,264 @@ final class ClaudeCodeWorker {
     }
 
     @MainActor
+    private func executeCopilot(
+        task: AgentTask,
+        modelContext: ModelContext,
+        onEvent: @escaping (ParsedEvent) -> Void,
+        promptOverride: String? = nil,
+        startEventType: String = "task.started",
+        startEventPayload: String? = nil,
+        auditPhase: String = "run"
+    ) async {
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
+            "status": task.status.rawValue,
+            "model": task.model,
+            "runtime": AgentRuntimeID.copilotCLI.rawValue,
+            "workspace_id": task.workspace?.id.uuidString ?? "none"
+        ])
+        guard !isRunning else {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "reason": "worker_already_running"
+            ], level: .warning)
+            return
+        }
+        isRunning = true
+        cancellationRequested = false
+
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .running
+        task.updatedAt = Date()
+
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        modelContext.insert(run)
+
+        let startPayload = startEventPayload ?? "Copilot started working on: \(task.goal)"
+        let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
+        modelContext.insert(startEvent)
+
+        if copilotPath.isEmpty {
+            copilotPath = CopilotCLIRuntime.detectPath()
+        }
+        guard FileManager.default.isExecutableFile(atPath: copilotPath) else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+                "reason": "copilot_cli_not_found"
+            ], level: .error)
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = "missing_copilot"
+            task.status = .failed
+            task.updatedAt = Date()
+            let event = TaskEvent(task: task, type: "error",
+                payload: "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`.", run: run)
+            modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        let codeDir = task.codeWorkingDirectory
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir), isDir.boolValue else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+                "reason": "workspace_not_found",
+                "runtime": AgentRuntimeID.copilotCLI.rawValue
+            ], level: .error)
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = "workspace_not_found"
+            task.status = .failed
+            task.updatedAt = Date()
+            let event = TaskEvent(task: task, type: "error",
+                payload: "Workspace directory not found: \(codeDir)", run: run)
+            modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        let executionPath: String
+        do {
+            executionPath = try await IsolationService.prepare(task: task)
+            if executionPath != task.effectiveWorkspacePath {
+                let isoEvent = TaskEvent(task: task, type: "tool.use",
+                    payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
+                modelContext.insert(isoEvent)
+            }
+        } catch {
+            AppLogger.audit(.isolationFailed, category: "Isolation", taskID: task.id, fields: [
+                "error_type": String(describing: type(of: error)),
+                "runtime": AgentRuntimeID.copilotCLI.rawValue
+            ], level: .error)
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = "isolation_failed"
+            task.status = .failed
+            task.updatedAt = Date()
+            let event = TaskEvent(task: task, type: "error",
+                payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
+            modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        let prompt = promptOverride ?? buildPrompt(for: task)
+        let startTime = Date()
+        let beforeGitStatus = Self.gitStatusSnapshot(workspacePath: executionPath)
+        if !task.skills.isEmpty {
+            let skillNames = task.skills.map(\.name).joined(separator: ", ")
+            let skillEvent = TaskEvent(task: task, type: "skill.active",
+                payload: "Active skills: \(skillNames)", run: run)
+            modelContext.insert(skillEvent)
+        }
+
+        let pendingEvents = PendingTaskCollector()
+        let result = await runCopilotProcess(
+            prompt: prompt,
+            task: task,
+            workspacePath: executionPath,
+            onLine: { line, parsesJSONLines in
+                let events: [AgentEvent] = parsesJSONLines
+                    ? CopilotStreamEventParser.parseAgentEvents(line: line)
+                    : [.text(text: line + "\n")]
+                for event in events {
+                    let t = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.applyCopilotEvent(event, to: task, run: run, modelContext: modelContext)
+                        if let parsed = Self.parsedEvent(from: event) {
+                            onEvent(parsed)
+                        }
+                    }
+                    pendingEvents.add(t)
+                }
+            }
+        )
+        await pendingEvents.drainAll()
+
+        Self.appendInferredFileChanges(
+            to: run,
+            task: task,
+            modelContext: modelContext,
+            workspacePath: executionPath,
+            beforeGitStatus: beforeGitStatus,
+            runStart: startTime
+        )
+
+        run.completedAt = Date()
+        run.exitCode = result.exitCode
+        AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
+            "exit_code": String(result.exitCode),
+            "runtime": AgentRuntimeID.copilotCLI.rawValue,
+            "phase": auditPhase
+        ], level: result.exitCode == 0 ? .info : .warning)
+
+        if cancellationRequested || task.status == .cancelled {
+            run.status = .cancelled
+            run.stopReason = "cancelled"
+            task.status = .cancelled
+        } else if result.timedOut {
+            run.status = .timeout
+            run.stopReason = "timeout"
+            task.status = .failed
+            let event = TaskEvent(task: task, type: "error",
+                                  payload: "Task idle timeout — no output for \(Int(timeoutSeconds))s. Process killed.", run: run)
+            modelContext.insert(event)
+        } else if result.maxTurnsExceeded {
+            run.status = .budgetExceeded
+            run.stopReason = "max_turns_reached"
+            task.status = .budgetExceeded
+            let event = TaskEvent(task: task, type: "budget.exceeded",
+                                  payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
+            modelContext.insert(event)
+        } else if result.budgetExceeded {
+            run.status = .budgetExceeded
+            run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
+            task.status = .budgetExceeded
+            let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let event = TaskEvent(task: task, type: "budget.exceeded",
+                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). Process killed.", run: run)
+            modelContext.insert(event)
+        } else if result.exitCode == 0 {
+            run.status = .completed
+            run.stopReason = "completed"
+            switch task.validationStrategy {
+            case .manual:
+                task.status = .completed
+                let event = TaskEvent(task: task, type: "task.completed", payload: "Copilot finished.", run: run)
+                modelContext.insert(event)
+            case .runTests:
+                let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
+                modelContext.insert(testEvent)
+                let testResult = await ValidationService.runTests(task: task)
+                switch testResult {
+                case .passed(let details):
+                    task.status = .completed
+                    let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                    modelContext.insert(event)
+                case .failed(let details):
+                    task.status = .failed
+                    let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                    modelContext.insert(event)
+                case .error(let msg):
+                    task.status = .pendingUser
+                    let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
+                    modelContext.insert(event)
+                }
+            case .aiCheck:
+                let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
+                modelContext.insert(checkEvent)
+                let aiResult = await ValidationService.aiCheck(task: task, claudePath: claudePath, model: validationModel)
+                switch aiResult {
+                case .passed(let details):
+                    task.status = .completed
+                    let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                    modelContext.insert(event)
+                case .failed(let details):
+                    task.status = .pendingUser
+                    let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                    modelContext.insert(event)
+                case .error(let msg):
+                    task.status = .pendingUser
+                    let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
+                    modelContext.insert(event)
+                }
+            }
+        } else {
+            run.status = .failed
+            run.stopReason = "failed"
+            task.status = .failed
+            let payload = enrichedFailurePayload(
+                prefix: "Copilot exited with code \(result.exitCode).",
+                rawError: result.error
+            )
+            let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+            modelContext.insert(event)
+        }
+
+        let folder = (try? task.ensureTaskFolder()) ?? ""
+        if !folder.isEmpty {
+            SessionHistoryManager.recordTurn(
+                taskFolder: folder,
+                taskTitle: task.title,
+                turnMessage: promptOverride == nil ? task.goal : (startEventPayload ?? task.goal),
+                output: run.output,
+                tokensUsed: run.tokensUsed,
+                costUSD: run.costUSD,
+                fileChanges: run.fileChanges,
+                redactions: sensitiveRedactions(for: task),
+                durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
+            )
+        }
+
+        IsolationService.cleanup(task: task, executionPath: executionPath)
+        Self.compactEvents(for: task, modelContext: modelContext)
+        task.updatedAt = Date()
+        if task.isTerminal {
+            task.completedAt = Date()
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        isRunning = false
+    }
+
+    @MainActor
     func cancel() {
         cancellationRequested = true
         currentProcess?.terminate()
@@ -782,6 +1063,13 @@ final class ClaudeCodeWorker {
     }
 
     // MARK: - Private
+
+    private func selectedRuntime(for task: AgentTask) -> AgentRuntimeID {
+        if let configured = task.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) {
+            return configured
+        }
+        return defaultRuntimeID
+    }
 
     struct ProcessResult {
         let exitCode: Int
@@ -799,6 +1087,226 @@ final class ClaudeCodeWorker {
             self.repetitionKilled = repetitionKilled
             self.maxTurnsExceeded = maxTurnsExceeded
         }
+    }
+
+    @MainActor
+    private func applyCopilotEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        switch event {
+        case .started(let sessionID, let model):
+            if let sessionID {
+                task.sessionId = sessionID
+                run.providerSessionId = sessionID
+            }
+            let payload = model.map { "Copilot stream started with model \($0)." } ?? "Copilot stream started."
+            modelContext.insert(TaskEvent(task: task, type: "task.started", payload: payload, run: run))
+
+        case .thinking(let text):
+            modelContext.insert(TaskEvent(task: task, type: "agent.thinking", payload: text, run: run))
+
+        case .text(let text):
+            run.output += text
+            modelContext.insert(TaskEvent(task: task, type: "agent.response", payload: text, run: run))
+
+        case .toolUse(let name, _, let inputSummary):
+            let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
+            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)\(suffix)", run: run))
+
+        case .toolResult(_, let content):
+            if !content.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+            }
+
+        case .fileChange(let path, let kind, let summary):
+            appendFileChange(path: path, kind: kind, summary: summary, task: task, run: run, modelContext: modelContext)
+
+        case .permissionRequested(let tool, let reason):
+            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+
+        case .stats(let input, let output, let cost, let duration, let turns):
+            let total = input + output
+            if total > 0 {
+                task.tokensUsed = total
+                run.tokensUsed = total
+                run.inputTokens = input
+                run.outputTokens = output
+            }
+            if let cost {
+                task.costUSD = cost
+                run.costUSD = cost
+            }
+            let details = [
+                total > 0 ? "tokens: \(total) (in: \(input), out: \(output))" : nil,
+                cost.map { String(format: "cost: $%.4f", $0) },
+                duration.map { "duration: \($0)ms" },
+                turns.map { "turns: \($0)" }
+            ].compactMap { $0 }.joined(separator: " | ")
+            if !details.isEmpty {
+                modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
+            }
+
+        case .completed(let summary):
+            if let summary, run.output.isEmpty {
+                run.output = summary
+            }
+
+        case .failed(let message):
+            modelContext.insert(TaskEvent(task: task, type: "error", payload: message, run: run))
+
+        case .unknown(_, let type, _):
+            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
+                "event": "unknown_copilot_stream_event",
+                "event_type": type
+            ], level: .debug)
+        }
+    }
+
+    @MainActor
+    private func appendFileChange(
+        path: String,
+        kind: String,
+        summary: String?,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        guard !path.isEmpty else { return }
+        guard !run.fileChanges.contains(where: { $0.path == path }) else { return }
+        let changeType: FileChange.FileChangeType = kind.lowercased().contains("write") ? .write : .edit
+        let change = FileChange(
+            path: path,
+            changeType: changeType,
+            content: summary,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )
+        run.appendFileChange(StoredFileChange(from: change))
+        let existingVersion = task.artifacts
+            .filter { $0.path == path }
+            .map(\.version)
+            .max() ?? 0
+        modelContext.insert(Artifact(task: task, type: changeType.rawValue, path: path, content: summary, version: existingVersion + 1))
+    }
+
+    private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
+        switch event {
+        case .started(let sessionID, let model):
+            return .systemInit(model: model, sessionId: sessionID)
+        case .thinking(let text):
+            return .thinking(text: text)
+        case .text(let text):
+            return .text(text: text)
+        case .toolUse(let name, let id, _):
+            return .toolUse(name: name, id: id, input: nil)
+        case .toolResult(let id, let content):
+            return .toolResult(toolId: id, content: content)
+        case .permissionRequested(let tool, let reason):
+            return .permissionDenied(tool: tool, reason: reason)
+        case .stats(let input, let output, let cost, let duration, let turns):
+            return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .completed(let summary):
+            return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
+        case .failed(let message):
+            return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
+        case .fileChange, .unknown:
+            return nil
+        }
+    }
+
+    private static func gitStatusSnapshot(workspacePath: String) -> Set<String> {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "-C", workspacePath, "status", "--porcelain"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+        guard process.terminationStatus == 0 else { return [] }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return Set(output.split(separator: "\n").map(String.init))
+    }
+
+    @MainActor
+    private static func appendInferredFileChanges(
+        to run: TaskRun,
+        task: AgentTask,
+        modelContext: ModelContext,
+        workspacePath: String,
+        beforeGitStatus: Set<String>,
+        runStart: Date
+    ) {
+        var paths = Set<String>()
+        let afterGitStatus = gitStatusSnapshot(workspacePath: workspacePath)
+        if !afterGitStatus.isEmpty || !beforeGitStatus.isEmpty {
+            for line in afterGitStatus.subtracting(beforeGitStatus) {
+                let pathPart = String(line.dropFirst(min(3, line.count))).trimmingCharacters(in: .whitespaces)
+                let normalized = pathPart.components(separatedBy: " -> ").last ?? pathPart
+                if !normalized.isEmpty {
+                    paths.insert((workspacePath as NSString).appendingPathComponent(normalized))
+                }
+            }
+        }
+
+        if paths.isEmpty {
+            paths.formUnion(recentlyModifiedFiles(workspacePath: workspacePath, since: runStart))
+        }
+
+        let existing = Set(run.fileChanges.map(\.path))
+        for path in paths.subtracting(existing).sorted().prefix(50) {
+            let change = FileChange(
+                path: path,
+                changeType: .edit,
+                content: "Detected after Copilot run",
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )
+            run.appendFileChange(StoredFileChange(from: change))
+            let existingVersion = task.artifacts
+                .filter { $0.path == path }
+                .map(\.version)
+                .max() ?? 0
+            modelContext.insert(Artifact(task: task, type: FileChange.FileChangeType.edit.rawValue, path: path, version: existingVersion + 1))
+        }
+    }
+
+    private static func recentlyModifiedFiles(workspacePath: String, since: Date) -> Set<String> {
+        let root = URL(fileURLWithPath: workspacePath)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        var result = Set<String>()
+        var visited = 0
+        while let url = enumerator.nextObject() as? URL {
+            visited += 1
+            if visited > 5000 { break }
+            let rel = url.path.replacingOccurrences(of: workspacePath + "/", with: "")
+            if rel.hasPrefix(".git/") || rel.hasPrefix(".astra/") || rel.hasPrefix("node_modules/") || rel.hasPrefix(".build/") {
+                continue
+            }
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  modified >= since else {
+                continue
+            }
+            result.insert(url.path)
+            if result.count >= 50 { break }
+        }
+        return result
     }
 
     // MARK: - Process Monitor (shared between run and resume)
@@ -1609,6 +2117,146 @@ final class ClaudeCodeWorker {
             }
 
             monitor.startWatchdog(process: process)
+        }
+    }
+
+    private func runCopilotProcess(
+        prompt: String,
+        task: AgentTask,
+        workspacePath: String,
+        onLine: @escaping (String, Bool) -> Void
+    ) async -> ProcessResult {
+        let taskEnv = task.resolvedEnvironmentVariables
+        let allowed = task.resolvedClaudeAllowedTools
+        let tokenBudget: Int
+        if task.tokenBudget == 0 {
+            tokenBudget = Int.max
+        } else {
+            tokenBudget = task.tokenBudget
+        }
+
+        return await withCheckedContinuation { continuation in
+            let resumeLock = NSLock()
+            var hasResumed = false
+            let resumeOnce: (ProcessResult) -> Void = { result in
+                resumeLock.lock()
+                guard !hasResumed else { resumeLock.unlock(); return }
+                hasResumed = true
+                resumeLock.unlock()
+                continuation.resume(returning: result)
+            }
+
+            let executable = copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath
+            let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+            let model = Self.model(task.model, for: .copilotCLI)
+            let plan = CopilotCLIRuntime.buildCommand(
+                executablePath: executable,
+                prompt: prompt,
+                model: model,
+                workspacePath: workspacePath,
+                additionalPaths: task.workspace?.additionalPaths ?? [],
+                permissionPolicy: permissionPolicy,
+                allowedTools: allowed,
+                timeoutSeconds: timeoutSeconds,
+                capabilities: capabilities,
+                taskEnvironment: taskEnv,
+                copilotHome: copilotHome
+            )
+
+            try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: plan.executablePath)
+            process.arguments = plan.arguments
+            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+            process.environment = plan.environment
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            let errorOutput = LockedBuffer()
+            let lineBuffer = LockedBuffer()
+            let monitor = ProcessMonitor(
+                tokenBudget: tokenBudget,
+                maxTurns: task.maxTurns,
+                maxRepetitions: 8,
+                idleTimeoutSeconds: self.timeoutSeconds,
+                taskID: task.id
+            )
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                guard let chunk = String(data: data, encoding: .utf8) else { return }
+
+                lineBuffer.append(chunk)
+                var buf = lineBuffer.value
+                while let newlineIndex = buf.firstIndex(of: "\n") {
+                    let line = String(buf[buf.startIndex..<newlineIndex])
+                    buf = String(buf[buf.index(after: newlineIndex)...])
+                    guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                    onLine(line, plan.parsesJSONLines)
+                    let parsedEvents = plan.parsesJSONLines
+                        ? CopilotStreamEventParser.parseAll(line: line)
+                        : [ParsedEvent.text(text: line)]
+                    for parsed in parsedEvents {
+                        let _ = monitor.processEvent(parsed, process: process)
+                    }
+                }
+                lineBuffer.value = buf
+            }
+
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                if let str = String(data: data, encoding: .utf8) {
+                    errorOutput.append(str)
+                }
+            }
+
+            process.terminationHandler = { proc in
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                let remaining = lineBuffer.value
+                if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    onLine(remaining, plan.parsesJSONLines)
+                }
+                let errStr = errorOutput.value
+                resumeOnce(ProcessResult(
+                    exitCode: Int(proc.terminationStatus),
+                    error: errStr.isEmpty ? nil : errStr,
+                    budgetExceeded: monitor.budgetExceeded,
+                    timedOut: monitor.timedOut,
+                    repetitionKilled: monitor.repetitionKilled,
+                    maxTurnsExceeded: monitor.maxTurnsExceeded
+                ))
+            }
+
+            self.currentProcess = process
+
+            do {
+                try process.run()
+            } catch {
+                resumeOnce(ProcessResult(exitCode: -1, error: error.localizedDescription))
+                return
+            }
+
+            monitor.startWatchdog(process: process)
+        }
+    }
+
+    private static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode:
+            return model.isEmpty ? runtime.defaultModel : model
+        case .copilotCLI:
+            if model.isEmpty { return runtime.defaultModel }
+            if model == "claude-sonnet-4-6" || model == "claude-opus-4-6" || model == "claude-haiku-4-5-20251001" {
+                return runtime.defaultModel
+            }
+            return model
         }
     }
 

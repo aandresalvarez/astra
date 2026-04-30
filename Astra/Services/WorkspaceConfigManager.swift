@@ -158,6 +158,7 @@ enum WorkspaceConfigManager {
         var tokenBudget: Int
         var tokensUsed: Int
         var model: String
+        var runtimeID: String?
         var costUSD: Double
         var sessionId: String?
         var maxTurns: Int
@@ -191,6 +192,9 @@ enum WorkspaceConfigManager {
         var tokensUsed: Int
         var inputTokens: Int?
         var outputTokens: Int?
+        var runtimeID: String?
+        var providerSessionId: String?
+        var providerVersion: String?
         var exitCode: Int?
         var output: String
         var costUSD: Double
@@ -651,6 +655,9 @@ enum WorkspaceConfigManager {
                 tokensUsed: run.tokensUsed,
                 inputTokens: run.inputTokens,
                 outputTokens: run.outputTokens,
+                runtimeID: run.runtimeID,
+                providerSessionId: run.providerSessionId,
+                providerVersion: run.providerVersion,
                 exitCode: run.exitCode,
                 output: run.output,
                 costUSD: run.costUSD,
@@ -688,6 +695,7 @@ enum WorkspaceConfigManager {
             tokenBudget: task.tokenBudget,
             tokensUsed: task.tokensUsed,
             model: task.model,
+            runtimeID: task.runtimeID,
             costUSD: task.costUSD,
             sessionId: task.sessionId,
             maxTurns: task.maxTurns,
@@ -1077,6 +1085,7 @@ enum WorkspaceConfigManager {
         task.constraints = config.constraints
         task.acceptanceCriteria = config.acceptanceCriteria
         task.tokensUsed = config.tokensUsed
+        task.runtimeID = config.runtimeID ?? AgentRuntimeID.claudeCode.rawValue
         task.costUSD = config.costUSD
         task.sessionId = config.sessionId
         task.maxTurns = config.maxTurns
@@ -1135,6 +1144,9 @@ enum WorkspaceConfigManager {
             run.tokensUsed = rc.tokensUsed
             run.inputTokens = rc.inputTokens ?? 0
             run.outputTokens = rc.outputTokens ?? 0
+            run.runtimeID = rc.runtimeID ?? task.runtimeID
+            run.providerSessionId = rc.providerSessionId
+            run.providerVersion = rc.providerVersion
             run.exitCode = rc.exitCode
             run.output = rc.output
             run.costUSD = rc.costUSD
