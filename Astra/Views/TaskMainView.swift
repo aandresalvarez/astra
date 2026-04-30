@@ -36,8 +36,7 @@ struct TaskMainView: View {
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
     @State private var pasteMonitor: Any?
-    @State private var threadSnapshot: TaskThreadSnapshot?
-    @State private var generatedFilePaths: [String] = []
+    @State private var threadViewModel = TaskThreadViewModel()
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -48,7 +47,7 @@ struct TaskMainView: View {
     }
 
     private var currentThreadSnapshot: TaskThreadSnapshot {
-        threadSnapshot ?? TaskThreadSnapshot(task: task)
+        threadViewModel.snapshot ?? TaskThreadSnapshot(task: task)
     }
 
     private var threadSnapshotTrigger: TaskThreadSnapshotTrigger {
@@ -110,10 +109,10 @@ struct TaskMainView: View {
         }
         .onChange(of: task.id) {
             selectedTab = .summary
+            threadViewModel.reset(for: task)
         }
         .onAppear {
-            refreshThreadSnapshot()
-            refreshGeneratedFilePaths()
+            threadViewModel.reset(for: task)
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.modifierFlags.contains(.command),
                    event.charactersIgnoringModifiers == "v" {
@@ -123,25 +122,18 @@ struct TaskMainView: View {
             }
         }
         .onDisappear {
+            threadViewModel.cancelGeneratedFilesRefresh()
             if let monitor = pasteMonitor {
                 NSEvent.removeMonitor(monitor)
                 pasteMonitor = nil
             }
         }
         .onChange(of: threadSnapshotTrigger) { _, _ in
-            refreshThreadSnapshot()
+            threadViewModel.refreshSnapshot(for: task)
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
-            refreshGeneratedFilePaths()
+            threadViewModel.refreshGeneratedFiles(folder: task.taskFolder)
         }
-    }
-
-    private func refreshThreadSnapshot() {
-        threadSnapshot = TaskThreadSnapshot(task: task)
-    }
-
-    private func refreshGeneratedFilePaths() {
-        generatedFilePaths = TaskGeneratedFiles.files(in: task.taskFolder)
     }
 
     // MARK: - Toolbar Stats
@@ -793,9 +785,9 @@ struct TaskMainView: View {
                 .textSelection(.enabled)
 
             // Generated files
-            if run.id == latestRun?.id && !generatedFilePaths.isEmpty {
+            if run.id == latestRun?.id && !threadViewModel.generatedFilePaths.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(generatedFilePaths, id: \.self) { path in
+                    ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
                         Button {
                             NSWorkspace.shared.open(URL(fileURLWithPath: path))
                         } label: {

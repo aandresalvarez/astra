@@ -1,11 +1,47 @@
 import Foundation
 
 enum MarkdownLinkifier {
+    private static let maximumCachedUTF16Length = 200_000
+
+    private final class CacheEntry {
+        let attributed: AttributedString
+
+        init(_ attributed: AttributedString) {
+            self.attributed = attributed
+        }
+    }
+
     private static let linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
 
+    private static let cache: NSCache<NSString, CacheEntry> = {
+        let cache = NSCache<NSString, CacheEntry>()
+        cache.countLimit = 512
+        cache.totalCostLimit = 2_000_000
+        return cache
+    }()
+
     static func markdownAttributed(_ text: String) -> AttributedString {
+        guard text.utf16.count <= maximumCachedUTF16Length else {
+            return makeMarkdownAttributed(text)
+        }
+
+        let cacheKey = text as NSString
+        if let cached = cache.object(forKey: cacheKey) {
+            return cached.attributed
+        }
+
+        let attributed = makeMarkdownAttributed(text)
+        cache.setObject(CacheEntry(attributed), forKey: cacheKey, cost: text.utf16.count)
+        return attributed
+    }
+
+    static func clearCacheForTests() {
+        cache.removeAllObjects()
+    }
+
+    private static func makeMarkdownAttributed(_ text: String) -> AttributedString {
         var attributed: AttributedString
         if let parsed = try? AttributedString(
             markdown: text,

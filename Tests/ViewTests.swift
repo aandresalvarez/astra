@@ -60,6 +60,18 @@ struct MarkdownTextViewTests {
 
         #expect(links.contains(expected))
     }
+
+    @Test("Markdown linkifier returns stable attributed output from cache")
+    func markdownLinkifierCacheIsStable() {
+        MarkdownLinkifier.clearCacheForTests()
+
+        let source = "Read **docs** at https://example.com/docs"
+        let first = MarkdownLinkifier.markdownAttributed(source)
+        let second = MarkdownLinkifier.markdownAttributed(source)
+
+        #expect(String(first.characters) == String(second.characters))
+        #expect(first.runs.compactMap(\.link) == second.runs.compactMap(\.link))
+    }
 }
 
 // MARK: - TaskThreadSnapshot
@@ -151,6 +163,75 @@ struct TaskThreadSnapshotTests {
         #expect(activity.toolResults.first?.payload == "result")
     }
 
+    @Test("Large snapshot fixture preserves per-run activity grouping")
+    func largeSnapshotFixture() {
+        let task = makeTask()
+        let runCount = 750
+        var runs: [TaskRun] = []
+        var events: [TaskEvent] = []
+        runs.reserveCapacity(runCount)
+        events.reserveCapacity(runCount * 4)
+
+        for index in 0..<runCount {
+            let baseTimestamp = Double(index * 10)
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: baseTimestamp)
+            run.completedAt = Date(timeIntervalSince1970: baseTimestamp + 5)
+            run.output = "Run output \(index)"
+            runs.append(run)
+
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 1),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Bash",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 2),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 3),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "result \(index)",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 4),
+                run: run
+            ))
+        }
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events.reversed(),
+            runs: runs.reversed()
+        )
+
+        #expect(snapshot.sortedRuns.count == runCount)
+        #expect(snapshot.sortedEvents.count == runCount * 4)
+        #expect(snapshot.conversationItems.count == runCount + 1)
+
+        for index in stride(from: 0, to: runCount, by: 125) {
+            let activity = snapshot.activity(for: runs[index])
+            #expect(activity.tools == [
+                TaskToolSummary(name: "Read", count: 2),
+                TaskToolSummary(name: "Bash", count: 1)
+            ])
+            #expect(activity.toolResults.count == 1)
+            #expect(activity.toolResults.first?.payload == "result \(index)")
+        }
+    }
+
     @Test("Generated file scan excludes internal task files")
     func generatedFileScanExcludesInternalFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -173,6 +254,20 @@ struct TaskThreadSnapshotTests {
         #expect(paths.contains(nested.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(root.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(outputs.appendingPathComponent("result.txt").path))
+    }
+
+    @Test("Generated file scan can run asynchronously")
+    func generatedFileScanRunsAsync() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generated-files-async-\(UUID().uuidString)")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = await TaskGeneratedFiles.filesAsync(in: root.path)
+
+        #expect(paths == [root.appendingPathComponent("visible.txt").path])
     }
 }
 

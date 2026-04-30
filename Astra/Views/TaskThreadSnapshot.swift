@@ -179,7 +179,13 @@ enum TaskGeneratedFiles {
                 files.append(full)
             }
         }
-        return files
+        return files.sorted()
+    }
+
+    static func filesAsync(in folder: String) async -> [String] {
+        await Task.detached(priority: .utility) {
+            files(in: folder)
+        }.value
     }
 }
 
