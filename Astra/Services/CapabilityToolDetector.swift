@@ -42,14 +42,7 @@ struct CapabilityToolDetector {
             description: "Work with GitHub issues, PRs, repos, and Actions",
             command: "gh",
             arguments: "",
-            prerequisite: CLIPrerequisite(
-                binary: "gh",
-                displayName: "GitHub CLI",
-                purpose: "Runs GitHub commands for repository workflows.",
-                installURL: URL(string: "https://cli.github.com/"),
-                installHint: "Install via Homebrew: `brew install gh`",
-                authHint: "Run `gh auth login`."
-            )
+            prerequisite: CommonCLIPrerequisites.githubCLI
         ),
         Candidate(
             id: "docker",

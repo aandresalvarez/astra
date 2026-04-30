@@ -608,22 +608,8 @@ final class PluginCatalog {
             ],
             templates: [],
             prerequisites: [
-                CLIPrerequisite(
-                    binary: "gh",
-                    displayName: "GitHub CLI",
-                    purpose: "Runs GitHub commands for repository workflows.",
-                    installURL: URL(string: "https://cli.github.com/"),
-                    installHint: "Install via Homebrew: `brew install gh`",
-                    authHint: "Run `gh auth login`."
-                ),
-                CLIPrerequisite(
-                    binary: "gh",
-                    livenessArgs: ["auth", "status"],
-                    displayName: "GitHub login",
-                    purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
-                    installHint: "Run `gh auth login`.",
-                    authHint: "Run `gh auth login`."
-                )
+                CommonCLIPrerequisites.githubCLI,
+                CommonCLIPrerequisites.githubAuth
             ]
         ),
 
