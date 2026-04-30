@@ -79,7 +79,7 @@ final class TaskScheduler {
             )
         }
 
-        task.runtimeID = UserDefaults.standard.string(forKey: "defaultRuntimeID") ?? AgentRuntimeID.claudeCode.rawValue
+        task.runtimeID = schedule.resolvedRuntimeID.rawValue
         task.status = .queued
         task.originScheduleID = schedule.id
         modelContext.insert(task)

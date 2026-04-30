@@ -6,7 +6,49 @@ public enum CopilotStreamEventParser {
     }
 
     public static func parseAll(line: String) -> [ParsedEvent] {
-        parseAgentEvents(line: line).compactMap(parsedEvent)
+        let events = parseAgentEvents(line: line)
+        let stats = events.compactMap { event -> (Int, Int, Double?, Int?, Int?)? in
+            if case .stats(let input, let output, let cost, let duration, let turns) = event {
+                return (input, output, cost, duration, turns)
+            }
+            return nil
+        }.first
+        var hasCompletion = false
+        var completionSummary: String?
+        for event in events {
+            if case .completed(let summary) = event {
+                hasCompletion = true
+                completionSummary = summary
+                break
+            }
+        }
+
+        var parsed: [ParsedEvent] = []
+        var emittedMergedResult = false
+        for event in events {
+            switch event {
+            case .stats where hasCompletion:
+                if let stats, !emittedMergedResult {
+                    parsed.append(.result(
+                        text: completionSummary,
+                        costUSD: stats.2,
+                        totalInputTokens: stats.0,
+                        totalOutputTokens: stats.1,
+                        durationMs: stats.3,
+                        numTurns: stats.4,
+                        isError: false
+                    ))
+                    emittedMergedResult = true
+                }
+            case .completed where stats != nil:
+                continue
+            default:
+                if let parsedEvent = parsedEvent(from: event) {
+                    parsed.append(parsedEvent)
+                }
+            }
+        }
+        return parsed
     }
 
     public static func parseAgentEvents(line: String) -> [AgentEvent] {

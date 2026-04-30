@@ -8,7 +8,7 @@ import SwiftData
 /// Tests the full pipeline: Workspace → AgentTask → ClaudeCodeWorker → TaskEvents + Artifacts + Files
 
 private func makeTestContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }

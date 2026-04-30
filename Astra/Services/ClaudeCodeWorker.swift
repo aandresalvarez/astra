@@ -899,6 +899,9 @@ final class ClaudeCodeWorker {
         let prompt = promptOverride ?? buildPrompt(for: task)
         let startTime = Date()
         let beforeGitStatus = Self.gitStatusSnapshot(workspacePath: executionPath)
+        let beforeDirtyFingerprints = Self.fileFingerprints(
+            for: Self.absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: executionPath)
+        )
         if !task.skills.isEmpty {
             let skillNames = task.skills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, type: "skill.active",
@@ -935,6 +938,7 @@ final class ClaudeCodeWorker {
             modelContext: modelContext,
             workspacePath: executionPath,
             beforeGitStatus: beforeGitStatus,
+            beforeDirtyFingerprints: beforeDirtyFingerprints,
             runStart: startTime
         )
 
@@ -1243,21 +1247,34 @@ final class ClaudeCodeWorker {
         modelContext: ModelContext,
         workspacePath: String,
         beforeGitStatus: Set<String>,
+        beforeDirtyFingerprints: [String: FileFingerprint],
         runStart: Date
     ) {
         var paths = Set<String>()
         let afterGitStatus = gitStatusSnapshot(workspacePath: workspacePath)
         if !afterGitStatus.isEmpty || !beforeGitStatus.isEmpty {
             for line in afterGitStatus.subtracting(beforeGitStatus) {
-                let pathPart = String(line.dropFirst(min(3, line.count))).trimmingCharacters(in: .whitespaces)
-                let normalized = pathPart.components(separatedBy: " -> ").last ?? pathPart
-                if !normalized.isEmpty {
-                    paths.insert((workspacePath as NSString).appendingPathComponent(normalized))
+                if let path = absolutePath(fromGitStatusLine: line, workspacePath: workspacePath) {
+                    paths.insert(path)
                 }
             }
-        }
 
-        if paths.isEmpty {
+            let dirtyCandidates = absolutePaths(
+                fromGitStatus: afterGitStatus.union(beforeGitStatus),
+                workspacePath: workspacePath
+            )
+            let afterDirtyFingerprints = fileFingerprints(for: dirtyCandidates)
+            for path in dirtyCandidates {
+                guard let before = beforeDirtyFingerprints[path],
+                      afterDirtyFingerprints[path] != before else { continue }
+                paths.insert(path)
+            }
+            paths.formUnion(recentlyModifiedFiles(
+                workspacePath: workspacePath,
+                since: runStart,
+                limitedTo: dirtyCandidates
+            ))
+        } else {
             paths.formUnion(recentlyModifiedFiles(workspacePath: workspacePath, since: runStart))
         }
 
@@ -1280,7 +1297,55 @@ final class ClaudeCodeWorker {
         }
     }
 
-    private static func recentlyModifiedFiles(workspacePath: String, since: Date) -> Set<String> {
+    private struct FileFingerprint: Equatable {
+        let size: UInt64
+        let modifiedAt: Date?
+        let checksum: UInt64?
+    }
+
+    private static func absolutePaths(fromGitStatus lines: Set<String>, workspacePath: String) -> Set<String> {
+        Set(lines.compactMap { absolutePath(fromGitStatusLine: $0, workspacePath: workspacePath) })
+    }
+
+    private static func absolutePath(fromGitStatusLine line: String, workspacePath: String) -> String? {
+        let pathPart = String(line.dropFirst(min(3, line.count))).trimmingCharacters(in: .whitespaces)
+        let normalized = pathPart.components(separatedBy: " -> ").last ?? pathPart
+        guard !normalized.isEmpty else { return nil }
+        return (workspacePath as NSString).appendingPathComponent(normalized)
+    }
+
+    private static func fileFingerprints(for paths: Set<String>) -> [String: FileFingerprint] {
+        Dictionary(uniqueKeysWithValues: paths.compactMap { path in
+            guard let fingerprint = fileFingerprint(path: path) else { return nil }
+            return (path, fingerprint)
+        })
+    }
+
+    private static func fileFingerprint(path: String) -> FileFingerprint? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let type = attributes[.type] as? FileAttributeType,
+              type == .typeRegular else {
+            return nil
+        }
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modified = attributes[.modificationDate] as? Date
+        let checksum: UInt64?
+        if size <= 5_000_000,
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            checksum = data.reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
+                (partial ^ UInt64(byte)) &* 1_099_511_628_211
+            }
+        } else {
+            checksum = nil
+        }
+        return FileFingerprint(size: size, modifiedAt: modified, checksum: checksum)
+    }
+
+    private static func recentlyModifiedFiles(
+        workspacePath: String,
+        since: Date,
+        limitedTo candidates: Set<String>? = nil
+    ) -> Set<String> {
         let root = URL(fileURLWithPath: workspacePath)
         guard let enumerator = FileManager.default.enumerator(
             at: root,
@@ -1295,6 +1360,9 @@ final class ClaudeCodeWorker {
             if visited > 5000 { break }
             let rel = url.path.replacingOccurrences(of: workspacePath + "/", with: "")
             if rel.hasPrefix(".git/") || rel.hasPrefix(".astra/") || rel.hasPrefix("node_modules/") || rel.hasPrefix(".build/") {
+                continue
+            }
+            if let candidates, !candidates.contains(url.path) {
                 continue
             }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum ScheduleType: String, Codable, CaseIterable {
     case once
@@ -42,6 +43,7 @@ final class TaskSchedule {
     var templateVariablesJSON: String
 
     // Execution defaults
+    var runtimeID: String?
     var model: String
     var tokenBudget: Int
     var skillIDs: [String]  // UUIDs of skills to attach to created tasks
@@ -76,6 +78,7 @@ final class TaskSchedule {
         name: String,
         goal: String = "",
         workspace: Workspace? = nil,
+        runtimeID: String? = AgentRuntimeID.claudeCode.rawValue,
         model: String = "claude-sonnet-4-6",
         tokenBudget: Int = 50000,
         scheduleType: ScheduleType = .once,
@@ -86,6 +89,7 @@ final class TaskSchedule {
         self.isEnabled = true
         self.goal = goal
         self.templateVariablesJSON = "{}"
+        self.runtimeID = runtimeID
         self.model = model
         self.tokenBudget = tokenBudget
         self.skillIDs = []
@@ -102,6 +106,10 @@ final class TaskSchedule {
         self.workspace = workspace
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    var resolvedRuntimeID: AgentRuntimeID {
+        AgentRuntimeID(rawValue: runtimeID ?? "") ?? .claudeCode
     }
 
     /// Advances nextFireDate based on scheduleType. For .once, disables the schedule.

@@ -142,6 +142,7 @@ enum WorkspaceConfigManager {
         var resultMode: String?
         var sourceTaskID: String?
         var runResultsJSON: String?
+        var runtimeID: String?
         var lastFiredAt: Date?
         var createdAt: Date?
         var updatedAt: Date?
@@ -633,6 +634,7 @@ enum WorkspaceConfigManager {
             resultMode: schedule.resultMode.rawValue,
             sourceTaskID: schedule.sourceTaskID?.uuidString,
             runResultsJSON: schedule.runResultsJSON == "[]" ? nil : schedule.runResultsJSON,
+            runtimeID: schedule.runtimeID,
             lastFiredAt: schedule.lastFiredAt,
             createdAt: schedule.createdAt,
             updatedAt: schedule.updatedAt
@@ -929,6 +931,7 @@ enum WorkspaceConfigManager {
             name: config.name,
             goal: config.goal,
             workspace: workspace,
+            runtimeID: config.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
             model: config.model,
             tokenBudget: config.tokenBudget,
             scheduleType: ScheduleType(rawValue: config.scheduleType) ?? .once,

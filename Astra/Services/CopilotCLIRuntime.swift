@@ -193,18 +193,23 @@ enum CopilotCLIRuntime {
         switch policy {
         case .autonomous:
             if requiresAllowAllToolsForPrompt {
-                return ["--allow-all-tools", "--allow-all-paths"]
+                return ["--allow-all-tools"]
             }
             return [
                 "--allow-tool",
-                "read,write,shell(git:*),shell(swift:*),shell(./script/*),shell(xcodebuild:*)"
+                "read",
+                "write",
+                "shell(git:*)",
+                "shell(swift:*)",
+                "shell(./script/*)",
+                "shell(xcodebuild:*)"
             ]
         case .restricted:
             let mapped = allowedTools.isEmpty
                 ? ["read", "shell(git status)", "shell(git diff)", "shell(git log)"]
                 : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)
             guard !mapped.isEmpty else { return [] }
-            return ["--allow-tool", Array(Set(mapped)).sorted().joined(separator: ",")]
+            return ["--allow-tool"] + Array(Set(mapped)).sorted()
         case .interactive:
             return []
         }

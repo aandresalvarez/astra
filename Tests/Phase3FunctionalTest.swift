@@ -9,7 +9,7 @@ import SwiftData
 /// Three agents debate state management libraries and produce a comparison matrix.
 
 private func makeTestContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }

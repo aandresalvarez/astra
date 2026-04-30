@@ -78,6 +78,24 @@ struct CopilotStreamEventParserTests {
             Issue.record("Expected result stats")
         }
     }
+
+    @Test("Result event with usage and summary maps to one result")
+    func resultStatsAndSummary() {
+        let line = #"{"type":"result","usage":{"input_tokens":12,"output_tokens":4,"cost_usd":0.02},"duration_ms":50,"turns":1,"summary":"done"}"#
+        let events = CopilotStreamEventParser.parseAll(line: line)
+        #expect(events.count == 1)
+        if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = events.first {
+            #expect(text == "done")
+            #expect(cost == 0.02)
+            #expect(input == 12)
+            #expect(output == 4)
+            #expect(duration == 50)
+            #expect(turns == 1)
+            #expect(!isError)
+        } else {
+            Issue.record("Expected one merged result event")
+        }
+    }
 }
 
 @Suite("Copilot CLI Command Planning")
@@ -129,7 +147,7 @@ struct CopilotCLICommandPlanningTests {
 
         #expect(!plan.parsesJSONLines)
         #expect(plan.arguments.contains("--allow-all-tools"))
-        #expect(plan.arguments.contains("--allow-all-paths"))
+        #expect(!plan.arguments.contains("--allow-all-paths"))
         #expect(!plan.arguments.contains("--output-format=json"))
     }
 
@@ -141,6 +159,8 @@ struct CopilotCLICommandPlanningTests {
             requiresAllowAllToolsForPrompt: false
         )
         let joined = args.joined(separator: " ")
+        #expect(args.first == "--allow-tool")
+        #expect(!args.contains { $0.contains(",") })
         #expect(joined.contains("read"))
         #expect(joined.contains("write"))
         #expect(joined.contains("shell(git:*)"))
@@ -193,7 +213,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let schema = Schema(ASTRASchemaV1.models)
+        let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
         let context = container.mainContext
@@ -221,5 +241,86 @@ struct CopilotWorkerExecutionTests {
         #expect(run.outputTokens == 3)
         #expect(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("copilot-output.txt").path))
         #expect(run.fileChanges.contains { $0.path.hasSuffix("copilot-output.txt") })
+    }
+
+    @Test("Worker records Copilot edits to files that were already dirty")
+    func fakeCopilotRecordsAlreadyDirtyFileEdits() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-dirty-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try Self.run(["git", "init"], in: workspaceURL)
+        try Self.run(["git", "config", "user.email", "astra@example.invalid"], in: workspaceURL)
+        try Self.run(["git", "config", "user.name", "ASTRA Tests"], in: workspaceURL)
+        try "clean\n".write(to: workspaceURL.appendingPathComponent("dirty.txt"), atomically: true, encoding: .utf8)
+        try Self.run(["git", "add", "dirty.txt"], in: workspaceURL)
+        try Self.run(["git", "commit", "-m", "initial"], in: workspaceURL)
+        try "dirty before run\n".write(to: workspaceURL.appendingPathComponent("dirty.txt"), atomically: true, encoding: .utf8)
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"edited dirty file"}}'
+        printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":10,"turns":1}'
+        printf 'changed during run\\n' >> dirty.txt
+        printf 'new during run\\n' > new-file.txt
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Dirty", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Edit files", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let worker = ClaudeCodeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        let run = try #require(task.runs.first)
+        #expect(run.fileChanges.contains { $0.path.hasSuffix("dirty.txt") })
+        #expect(run.fileChanges.contains { $0.path.hasSuffix("new-file.txt") })
+    }
+
+    @discardableResult
+    private static func run(_ arguments: [String], in directory: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            throw NSError(
+                domain: "CopilotRuntimeTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: error.isEmpty ? output : error]
+            )
+        }
+        return output
     }
 }

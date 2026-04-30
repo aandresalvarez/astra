@@ -85,6 +85,7 @@ struct TaskMainView: View {
                     workspace: ws,
                     prefillName: task.title,
                     prefillGoal: task.goal,
+                    prefillRuntimeID: task.resolvedRuntimeID.rawValue,
                     prefillModel: task.model,
                     prefillBudget: task.tokenBudget,
                     prefillSkillIDs: Set(task.skills.map { $0.id.uuidString }),
@@ -1705,6 +1706,7 @@ struct TaskMainView: View {
         if let hour = json["dailyHour"] as? Int { schedule.dailyHour = hour }
         if let minute = json["dailyMinute"] as? Int { schedule.dailyMinute = minute }
         if let dow = json["weeklyDayOfWeek"] as? Int { schedule.weeklyDayOfWeek = dow }
+        schedule.runtimeID = task.resolvedRuntimeID.rawValue
         if let m = json["model"] as? String { schedule.model = m } else { schedule.model = task.model }
 
         schedule.tokenBudget = task.tokenBudget

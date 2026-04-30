@@ -2,9 +2,10 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -232,6 +233,8 @@ struct WorkspacePersistenceTests {
         context.insert(sourceTask)
 
         let schedule = TaskSchedule(name: "Watcher", goal: "Check updates", workspace: workspace)
+        schedule.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        schedule.model = AgentRuntimeID.copilotCLI.defaultModel
         schedule.conversationContext = "User asked for a concise summary."
         schedule.resultMode = .scheduleLog
         schedule.sourceTaskID = sourceTask.id
@@ -247,6 +250,7 @@ struct WorkspacePersistenceTests {
         #expect(config.schedules?.first?.resultMode == ScheduleResultMode.scheduleLog.rawValue)
         #expect(config.schedules?.first?.sourceTaskID == sourceTask.id.uuidString)
         #expect(config.schedules?.first?.runResultsJSON == schedule.runResultsJSON)
+        #expect(config.schedules?.first?.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(config.schedules?.first?.lastFiredAt == schedule.lastFiredAt)
 
         let importedContainer = try makeWorkspacePersistenceContainer()
@@ -256,6 +260,7 @@ struct WorkspacePersistenceTests {
         #expect(importedSchedule.resultMode == .scheduleLog)
         #expect(importedSchedule.sourceTaskID == sourceTask.id)
         #expect(importedSchedule.runResultsJSON == schedule.runResultsJSON)
+        #expect(importedSchedule.resolvedRuntimeID == .copilotCLI)
         #expect(importedSchedule.lastFiredAt == schedule.lastFiredAt)
     }
 

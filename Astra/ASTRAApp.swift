@@ -83,7 +83,7 @@ public struct ASTRAApp: App {
         NSApplication.shared.activate(ignoringOtherApps: true)
         AppLogger.audit(.appActivated, category: "App")
 
-        let schema = Schema(ASTRASchemaV1.models)
+        let schema = ASTRASchema.current
 
         // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })

@@ -5,7 +5,7 @@ import SwiftData
 import ASTRACore
 
 private func makeContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -107,6 +107,15 @@ struct SchedulePropertyTests {
         let vars = schedule.templateVariables
         #expect(vars["file"] == "main.swift")
         #expect(vars["mode"] == "strict")
+    }
+
+    @Test("runtimeID resolves to a stable provider")
+    func runtimeIDResolution() {
+        let defaultSchedule = TaskSchedule(name: "Default")
+        #expect(defaultSchedule.resolvedRuntimeID == .claudeCode)
+
+        let copilotSchedule = TaskSchedule(name: "Copilot", runtimeID: AgentRuntimeID.copilotCLI.rawValue, model: "gpt-5")
+        #expect(copilotSchedule.resolvedRuntimeID == .copilotCLI)
     }
 
     @Test("frequencySummary for each type")

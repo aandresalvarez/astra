@@ -1942,7 +1942,7 @@ struct ChatPanelView: View {
             let scheduleTypeRaw = json["scheduleType"] as? String ?? "daily"
             let scheduleType = ScheduleType(rawValue: scheduleTypeRaw) ?? .daily
 
-            let schedule = TaskSchedule(name: name, goal: goal, workspace: ws, scheduleType: scheduleType)
+            let schedule = TaskSchedule(name: name, goal: goal, workspace: ws, runtimeID: defaultRuntimeID, scheduleType: scheduleType)
 
             // Configure based on type
             if let interval = json["intervalSeconds"] as? Int {

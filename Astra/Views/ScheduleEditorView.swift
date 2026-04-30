@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 
 struct ScheduleEditorView: View {
     @Environment(\.modelContext) private var modelContext
@@ -11,6 +12,7 @@ struct ScheduleEditorView: View {
     // Prefill from existing task (Convert to Schedule)
     var prefillName: String?
     var prefillGoal: String?
+    var prefillRuntimeID: String?
     var prefillModel: String?
     var prefillBudget: Int?
     var prefillSkillIDs: Set<String>?
@@ -22,8 +24,12 @@ struct ScheduleEditorView: View {
     var prefillIntervalSeconds: Int?
     var prefillSourceTaskID: UUID?
 
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("defaultModel") private var defaultModel = AgentRuntimeID.claudeCode.defaultModel
+
     @State private var name = ""
     @State private var goal = ""
+    @State private var runtimeID = AgentRuntimeID.claudeCode.rawValue
     @State private var model = "claude-sonnet-4-6"
     @State private var tokenBudget = 50000
     @State private var scheduleType: ScheduleType = .daily
@@ -46,11 +52,6 @@ struct ScheduleEditorView: View {
         return (workspaceSkills + enabledGlobals).sorted { $0.name < $1.name }
     }
 
-    private let models: [(id: String, label: String)] = [
-        ("claude-opus-4-6", "Opus 4.6"),
-        ("claude-sonnet-4-6", "Sonnet 4.6"),
-        ("claude-haiku-4-5-20251001", "Haiku 4.5")
-    ]
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
     private let intervalPresets = [
         (label: "15 min", value: 900),
@@ -262,15 +263,33 @@ struct ScheduleEditorView: View {
 
                         VStack(spacing: 1) {
                             fieldRow {
-                                Text("Model").foregroundStyle(Stanford.coolGrey)
+                                Text("Provider").foregroundStyle(Stanford.coolGrey)
                                 Spacer()
-                                Picker("", selection: $model) {
-                                    ForEach(models, id: \.id) { m in
-                                        Text(m.label).tag(m.id)
+                                Picker("", selection: $runtimeID) {
+                                    ForEach(AgentRuntimeID.allCases) { runtime in
+                                        Text(runtime.displayName).tag(runtime.rawValue)
                                     }
                                 }
                                 .labelsHidden()
-                                .frame(width: 140)
+                                .frame(width: 180)
+                                .onChange(of: runtimeID) {
+                                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+                                    if !runtime.defaultModels.contains(model) {
+                                        model = runtime.defaultModel
+                                    }
+                                }
+                            }
+                            Divider().padding(.leading, 16)
+                            fieldRow {
+                                Text("Model").foregroundStyle(Stanford.coolGrey)
+                                Spacer()
+                                Picker("", selection: $model) {
+                                    ForEach(runtimeModels, id: \.self) { candidate in
+                                        Text(candidate).tag(candidate)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 180)
                             }
                             Divider().padding(.leading, 16)
                             fieldRow {
@@ -401,6 +420,7 @@ struct ScheduleEditorView: View {
             if let s = schedule {
                 name = s.name
                 goal = s.goal
+                runtimeID = s.resolvedRuntimeID.rawValue
                 model = s.model
                 tokenBudget = s.tokenBudget
                 scheduleType = s.scheduleType
@@ -413,9 +433,15 @@ struct ScheduleEditorView: View {
                 resultMode = s.resultMode
             } else {
                 // Apply prefill values (Convert to Schedule flow)
+                runtimeID = prefillRuntimeID ?? defaultRuntimeID
                 if let n = prefillName { name = n }
                 if let g = prefillGoal { goal = g }
-                if let m = prefillModel { model = m }
+                if let m = prefillModel {
+                    model = m
+                } else {
+                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+                    model = runtime.defaultModels.contains(defaultModel) ? defaultModel : runtime.defaultModel
+                }
                 if let b = prefillBudget { tokenBudget = b }
                 if let t = prefillScheduleType { scheduleType = t }
                 if let h = prefillHour { dailyHour = h }
@@ -424,6 +450,7 @@ struct ScheduleEditorView: View {
                 if let i = prefillIntervalSeconds { intervalSeconds = i }
                 if let ids = prefillSkillIDs { selectedSkillIDs = ids }
             }
+            alignModelWithRuntime()
         }
     }
 
@@ -445,6 +472,17 @@ struct ScheduleEditorView: View {
         .font(Stanford.body(14))
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private var runtimeModels: [String] {
+        (AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode).defaultModels
+    }
+
+    private func alignModelWithRuntime() {
+        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+        if !runtime.defaultModels.contains(model) {
+            model = runtime.defaultModel
+        }
     }
 
     private var timePicker: some View {
@@ -479,6 +517,7 @@ struct ScheduleEditorView: View {
 
         s.name = name.trimmingCharacters(in: .whitespaces)
         s.goal = goal.trimmingCharacters(in: .whitespaces)
+        s.runtimeID = runtimeID
         s.model = model
         s.tokenBudget = tokenBudget
         s.scheduleType = scheduleType
