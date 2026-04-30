@@ -30,4 +30,3 @@ enum ApprovedCapabilityBundle {
         bundle.url(forResource: "Capabilities", withExtension: nil)
     }
 }
-
