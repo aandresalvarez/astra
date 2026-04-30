@@ -139,7 +139,7 @@ struct PluginCatalogLoadTests {
         let catalog = PluginCatalog()
 
         catalog.loadApprovedCapabilities(library: library)
-        #expect(catalog.packages.map(\.id).contains("code-reviewer"))
+        #expect(catalog.packages.map(\.id).contains("security-auditor"))
 
         try library.install(package)
         catalog.loadApprovedCapabilities(library: library)

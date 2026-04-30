@@ -144,7 +144,7 @@ public enum CommonCLIPrerequisites {
         livenessArgs: ["version", "--format", "{{.Client.Version}}"],
         semantic: .stderrNoDaemonError,
         displayName: "Docker",
-        purpose: "Talks to the local Docker daemon for the Docker Manager skill.",
+        purpose: "Talks to the local Docker daemon for Docker-based workflows.",
         installURL: URL(string: "https://docs.docker.com/desktop/install/mac-install/"),
         installHint: "Install Docker Desktop and make sure it's running.",
         authHint: "Start Docker Desktop if the daemon is unreachable."
