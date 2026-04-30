@@ -109,6 +109,21 @@ struct PluginPackagePrereqTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
     }
 
+    @Test("Built-in REDCap package has Stanford API connector")
+    func builtInREDCapHasStanfordConnector() {
+        let redcap = PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" }
+        #expect(redcap != nil)
+        #expect(redcap?.category == "Integrations")
+        #expect(redcap?.connectors.count == 1)
+        #expect(redcap?.connectors.first?.serviceType == "redcap")
+        #expect(redcap?.connectors.first?.baseURL == "https://redcap.stanford.edu/api/")
+        #expect(redcap?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
+        #expect(redcap?.localTools.map(\.command) == ["curl"])
+        #expect(redcap?.skills.first?.environmentKeys == ["REDCAP_API_URL"])
+        #expect(redcap?.skills.first?.environmentValues == ["https://redcap.stanford.edu/api/"])
+        #expect(redcap?.skills.first?.behaviorInstructions.contains("content=formEventMapping") == true)
+    }
+
     @Test("Built-in Docker package has docker prereq")
     func builtInDockerHasPrereq() {
         let docker = PluginCatalog.builtInPackages.first { $0.id == "docker-manager" }

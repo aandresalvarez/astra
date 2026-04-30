@@ -183,6 +183,7 @@ struct CapabilityLibraryTests {
             "gcloud-workflow",
             "github-workflow",
             "jira-workflow",
+            "redcap-workflow",
             "security-auditor"
         ]
 
@@ -193,6 +194,8 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.connectors.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.map(\.command) == ["gh"])
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
+        #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
+        #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
     }
 
     @Test("local catalog source reads installed capability packages")
