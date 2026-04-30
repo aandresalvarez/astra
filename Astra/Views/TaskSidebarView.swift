@@ -749,9 +749,13 @@ struct TaskSidebarView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(Stanford.ui(14, weight: .medium))
+                    .font(Stanford.ui(18, weight: .bold))
                     .foregroundStyle(Stanford.cardinalRed)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Stanford.cardinalRed.opacity(isHovered ? 0.12 : 0.07))
+                    )
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)

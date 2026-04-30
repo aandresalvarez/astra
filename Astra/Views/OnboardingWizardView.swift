@@ -27,6 +27,8 @@ struct OnboardingWizardView: View {
     /// Called when the user hits "Create First Workspace" on the final step.
     /// The wrapping ContentView opens the actual workspace-creation sheet.
     var onCreateWorkspace: () -> Void
+    var allowsDismiss: Bool
+    var onDismiss: () -> Void
 
     static let requiredCLIPrerequisites: [CLIPrerequisite] = [
         CommonCLIPrerequisites.claude,
@@ -38,10 +40,14 @@ struct OnboardingWizardView: View {
     init(
         hasCompletedOnboarding: Binding<Bool>,
         initialStep: Step = .welcome,
+        allowsDismiss: Bool = false,
+        onDismiss: @escaping () -> Void = {},
         onCreateWorkspace: @escaping () -> Void
     ) {
         self._hasCompletedOnboarding = hasCompletedOnboarding
         self._currentStep = State(initialValue: initialStep)
+        self.allowsDismiss = allowsDismiss
+        self.onDismiss = onDismiss
         self.onCreateWorkspace = onCreateWorkspace
     }
 
@@ -90,7 +96,17 @@ struct OnboardingWizardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            progressBar
+            HStack(spacing: 12) {
+                progressBar
+                    .frame(maxWidth: .infinity)
+                if allowsDismiss {
+                    Button("Close") { onDismiss() }
+                        .font(Stanford.body(13))
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityLabel("Close onboarding")
+                }
+            }
+            .padding(.trailing, allowsDismiss ? 20 : 0)
             Divider()
 
             ScrollView {

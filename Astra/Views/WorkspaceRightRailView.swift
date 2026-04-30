@@ -414,9 +414,29 @@ struct WorkspaceRightRailView: View {
             catalogPackages: approvedCapabilityPackages,
             capabilities: capabilities
         ).map(makePackageCapabilityItem).sorted {
+            let lhsPriority = railCapabilityPriority($0)
+            let rhsPriority = railCapabilityPriority($1)
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
             if $0.isEnabled != $1.isEnabled { return $0.isEnabled && !$1.isEnabled }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    private func railCapabilityPriority(_ item: RailCapabilityItem) -> Int {
+        let normalizedID: String? = {
+            if case .package(let package) = item.source {
+                return package.id.lowercased()
+            }
+            return nil
+        }()
+        let normalizedName = item.name
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+
+        if normalizedName.contains("bigquery") { return 0 }
+        if normalizedID == "jira-workflow" || normalizedName.contains("jira") { return 1 }
+        if normalizedID == "redcap-workflow" || normalizedName.contains("redcap") { return 2 }
+        return 100
     }
 
     private func makePackageCapabilityItem(_ package: PluginPackage) -> RailCapabilityItem {

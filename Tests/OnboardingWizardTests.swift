@@ -70,6 +70,7 @@ struct OnboardingWizardTests {
     @Test("Onboarding completion uses the Astra-specific storage key")
     func completionStorageKeyIsNamespaced() {
         #expect(AppStorageKeys.hasCompletedOnboarding == "astra.hasCompletedOnboarding")
+        #expect(AppStorageKeys.hasPresentedOnboarding == "astra.hasPresentedOnboarding")
         #expect(AppStorageKeys.skipPermissions == "skipPermissions")
         #expect(AppStorageKeys.securityGateDefaultedToReview == "astra.securityGateDefaultedToReview.v1")
     }

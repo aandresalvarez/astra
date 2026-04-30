@@ -45,6 +45,10 @@ struct ContentView: View {
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
+    /// Tracks whether the wizard has ever been presented. The first
+    /// presentation remains modal; later manual replays can be dismissed.
+    @AppStorage(AppStorageKeys.hasPresentedOnboarding) private var hasPresentedOnboarding = false
+    @State private var isReplayingOnboarding = false
     /// Shared preflight cache — one instance for the whole app run so the
     /// wizard's probe of `claude` warms the cache for the catalog badges
     /// (and vice versa).
@@ -309,14 +313,24 @@ struct ContentView: View {
         .focusedValue(\.importWorkspaceAction, { importWorkspace() })
         .sheet(isPresented: Binding(
             get: { !hasCompletedOnboarding && !isUITestingSeededLaunch },
-            set: { _ in }
+            set: { isPresented in
+                if !isPresented, isReplayingOnboarding {
+                    hasCompletedOnboarding = true
+                }
+            }
         )) {
             OnboardingWizardView(
                 hasCompletedOnboarding: $hasCompletedOnboarding,
+                allowsDismiss: isReplayingOnboarding,
+                onDismiss: { hasCompletedOnboarding = true },
                 onCreateWorkspace: { createWorkspace() }
             )
             .environment(\.preflightCache, runtime.preflightCache)
-            .interactiveDismissDisabled(true)
+            .interactiveDismissDisabled(!isReplayingOnboarding)
+            .onAppear {
+                isReplayingOnboarding = hasPresentedOnboarding
+                hasPresentedOnboarding = true
+            }
         }
     }
 
@@ -919,6 +933,9 @@ struct ContentView: View {
     }
 
     private func handleAppear() {
+        if hasCompletedOnboarding, !hasPresentedOnboarding {
+            hasPresentedOnboarding = true
+        }
         applySecurityGateDefaultIfNeeded()
         applySettings()
         seedTestDataIfNeeded()
