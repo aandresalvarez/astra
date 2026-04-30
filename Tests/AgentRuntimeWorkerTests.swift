@@ -306,4 +306,58 @@ struct BuildPromptTests {
         #expect(prompt.contains("Create an agent team with 3 teammates"))
         #expect(prompt.contains("Focus on security"))
     }
+
+    @Test("Initial prompt includes Astra Run Protocol instructions")
+    func initialPromptIncludesAstraRunProtocol() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-arp")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        let worker = AgentRuntimeWorker()
+        let prompt = worker.buildPrompt(for: task)
+
+        #expect(prompt.contains("Astra Run Protocol v1:"))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
+    }
+
+    @Test("Follow-up prompt includes the same Astra Run Protocol instructions")
+    func followUpPromptIncludesAstraRunProtocol() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-arp-followup")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: task)
+
+        #expect(prompt.contains("Astra Run Protocol v1:"))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
+    }
+
+    @Test("Copilot prompt includes Astra Run Protocol instructions through runtime capability")
+    func copilotPromptIncludesAstraRunProtocol() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-arp-copilot")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(AgentRuntimeID.copilotCLI.supportsAstraRunProtocol)
+        #expect(prompt.contains("Astra Run Protocol v1:"))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
+        #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
+    }
 }

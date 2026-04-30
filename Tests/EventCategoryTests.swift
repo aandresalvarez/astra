@@ -32,7 +32,8 @@ struct EventCategoryTests {
 
     @Test("System events categorized correctly")
     func systemCategory() {
-        let types = ["error", "budget.exceeded", "task.stats", "task.chained"]
+        let types = ["error", "budget.exceeded", "task.stats", "task.chained",
+                     "astra.todo.replace", "astra.complete", "astra.protocol.invalid"]
         for type in types {
             #expect(TaskEvent.categoryFor(type: type) == "system", "Expected 'system' for \(type)")
         }

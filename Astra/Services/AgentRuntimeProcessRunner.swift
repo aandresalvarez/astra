@@ -61,6 +61,9 @@ final class AgentRuntimeProcessRunner {
 
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
+            let eventPipeline = AgentRuntimeEventPipelineBox(
+                supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+            )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 maxTurns: task.maxTurns,
@@ -82,7 +85,9 @@ final class AgentRuntimeProcessRunner {
                     if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                         onLine(line)
                         for parsed in StreamEventParser.parseAll(line: line) {
-                            _ = monitor.processEvent(parsed, process: process)
+                            for filtered in eventPipeline.process(parsed) {
+                                _ = monitor.processEvent(filtered, process: process)
+                            }
                         }
                     }
                 }
@@ -103,6 +108,14 @@ final class AgentRuntimeProcessRunner {
                 let remaining = lineBuffer.value
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)
+                    for parsed in StreamEventParser.parseAll(line: remaining) {
+                        for filtered in eventPipeline.process(parsed) {
+                            _ = monitor.processEvent(filtered, process: process)
+                        }
+                    }
+                }
+                for filtered in eventPipeline.flushParsedEvents() {
+                    _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
                 resumeOnce(AgentProcessResult(
@@ -185,6 +198,9 @@ final class AgentRuntimeProcessRunner {
 
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
+            let eventPipeline = AgentRuntimeEventPipelineBox(
+                supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
+            )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 maxTurns: task.maxTurns,
@@ -209,7 +225,9 @@ final class AgentRuntimeProcessRunner {
                         ? CopilotStreamEventParser.parseAll(line: line)
                         : [ParsedEvent.text(text: line)]
                     for parsed in parsedEvents {
-                        _ = monitor.processEvent(parsed, process: process)
+                        for filtered in eventPipeline.process(parsed) {
+                            _ = monitor.processEvent(filtered, process: process)
+                        }
                     }
                 }
                 lineBuffer.value = buffer
@@ -229,6 +247,17 @@ final class AgentRuntimeProcessRunner {
                 let remaining = lineBuffer.value
                 if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onLine(remaining, plan.parsesJSONLines)
+                    let parsedEvents = plan.parsesJSONLines
+                        ? CopilotStreamEventParser.parseAll(line: remaining)
+                        : [ParsedEvent.text(text: remaining)]
+                    for parsed in parsedEvents {
+                        for filtered in eventPipeline.process(parsed) {
+                            _ = monitor.processEvent(filtered, process: process)
+                        }
+                    }
+                }
+                for filtered in eventPipeline.flushParsedEvents() {
+                    _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
                 resumeOnce(AgentProcessResult(
@@ -308,6 +337,9 @@ final class AgentRuntimeProcessRunner {
 
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
+            let eventPipeline = AgentRuntimeEventPipelineBox(
+                supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+            )
             let monitor = AgentProcessMonitor(
                 tokenBudget: remainingBudget,
                 maxTurns: task.maxTurns,
@@ -329,7 +361,9 @@ final class AgentRuntimeProcessRunner {
                     if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                         onLine(line)
                         for parsed in StreamEventParser.parseAll(line: line) {
-                            _ = monitor.processEvent(parsed, process: process)
+                            for filtered in eventPipeline.process(parsed) {
+                                _ = monitor.processEvent(filtered, process: process)
+                            }
                         }
                     }
                 }
@@ -350,6 +384,14 @@ final class AgentRuntimeProcessRunner {
                 let remaining = lineBuffer.value
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)
+                    for parsed in StreamEventParser.parseAll(line: remaining) {
+                        for filtered in eventPipeline.process(parsed) {
+                            _ = monitor.processEvent(filtered, process: process)
+                        }
+                    }
+                }
+                for filtered in eventPipeline.flushParsedEvents() {
+                    _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
                 resumeOnce(AgentProcessResult(

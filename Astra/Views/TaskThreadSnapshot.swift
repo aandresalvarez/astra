@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum TaskConversationItem: Identifiable {
     case userMessage(text: String, timestamp: Date)
@@ -33,13 +34,36 @@ struct TaskRunActivity {
     static let empty = TaskRunActivity(tools: [], toolResults: [], fileChanges: [])
 }
 
+struct TaskProtocolTodoItem: Identifiable, Hashable {
+    let id: String
+    let text: String
+    let status: AstraRunProtocolEvent.TodoStatus
+
+    var isDone: Bool { status == .done }
+}
+
+struct TaskRunProtocolState: Equatable {
+    var todoItems: [TaskProtocolTodoItem] = []
+    var completionSummary: String?
+    var verifiedBy: String?
+    var invalidEventCount = 0
+
+    static let empty = TaskRunProtocolState()
+
+    var hasCompletion: Bool {
+        completionSummary?.isEmpty == false
+    }
+}
+
 struct TaskThreadSnapshot {
     let sortedEvents: [TaskEvent]
     let sortedRuns: [TaskRun]
     let latestRun: TaskRun?
     let conversationItems: [TaskConversationItem]
+    let latestAgentPlanItems: [TaskProtocolTodoItem]
 
     private let activityByRunID: [UUID: TaskRunActivity]
+    private let protocolByRunID: [UUID: TaskRunProtocolState]
 
     static let empty = TaskThreadSnapshot(
         goal: "",
@@ -64,16 +88,41 @@ struct TaskThreadSnapshot {
 
         var toolsByRunID: [UUID: [TaskEvent]] = [:]
         var resultsByRunID: [UUID: [TaskEvent]] = [:]
+        var protocolStatesByRunID: [UUID: TaskRunProtocolState] = [:]
+        var latestPlanItems: [TaskProtocolTodoItem] = []
 
         for event in sortedEvents {
-            guard let runID = event.run?.id else { continue }
-            switch event.type {
-            case "tool.use":
-                toolsByRunID[runID, default: []].append(event)
-            case "tool.result" where !event.payload.isEmpty:
-                resultsByRunID[runID, default: []].append(event)
-            default:
-                break
+            if let runID = event.run?.id {
+                switch event.type {
+                case "tool.use":
+                    toolsByRunID[runID, default: []].append(event)
+                case "tool.result" where !event.payload.isEmpty:
+                    resultsByRunID[runID, default: []].append(event)
+                default:
+                    break
+                }
+            }
+
+            if let runID = event.run?.id {
+                var state = protocolStatesByRunID[runID] ?? .empty
+                switch event.type {
+                case "astra.todo.replace":
+                    if case .todoReplace(let items)? = AstraRunProtocolEvent.decodeNormalizedPayload(event.payload) {
+                        let mapped = Self.protocolTodoItems(from: items, eventID: event.id)
+                        state.todoItems = mapped
+                        latestPlanItems = mapped
+                    }
+                case "astra.complete":
+                    if case .complete(let summary, let verifiedBy)? = AstraRunProtocolEvent.decodeNormalizedPayload(event.payload) {
+                        state.completionSummary = summary
+                        state.verifiedBy = verifiedBy
+                    }
+                case "astra.protocol.invalid":
+                    state.invalidEventCount += 1
+                default:
+                    break
+                }
+                protocolStatesByRunID[runID] = state
             }
         }
 
@@ -86,17 +135,24 @@ struct TaskThreadSnapshot {
             )
         }
         activityByRunID = activity
+        protocolByRunID = protocolStatesByRunID
+        latestAgentPlanItems = latestPlanItems
 
         conversationItems = Self.makeConversationItems(
             goal: goal,
             createdAt: createdAt,
             events: sortedEvents,
-            runs: sortedRuns
+            runs: sortedRuns,
+            protocolByRunID: protocolStatesByRunID
         )
     }
 
     func activity(for run: TaskRun) -> TaskRunActivity {
         activityByRunID[run.id] ?? .empty
+    }
+
+    func protocolState(for run: TaskRun) -> TaskRunProtocolState {
+        protocolByRunID[run.id] ?? .empty
     }
 
     private static func summarizeToolEvents(_ events: [TaskEvent]) -> [TaskToolSummary] {
@@ -120,7 +176,8 @@ struct TaskThreadSnapshot {
         goal: String,
         createdAt: Date,
         events: [TaskEvent],
-        runs: [TaskRun]
+        runs: [TaskRun],
+        protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> [TaskConversationItem] {
         var items: [TaskConversationItem] = [
             .userMessage(text: goal, timestamp: createdAt)
@@ -136,7 +193,9 @@ struct TaskThreadSnapshot {
 
         for event in conversationEvents {
             for run in runs where !addedRunIDs.contains(run.id) {
-                if let completed = run.completedAt, completed <= event.timestamp, !run.output.isEmpty {
+                if let completed = run.completedAt,
+                   completed <= event.timestamp,
+                   shouldShowAgentResponse(for: run, protocolByRunID: protocolByRunID) {
                     items.append(.agentResponse(run: run))
                     addedRunIDs.insert(run.id)
                 }
@@ -156,11 +215,31 @@ struct TaskThreadSnapshot {
             }
         }
 
-        for run in runs where !addedRunIDs.contains(run.id) && !run.output.isEmpty {
+        for run in runs where !addedRunIDs.contains(run.id) && shouldShowAgentResponse(for: run, protocolByRunID: protocolByRunID) {
             items.append(.agentResponse(run: run))
         }
 
         return items
+    }
+
+    private static func shouldShowAgentResponse(
+        for run: TaskRun,
+        protocolByRunID: [UUID: TaskRunProtocolState]
+    ) -> Bool {
+        !run.output.isEmpty || protocolByRunID[run.id]?.hasCompletion == true
+    }
+
+    private static func protocolTodoItems(
+        from items: [AstraRunProtocolEvent.TodoItem],
+        eventID: UUID
+    ) -> [TaskProtocolTodoItem] {
+        items.enumerated().map { index, item in
+            TaskProtocolTodoItem(
+                id: "\(eventID.uuidString)-\(index)",
+                text: item.text,
+                status: item.status
+            )
+        }
     }
 }
 

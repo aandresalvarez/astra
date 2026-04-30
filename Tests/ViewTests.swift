@@ -163,6 +163,72 @@ struct TaskThreadSnapshotTests {
         #expect(activity.toolResults.first?.payload == "result")
     }
 
+    @Test("Latest agent plan derives from newest ARP todo.replace event")
+    func latestAgentPlanDerivesFromProtocolEvents() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let firstPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Old step", status: .pending)
+        ])).normalizedPayload
+        let secondPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Inspect", status: .done),
+            AstraRunProtocolEvent.TodoItem(text: "Test", status: .pending)
+        ])).normalizedPayload
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [
+                makeEvent(task: task, type: "astra.todo.replace", payload: firstPayload, timestamp: Date(timeIntervalSince1970: 1), run: run),
+                makeEvent(task: task, type: "astra.todo.replace", payload: secondPayload, timestamp: Date(timeIntervalSince1970: 2), run: run)
+            ],
+            runs: [run]
+        )
+
+        #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Inspect", "Test"])
+        #expect(snapshot.latestAgentPlanItems.map(\.isDone) == [true, false])
+        #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
+    }
+
+    @Test("Conversation includes run with ARP completion even when output is empty")
+    func protocolCompletionCreatesConversationItem() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = createdAt
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 110)
+        run.completedAt = Date(timeIntervalSince1970: 120)
+        run.output = ""
+
+        let payload = AstraRunProtocolParsedEvent.valid(.complete(
+            summary: "Implementation complete.",
+            verifiedBy: "swift test"
+        )).normalizedPayload
+        let event = makeEvent(
+            task: task,
+            type: "astra.complete",
+            payload: payload,
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [event],
+            runs: [run]
+        )
+
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected agent response for protocol-only completion")
+            return
+        }
+        #expect(responseRun === run)
+        #expect(snapshot.protocolState(for: run).completionSummary == "Implementation complete.")
+        #expect(snapshot.protocolState(for: run).verifiedBy == "swift test")
+    }
+
     @Test("Large snapshot fixture preserves per-run activity grouping")
     func largeSnapshotFixture() {
         let task = makeTask()
@@ -610,6 +676,9 @@ struct TimelineDisplayTests {
         ("agent.thinking", "brain"),
         ("agent.response", "text.bubble"),
         ("tool.use", "wrench"),
+        ("astra.todo.replace", "checklist"),
+        ("astra.complete", "checkmark.seal"),
+        ("astra.protocol.invalid", "exclamationmark.triangle"),
         ("task.completed", "checkmark.circle"),
         ("task.stats", "chart.bar"),
         ("budget.exceeded", "exclamationmark.triangle"),
@@ -622,6 +691,9 @@ struct TimelineDisplayTests {
         ("agent.thinking", "Thinking"),
         ("agent.response", "Response"),
         ("tool.use", "Tool"),
+        ("astra.todo.replace", "Agent Plan"),
+        ("astra.complete", "Agent Completion"),
+        ("astra.protocol.invalid", "Invalid Protocol"),
         ("task.completed", "Completed"),
         ("task.stats", "Stats"),
         ("budget.exceeded", "Budget Exceeded"),
@@ -637,6 +709,9 @@ struct TimelineDisplayTests {
         case "agent.thinking": "brain"
         case "agent.response": "text.bubble"
         case "tool.use": "wrench"
+        case "astra.todo.replace": "checklist"
+        case "astra.complete": "checkmark.seal"
+        case "astra.protocol.invalid": "exclamationmark.triangle"
         case "task.completed": "checkmark.circle"
         case "task.stats": "chart.bar"
         case "budget.exceeded": "exclamationmark.triangle"
@@ -654,6 +729,9 @@ struct TimelineDisplayTests {
         case "agent.thinking": "Thinking"
         case "agent.response": "Response"
         case "tool.use": "Tool"
+        case "astra.todo.replace": "Agent Plan"
+        case "astra.complete": "Agent Completion"
+        case "astra.protocol.invalid": "Invalid Protocol"
         case "task.completed": "Completed"
         case "task.stats": "Stats"
         case "budget.exceeded": "Budget Exceeded"

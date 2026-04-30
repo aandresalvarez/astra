@@ -51,7 +51,10 @@ enum AgentEventRecorder {
                 run.costUSD = cost
             }
             if let text, run.output.isEmpty {
-                run.output = text
+                let visibleText = visibleTextWithoutProtocolMarkers(text)
+                if !visibleText.isEmpty {
+                    run.output = visibleText
+                }
             }
 
             let details = [
@@ -137,6 +140,9 @@ enum AgentEventRecorder {
                 "tool": tool
             ], level: .warning)
 
+        case .astraProtocol(let event):
+            recordAstraProtocol(event, to: task, run: run, modelContext: modelContext)
+
         case .unknown(let type):
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
                 "event": "unknown_stream_event",
@@ -184,6 +190,8 @@ enum AgentEventRecorder {
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
                 "tool": tool
             ], level: .warning)
+        case .astraProtocol(let event):
+            recordAstraProtocol(event, to: task, run: run, modelContext: modelContext)
         default:
             break
         }
@@ -251,8 +259,14 @@ enum AgentEventRecorder {
 
         case .completed(let summary):
             if let summary, run.output.isEmpty {
-                run.output = summary
+                let visibleText = visibleTextWithoutProtocolMarkers(summary)
+                if !visibleText.isEmpty {
+                    run.output = visibleText
+                }
             }
+
+        case .astraProtocol(let event):
+            recordAstraProtocol(event, to: task, run: run, modelContext: modelContext)
 
         case .failed(let message):
             modelContext.insert(TaskEvent(task: task, type: "error", payload: message, run: run))
@@ -281,6 +295,8 @@ enum AgentEventRecorder {
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):
             return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .astraProtocol(let event):
+            return .astraProtocol(event)
         case .completed(let summary):
             return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
         case .failed(let message):
@@ -288,6 +304,32 @@ enum AgentEventRecorder {
         case .fileChange, .unknown:
             return nil
         }
+    }
+
+    @MainActor
+    private static func recordAstraProtocol(
+        _ event: AstraRunProtocolParsedEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: event.taskEventType,
+            payload: event.normalizedPayload,
+            run: run
+        ))
+    }
+
+    private static func visibleTextWithoutProtocolMarkers(_ text: String) -> String {
+        var pipeline = AgentRuntimeEventPipeline(supportsAstraRunProtocol: true)
+        var output = ""
+        for item in pipeline.process(ParsedEvent.text(text: text)) + pipeline.flushParsedEvents() {
+            if case .text(let text) = item {
+                output += text
+            }
+        }
+        return output
     }
 
     @MainActor

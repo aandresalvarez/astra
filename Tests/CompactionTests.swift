@@ -1,6 +1,14 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import ASTRA
+import ASTRACore
+
+private func makeCompactionTestContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
 
 @Suite("Event Compaction")
 @MainActor
@@ -76,5 +84,34 @@ struct CompactionTests {
         #expect(kept.first == 250)
         #expect(kept.last == 299)
         #expect(kept.count == 50)
+    }
+
+    @Test("Compaction preserves Astra protocol events")
+    func preservesAstraProtocolEvents() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+        let protocolPayload = AstraRunProtocolParsedEvent.valid(.complete(
+            summary: "Finished",
+            verifiedBy: "swift test"
+        )).normalizedPayload
+
+        for index in 0..<210 {
+            let event: TaskEvent
+            if index == 10 || index == 20 {
+                event = TaskEvent(task: task, type: "astra.complete", payload: protocolPayload)
+            } else {
+                event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            }
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+
+        let protocolEvents = task.events.filter { $0.type == "astra.complete" }
+        #expect(protocolEvents.count == 2)
+        #expect(task.events.contains { $0.type == "activity.compacted" })
     }
 }

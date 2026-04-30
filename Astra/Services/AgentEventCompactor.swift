@@ -11,7 +11,10 @@ enum AgentEventCompactor {
         guard events.count > threshold else { return }
 
         let cutoff = events.count - keepCount
-        let toCompact = Array(events.prefix(cutoff))
+        let toCompact = events
+            .prefix(cutoff)
+            .filter { !$0.type.hasPrefix("astra.") }
+        guard !toCompact.isEmpty else { return }
 
         var typeCounts: [String: Int] = [:]
         for event in toCompact {

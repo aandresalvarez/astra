@@ -111,6 +111,19 @@ struct ProcessMonitorTests {
         #expect(monitor.estimatedTokens == 100) // 50 + max(50, 10/4)
     }
 
+    @Test("Astra protocol events do not affect budget or repetition")
+    func astraProtocolEventsAreAdvisory() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1, maxRepetitions: 1)
+        let event = ParsedEvent.astraProtocol(.valid(.complete(summary: "Done", verifiedBy: "swift test")))
+
+        let shouldKill = monitor.processEvent(event, process: nil)
+
+        #expect(shouldKill == false)
+        #expect(monitor.estimatedTokens == 0)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.repetitionKilled == false)
+    }
+
     // MARK: - Repetition Circuit Breaker
 
     @Test("Repetition kills after max identical events")
@@ -171,6 +184,7 @@ struct ProcessMonitorTests {
             AgentRuntimeWorker.ProcessMonitor.eventSignature(.toolResult(toolId: "t1", content: "")),
             AgentRuntimeWorker.ProcessMonitor.eventSignature(.systemInit(model: "sonnet", sessionId: "s1")),
             AgentRuntimeWorker.ProcessMonitor.eventSignature(.result(text: nil, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)),
+            AgentRuntimeWorker.ProcessMonitor.eventSignature(.astraProtocol(.invalid(reason: "bad marker"))),
         ]
         // All signatures should be unique
         #expect(Set(sigs).count == sigs.count)

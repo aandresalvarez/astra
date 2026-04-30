@@ -28,6 +28,13 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
             ["gpt-5", "claude-sonnet-4.5", "claude-sonnet-4"]
         }
     }
+
+    public var supportsAstraRunProtocol: Bool {
+        switch self {
+        case .claudeCode, .copilotCLI:
+            true
+        }
+    }
 }
 
 public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
@@ -37,6 +44,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let installHint: String
     public let authHint: String
     public let defaultModels: [String]
+    public let supportsAstraRunProtocol: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -44,7 +52,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: String,
         installHint: String,
         authHint: String,
-        defaultModels: [String]
+        defaultModels: [String],
+        supportsAstraRunProtocol: Bool
     ) {
         self.id = id
         self.displayName = displayName
@@ -52,6 +61,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.installHint = installHint
         self.authHint = authHint
         self.defaultModels = defaultModels
+        self.supportsAstraRunProtocol = supportsAstraRunProtocol
     }
 
     public static let claudeCode = AgentRuntimeDescriptor(
@@ -60,7 +70,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: "claude",
         installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
-        defaultModels: AgentRuntimeID.claudeCode.defaultModels
+        defaultModels: AgentRuntimeID.claudeCode.defaultModels,
+        supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
     )
 
     public static let copilotCLI = AgentRuntimeDescriptor(
@@ -69,7 +80,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: "copilot",
         installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
-        defaultModels: AgentRuntimeID.copilotCLI.defaultModels
+        defaultModels: AgentRuntimeID.copilotCLI.defaultModels,
+        supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
     )
 }
 
@@ -82,6 +94,7 @@ public enum AgentEvent: Sendable, Equatable {
     case fileChange(path: String, kind: String, summary: String?)
     case permissionRequested(tool: String, reason: String)
     case stats(inputTokens: Int, outputTokens: Int, costUSD: Double?, durationMs: Int?, turns: Int?)
+    case astraProtocol(AstraRunProtocolParsedEvent)
     case completed(summary: String?)
     case failed(message: String)
     case unknown(provider: String, type: String, raw: String)

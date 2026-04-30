@@ -183,6 +183,9 @@ final class AgentRuntimeWorker {
         // final status. Without this, fire-and-forget Task blocks race with the
         // post-process code that reads task.tokensUsed, task.costUSD, etc.
         let pendingEvents = PendingTaskCollector()
+        let eventPipeline = AgentRuntimeEventPipelineBox(
+            supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+        )
 
         let result = await processRunner.runClaudeProcess(
             prompt: prompt,
@@ -194,16 +197,28 @@ final class AgentRuntimeWorker {
             onLine: { line in
                 // Parse each JSON line into structured events
                 for parsed in StreamEventParser.parseAll(line: line) {
-                    let t = Task { @MainActor [weak self] in
-                        guard self != nil else { return }
+                    for filtered in eventPipeline.process(parsed) {
+                        let t = Task { @MainActor [weak self] in
+                            guard self != nil else { return }
 
-                        AgentEventRecorder.recordClaudeRunEvent(parsed, to: task, run: run, modelContext: modelContext)
-                        onEvent(parsed)
+                            AgentEventRecorder.recordClaudeRunEvent(filtered, to: task, run: run, modelContext: modelContext)
+                            onEvent(filtered)
+                        }
+                        pendingEvents.add(t)
                     }
-                    pendingEvents.add(t)
                 }
             }
         )
+
+        for parsed in eventPipeline.flushParsedEvents() {
+            let t = Task { @MainActor [weak self] in
+                guard self != nil else { return }
+
+                AgentEventRecorder.recordClaudeRunEvent(parsed, to: task, run: run, modelContext: modelContext)
+                onEvent(parsed)
+            }
+            pendingEvents.add(t)
+        }
 
         // Drain all pending event-processing tasks before setting final status.
         // This ensures tokensUsed, costUSD, and all SwiftData inserts are complete.
@@ -459,6 +474,9 @@ final class AgentRuntimeWorker {
         ])
 
         let pendingEvents = PendingTaskCollector()
+        let eventPipeline = AgentRuntimeEventPipelineBox(
+            supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+        )
 
         let result = await processRunner.runClaudeProcess(
             prompt: followUpPrompt,
@@ -469,14 +487,24 @@ final class AgentRuntimeWorker {
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
                 for parsed in StreamEventParser.parseAll(line: line) {
-                    let t = Task { @MainActor in
-                        AgentEventRecorder.recordClaudeFollowUpEvent(parsed, to: task, run: run, modelContext: modelContext)
-                        onEvent(parsed)
+                    for filtered in eventPipeline.process(parsed) {
+                        let t = Task { @MainActor in
+                            AgentEventRecorder.recordClaudeFollowUpEvent(filtered, to: task, run: run, modelContext: modelContext)
+                            onEvent(filtered)
+                        }
+                        pendingEvents.add(t)
                     }
-                    pendingEvents.add(t)
                 }
             }
         )
+
+        for parsed in eventPipeline.flushParsedEvents() {
+            let t = Task { @MainActor in
+                AgentEventRecorder.recordClaudeFollowUpEvent(parsed, to: task, run: run, modelContext: modelContext)
+                onEvent(parsed)
+            }
+            pendingEvents.add(t)
+        }
 
         // Drain all pending event-processing tasks before setting final status
         await pendingEvents.drainAll()
@@ -693,6 +721,9 @@ final class AgentRuntimeWorker {
         }
 
         let pendingEvents = PendingTaskCollector()
+        let eventPipeline = AgentRuntimeEventPipelineBox(
+            supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
+        )
         let result = await processRunner.runCopilotProcess(
             prompt: prompt,
             task: task,
@@ -706,17 +737,29 @@ final class AgentRuntimeWorker {
                     ? CopilotStreamEventParser.parseAgentEvents(line: line)
                     : [.text(text: line + "\n")]
                 for event in events {
-                    let t = Task { @MainActor [weak self] in
-                        guard self != nil else { return }
-                        AgentEventRecorder.recordCopilotEvent(event, to: task, run: run, modelContext: modelContext)
-                        if let parsed = AgentEventRecorder.parsedEvent(from: event) {
-                            onEvent(parsed)
+                    for filtered in eventPipeline.process(event) {
+                        let t = Task { @MainActor [weak self] in
+                            guard self != nil else { return }
+                            AgentEventRecorder.recordCopilotEvent(filtered, to: task, run: run, modelContext: modelContext)
+                            if let parsed = AgentEventRecorder.parsedEvent(from: filtered) {
+                                onEvent(parsed)
+                            }
                         }
+                        pendingEvents.add(t)
                     }
-                    pendingEvents.add(t)
                 }
             }
         )
+        for event in eventPipeline.flushAgentEvents() {
+            let t = Task { @MainActor [weak self] in
+                guard self != nil else { return }
+                AgentEventRecorder.recordCopilotEvent(event, to: task, run: run, modelContext: modelContext)
+                if let parsed = AgentEventRecorder.parsedEvent(from: event) {
+                    onEvent(parsed)
+                }
+            }
+            pendingEvents.add(t)
+        }
         await pendingEvents.drainAll()
 
         AgentFileChangeDetector.appendInferredFileChanges(

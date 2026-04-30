@@ -17,6 +17,39 @@ final class AgentLockedBuffer: @unchecked Sendable {
     }
 }
 
+final class AgentRuntimeEventPipelineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pipeline: AgentRuntimeEventPipeline
+
+    init(supportsAstraRunProtocol: Bool) {
+        pipeline = AgentRuntimeEventPipeline(supportsAstraRunProtocol: supportsAstraRunProtocol)
+    }
+
+    func process(_ event: ParsedEvent) -> [ParsedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.process(event)
+    }
+
+    func process(_ event: AgentEvent) -> [AgentEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.process(event)
+    }
+
+    func flushParsedEvents() -> [ParsedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.flushParsedEvents()
+    }
+
+    func flushAgentEvents() -> [AgentEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.flushAgentEvents()
+    }
+}
+
 struct AgentProcessResult {
     let exitCode: Int
     let error: String?
@@ -92,6 +125,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         lastActivityTime = Date()
 
+        if case .astraProtocol = parsed {
+            return false
+        }
+
         if case .result = parsed {
             _turnCount += 1
             if maxTurns > 0 && _turnCount >= maxTurns {
@@ -148,6 +185,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             _estimatedTokens += 50
         case .permissionDenied:
             _estimatedTokens += 50
+        case .astraProtocol:
+            break
         case .systemInit, .unknown:
             _estimatedTokens += 20
         case .result:
@@ -219,6 +258,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         case .teamDeleted(let name): return "team.deleted:\(name)"
         case .teamMessage(let from, let to, _): return "team.msg:\(from)->\(to)"
         case .permissionDenied(let tool, _): return "perm.denied:\(tool)"
+        case .astraProtocol: return "astra.protocol"
         case .unknown(let type): return "unknown:\(type)"
         }
     }

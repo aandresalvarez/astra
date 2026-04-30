@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum AgentPromptBuilder {
     static func buildPrompt(for task: AgentTask) -> String {
@@ -48,6 +49,9 @@ enum AgentPromptBuilder {
         appendConnectorContext(for: task, to: &parts)
         appendToolContext(for: task, to: &parts)
         appendDocumentReaderContext(to: &parts)
+        if task.resolvedRuntimeID.supportsAstraRunProtocol {
+            appendAstraRunProtocolInstructions(to: &parts)
+        }
 
         if task.useAgentTeam {
             var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
@@ -286,6 +290,10 @@ enum AgentPromptBuilder {
             parts.append(memoriesBlock)
         }
 
+        if task.resolvedRuntimeID.supportsAstraRunProtocol {
+            appendAstraRunProtocolInstructions(to: &parts)
+        }
+
         parts.append("User's follow-up request:\n\(message)")
 
         return parts.joined(separator: "\n\n")
@@ -366,5 +374,19 @@ enum AgentPromptBuilder {
             if files.count >= 30 { break }
         }
         return files
+    }
+
+    private static func appendAstraRunProtocolInstructions(to parts: inout [String]) {
+        parts.append("""
+        Astra Run Protocol v1:
+        Emit structured progress markers only when useful, each on its own line and outside code fences.
+        Marker prefix must be exactly `ASTRA_EVENT ` followed by one JSON object.
+        Supported markers:
+        ASTRA_EVENT {"v":1,"type":"todo.replace","items":[{"text":"Short step","status":"pending"}]}
+        ASTRA_EVENT {"v":1,"type":"complete","summary":"What changed and what is ready for review.","verifiedBy":"Tests or checks run"}
+        For todo.replace, replace the whole visible plan. Each item status must be `pending` or `done`.
+        For complete, summarize completed work and include verifiedBy when you ran checks. This marker is advisory only: keep writing the final response normally and do not rely on it to end the task.
+        Do not wrap ASTRA_EVENT lines in markdown, quotes, bullets, or code fences.
+        """)
     }
 }

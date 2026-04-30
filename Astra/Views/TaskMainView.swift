@@ -324,7 +324,9 @@ struct TaskMainView: View {
             case .userMessage(let text, _):
                 lines.append("User: \(text)")
             case .agentResponse(let run):
-                let output = String(run.output.prefix(3000))
+                let protocolState = currentThreadSnapshot.protocolState(for: run)
+                let response = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
+                let output = String(response.prefix(3000))
                 lines.append("Agent: \(output)")
             case .scheduleResult(let text, _):
                 lines.append("Schedule: \(text)")
@@ -404,6 +406,11 @@ struct TaskMainView: View {
                     .background(Stanford.plum.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .padding(.horizontal, 14)
+                }
+
+                if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
+                    agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
+                        .padding(.horizontal, 14)
                 }
 
                 ForEach(currentThreadSnapshot.conversationItems) { item in
@@ -720,8 +727,10 @@ struct TaskMainView: View {
 
     private func chatAgentBubble(run: TaskRun) -> some View {
         let activity = currentThreadSnapshot.activity(for: run)
+        let protocolState = currentThreadSnapshot.protocolState(for: run)
         let toolEvents = activity.tools
         let isExpanded = expandedRunActivity.contains(run.id)
+        let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
 
         return VStack(alignment: .leading, spacing: 8) {
             // Collapsible tool activity
@@ -779,10 +788,16 @@ struct TaskMainView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.poppy.opacity(0.3), lineWidth: 1))
             }
 
+            if protocolState.hasCompletion {
+                agentCompletionPanel(protocolState)
+            }
+
             // Response text — flows directly, no card
-            MarkdownTextView(text: run.output)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+            if !run.output.isEmpty {
+                MarkdownTextView(text: run.output)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
 
             // Generated files
             if run.id == latestRun?.id && !threadViewModel.generatedFilePaths.isEmpty {
@@ -809,7 +824,7 @@ struct TaskMainView: View {
             HStack(spacing: 12) {
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(run.output, forType: .string)
+                    NSPasteboard.general.setString(copyText, forType: .string)
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(Stanford.ui(12))
@@ -860,6 +875,78 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist")
+                    .font(Stanford.ui(12, weight: .semibold))
+                Text("Agent Plan")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Spacer()
+            }
+            .foregroundStyle(Stanford.coolGrey)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(items) { item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                            .font(Stanford.ui(12, weight: .semibold))
+                            .foregroundStyle(item.isDone ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                            .frame(width: 14, height: 16)
+                        Text(item.text)
+                            .font(Stanford.body(13))
+                            .foregroundStyle(item.isDone ? Stanford.coolGrey : Stanford.black)
+                            .strikethrough(item.isDone, color: Stanford.coolGrey)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Stanford.fog.opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Stanford.coolGrey.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func agentCompletionPanel(_ state: TaskRunProtocolState) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(Stanford.ui(15))
+                .foregroundStyle(Stanford.paloAltoGreen)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                if let summary = state.completionSummary {
+                    Text(summary)
+                        .font(Stanford.body(14))
+                        .foregroundStyle(Stanford.black)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                if let verifiedBy = state.verifiedBy, !verifiedBy.isEmpty {
+                    Text("Verified by \(verifiedBy)")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Stanford.paloAltoGreen.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Stanford.paloAltoGreen.opacity(0.24), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
