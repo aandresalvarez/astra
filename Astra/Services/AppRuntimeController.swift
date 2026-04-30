@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Observable @MainActor
 final class AppRuntimeController {
@@ -25,12 +26,18 @@ final class AppRuntimeController {
 
     func applySettings(
         claudePath: String,
+        copilotPath: String,
+        defaultRuntimeID: String,
         timeoutSeconds: Int,
         validationModel: String,
         skipPermissions: Bool
     ) {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
         taskQueue.applySettings(
             claudePath: claudePath.isEmpty ? nil : claudePath,
+            copilotPath: copilotPath.isEmpty ? nil : copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome(),
+            defaultRuntimeID: runtime,
             timeoutSeconds: TimeInterval(timeoutSeconds),
             validationModel: validationModel,
             skipPermissions: skipPermissions
@@ -42,7 +49,7 @@ final class AppRuntimeController {
     }
 
     func loadPluginCatalog() {
-        pluginCatalog.loadCatalog()
+        pluginCatalog.loadApprovedCapabilities()
     }
 
     func backfillThreadTitlesIfNeeded(

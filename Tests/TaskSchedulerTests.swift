@@ -5,7 +5,7 @@ import SwiftData
 import ASTRACore
 
 private func makeContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -107,6 +107,15 @@ struct SchedulePropertyTests {
         let vars = schedule.templateVariables
         #expect(vars["file"] == "main.swift")
         #expect(vars["mode"] == "strict")
+    }
+
+    @Test("runtimeID resolves to a stable provider")
+    func runtimeIDResolution() {
+        let defaultSchedule = TaskSchedule(name: "Default")
+        #expect(defaultSchedule.resolvedRuntimeID == .claudeCode)
+
+        let copilotSchedule = TaskSchedule(name: "Copilot", runtimeID: AgentRuntimeID.copilotCLI.rawValue, model: "gpt-5")
+        #expect(copilotSchedule.resolvedRuntimeID == .copilotCLI)
     }
 
     @Test("frequencySummary for each type")
@@ -275,6 +284,35 @@ struct ScheduleFireLogicTests {
 
         #expect(task.skills.count == 1)
         #expect(task.skills[0].name == "Test Skill")
+    }
+
+    @Test("Schedule skill resolution includes only enabled shared skills")
+    func scheduleSharedSkillResolution() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Shared Schedule", primaryPath: "/tmp/shared-schedule")
+        ctx.insert(ws)
+
+        let enabledShared = Skill(name: "Enabled Shared", allowedTools: ["Read"])
+        enabledShared.isGlobal = true
+        ctx.insert(enabledShared)
+        ws.enabledGlobalSkillIDs = [enabledShared.id.uuidString]
+
+        let disabledShared = Skill(name: "Disabled Shared", allowedTools: ["Read"])
+        disabledShared.isGlobal = true
+        ctx.insert(disabledShared)
+
+        let schedule = TaskSchedule(name: "Skilled", goal: "G", workspace: ws)
+        schedule.skillIDs = [enabledShared.id.uuidString, disabledShared.id.uuidString]
+        ctx.insert(schedule)
+        try ctx.save()
+
+        let resolved = TaskScheduler.resolvedSkills(
+            for: schedule,
+            globalSkills: [enabledShared, disabledShared]
+        )
+
+        #expect(resolved.map(\.name) == ["Enabled Shared"])
     }
 
     @Test("Due vs future filtering logic")

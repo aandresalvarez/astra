@@ -46,6 +46,7 @@ struct PluginPackagePrereqTests {
         let pkg = try JSONDecoder().decode(PluginPackage.self, from: legacy)
         #expect(pkg.id == "legacy-pkg")
         #expect(pkg.prerequisites.isEmpty)
+        #expect(pkg.sourceMetadata == nil)
     }
 
     @Test("Encoded JSON round-trips with prerequisites preserved")
@@ -66,6 +67,27 @@ struct PluginPackagePrereqTests {
         #expect(decoded.prerequisites.first?.binary == "gcloud")
     }
 
+    @Test("Encoded JSON round-trips source metadata")
+    func roundTripWithSourceMetadata() throws {
+        let source = CapabilitySourceMetadata.remoteApproved(
+            id: "stanford-approved",
+            displayName: "Stanford Approved",
+            url: URL(string: "https://capabilities.stanford.edu")
+        )
+        let pkg = PluginPackage(
+            id: "rt-source", name: "RT Source", icon: "circle", description: "d",
+            author: "a", category: "c", tags: [],
+            version: "1.0.0",
+            skills: [], connectors: [], localTools: [], templates: [],
+            sourceMetadata: source
+        )
+        let data = try JSONEncoder().encode(pkg)
+        let decoded = try JSONDecoder().decode(PluginPackage.self, from: data)
+
+        #expect(decoded.sourceMetadata == source)
+        #expect(decoded.sourceMetadata?.trustLevel == "remote-approved")
+    }
+
     @Test("Built-in Google Cloud package has gcloud + auth prereqs")
     func builtInGCloudHasPrereqs() {
         let gcp = PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" }
@@ -73,6 +95,18 @@ struct PluginPackagePrereqTests {
         #expect(gcp?.prerequisites.count == 2)
         #expect(gcp?.prerequisites.first?.binary == "gcloud")
         #expect(gcp?.prerequisites.last?.semantic == .stdoutNonEmpty)
+    }
+
+    @Test("Built-in GitHub package is CLI-only and requires gh")
+    func builtInGitHubIsCLIOnly() {
+        let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
+        #expect(github != nil)
+        #expect(github?.connectors.isEmpty == true)
+        #expect(github?.localTools.map(\.command) == ["gh"])
+        #expect(github?.prerequisites.count == 2)
+        #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])
+        #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status"])
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
     }
 
     @Test("Built-in Docker package has docker prereq")

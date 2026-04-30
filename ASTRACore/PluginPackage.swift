@@ -1,5 +1,64 @@
 import Foundation
 
+public struct CapabilitySourceMetadata: Codable, Sendable, Equatable {
+    public var id: String
+    public var displayName: String
+    public var kind: String
+    public var url: URL?
+    public var trustLevel: String
+    public var lastRefreshedAt: Date?
+
+    public init(
+        id: String,
+        displayName: String,
+        kind: String,
+        url: URL? = nil,
+        trustLevel: String,
+        lastRefreshedAt: Date? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.kind = kind
+        self.url = url
+        self.trustLevel = trustLevel
+        self.lastRefreshedAt = lastRefreshedAt
+    }
+
+    public static func builtIn() -> CapabilitySourceMetadata {
+        CapabilitySourceMetadata(
+            id: "built-in",
+            displayName: "Built-in Capabilities",
+            kind: "built-in",
+            trustLevel: "built-in"
+        )
+    }
+
+    public static func localLibrary() -> CapabilitySourceMetadata {
+        CapabilitySourceMetadata(
+            id: "local",
+            displayName: "Local Capability Library",
+            kind: "local",
+            trustLevel: "local"
+        )
+    }
+
+    public static func remoteApproved(
+        id: String,
+        displayName: String,
+        url: URL?,
+        lastRefreshedAt: Date? = nil
+    ) -> CapabilitySourceMetadata {
+        CapabilitySourceMetadata(
+            id: id,
+            displayName: displayName,
+            kind: "remote",
+            url: url,
+            trustLevel: "remote-approved",
+            lastRefreshedAt: lastRefreshedAt
+        )
+    }
+}
+
 public struct PluginPackage: Codable, Identifiable {
     public var formatVersion: Int
     public var id: String
@@ -20,6 +79,7 @@ public struct PluginPackage: Codable, Identifiable {
     public var conflicts: [String]?
     public var signature: String?
     public var isTrusted: Bool = false
+    public var sourceMetadata: CapabilitySourceMetadata?
     /// External CLI tools this package needs in order to actually work.
     /// The catalog renders these as preflight badges so users see
     /// "gcloud required ✓ found" before they install.
@@ -43,7 +103,8 @@ public struct PluginPackage: Codable, Identifiable {
         connectors: [PluginConnector],
         localTools: [PluginLocalTool],
         templates: [PluginTemplate],
-        prerequisites: [CLIPrerequisite] = []
+        prerequisites: [CLIPrerequisite] = [],
+        sourceMetadata: CapabilitySourceMetadata? = nil
     ) {
         self.formatVersion = formatVersion
         self.id = id
@@ -60,6 +121,7 @@ public struct PluginPackage: Codable, Identifiable {
         self.localTools = localTools
         self.templates = templates
         self.prerequisites = prerequisites
+        self.sourceMetadata = sourceMetadata
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +144,7 @@ public struct PluginPackage: Codable, Identifiable {
         requires = try c.decodeIfPresent([String].self, forKey: .requires)
         conflicts = try c.decodeIfPresent([String].self, forKey: .conflicts)
         signature = try c.decodeIfPresent(String.self, forKey: .signature)
+        sourceMetadata = try c.decodeIfPresent(CapabilitySourceMetadata.self, forKey: .sourceMetadata)
         // Legacy fixtures pre-date `prerequisites`. Default to empty so
         // every pre-existing catalog JSON still decodes cleanly.
         prerequisites = try c.decodeIfPresent([CLIPrerequisite].self, forKey: .prerequisites) ?? []

@@ -2,6 +2,8 @@ import SwiftUI
 
 enum AppStorageKeys {
     static let hasCompletedOnboarding = "astra.hasCompletedOnboarding"
+    static let skipPermissions = "skipPermissions"
+    static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
 }
 
 /// User-controllable override for light/dark mode. Persisted in

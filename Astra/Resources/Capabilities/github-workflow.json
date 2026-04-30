@@ -1,0 +1,92 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+
+  ],
+  "description" : "Manage issues, PRs, and CI from your workspace",
+  "formatVersion" : 2,
+  "icon" : "chevron.left.forwardslash.chevron.right",
+  "id" : "github-workflow",
+  "isTrusted" : false,
+  "localTools" : [
+    {
+      "arguments" : "",
+      "command" : "gh",
+      "description" : "Run GitHub CLI commands (issues, PRs, repos, actions)",
+      "icon" : "terminal",
+      "name" : "gh — GitHub CLI",
+      "toolType" : "cli"
+    }
+  ],
+  "name" : "GitHub Workflow",
+  "prerequisites" : [
+    {
+      "authHint" : "Run `gh auth login`.",
+      "binary" : "gh",
+      "displayName" : "GitHub CLI",
+      "installHint" : "Install via Homebrew: `brew install gh`",
+      "installURL" : "https:\/\/cli.github.com\/",
+      "livenessArgs" : [
+        "--version"
+      ],
+      "purpose" : "Runs GitHub commands for repository workflows."
+    },
+    {
+      "authHint" : "Run `gh auth login`.",
+      "binary" : "gh",
+      "displayName" : "GitHub login",
+      "installHint" : "Run `gh auth login`.",
+      "livenessArgs" : [
+        "auth",
+        "status"
+      ],
+      "purpose" : "An authenticated GitHub CLI session is required for issues, pull requests, and Actions."
+    }
+  ],
+  "setupGuide" : "Connect your workspace to GitHub using the GitHub CLI. This capability does not use a stored GitHub connector or token; it runs `gh` against the current repository or an explicit owner\/repo.\n\nWhat you can do:\n• List and search issues and pull requests\n• Read PR diffs, review comments, and CI status\n• Create issues with labels and assignees\n• Post comments on issues and PRs\n• Check workflow runs and deployment status\n\nSetup:\n• Install GitHub CLI: `brew install gh`\n• Authenticate locally: `gh auth login`\n• Run tasks from a cloned GitHub repository, or specify `--repo owner\/repo` in commands",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a GitHub integration agent. Use the GitHub CLI (`gh`) via Bash for GitHub work. Do not rely on stored connector credentials.\n\nAUTHENTICATION\n• Require `gh` to be installed and authenticated locally\n• If authentication fails, tell the user to run `gh auth login`\n• Prefer the current git repository context; use `--repo owner\/repo` when the user specifies a repository outside the current checkout\n\nCOMMON OPERATIONS\n• List issues: gh issue list --state open --limit 30\n• View issue: gh issue view ISSUE_NUMBER --comments\n• Create issue: gh issue create --title \"...\" --body \"...\" --label \"bug\"\n• List PRs: gh pr list --state open --limit 30\n• View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url\n• PR diff: gh pr diff PR_NUMBER\n• Review checks: gh pr checks PR_NUMBER\n• Workflow runs: gh run list --limit 10\n• View workflow run: gh run view RUN_ID --log\n• Comment on issue or PR: gh issue comment NUMBER --body \"...\" or gh pr comment NUMBER --body \"...\"\n\nFORMATTING\n• Issues\/PRs: show number, title, state, author, labels, and URL\n• PR diffs: summarize changes by file and highlight risky modifications\n• CI: show workflow name, status, conclusion, and failing job details\n\nRULES\n• Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows\n• Prefer `--json` output for structured parsing when available\n• Include links to issues\/PRs in your responses\n• Never ask the user to paste GitHub credentials when `gh auth login` is the right fix",
+      "customTools" : [
+
+      ],
+      "description" : "Manage issues, PRs, and CI via GitHub CLI",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+
+      ],
+      "environmentValues" : [
+
+      ],
+      "icon" : "chevron.left.forwardslash.chevron.right",
+      "name" : "GitHub Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "github",
+    "git",
+    "pull-requests",
+    "issues",
+    "ci"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "2.1.1"
+}

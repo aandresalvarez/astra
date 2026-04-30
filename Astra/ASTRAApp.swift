@@ -83,7 +83,7 @@ public struct ASTRAApp: App {
         NSApplication.shared.activate(ignoringOtherApps: true)
         AppLogger.audit(.appActivated, category: "App")
 
-        let schema = Schema(ASTRASchemaV1.models)
+        let schema = ASTRASchema.current
 
         // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
@@ -109,7 +109,7 @@ public struct ASTRAApp: App {
             ])
             if !isUITesting {
                 WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                PluginCatalog().seedBuiltInPlugins()
+                try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                 Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                 Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
             }
@@ -130,7 +130,7 @@ public struct ASTRAApp: App {
                 ])
                 if !isUITesting {
                     WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                    PluginCatalog().seedBuiltInPlugins()
+                    try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                     Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                     Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
                 }

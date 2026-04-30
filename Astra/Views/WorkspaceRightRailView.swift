@@ -1,4 +1,5 @@
 import AppKit
+import ASTRACore
 import SwiftData
 import SwiftUI
 
@@ -43,7 +44,7 @@ struct WorkspaceRightRailView: View {
     let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    var onBrowseCatalog: (() -> Void)?
+    var onManageCapabilities: (() -> Void)?
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
@@ -54,6 +55,9 @@ struct WorkspaceRightRailView: View {
 
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
+
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedTab: WorkspaceRightRailTab = .configure
@@ -70,6 +74,9 @@ struct WorkspaceRightRailView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var editingMemoryIndex: Int?
+    @State private var approvedCapabilityPackages: [PluginPackage] = []
+    @State private var expandedCapabilityID: String?
+    @State private var capabilityError: String?
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -84,43 +91,37 @@ struct WorkspaceRightRailView: View {
         return formatter
     }()
 
+    private var capabilities: WorkspaceCapabilities {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        )
+    }
+
     private var workspaceSkills: [Skill] {
-        workspace.skills
-            .filter { !$0.isGlobal }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        capabilities.workspaceSkills
     }
 
     private var enabledGlobalSkills: [Skill] {
-        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
-        return globalSkills
-            .filter { enabledIDs.contains($0.id.uuidString) && !$0.isSystemBuiltIn }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        capabilities.enabledGlobalSkills
     }
 
     private var availableSkills: [Skill] {
-        workspaceSkills + enabledGlobalSkills.filter { globalSkill in
-            !workspaceSkills.contains { $0.id == globalSkill.id }
-        }
+        capabilities.activeSkills
     }
 
     private var workspaceTools: [LocalTool] {
-        let direct = workspace.localTools
-        let attached = workspaceSkills.flatMap(\.localTools) + enabledGlobalSkills.flatMap(\.localTools)
-        return uniqueTools(direct + attached)
+        capabilities.activeTools
     }
 
     private var enabledGlobalConnectors: [Connector] {
-        let enabledIDs = Set(workspace.enabledGlobalConnectorIDs)
-        return globalConnectors
-            .filter { enabledIDs.contains($0.id.uuidString) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        capabilities.enabledGlobalConnectors
     }
 
     private var workspaceConnectors: [Connector] {
-        let direct = workspace.connectors
-        let attached = workspaceSkills.flatMap(\.connectors) + enabledGlobalSkills.flatMap(\.connectors)
-        let globals = enabledGlobalConnectors.filter { gc in !direct.contains { $0.id == gc.id } }
-        return uniqueConnectors(direct + attached + globals)
+        capabilities.activeConnectors
     }
 
     private var templates: [TaskTemplate] {
@@ -253,23 +254,19 @@ struct WorkspaceRightRailView: View {
         VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
             collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
                 HStack(spacing: 10) {
-                    if let onBrowseCatalog {
+                    if let onManageCapabilities {
                         Button {
-                            onBrowseCatalog()
+                            onManageCapabilities()
                         } label: {
-                            Text("Browse catalog")
+                            Text("Manage capabilities")
                                 .font(Stanford.caption(11).weight(.medium))
                                 .foregroundStyle(Stanford.lagunita)
                         }
                         .buttonStyle(.plain)
                     }
-
-                    capabilityAddMenu
                 }
             } content: {
-                workspaceSkillSection
-                connectorSubsection
-                toolsAndTemplatesPills
+                capabilityList
             }
 
             // CONTEXT (expanded by default)
@@ -300,36 +297,296 @@ struct WorkspaceRightRailView: View {
         .tint(Stanford.lagunita)
         .onAppear {
             loadSSHConnections()
+            refreshApprovedCapabilities()
             applyConfigureDefaults()
         }
         .onChange(of: workspace.primaryPath) { loadSSHConnections() }
+        .alert("Capability could not be updated", isPresented: Binding(
+            get: { capabilityError != nil },
+            set: { if !$0 { capabilityError = nil } }
+        )) {
+            Button("OK", role: .cancel) { capabilityError = nil }
+        } message: {
+            Text(capabilityError ?? "")
+        }
     }
 
-    private var capabilityAddMenu: some View {
-        Menu {
-            Button { onOpenConfigureTab?(.skills, nil) } label: {
-                Label("Add Skill", systemImage: "puzzlepiece.extension")
+    private var capabilityList: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+            if railCapabilityItems.isEmpty {
+                EmptyRailState(
+                    title: "No capabilities enabled",
+                    description: "Open Manage Capabilities to enable approved capabilities for this workspace."
+                )
+            } else {
+                ForEach(railCapabilityItems) { item in
+                    capabilityCard(item)
+                }
             }
-            Button { onOpenConfigureTab?(.connectors, nil) } label: {
-                Label("Add Connector", systemImage: "bolt.horizontal.circle")
-            }
-            Button { onOpenConfigureTab?(.tools, nil) } label: {
-                Label("Add Tool", systemImage: "wrench.and.screwdriver")
-            }
-            Button { onOpenConfigureTab?(.templates, nil) } label: {
-                Label("Add Template", systemImage: "rectangle.3.group")
-            }
-        } label: {
-            Image(systemName: "plus")
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Add capability")
+    }
+
+    private func capabilityCard(_ item: RailCapabilityItem) -> some View {
+        let isExpanded = expandedCapabilityID == item.id
+
+        return VStack(alignment: .leading, spacing: 0) {
+            CapabilityRailRow(
+                icon: item.icon,
+                title: item.name,
+                subtitle: item.summary,
+                color: item.color,
+                readiness: item.readiness,
+                isExpanded: isExpanded,
+                isOn: capabilityEnabledBinding(item),
+                onTap: {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                        expandedCapabilityID = isExpanded ? nil : item.id
+                    }
+                }
+            )
+
+            if isExpanded {
+                capabilityDetails(item)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(Stanford.railInlineCardPadding)
+        .background(Color.primary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
+    }
+
+    private func capabilityDetails(_ item: RailCapabilityItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().opacity(0.3)
+
+            if !item.skillNames.isEmpty {
+                capabilityDetailGroup("Behavior", values: item.skillNames)
+            }
+
+            if !item.connectorNames.isEmpty {
+                capabilityDetailGroup("Connectors", values: item.connectorNames)
+            }
+
+            if !item.toolNames.isEmpty {
+                capabilityDetailGroup("Tools", values: item.toolNames)
+            }
+
+            if !item.requirementNames.isEmpty {
+                capabilityDetailGroup("Requirements", values: item.requirementNames)
+            }
+
+            if item.readiness.level == .needsAttention {
+                capabilityDetailGroup("Needs attention", values: item.readiness.messages)
+            }
+
+            Button {
+                openCapabilityConfiguration(item)
+            } label: {
+                Text("Open configuration")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+        }
+        .padding(.top, 6)
+        .padding(.leading, 25)
+    }
+
+    private func capabilityDetailGroup(_ title: String, values: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(Stanford.ui(9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .tracking(0.4)
+
+            ForEach(values, id: \.self) { value in
+                Text(value)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var railCapabilityItems: [RailCapabilityItem] {
+        CapabilityCatalogInventory.packages(
+            catalogPackages: approvedCapabilityPackages,
+            capabilities: capabilities
+        ).map(makePackageCapabilityItem).sorted {
+            if $0.isEnabled != $1.isEnabled { return $0.isEnabled && !$1.isEnabled }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func makePackageCapabilityItem(_ package: PluginPackage) -> RailCapabilityItem {
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
+
+        return RailCapabilityItem(
+            id: "package:\(package.id)",
+            name: package.name,
+            icon: package.icon,
+            summary: package.description.isEmpty ? package.contentSummary : package.description,
+            color: Stanford.lagunita,
+            isEnabled: state.isEnabled,
+            readiness: state.readiness,
+            source: .package(package),
+            skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
+            connectorNames: (package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
+            toolNames: (package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
+            requirementNames: package.prerequisites.map(\.displayName).uniqueSorted()
+        )
+    }
+
+    private func makeSkillCapabilityItem(_ skill: Skill) -> RailCapabilityItem {
+        let connectors = uniqueConnectors(skill.connectors)
+        let tools = uniqueTools(skill.localTools)
+        let isEnabled = skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : true
+        return RailCapabilityItem(
+            id: "skill:\(skill.id.uuidString)",
+            name: skill.name.isEmpty ? "Untitled Capability" : skill.name,
+            icon: skill.icon,
+            summary: skill.skillDescription.isEmpty ? "\(skill.allowedTools.count) permissions" : skill.skillDescription,
+            color: Stanford.lagunita,
+            isEnabled: isEnabled,
+            readiness: readinessForSkill(isEnabled: isEnabled, connectors: connectors),
+            source: .skill(skill),
+            skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
+            connectorNames: connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }.uniqueSorted(),
+            toolNames: tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }.uniqueSorted(),
+            requirementNames: []
+        )
+    }
+
+    private func readinessForSkill(isEnabled: Bool, connectors: [Connector]) -> CapabilityReadiness {
+        guard isEnabled else { return .inactive }
+
+        let messages = connectors.flatMap { connector -> [String] in
+            guard connector.authMethod != "none" else { return [] }
+            let name = connector.name.isEmpty ? "Connector" : connector.name
+            let missing = connector.missingCredentialKeys()
+            if !missing.isEmpty {
+                return ["\(name): missing \(missing.joined(separator: ", "))"]
+            }
+            if connector.credentialKeys.isEmpty {
+                return ["\(name): no credentials configured"]
+            }
+            return []
+        }
+
+        return messages.isEmpty
+            ? .ready
+            : CapabilityReadiness(level: .needsAttention, messages: messages)
+    }
+
+    private func linkedConnectors(for package: PluginPackage, linkedSkills: [Skill]) -> [Connector] {
+        let packageNames = Set(package.connectors.map(\.name))
+        let active = capabilities.activeConnectors.filter { packageNames.contains($0.name) }
+        return uniqueConnectors(active + linkedSkills.flatMap(\.connectors))
+    }
+
+    private func linkedTools(for package: PluginPackage, linkedSkills: [Skill]) -> [LocalTool] {
+        let packageNames = Set(package.localTools.map(\.name))
+        let active = capabilities.activeTools.filter { packageNames.contains($0.name) }
+        return uniqueTools(active + linkedSkills.flatMap(\.localTools))
+    }
+
+    private func hasEnabledElements(
+        package: PluginPackage,
+        linkedSkills: [Skill],
+        linkedConnectors: [Connector],
+        linkedTools: [LocalTool]
+    ) -> Bool {
+        if linkedSkills.contains(where: { skill in
+            skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : workspace.skills.contains { $0.id == skill.id }
+        }) {
+            return true
+        }
+
+        if linkedConnectors.contains(where: { connector in
+            connector.isGlobal ? workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString) : workspace.connectors.contains { $0.id == connector.id }
+        }) {
+            return true
+        }
+
+        if linkedTools.contains(where: { tool in
+            tool.isGlobal ? workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) : workspace.localTools.contains { $0.id == tool.id }
+        }) {
+            return true
+        }
+
+        return false
+    }
+
+    private func capabilityEnabledBinding(_ item: RailCapabilityItem) -> Binding<Bool> {
+        Binding(
+            get: { item.isEnabled },
+            set: { enabled in
+                setCapability(item, enabled: enabled)
+            }
+        )
+    }
+
+    private func setCapability(_ item: RailCapabilityItem, enabled: Bool) {
+        switch item.source {
+        case .package(let package):
+            if enabled {
+                do {
+                    try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext)
+                    refreshApprovedCapabilities()
+                } catch {
+                    capabilityError = error.localizedDescription
+                }
+            } else {
+                disablePackageCapability(package)
+            }
+        case .skill(let skill):
+            guard skill.isGlobal else { return }
+            let idString = skill.id.uuidString
+            if enabled {
+                if !workspace.enabledGlobalSkillIDs.contains(idString) {
+                    workspace.enabledGlobalSkillIDs.append(idString)
+                }
+            } else {
+                workspace.enabledGlobalSkillIDs.removeAll { $0 == idString }
+            }
+            workspace.updatedAt = Date()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        }
+    }
+
+    private func disablePackageCapability(_ package: PluginPackage) {
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
+
+        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
+        workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
+        workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
+        workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    private func openCapabilityConfiguration(_ item: RailCapabilityItem) {
+        switch item.source {
+        case .package:
+            onOpenConfigureTab?(.capabilities, nil)
+        case .skill(let skill):
+            onOpenConfigureTab?(.skills, skill.id)
+        }
+    }
+
+    private func refreshApprovedCapabilities() {
+        let library = CapabilityLibrary()
+        try? library.seedApprovedPackages(PluginCatalog.builtInPackages)
+        approvedCapabilityPackages = library.installedPackages()
     }
 
     // MARK: - Connector Subsection
@@ -350,8 +607,7 @@ struct WorkspaceRightRailView: View {
                 Spacer()
             }
 
-            let localConnectors = workspace.connectors
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let localConnectors = capabilities.workspaceConnectors
 
             ForEach(localConnectors) { connector in
                 CapabilityRow(
@@ -363,9 +619,7 @@ struct WorkspaceRightRailView: View {
                 )
             }
 
-            let availableGlobals = globalConnectors
-                .filter { gc in !localConnectors.contains { $0.id == gc.id } }
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let availableGlobals = capabilities.availableGlobalConnectors
 
             ForEach(availableGlobals) { connector in
                 CapabilityToggleRow(
@@ -383,13 +637,18 @@ struct WorkspaceRightRailView: View {
 
     @ViewBuilder
     private var toolsAndTemplatesPills: some View {
-        if workspaceTools.isEmpty && templates.isEmpty {
+        let availableGlobalTools = capabilities.availableGlobalTools.filter {
+            !workspace.enabledGlobalToolIDs.contains($0.id.uuidString)
+        }
+        let hasTools = !workspaceTools.isEmpty || !availableGlobalTools.isEmpty
+
+        if !hasTools && templates.isEmpty {
             Text("No tools or templates attached")
                 .font(Stanford.caption(11))
                 .foregroundStyle(.tertiary)
                 .padding(.leading, 2)
         } else {
-            if !workspaceTools.isEmpty {
+            if hasTools {
                 resourceSection(
                     title: "Tools",
                     count: workspaceTools.count,
@@ -397,17 +656,29 @@ struct WorkspaceRightRailView: View {
                     color: Stanford.plum,
                     isExpanded: $isToolsExpanded
                 ) {
-                    resourceRows(
-                        items: workspaceTools,
-                        emptyTitle: "No tools",
-                        emptyDescription: "Add scripts or CLI commands in Configure."
-                    ) { tool in
-                        ResourceRow(
+                    if !workspaceTools.isEmpty {
+                        resourceRows(
+                            items: workspaceTools,
+                            emptyTitle: "No tools",
+                            emptyDescription: "Add scripts or CLI commands in Configure."
+                        ) { tool in
+                            ResourceRow(
+                                icon: LocalTool.iconForType(tool.toolType),
+                                title: tool.name.isEmpty ? "Untitled Tool" : tool.name,
+                                subtitle: tool.displayCommand.isEmpty ? tool.toolType.uppercased() : tool.displayCommand,
+                                color: Stanford.plum,
+                                onEdit: { onOpenConfigureTab?(.tools, tool.id) }
+                            )
+                        }
+                    }
+
+                    ForEach(availableGlobalTools) { tool in
+                        CapabilityToggleRow(
                             icon: LocalTool.iconForType(tool.toolType),
                             title: tool.name.isEmpty ? "Untitled Tool" : tool.name,
                             subtitle: tool.displayCommand.isEmpty ? tool.toolType.uppercased() : tool.displayCommand,
                             color: Stanford.plum,
-                            onEdit: { onOpenConfigureTab?(.tools, tool.id) }
+                            isOn: workspaceGlobalToolBinding(tool)
                         )
                     }
                 }
@@ -1096,10 +1367,7 @@ struct WorkspaceRightRailView: View {
                 )
             }
 
-            let availableGlobals = globalSkills.filter { globalSkill in
-                !globalSkill.isSystemBuiltIn &&
-                !workspaceSkills.contains { $0.id == globalSkill.id }
-            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let availableGlobals = capabilities.availableGlobalSkills
 
             ForEach(availableGlobals) { skill in
                 CapabilityToggleRow(
@@ -1210,8 +1478,34 @@ struct WorkspaceRightRailView: View {
         )
     }
 
+    private func workspaceGlobalToolBinding(_ tool: LocalTool) -> Binding<Bool> {
+        Binding(
+            get: {
+                workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+            },
+            set: { enabled in
+                let idString = tool.id.uuidString
+                if enabled {
+                    if !workspace.enabledGlobalToolIDs.contains(idString) {
+                        workspace.enabledGlobalToolIDs.append(idString)
+                    }
+                } else {
+                    workspace.enabledGlobalToolIDs.removeAll { $0 == idString }
+                }
+                workspace.updatedAt = Date()
+                WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
+            }
+        )
+    }
+
     private func uniqueTools(_ tools: [LocalTool]) -> [LocalTool] {
         Dictionary(grouping: tools, by: \.id)
+            .compactMap { $0.value.first }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
+        Dictionary(grouping: skills, by: \.id)
             .compactMap { $0.value.first }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -1333,6 +1627,105 @@ private struct RailMetricCard: View {
         .padding(.horizontal, 8)
         .background(Color.primary.opacity(0.03))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
+    }
+}
+
+private struct RailCapabilityItem: Identifiable {
+    enum Source {
+        case package(PluginPackage)
+        case skill(Skill)
+    }
+
+    let id: String
+    let name: String
+    let icon: String
+    let summary: String
+    let color: Color
+    let isEnabled: Bool
+    let readiness: CapabilityReadiness
+    let source: Source
+    let skillNames: [String]
+    let connectorNames: [String]
+    let toolNames: [String]
+    let requirementNames: [String]
+}
+
+private struct CapabilityRailRow: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let color: Color
+    let readiness: CapabilityReadiness
+    let isExpanded: Bool
+    let isOn: Binding<Bool>
+    let onTap: () -> Void
+
+    private var readinessColor: Color {
+        switch readiness.level {
+        case .ready:
+            return Stanford.paloAltoGreen
+        case .needsAttention:
+            return Stanford.poppy
+        case .inactive:
+            return Color.secondary.opacity(0.35)
+        }
+    }
+
+    private var readinessLabel: String {
+        switch readiness.level {
+        case .ready:
+            return "Functional"
+        case .needsAttention:
+            return "Needs attention"
+        case .inactive:
+            return "Disabled"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onTap) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .font(Stanford.ui(13, weight: .medium))
+                        .foregroundStyle(isOn.wrappedValue ? color : .secondary)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text(title.isEmpty ? "Untitled Capability" : title)
+                                .font(Stanford.caption(12).weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Circle()
+                                .fill(readinessColor)
+                                .frame(width: 6, height: 6)
+                                .help(readiness.messages.joined(separator: "\n"))
+                                .accessibilityLabel(readinessLabel)
+                        }
+
+                        Text(subtitle.isEmpty ? "No details" : subtitle)
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
     }
 }
 
@@ -1567,6 +1960,17 @@ private struct ResourceRow: View {
             }
         }
         .contentShape(Rectangle())
+    }
+}
+
+private extension Array where Element == String {
+    func uniqueSorted() -> [String] {
+        var seen = Set<String>()
+        return filter { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && seen.insert(trimmed).inserted
+        }
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 }
 

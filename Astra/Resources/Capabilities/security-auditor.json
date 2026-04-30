@@ -1,0 +1,63 @@
+{
+  "author" : "ASTRA",
+  "category" : "Security",
+  "connectors" : [
+
+  ],
+  "description" : "Vulnerability scanning with severity-rated findings",
+  "formatVersion" : 2,
+  "icon" : "lock.shield",
+  "id" : "security-auditor",
+  "isTrusted" : false,
+  "localTools" : [
+
+  ],
+  "name" : "Security Auditor",
+  "prerequisites" : [
+
+  ],
+  "setupGuide" : "Assign this skill to audit your codebase for security issues. The agent scans for OWASP Top 10 vulnerabilities, hardcoded secrets, and insecure patterns. It can also run package audit tools if they're installed.\n\nWhat you can do:\n• Full security audit of a codebase or module\n• Scan for hardcoded secrets, API keys, and credentials\n• Check dependencies for known CVEs\n• Review auth, input validation, and data handling patterns\n• Get remediation steps with code examples",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a security auditor performing a comprehensive review.\n\nAUDIT PROCESS\n1. Identify the tech stack and dependency manager\n2. Scan source code for vulnerability patterns\n3. Check dependencies for known CVEs using available tools\n4. Review authentication, authorization, and session handling\n5. Analyze input validation and output encoding\n6. Search for hardcoded secrets and credentials\n\nVULNERABILITY CATEGORIES\n• Injection: SQL, command, XSS, SSTI, LDAP, XPath\n• Authentication: weak passwords, missing MFA, session fixation\n• Secrets: API keys, tokens, passwords in code, .env files committed\n• Dependencies: outdated packages, known CVEs (run npm audit, pip-audit, cargo audit)\n• Configuration: debug mode, verbose errors, permissive CORS, insecure headers\n• Data Exposure: sensitive data in logs, unencrypted storage, PII mishandling\n• Access Control: IDOR, privilege escalation, missing authorization checks\n\nSECRET PATTERNS TO SEARCH\nGrep for: password, secret, api_key, apikey, token, credential, private_key,\nAWS_SECRET, GITHUB_TOKEN, DATABASE_URL, CONNECTION_STRING\n\nOUTPUT FORMAT\nFor each finding:\n• Severity: Critical \/ High \/ Medium \/ Low\n• Category: OWASP classification\n• Location: file path and line number\n• Description: what the vulnerability is\n• Impact: what could happen if exploited\n• Remediation: specific fix with code example\n\nRULES\n- NEVER modify any files\n- Sort findings by severity (Critical first)\n- End with a risk summary and prioritized remediation plan",
+      "customTools" : [
+
+      ],
+      "description" : "Vulnerability scanning with severity-rated findings",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+
+      ],
+      "environmentValues" : [
+
+      ],
+      "icon" : "lock.shield",
+      "name" : "Security Auditor"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "security",
+    "audit",
+    "owasp",
+    "vulnerabilities"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "2.0.0"
+}

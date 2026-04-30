@@ -74,6 +74,14 @@ final class Connector {
         return result
     }
 
+    func missingCredentialKeys(store: SecretStore = KeychainSecretStore()) -> [String] {
+        let resolved = credentials(store: store)
+        return credentialKeys.filter { key in
+            let value = resolved[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty
+        }
+    }
+
     var config: [String: String] {
         Dictionary(zip(configKeys, configValues), uniquingKeysWith: { _, last in last })
     }
@@ -164,6 +172,17 @@ final class Connector {
         }
 
         let creds = credentials
+        let missingKeys = missingCredentialKeys()
+        if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: [
+                "connector_id": id.uuidString,
+                "service_type": serviceType,
+                "result": "missing_credentials",
+                "missing_count": String(missingKeys.count)
+            ], level: .warning)
+            return (false, "Missing Keychain value: \(missingKeys.joined(separator: ", "))")
+        }
+
         let method = testHTTPMethod.isEmpty ? "GET" : testHTTPMethod.uppercased()
 
         let testPath: String

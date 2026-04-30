@@ -9,7 +9,7 @@ import SwiftData
 /// The Lead agent spawns a Developer and QA Tester to build and test a regex parser.
 
 private func makeTestContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -60,8 +60,8 @@ struct Phase2FunctionalTest {
         #expect(task.useAgentTeam == true, "Task should have teams enabled")
         #expect(task.teamSize == 2, "Team size should be 2")
 
-        // 4. Run through ClaudeCodeWorker
-        let worker = ClaudeCodeWorker()
+        // 4. Run through AgentRuntimeWorker
+        let worker = AgentRuntimeWorker()
         var receivedEvents: [ParsedEvent] = []
 
         await worker.execute(task: task, modelContext: context) { event in

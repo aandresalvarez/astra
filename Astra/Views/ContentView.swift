@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var showingDashboard = false
     @State private var showingLogs = false
     @State private var showingConfigure = false
-    @State private var configureInitialTab: ConfigureTab = .skills
+    @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
@@ -25,16 +25,18 @@ struct ContentView: View {
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
-    @State private var showingPluginCatalog = false
     @State private var renamingWorkspace: Workspace?
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
-    @AppStorage("skipPermissions") private var skipPermissions = true
+    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -63,6 +65,30 @@ struct ContentView: View {
             .joined(separator: ",")
     }
 
+    private var executionSettingsSignature: String {
+        [
+            claudePath,
+            copilotPath,
+            defaultRuntimeID,
+            String(timeoutSeconds),
+            validationModel,
+            String(skipPermissions)
+        ].joined(separator: "|")
+    }
+
+    private var selectedTaskBinding: Binding<AgentTask?> {
+        Binding(
+            get: { selectedTask },
+            set: { setSelectedTask($0) }
+        )
+    }
+
+    private var selectedTaskUnreadSignature: String {
+        guard let selectedTask else { return "" }
+        let unread = selectedTask.unreadAt?.timeIntervalSince1970 ?? 0
+        return "\(selectedTask.id.uuidString):\(unread)"
+    }
+
     private var rightRailInspectorBinding: Binding<Bool> {
         Binding(
             get: {
@@ -78,12 +104,12 @@ struct ContentView: View {
         NavigationSplitView {
             TaskSidebarView(
                 tasks: allTasks,
-                selectedTask: $selectedTask,
+                selectedTask: selectedTaskBinding,
                 taskQueue: runtime.taskQueue,
                 workspaces: workspaces,
                 selectedWorkspace: $selectedWorkspace,
                 onNewTask: {
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     isComposingTask = true
                 },
                 onRunQueue: { runQueue() },
@@ -98,7 +124,7 @@ struct ContentView: View {
                     showingWorkspaceEditor = true
                 },
                 onImportWorkspace: { importWorkspace() },
-                onShowConfigure: { showingConfigure = true },
+                onShowConfigure: { openCapabilitiesManager() },
                 onShowLogs: { showingLogs = true },
                 onShowDashboard: { showingDashboard = true },
                 onDeleteWorkspace: { ws in deleteWorkspace(ws) },
@@ -153,7 +179,7 @@ struct ContentView: View {
                 SearchPanelOverlay(
                     tasks: allTasks,
                     workspaces: workspaces,
-                    selectedTask: $selectedTask,
+                    selectedTask: selectedTaskBinding,
                     selectedWorkspace: $selectedWorkspace,
                     isActive: $isSearchActive
                 )
@@ -243,11 +269,6 @@ struct ContentView: View {
         .sheet(item: $editingSchedule) { schedule in
             ScheduleEditorView(workspace: schedule.workspace ?? selectedWorkspace!, schedule: schedule)
         }
-        .sheet(isPresented: $showingPluginCatalog) {
-            if let ws = selectedWorkspace {
-                PluginCatalogView(workspace: ws, catalog: runtime.pluginCatalog)
-            }
-        }
         .alert("New Workspace", isPresented: $showingNewWorkspace) {
             TextField("Workspace name", text: $newWorkspaceName)
             Button("Cancel", role: .cancel) { newWorkspaceName = "" }
@@ -267,41 +288,18 @@ struct ContentView: View {
         }
         .id(uiScale)
         .onAppear {
-            applySettings()
-            seedTestDataIfNeeded()
-            migrateConnectorCredentials()
-            migrateSkillSecrets()
-            restoreWorkspaceSelection()
-            backfillThreadTitlesIfNeeded()
-            enterUITestComposerIfNeeded()
-            runtime.startScheduler(modelContext: modelContext)
-            runtime.loadPluginCatalog()
-            refreshUpdateSafetyHooks()
-            appUpdateController.probeForUpdatesOnce()
+            handleAppear()
         }
-        .onChange(of: claudePath) { applySettings() }
-        .onChange(of: timeoutSeconds) { applySettings() }
-        .onChange(of: validationModel) { applySettings() }
-        .onChange(of: skipPermissions) { applySettings() }
+        .onChange(of: executionSettingsSignature) { applySettings() }
         .onChange(of: updateSafetySignature) { refreshUpdateSafetyHooks() }
         .onChange(of: workspaceSelectionSignature) {
-            restoreWorkspaceSelection()
-            enterUITestComposerIfNeeded()
+            handleWorkspaceSelectionSignatureChanged()
         }
         .onChange(of: selectedWorkspace) {
-            // Clear selected task when switching workspaces
-            let selectedWorkspaceID = selectedWorkspace?.id
-            let taskWorkspaceID = selectedTask?.workspace?.id
-            if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
-                selectedTask = nil
-            }
-            if isUITestingSeededLaunch {
-                selectedTask = nil
-                isComposingTask = selectedWorkspace != nil
-            } else {
-                isComposingTask = false
-            }
-            persistWorkspaceSelection()
+            handleSelectedWorkspaceChanged()
+        }
+        .onChange(of: selectedTaskUnreadSignature) {
+            markSelectedTaskReadIfNeeded()
         }
         .environment(\.preflightCache, runtime.preflightCache)
         // Publish window-scoped actions so File menu commands (New /
@@ -399,13 +397,13 @@ struct ContentView: View {
                     WorkspaceRightRailView(
                         workspace: workspace,
                         selectedTask: selectedTask,
-                        onConfigure: { configureInitialTab = .skills; configureFocusItemID = nil; showingConfigure = true },
+                        onConfigure: { openCapabilitiesManager() },
                         onEditWorkspace: { showingWorkspaceEditor = true },
                         onShowDashboard: { showingDashboard = true },
                         onShowLogs: { showingLogs = true },
                         onNewSchedule: { showingNewSchedule = true },
                         onEditSchedule: { schedule in editingSchedule = schedule },
-                        onBrowseCatalog: { showingPluginCatalog = true },
+                        onManageCapabilities: { openCapabilitiesManager() },
                         onOpenConfigureTab: { tab, itemID in
                             configureInitialTab = tab
                             configureFocusItemID = itemID
@@ -430,12 +428,12 @@ struct ContentView: View {
                 sshReloadTrigger: sshReloadTrigger,
                 draftToLoad: task,
                 onQuickRun: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                     runSingleTask(task)
                 },
                 onTaskCreated: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onAddSSHConnection: {
@@ -459,9 +457,9 @@ struct ContentView: View {
                 onToggleDone: { t in toggleDone(t) },
                 onMoveToDraft: { task in
                     isComposingTask = false
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     DispatchQueue.main.async {
-                        selectedTask = task
+                        setSelectedTask(task)
                     }
                 },
                 onManageSkills: {
@@ -470,7 +468,7 @@ struct ContentView: View {
                     showingConfigure = true
                 },
                 onForkTask: { forkedTask in
-                    selectedTask = forkedTask
+                    setSelectedTask(forkedTask)
                 }
             )
         } else if isComposingTask, selectedWorkspace != nil {
@@ -479,12 +477,12 @@ struct ContentView: View {
                 workspace: selectedWorkspace,
                 sshReloadTrigger: sshReloadTrigger,
                 onQuickRun: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                     runSingleTask(task)
                 },
                 onTaskCreated: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onAddSSHConnection: {
@@ -502,11 +500,11 @@ struct ContentView: View {
                 tasks: filteredTasks,
                 taskQueue: runtime.taskQueue,
                 onCreateTask: {
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     isComposingTask = true
                 },
                 onOpenTask: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onDeleteTask: { task in
@@ -516,17 +514,23 @@ struct ContentView: View {
                     setDoneState(task, to: isDone)
                 },
                 onRunQueue: { runQueue() },
-                onConfigure: { configureInitialTab = .skills; configureFocusItemID = nil; showingConfigure = true },
+                onConfigure: { openCapabilitiesManager() },
                 onShowDashboard: { showingDashboard = true },
                 onShowLogs: { showingLogs = true },
                 onNewSchedule: { showingNewSchedule = true },
                 onEditSchedule: { schedule in editingSchedule = schedule },
-                onBrowseCatalog: { showingPluginCatalog = true }
+                onManageCapabilities: { openCapabilitiesManager() }
             )
         } else {
             // Onboarding — no workspace
             onboardingView
         }
+    }
+
+    private func openCapabilitiesManager() {
+        configureInitialTab = .capabilities
+        configureFocusItemID = nil
+        showingConfigure = true
     }
 
     /// Empty-state shown when the user has completed onboarding but no
@@ -789,8 +793,38 @@ struct ContentView: View {
 
     // MARK: - Task Actions
 
-    private func runQueue() { coordinator.runQueue() }
-    private func runSingleTask(_ task: AgentTask) { coordinator.runSingleTask(task) }
+    private func setSelectedTask(_ task: AgentTask?) {
+        selectedTask = task
+        markTaskRead(task)
+    }
+
+    private func markSelectedTaskReadIfNeeded() {
+        markTaskRead(selectedTask)
+    }
+
+    private func markTaskRead(_ task: AgentTask?) {
+        guard let task, task.unreadAt != nil else { return }
+        task.markRead()
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
+                "operation": "mark_task_read",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func runQueue() {
+        applySettings()
+        coordinator.runQueue()
+    }
+
+    private func runSingleTask(_ task: AgentTask) {
+        applySettings()
+        coordinator.runSingleTask(task)
+    }
     private func cancelTask(_ task: AgentTask) { coordinator.cancelTask(task) }
 
     private func retryTask(_ task: AgentTask) { coordinator.retryTask(task) }
@@ -799,7 +833,7 @@ struct ContentView: View {
 
     private func deleteTask(_ task: AgentTask) {
         if selectedTask?.id == task.id {
-            selectedTask = nil
+            setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
     }
@@ -862,6 +896,47 @@ struct ContentView: View {
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
         )
+    }
+
+    private func handleSelectedWorkspaceChanged() {
+        let selectedWorkspaceID: UUID? = selectedWorkspace?.id
+        let taskWorkspaceID: UUID? = selectedTask?.workspace?.id
+        if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
+            selectedTask = nil
+        }
+        if isUITestingSeededLaunch {
+            selectedTask = nil
+            isComposingTask = selectedWorkspace != nil
+        } else {
+            isComposingTask = false
+        }
+        persistWorkspaceSelection()
+    }
+
+    private func handleWorkspaceSelectionSignatureChanged() {
+        restoreWorkspaceSelection()
+        enterUITestComposerIfNeeded()
+    }
+
+    private func handleAppear() {
+        applySecurityGateDefaultIfNeeded()
+        applySettings()
+        seedTestDataIfNeeded()
+        migrateConnectorCredentials()
+        migrateSkillSecrets()
+        restoreWorkspaceSelection()
+        backfillThreadTitlesIfNeeded()
+        enterUITestComposerIfNeeded()
+        runtime.startScheduler(modelContext: modelContext)
+        runtime.loadPluginCatalog()
+        refreshUpdateSafetyHooks()
+        appUpdateController.probeForUpdatesOnce()
+    }
+
+    private func applySecurityGateDefaultIfNeeded() {
+        guard !securityGateDefaultedToReview else { return }
+        skipPermissions = false
+        securityGateDefaultedToReview = true
     }
 
     // MARK: - Seeding
@@ -937,6 +1012,8 @@ struct ContentView: View {
     private func applySettings() {
         runtime.applySettings(
             claudePath: claudePath,
+            copilotPath: copilotPath,
+            defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
             skipPermissions: skipPermissions

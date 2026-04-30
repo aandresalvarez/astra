@@ -3,10 +3,10 @@ import SwiftData
 
 struct ConnectorsManagerView: View {
     var workspace: Workspace
+    var onManageCapabilities: (() -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @State private var selectedConnector: Connector?
-    @State private var showCatalog = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,10 +16,12 @@ struct ConnectorsManagerView: View {
                     .font(Stanford.heading(22))
                     .foregroundStyle(Stanford.black)
                 Spacer()
-                Button { showCatalog.toggle() } label: {
-                    Label("Add from Catalog", systemImage: "square.grid.2x2")
+                if let onManageCapabilities {
+                    Button { onManageCapabilities() } label: {
+                        Label("Manage Capabilities", systemImage: "square.grid.2x2")
+                    }
+                    .help("Open Manage Capabilities")
                 }
-                .help("Open the shared catalog, filtered to connectors")
                 Button { createConnector() } label: {
                     Label("New", systemImage: "plus")
                 }
@@ -30,38 +32,34 @@ struct ConnectorsManagerView: View {
 
             Divider()
 
-            if showCatalog {
-                PluginCatalogView(workspace: workspace, catalog: PluginCatalog(), focus: .connectors, onInstall: { _ in
-                    showCatalog = false
-                })
-            } else {
-                HStack(spacing: 0) {
-                    // List
-                    List(selection: $selectedConnector) {
-                        ForEach(workspace.connectors.sorted(by: { $0.name < $1.name })) { connector in
-                            connectorRow(connector)
-                                .tag(connector)
-                        }
+            HStack(spacing: 0) {
+                // List
+                List(selection: $selectedConnector) {
+                    ForEach(workspace.connectors.sorted(by: { $0.name < $1.name })) { connector in
+                        connectorRow(connector)
+                            .tag(connector)
                     }
-                    .listStyle(.sidebar)
-                    .frame(width: 200)
-                    .background(Stanford.fog)
+                }
+                .listStyle(.sidebar)
+                .frame(width: 200)
+                .background(Stanford.fog)
 
-                    Divider()
+                Divider()
 
-                    // Editor
-                    if let connector = selectedConnector {
-                        ConnectorEditorView(connector: connector, workspace: workspace, onDelete: {
-                            deleteConnector(connector)
-                        })
-                    } else {
-                        ContentUnavailableView(
-                            "Select a Connector",
-                            systemImage: "network",
-                            description: Text("Select a connector to edit or click + to create one.")
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                // Editor
+                if let connector = selectedConnector {
+                    ConnectorEditorView(connector: connector, workspace: workspace, onDelete: {
+                        deleteConnector(connector)
+                    }, onDuplicate: { copy in
+                        selectedConnector = copy
+                    })
+                } else {
+                    ContentUnavailableView(
+                        "Select a Connector",
+                        systemImage: "network",
+                        description: Text("Select a connector to edit or click + to create one.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
@@ -117,6 +115,7 @@ struct ConnectorEditorView: View {
     @Bindable var connector: Connector
     var workspace: Workspace?
     let onDelete: () -> Void
+    var onDuplicate: ((Connector) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @State private var newCredKey = ""
     @State private var newCredValue = ""
@@ -124,6 +123,8 @@ struct ConnectorEditorView: View {
     @State private var newConfigValue = ""
     @State private var showSecrets = false
     @State private var isAddingCredential = false
+    @State private var editingCredentialKey: String?
+    @State private var replacementCredentialValue = ""
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
@@ -142,6 +143,10 @@ struct ConnectorEditorView: View {
                upper.contains("CHANNELS") || upper.contains("TAGS") ||
                upper.contains("LABELS") || upper.contains("TEAMS") ||
                upper.contains("SCHEMAS") || upper.contains("SPACES")
+    }
+
+    private var missingCredentialKeys: [String] {
+        connector.missingCredentialKeys()
     }
 
     var body: some View {
@@ -219,7 +224,11 @@ struct ConnectorEditorView: View {
                                     .fontWeight(.medium)
                             }
                         }
-                        .disabled(connector.baseURL.isEmpty || connector.credentialKeys.isEmpty || isTesting)
+                        .disabled(
+                            connector.baseURL.isEmpty ||
+                            (connector.authMethod != "none" && connector.credentialKeys.isEmpty) ||
+                            isTesting
+                        )
                         .buttonStyle(.borderedProminent)
                         .tint(Stanford.paloAltoGreen)
 
@@ -233,9 +242,11 @@ struct ConnectorEditorView: View {
                                     .foregroundStyle(result.0 ? Stanford.paloAltoGreen : Stanford.cardinalRed)
                             }
                         } else if !isTesting {
-                            Text("Verify credentials and connectivity")
+                            Text(missingCredentialKeys.isEmpty
+                                 ? "Verify credentials and connectivity"
+                                 : "Missing Keychain value: \(missingCredentialKeys.joined(separator: ", "))")
                                 .font(Stanford.caption(13))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(missingCredentialKeys.isEmpty ? Color.secondary : Stanford.poppy)
                         }
 
                         Spacer()
@@ -399,14 +410,43 @@ struct ConnectorEditorView: View {
 
                                         Spacer()
 
-                                        Button {
-                                            connector.removeCredential(at: idx)
-                                        } label: {
-                                            Image(systemName: "trash")
-                                                .font(Stanford.ui(12))
-                                                .foregroundStyle(Stanford.coolGrey)
+                                        if editingCredentialKey == key {
+                                            SecureField("value", text: $replacementCredentialValue)
+                                                .textFieldStyle(.roundedBorder)
+                                                .font(Stanford.ui(12, design: .monospaced))
+                                                .frame(maxWidth: 220)
+                                                .onSubmit { saveCredentialReplacement(for: key) }
+
+                                            Button("Save") {
+                                                saveCredentialReplacement(for: key)
+                                            }
+                                            .font(Stanford.caption(12))
+                                            .disabled(replacementCredentialValue.isEmpty)
+
+                                            Button("Cancel") {
+                                                cancelCredentialReplacement()
+                                            }
+                                            .font(Stanford.caption(12))
+                                            .buttonStyle(.plain)
+                                            .foregroundStyle(Stanford.coolGrey)
+                                        } else {
+                                            Button(inKeychain ? "Replace" : "Set Value") {
+                                                editingCredentialKey = key
+                                                replacementCredentialValue = ""
+                                            }
+                                            .font(Stanford.caption(12))
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+
+                                            Button {
+                                                connector.removeCredential(at: idx)
+                                            } label: {
+                                                Image(systemName: "trash")
+                                                    .font(Stanford.ui(12))
+                                                    .foregroundStyle(Stanford.coolGrey)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
@@ -473,24 +513,59 @@ struct ConnectorEditorView: View {
 
                 // Sharing
                 GroupBox("Sharing") {
-                    Toggle(isOn: Binding(
-                        get: { connector.isGlobal },
-                        set: { newValue in
-                            connector.isGlobal = newValue
-                            if newValue {
-                                connector.workspace = nil
-                            } else if let ws = workspace {
-                                connector.workspace = ws
+                    if connector.isGlobal {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: Binding(
+                                get: {
+                                    guard let workspace else { return false }
+                                    return workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+                                },
+                                set: { enabled in
+                                    guard let workspace else { return }
+                                    if enabled {
+                                        CapabilitySharing.enableShared(connector, in: workspace)
+                                    } else {
+                                        CapabilitySharing.disableShared(connector, in: workspace)
+                                    }
+                                    saveSharingChange()
+                                }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Enabled in this workspace")
+                                        .font(Stanford.body(14))
+                                    Text("The shared connector stays installed for other workspaces.")
+                                        .font(Stanford.caption(12))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            connector.updatedAt = Date()
+                            .disabled(workspace == nil)
+
+                            Button {
+                                duplicateForWorkspace()
+                            } label: {
+                                Label("Duplicate for this workspace", systemImage: "doc.on.doc")
+                                    .font(Stanford.body(13))
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(workspace == nil)
                         }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Shared across all workspaces")
-                                .font(Stanford.body(14))
-                            Text("Enable this connector in any workspace's plug-ins panel")
-                                .font(Stanford.caption(12))
-                                .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(isOn: Binding(
+                            get: { connector.isGlobal },
+                            set: { newValue in
+                                if newValue {
+                                    CapabilitySharing.promoteToShared(connector, in: workspace)
+                                }
+                                saveSharingChange()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Shared across all workspaces")
+                                    .font(Stanford.body(14))
+                                Text("Enable this connector in any workspace's plug-ins panel")
+                                    .font(Stanford.caption(12))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -528,7 +603,10 @@ struct ConnectorEditorView: View {
         }
         .onDisappear {
             connector.updatedAt = Date()
-            WorkspacePersistenceCoordinator.flushPendingExport(workspace: connector.workspace, modelContext: modelContext)
+            WorkspacePersistenceCoordinator.flushPendingExport(
+                workspace: workspace ?? connector.workspace,
+                modelContext: modelContext
+            )
         }
     }
 
@@ -536,6 +614,7 @@ struct ConnectorEditorView: View {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
         connector.saveCredential(key: key, value: newCredValue)
+        testResult = nil
         cancelCredentialEntry()
     }
 
@@ -543,6 +622,19 @@ struct ConnectorEditorView: View {
         newCredKey = ""
         newCredValue = ""
         isAddingCredential = false
+    }
+
+    private func saveCredentialReplacement(for key: String) {
+        let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
+        connector.saveCredential(key: normalizedKey, value: replacementCredentialValue)
+        testResult = nil
+        cancelCredentialReplacement()
+    }
+
+    private func cancelCredentialReplacement() {
+        editingCredentialKey = nil
+        replacementCredentialValue = ""
     }
 
     private func addConfig() {
@@ -577,6 +669,21 @@ struct ConnectorEditorView: View {
         case "github": return "GitHub"
         default: return type.replacingOccurrences(of: "_", with: " ").capitalized
         }
+    }
+
+    private func duplicateForWorkspace() {
+        guard let workspace else { return }
+        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
+        modelContext.insert(copy)
+        onDuplicate?(copy)
+        saveSharingChange()
+    }
+
+    private func saveSharingChange() {
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace ?? connector.workspace,
+            modelContext: modelContext
+        )
     }
 
     private func applyServiceDefaults(for type: String) {

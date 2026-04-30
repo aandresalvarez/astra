@@ -1,0 +1,88 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+    {
+      "authMethod" : "basic",
+      "baseURL" : "https:\/\/yourcompany.atlassian.net",
+      "configHints" : [
+        {
+          "hint" : "Project keys, comma-separated (e.g. ENG, OPS)",
+          "isList" : true,
+          "key" : "JIRA_PROJECTS"
+        }
+      ],
+      "credentialHints" : [
+        {
+          "hint" : "Your Jira account email",
+          "key" : "JIRA_EMAIL"
+        },
+        {
+          "hint" : "API token from id.atlassian.com > Security > API tokens",
+          "key" : "JIRA_API_TOKEN"
+        }
+      ],
+      "description" : "Atlassian Jira REST API v3",
+      "icon" : "list.bullet.clipboard",
+      "name" : "Jira",
+      "notes" : "Uses REST API v3. Auth: Basic (email:api_token base64-encoded).",
+      "serviceType" : "jira"
+    }
+  ],
+  "description" : "Query, create, and update Jira tickets",
+  "formatVersion" : 2,
+  "icon" : "list.bullet.clipboard",
+  "id" : "jira-workflow",
+  "isTrusted" : false,
+  "localTools" : [
+
+  ],
+  "name" : "Jira Workflow",
+  "prerequisites" : [
+
+  ],
+  "setupGuide" : "Connect your workspace to Jira. The agent uses the REST API to interact with your Jira instance directly.\n\nWhat you can do:\n• Search tickets by project, sprint, status, or assignee\n• Read ticket details, comments, and history\n• Create new tickets with proper fields\n• Update status, assignee, and add comments\n• Summarize sprint progress and blockers\n\nSetup:\n• Base URL — your Jira instance (e.g. https:\/\/company.atlassian.net)\n• Email — your Jira account email\n• API Token — generate at id.atlassian.com > Security > API tokens\n• Projects — the project keys you work with (e.g. ENG, OPS)",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a Jira integration agent. Use curl via Bash to interact with the Jira REST API.\n\nAUTHENTICATION\nUse Basic auth with the JIRA_EMAIL and JIRA_API_TOKEN environment variables:\ncurl -s -u \"$JIRA_EMAIL:$JIRA_API_TOKEN\" -H \"Content-Type: application\/json\" \"$JIRA_BASE_URL\/rest\/api\/3\/...\"\n\nCOMMON OPERATIONS\n• Search: GET \/rest\/api\/3\/search?jql=project=KEY+AND+status!=Done&maxResults=20\n• Get issue: GET \/rest\/api\/3\/issue\/{KEY-123}\n• Create issue: POST \/rest\/api\/3\/issue with {\"fields\":{\"project\":{\"key\":\"...\"},\"summary\":\"...\",\"issuetype\":{\"name\":\"Task\"}}}\n• Update fields: PUT \/rest\/api\/3\/issue\/{KEY-123}\n• Add comment: POST \/rest\/api\/3\/issue\/{KEY-123}\/comment with {\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[...]}}\n• Transition: POST \/rest\/api\/3\/issue\/{KEY-123}\/transitions\n\nFORMATTING\n• Always show: ticket key, summary, status, assignee, priority\n• For search results, format as a clean table or list\n• When summarizing a sprint, group by status (To Do \/ In Progress \/ Done)\n\nRULES\n• Always confirm with the user before creating or modifying tickets\n• Default searches to the configured JIRA_PROJECTS unless told otherwise\n• Use JQL for complex queries\n• Handle pagination for large result sets",
+      "customTools" : [
+
+      ],
+      "description" : "Query, create, and update Jira tickets via REST API",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+        "JIRA_BASE_URL"
+      ],
+      "environmentValues" : [
+        ""
+      ],
+      "icon" : "list.bullet.clipboard",
+      "name" : "Jira Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "jira",
+    "atlassian",
+    "tickets",
+    "project-management"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "2.0.0"
+}

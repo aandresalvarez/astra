@@ -51,6 +51,7 @@ final class TaskLifecycleCoordinator {
         task.status = .cancelled
         task.updatedAt = Date()
         task.completedAt = Date()
+        task.markRead()
         let event = TaskEvent(task: task, type: "task.cancelled", payload: "Task cancelled by user.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -63,6 +64,7 @@ final class TaskLifecycleCoordinator {
         task.costUSD = 0
         task.updatedAt = Date()
         task.completedAt = nil
+        task.markRead()
         let event = TaskEvent(task: task, type: "task.retried", payload: "Task re-queued for retry.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -80,6 +82,7 @@ final class TaskLifecycleCoordinator {
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
+        task.markRead()
         let event = TaskEvent(task: task, type: "task.resumed", payload: "Resuming previous session — continuing where the agent left off.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -104,6 +107,7 @@ final class TaskLifecycleCoordinator {
         task.status = .completed
         task.updatedAt = Date()
         task.completedAt = Date()
+        task.markRead()
         let event = TaskEvent(task: task, type: "task.approved", payload: "Task approved by user.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -120,6 +124,7 @@ final class TaskLifecycleCoordinator {
     func setDoneState(_ task: AgentTask, to isDone: Bool) {
         task.isDone = isDone
         task.updatedAt = Date()
+        task.markRead()
         do {
             try modelContext.save()
         } catch {

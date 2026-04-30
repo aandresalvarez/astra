@@ -41,26 +41,13 @@ struct TaskSidebarView: View {
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
 
-    private var visibleWorkspaces: [Workspace] {
-        let sorted = workspaces.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        guard !searchText.isEmpty else { return sorted }
-        return sorted.filter {
-            workspaceMatchesSearch($0) ||
-            tasksForWorkspace($0, matchingSearch: true).isEmpty == false
-        }
-    }
-
-    private var pinnedTasks: [AgentTask] {
-        tasks
-            .filter { $0.isPinned && isSidebarReviewTask($0) }
-            .sorted { $0.updatedAt > $1.updatedAt }
-    }
-
     private var allSchedules: [TaskSchedule] {
         workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
     }
 
     var body: some View {
+        let taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
+
         VStack(spacing: 0) {
             // Top new task button — lightweight inline style
             if selectedWorkspace != nil {
@@ -82,9 +69,11 @@ struct TaskSidebarView: View {
                 .padding(.top, 6)
             }
 
+            pinnedDock(using: taskIndex)
+            unreadDock(using: taskIndex)
+
             List {
-                pinnedSection
-                workspaceSection
+                workspaceSection(using: taskIndex)
                 schedulesSection
             }
             .listStyle(.sidebar)
@@ -148,79 +137,33 @@ struct TaskSidebarView: View {
 
     // MARK: - Pinned Section
 
-    private var pinnedSection: some View {
-        Section {
-            if isPinnedExpanded {
-                if pinnedTasks.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
-                            .font(Stanford.ui(11))
-                            .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.4))
-                        Text(isPinnedDropTargeted ? "Drop to pin" : "Drag tasks here to pin")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : .secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(isPinnedDropTargeted ? Stanford.poppy.opacity(0.08) : .clear)
-                    )
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(isPinnedDropTargeted ? Stanford.poppy.opacity(0.5) : Color.primary.opacity(0.06), style: StrokeStyle(lineWidth: isPinnedDropTargeted ? 1.5 : 1, dash: [5, 3]))
-                    )
-                    .animation(.easeInOut(duration: 0.15), value: isPinnedDropTargeted)
-                    .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                    .listRowBackground(Color.clear)
-                } else {
-                    ForEach(pinnedTasks) { task in
-                        pinnedTaskRow(for: task)
-                    }
-                    if isPinnedDropTargeted {
-                        HStack(spacing: 6) {
-                            Image(systemName: "pin.fill")
-                                .font(Stanford.ui(10))
-                                .foregroundStyle(Stanford.poppy)
-                            Text("Drop to pin")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(Stanford.poppy)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Stanford.poppy.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                        .listRowBackground(Color.clear)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                    }
-                }
-            }
-        } header: {
-            HStack(spacing: 10) {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                        isPinnedExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Pinned")
-                            .font(Stanford.caption(14))
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+    private func pinnedDock(using taskIndex: SidebarTaskIndex) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            pinnedHeader
 
-                Spacer()
+            if isPinnedExpanded {
+                ScrollView(.vertical, showsIndicators: taskIndex.pinnedTasks.count > 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if taskIndex.pinnedTasks.isEmpty {
+                            pinnedEmptyDropTarget
+                        } else {
+                            ForEach(taskIndex.pinnedTasks) { task in
+                                pinnedTaskRow(for: task)
+                            }
+
+                            if isPinnedDropTargeted {
+                                pinnedInlineDropTarget
+                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 2)
+                }
+                .frame(height: pinnedContentHeight(using: taskIndex))
             }
-            .padding(.horizontal, 8)
-            .padding(.top, 20)
-            .padding(.bottom, 4)
-            .textCase(nil)
         }
+        .padding(.bottom, 8)
         .onDrop(of: [.text], isTargeted: $isPinnedDropTargeted) { providers in
             guard let provider = providers.first else { return false }
             provider.loadItem(forTypeIdentifier: "public.text", options: nil) { data, _ in
@@ -230,14 +173,85 @@ struct TaskSidebarView: View {
                 DispatchQueue.main.async {
                     if let task = tasks.first(where: { $0.id == uuid }) {
                         withAnimation {
-                            task.isPinned = true
-                            try? modelContext.save()
+                            setPinned(true, for: task)
                         }
                     }
                 }
             }
             return true
         }
+    }
+
+    private var pinnedHeader: some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                    isPinnedExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Pinned")
+                        .font(Stanford.caption(14))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .padding(.bottom, 4)
+    }
+
+    private var pinnedEmptyDropTarget: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
+                .font(Stanford.ui(11))
+                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.4))
+            Text(isPinnedDropTargeted ? "Drop to pin" : "Drag tasks here to pin")
+                .font(Stanford.caption(12))
+                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : .secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isPinnedDropTargeted ? Stanford.poppy.opacity(0.08) : .clear)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(isPinnedDropTargeted ? Stanford.poppy.opacity(0.5) : Color.primary.opacity(0.06), style: StrokeStyle(lineWidth: isPinnedDropTargeted ? 1.5 : 1, dash: [5, 3]))
+        )
+        .animation(.easeInOut(duration: 0.15), value: isPinnedDropTargeted)
+    }
+
+    private var pinnedInlineDropTarget: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pin.fill")
+                .font(Stanford.ui(10))
+                .foregroundStyle(Stanford.poppy)
+            Text("Drop to pin")
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.poppy)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.poppy.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func pinnedContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
+        guard isPinnedExpanded else { return 0 }
+        if taskIndex.pinnedTasks.isEmpty { return 36 }
+
+        let rowHeight = Stanford.sidebarThreadRowHeight + 2
+        let taskHeight = CGFloat(taskIndex.pinnedTasks.count) * rowHeight
+        let dropTargetHeight: CGFloat = isPinnedDropTargeted ? 30 : 0
+        return min(taskHeight + dropTargetHeight + 2, 220)
     }
 
     private func pinnedTaskRow(for task: AgentTask) -> some View {
@@ -258,8 +272,7 @@ struct TaskSidebarView: View {
             if hoveredTaskID == task.id {
                 Button {
                     withAnimation {
-                        task.isPinned = false
-                        try? modelContext.save()
+                        setPinned(false, for: task)
                     }
                 } label: {
                     Image(systemName: "pin.slash.fill")
@@ -277,8 +290,7 @@ struct TaskSidebarView: View {
         .contextMenu {
             Button {
                 withAnimation {
-                    task.isPinned = false
-                    try? modelContext.save()
+                    setPinned(false, for: task)
                 }
             } label: {
                 Label("Unpin", systemImage: "pin.slash")
@@ -290,6 +302,79 @@ struct TaskSidebarView: View {
         }
         .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
+    }
+
+    // MARK: - Unreads Section
+
+    @ViewBuilder
+    private func unreadDock(using taskIndex: SidebarTaskIndex) -> some View {
+        if !taskIndex.unreadTasks.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                unreadHeader(count: taskIndex.unreadTasks.count)
+
+                ScrollView(.vertical, showsIndicators: taskIndex.unreadTasks.count > 3) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(taskIndex.unreadTasks) { task in
+                            unreadTaskRow(for: task)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 2)
+                }
+                .frame(height: unreadContentHeight(using: taskIndex))
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func unreadHeader(count: Int) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "circle.fill")
+                    .font(Stanford.ui(6, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                Text("Unreads")
+                    .font(Stanford.caption(14))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            SidebarCountBadge(count: count)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
+    }
+
+    private func unreadContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
+        let rowHeight = Stanford.sidebarThreadRowHeight + 2
+        let taskHeight = CGFloat(taskIndex.unreadTasks.count) * rowHeight
+        return min(taskHeight + 2, 156)
+    }
+
+    private func unreadTaskRow(for task: AgentTask) -> some View {
+        let isHovered = hoveredTaskID == task.id
+
+        return HStack(spacing: 0) {
+            Button {
+                selectedTask = task
+            } label: {
+                SidebarThreadRow(
+                    task: task,
+                    isSelected: selectedTask?.id == task.id,
+                    isHovered: isHovered,
+                    subtitle: task.workspace?.name
+                )
+            }
+            .buttonStyle(.plain)
+
+            taskOptionsMenu(for: task, isHovered: isHovered)
+        }
+        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
+        .contextMenu {
+            taskContextMenu(for: task)
+        }
     }
 
     @ViewBuilder
@@ -457,8 +542,24 @@ struct TaskSidebarView: View {
 
     // MARK: - Workspace Section
 
-    private var workspaceSection: some View {
-        Section {
+    private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
+        let sorted = workspaces.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard !searchText.isEmpty else { return sorted }
+
+        return sorted.filter { workspace in
+            workspaceMatchesSearch(workspace) ||
+                taskIndex.reviewTasks(
+                    for: workspace,
+                    matchingSearch: true,
+                    workspaceMatchesSearch: false
+                ).isEmpty == false
+        }
+    }
+
+    private func workspaceSection(using taskIndex: SidebarTaskIndex) -> some View {
+        let visibleWorkspaces = visibleWorkspaces(using: taskIndex)
+
+        return Section {
             if isWorkspacesExpanded && visibleWorkspaces.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No workspaces yet")
@@ -470,9 +571,9 @@ struct TaskSidebarView: View {
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
                 ForEach(visibleWorkspaces) { workspace in
-                    workspaceRow(for: workspace)
-                    if isWorkspaceExpanded(workspace) {
-                        workspaceTaskGroups(for: workspace)
+                    workspaceRow(for: workspace, using: taskIndex)
+                    if isWorkspaceExpanded(workspace, using: taskIndex) {
+                        workspaceTaskGroups(for: workspace, using: taskIndex)
                     }
                 }
             }
@@ -527,15 +628,15 @@ struct TaskSidebarView: View {
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
 
-    private func workspaceRow(for workspace: Workspace) -> some View {
-        let isExpanded = isWorkspaceExpanded(workspace)
+    private func workspaceRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
         return HStack(alignment: .center, spacing: 6) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    toggleWorkspaceExpansion(workspace)
+                    toggleWorkspaceExpansion(workspace, using: taskIndex)
                 }
             } label: {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -551,7 +652,7 @@ struct TaskSidebarView: View {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                     if isExpanded && isSelected {
                         // Already open and selected → collapse
-                        toggleWorkspaceExpansion(workspace)
+                        toggleWorkspaceExpansion(workspace, using: taskIndex)
                     } else if !isExpanded {
                         // Collapsed → expand and select
                         collapsedWorkspaceIDs.remove(workspace.id)
@@ -576,58 +677,30 @@ struct TaskSidebarView: View {
             }
             .buttonStyle(.plain)
 
+            workspaceRowActions(for: workspace, isHovered: isHovered)
         }
         .padding(.leading, 6)
-        .padding(.trailing, isHovered ? 30 : 6)
+        .padding(.trailing, 4)
         .padding(.vertical, 6)
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .onHover { hovering in hoveredWorkspaceID = hovering ? workspace.id : nil }
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(selectedWorkspace?.id == workspace.id && selectedTask == nil ? Color.primary.opacity(0.10) : .clear)
         )
-        .overlay(alignment: .trailing) {
-            if isHovered {
-                Menu {
-                    Button {
-                        selectedWorkspace = workspace
-                        onEditWorkspace?(workspace)
-                    } label: {
-                        Label("Workspace Details", systemImage: "info.circle")
-                    }
-
-                    Button {
-                        onRenameWorkspace?(workspace)
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        onDeleteWorkspace?(workspace)
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(Stanford.ui(14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Workspace options")
-                .accessibilityLabel("Options for \(workspace.name)")
-                .padding(.trailing, 4)
-            }
-        }
         .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
         .contextMenu {
+            Button {
+                startNewTask(in: workspace)
+            } label: {
+                Label("New Task", systemImage: "square.and.pencil")
+            }
+
+            Divider()
+
             Button {
                 selectedWorkspace = workspace
                 onEditWorkspace?(workspace)
@@ -651,15 +724,78 @@ struct TaskSidebarView: View {
         }
     }
 
+    private func workspaceRowActions(for workspace: Workspace, isHovered: Bool) -> some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button {
+                    selectedWorkspace = workspace
+                    onEditWorkspace?(workspace)
+                } label: {
+                    Label("Workspace Details", systemImage: "info.circle")
+                }
+
+                Button {
+                    onRenameWorkspace?(workspace)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onDeleteWorkspace?(workspace)
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(Stanford.ui(14, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Workspace options")
+            .accessibilityLabel("Options for \(workspace.name)")
+
+            Button {
+                startNewTask(in: workspace)
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Start new chat in Astra")
+            .accessibilityLabel("Start new chat in \(workspace.name)")
+        }
+        .frame(width: 50, alignment: .trailing)
+        .opacity(isHovered ? 1 : 0)
+        .allowsHitTesting(isHovered)
+        .accessibilityHidden(!isHovered)
+    }
+
+    private func startNewTask(in workspace: Workspace) {
+        selectedWorkspace = workspace
+        selectedTask = nil
+        collapsedWorkspaceIDs.remove(workspace.id)
+        expandedWorkspaceIDs.insert(workspace.id)
+        onNewTask()
+    }
+
     @ViewBuilder
-    private func workspaceTaskGroups(for workspace: Workspace) -> some View {
-        let workspaceTasks = tasksForWorkspace(workspace).sorted { lhs, rhs in
+    private func workspaceTaskGroups(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex).sorted { lhs, rhs in
             lhs.updatedAt > rhs.updatedAt
         }
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
 
-        if workspaceTasks.isEmpty && !hasAnyTask(in: workspace) {
+        if workspaceTasks.isEmpty && !hasAnyTask(in: workspace, using: taskIndex) {
             emptyWorkspaceRow(for: workspace)
         } else if !workspaceTasks.isEmpty {
             ForEach(visibleTasks) { task in
@@ -708,74 +844,21 @@ struct TaskSidebarView: View {
     }
 
     private func compactTaskRow(for task: AgentTask) -> some View {
-        Button {
-            selectedTask = task
-        } label: {
-            SidebarThreadRow(
-                task: task,
-                isSelected: selectedTask?.id == task.id,
-                // Hover signal is shared with the .overlay below — same
-                // source of truth for the menu and the timestamp's
-                // opacity, so they can't fall out of sync.
-                isHovered: hoveredTaskID == task.id
-            )
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topTrailing) {
-            if hoveredTaskID == task.id {
-                Menu {
-                    Button {
-                        withAnimation {
-                            task.isPinned.toggle()
-                            try? modelContext.save()
-                        }
-                    } label: {
-                        Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
-                    }
+        let isHovered = hoveredTaskID == task.id
 
-                    Button {
-                        renameTaskText = task.title
-                        renamingTask = task
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-
-                    if task.status != .running {
-                        Button {
-                            if let onToggleDone {
-                                onToggleDone(task)
-                            } else {
-                                withAnimation {
-                                    task.isDone.toggle()
-                                    task.updatedAt = Date()
-                                    try? modelContext.save()
-                                }
-                            }
-                        } label: {
-                            Label(task.isDone ? "Reopen" : "Mark as Done", systemImage: task.isDone ? "arrow.uturn.backward" : "checkmark.circle")
-                        }
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        onDeleteTask?(task)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(Stanford.ui(12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .padding(.top, 4)
-                .padding(.trailing, 4)
+        return HStack(spacing: 0) {
+            Button {
+                selectedTask = task
+            } label: {
+                SidebarThreadRow(
+                    task: task,
+                    isSelected: selectedTask?.id == task.id,
+                    isHovered: isHovered
+                )
             }
+            .buttonStyle(.plain)
+
+            taskOptionsMenu(for: task, includePinToggle: true, isHovered: isHovered)
         }
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .onDrag {
@@ -798,8 +881,7 @@ struct TaskSidebarView: View {
         .contextMenu {
             Button {
                 withAnimation {
-                    task.isPinned.toggle()
-                    try? modelContext.save()
+                    togglePinned(for: task)
                 }
             } label: {
                 Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
@@ -811,6 +893,42 @@ struct TaskSidebarView: View {
         }
         .listRowInsets(EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 8))
         .listRowBackground(Color.clear)
+    }
+
+    private func taskOptionsMenu(
+        for task: AgentTask,
+        includePinToggle: Bool = false,
+        isHovered: Bool
+    ) -> some View {
+        Menu {
+            if includePinToggle {
+                Button {
+                    withAnimation {
+                        togglePinned(for: task)
+                    }
+                } label: {
+                    Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
+                }
+
+                Divider()
+            }
+
+            taskContextMenu(for: task)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(Stanford.ui(12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 24, height: 24, alignment: .center)
+        .opacity(isHovered ? 1 : 0)
+        .allowsHitTesting(isHovered)
+        .accessibilityHidden(!isHovered)
+        .help("Task options")
     }
 
     private func taskRow(for task: AgentTask) -> some View {
@@ -831,18 +949,18 @@ struct TaskSidebarView: View {
         .listRowBackground(Color.clear)
     }
 
-    private func isWorkspaceExpanded(_ workspace: Workspace) -> Bool {
+    private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
         if collapsedWorkspaceIDs.contains(workspace.id) {
             return false
         }
 
         return selectedWorkspace?.id == workspace.id ||
             expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true).isEmpty)
+            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty)
     }
 
-    private func toggleWorkspaceExpansion(_ workspace: Workspace) {
-        if isWorkspaceExpanded(workspace) {
+    private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
+        if isWorkspaceExpanded(workspace, using: taskIndex) {
             expandedWorkspaceIDs.remove(workspace.id)
             collapsedWorkspaceIDs.insert(workspace.id)
             expandedWorkspaceTaskLists.remove(workspace.id)
@@ -852,34 +970,25 @@ struct TaskSidebarView: View {
         }
     }
 
-    private func tasksForWorkspace(_ workspace: Workspace, matchingSearch: Bool = false) -> [AgentTask] {
-        let workspaceTasks = tasks.filter {
-            $0.workspace?.id == workspace.id && isSidebarReviewTask($0)
-        }
-        guard matchingSearch || !searchText.isEmpty else { return workspaceTasks }
-        guard !workspaceMatchesSearch(workspace) else { return workspaceTasks }
-        return workspaceTasks.filter(taskMatchesSearch)
-    }
-
-    private func hasAnyTask(in workspace: Workspace) -> Bool {
-        tasks.contains { $0.workspace?.id == workspace.id }
-    }
-
-    private func isSidebarReviewTask(_ task: AgentTask) -> Bool {
-        !task.isDone && (
-            task.status == .running ||
-            KanbanCategory.review.includes(task)
+    private func tasksForWorkspace(
+        _ workspace: Workspace,
+        matchingSearch: Bool = false,
+        using taskIndex: SidebarTaskIndex
+    ) -> [AgentTask] {
+        taskIndex.reviewTasks(
+            for: workspace,
+            matchingSearch: matchingSearch,
+            workspaceMatchesSearch: workspaceMatchesSearch(workspace)
         )
+    }
+
+    private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
+        taskIndex.hasAnyTask(in: workspace)
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {
         workspace.name.localizedCaseInsensitiveContains(searchText) ||
             workspace.primaryPath.localizedCaseInsensitiveContains(searchText)
-    }
-
-    private func taskMatchesSearch(_ task: AgentTask) -> Bool {
-        task.title.localizedCaseInsensitiveContains(searchText) ||
-            task.goal.localizedCaseInsensitiveContains(searchText)
     }
 
     @ViewBuilder
@@ -939,6 +1048,16 @@ struct TaskSidebarView: View {
             Label("Delete", systemImage: "trash")
         }
     }
+
+    private func togglePinned(for task: AgentTask) {
+        setPinned(!task.isPinned, for: task)
+    }
+
+    private func setPinned(_ isPinned: Bool, for task: AgentTask) {
+        guard task.isPinned != isPinned else { return }
+        task.isPinned = isPinned
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
 }
 
 private struct SidebarCountBadge: View {
@@ -991,6 +1110,15 @@ private struct SidebarThreadRow: View {
     let isHovered: Bool
     var subtitle: String?
 
+    private var titleWeight: Font.Weight {
+        if task.shouldShowUnread { return .semibold }
+        return isSelected ? .medium : .regular
+    }
+
+    private var metadataWeight: Font.Weight {
+        task.shouldShowUnread ? .semibold : .regular
+    }
+
     private var showIcon: Bool {
         isSelected || isHovered || isActionableStatus
     }
@@ -1027,7 +1155,7 @@ private struct SidebarThreadRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.title)
-                    .font(Stanford.ui(14, weight: isSelected ? .medium : .regular))
+                    .font(Stanford.ui(14, weight: titleWeight))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1048,8 +1176,8 @@ private struct SidebarThreadRow: View {
             // Keep the layout in place (no width shift) by using opacity,
             // not conditional removal.
             Text(relativeTime(task.updatedAt))
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
+                .font(Stanford.caption(11).weight(metadataWeight))
+                .foregroundStyle(task.shouldShowUnread ? .primary : .secondary)
                 .lineLimit(1)
                 .fixedSize()
                 .frame(minWidth: 24, alignment: .trailing)
@@ -1249,7 +1377,7 @@ struct SearchPanelOverlay: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 18)
                                     Text(task.title)
-                                        .font(Stanford.ui(14))
+                                        .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
                                     Spacer()

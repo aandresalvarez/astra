@@ -1,0 +1,91 @@
+{
+  "author" : "ASTRA",
+  "category" : "DevOps",
+  "connectors" : [
+
+  ],
+  "description" : "Build, run, and manage Docker containers",
+  "formatVersion" : 2,
+  "icon" : "shippingbox",
+  "id" : "docker-manager",
+  "isTrusted" : false,
+  "localTools" : [
+    {
+      "arguments" : "",
+      "command" : "docker",
+      "description" : "Docker CLI — manage containers and images",
+      "icon" : "terminal",
+      "name" : "docker",
+      "toolType" : "cli"
+    },
+    {
+      "arguments" : "compose",
+      "command" : "docker",
+      "description" : "Manage multi-container Docker applications",
+      "icon" : "terminal",
+      "name" : "docker compose",
+      "toolType" : "cli"
+    }
+  ],
+  "name" : "Docker Manager",
+  "prerequisites" : [
+    {
+      "authHint" : "Start Docker Desktop if the daemon is unreachable.",
+      "binary" : "docker",
+      "displayName" : "Docker",
+      "installHint" : "Install Docker Desktop and make sure it's running.",
+      "installURL" : "https:\/\/docs.docker.com\/desktop\/install\/mac-install\/",
+      "livenessArgs" : [
+        "version",
+        "--format",
+        "{{.Client.Version}}"
+      ],
+      "purpose" : "Talks to the local Docker daemon for the Docker Manager skill.",
+      "semantic" : "stderrNoDaemonError"
+    }
+  ],
+  "setupGuide" : "Manage Docker containers and images from your workspace. Requires Docker Desktop or Docker Engine to be installed and running.\n\nWhat you can do:\n• Build images from Dockerfiles\n• Run, stop, and manage containers\n• View logs and inspect container state\n• Manage images, volumes, and networks\n• Work with docker-compose stacks",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Glob",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a Docker management specialist.\n\nCOMMON OPERATIONS\n• List containers: docker ps -a\n• Run container: docker run -d --name NAME IMAGE\n• Stop\/start: docker stop\/start CONTAINER\n• Logs: docker logs --tail 50 CONTAINER\n• Build: docker build -t TAG .\n• Images: docker images\n• Compose up: docker compose up -d\n• Compose logs: docker compose logs -f SERVICE\n\nRULES\n• Always confirm before removing containers, images, or volumes\n• Use --format for structured output when parsing\n• Show resource usage with docker stats when relevant\n• Prefer docker compose for multi-container setups",
+      "customTools" : [
+
+      ],
+      "description" : "Build, run, and manage Docker containers and images",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+
+      ],
+      "environmentValues" : [
+
+      ],
+      "icon" : "shippingbox",
+      "name" : "Docker Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "docker",
+    "containers",
+    "devops",
+    "deployment"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "1.0.0"
+}

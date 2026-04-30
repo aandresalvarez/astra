@@ -171,6 +171,7 @@ public enum ParsedEvent {
     case teamDeleted(name: String)
     case teamMessage(from: String, to: String, content: String)
     case permissionDenied(tool: String, reason: String)
+    case astraProtocol(AstraRunProtocolParsedEvent)
     case unknown(type: String)
 }
 

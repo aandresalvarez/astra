@@ -80,6 +80,7 @@ enum AuditEvent: String, CaseIterable {
     case validationError = "validation.error"
 
     case connectorCreated = "connector.created"
+    case connectorUpdated = "connector.updated"
     case connectorDeleted = "connector.deleted"
     case connectorSecretAdded = "connector.secret.added"
     case connectorSecretRemoved = "connector.secret.removed"
@@ -91,11 +92,14 @@ enum AuditEvent: String, CaseIterable {
     case skillSecretRemoved = "skill.secret.removed"
     case skillToolPermissionChanged = "skill.tool_permission.changed"
     case localToolCreated = "local_tool.created"
+    case localToolUpdated = "local_tool.updated"
     case localToolDeleted = "local_tool.deleted"
     case templateCreated = "template.created"
     case templateDeleted = "template.deleted"
 
     case pluginInstalled = "plugin.installed"
+    case capabilityInstalled = "capability.installed"
+    case capabilityEnabled = "capability.enabled"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
     case workspaceRecovered = "workspace.recovered"

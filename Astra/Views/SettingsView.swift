@@ -1,11 +1,14 @@
 import AppKit
 import SwiftUI
+import ASTRACore
 
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultTokenBudget") private var defaultTokenBudget = 50000
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
@@ -14,10 +17,10 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
 
-    private let models = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
 
     @State private var detectedPath = ""
+    @State private var detectedCopilotPath = ""
 
     @MainActor
     init(appUpdateController: AppUpdateController) {
@@ -26,12 +29,27 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Agent Runtime") {
+                Picker("Default Provider", selection: $defaultRuntimeID) {
+                    ForEach(AgentRuntimeID.allCases) { runtime in
+                        Text(runtime.displayName).tag(runtime.rawValue)
+                    }
+                }
+                .onChange(of: defaultRuntimeID) {
+                    let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+                    if !runtime.defaultModels.contains(defaultModel) {
+                        defaultModel = runtime.defaultModel
+                    }
+                }
+                Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Claude CLI") {
                 HStack {
                     TextField("Path", text: $claudePath, prompt: Text("Auto-detected"))
-                    Button("Detect") {
-                        detectCLI()
-                    }
+                    Button("Detect") { detectClaudeCLI() }
                 }
                 if !detectedPath.isEmpty {
                     Text("Detected: \(detectedPath)")
@@ -40,9 +58,24 @@ struct SettingsView: View {
                 }
             }
 
+            Section("GitHub Copilot CLI") {
+                HStack {
+                    TextField("Path", text: $copilotPath, prompt: Text("Auto-detected"))
+                    Button("Detect") { detectCopilotCLI() }
+                }
+                if !detectedCopilotPath.isEmpty {
+                    Text("Detected: \(detectedCopilotPath)")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+                Text("Copilot uses your GitHub Copilot account and may consume Copilot premium requests.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Defaults") {
                 Picker("Model", selection: $defaultModel) {
-                    ForEach(models, id: \.self) { m in
+                    ForEach(runtimeModels, id: \.self) { m in
                         Text(m).tag(m)
                     }
                 }
@@ -93,7 +126,7 @@ struct SettingsView: View {
                 }
 
                 Picker("Validation Model", selection: $validationModel) {
-                    ForEach(models, id: \.self) { m in
+                    ForEach(AgentRuntimeID.claudeCode.defaultModels, id: \.self) { m in
                         Text(m).tag(m)
                     }
                 }
@@ -197,12 +230,17 @@ struct SettingsView: View {
         .frame(width: 560, height: 620)
         .navigationTitle("Settings")
         .onAppear {
-            detectCLI()
+            detectClaudeCLI()
+            detectCopilotCLI()
         }
     }
 
     private var resolvedWorkspacesRoot: String {
         workspacesRoot.isEmpty ? AppChannel.current.defaultWorkspacesRoot : workspacesRoot
+    }
+
+    private var runtimeModels: [String] {
+        (AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode).defaultModels
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
@@ -226,19 +264,19 @@ struct SettingsView: View {
         }
     }
 
-    private func detectCLI() {
-        let candidates = [
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
-            "\(NSHomeDirectory())/.npm-global/bin/claude",
-            "\(NSHomeDirectory())/.local/bin/claude"
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                detectedPath = path
-                if claudePath.isEmpty { claudePath = path }
-                return
-            }
+    private func detectClaudeCLI() {
+        let path = RuntimePathResolver.detectClaudePath()
+        if FileManager.default.isExecutableFile(atPath: path) {
+            detectedPath = path
+            if claudePath.isEmpty { claudePath = path }
+        }
+    }
+
+    private func detectCopilotCLI() {
+        let detected = CopilotCLIRuntime.detectPath()
+        if !detected.isEmpty {
+            detectedCopilotPath = detected
+            if copilotPath.isEmpty { copilotPath = detected }
         }
     }
 

@@ -40,6 +40,8 @@ final class TaskEvent {
             return "tool"
         case "error", "budget.exceeded", "task.stats", "task.chained":
             return "system"
+        case let t where t.hasPrefix("astra."):
+            return "system"
         case let t where t.hasPrefix("team."):
             return "team"
         default:

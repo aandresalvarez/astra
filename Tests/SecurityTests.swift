@@ -169,4 +169,32 @@ struct LegacyCredentialTests {
         let creds = connector.credentials(store: store)
         #expect(creds["API_KEY"] == "secure-value")
     }
+
+    @Test("Missing credential keys are detected before connector tests")
+    func missingCredentialKeysDetected() {
+        let store = MockSecretStore()
+        let connector = Connector(name: "Jira", serviceType: "jira")
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: entityID, label: nil)
+
+        #expect(connector.missingCredentialKeys(store: store) == ["JIRA_API_TOKEN"])
+    }
+
+    @Test("Connector test reports missing Keychain values without making request")
+    func testConnectionReportsMissingCredentials() async {
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let result = await connector.testConnection()
+
+        #expect(!result.0)
+        #expect(result.1 == "Missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN")
+    }
 }

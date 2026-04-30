@@ -5,7 +5,7 @@ import SwiftData
 import ASTRACore
 
 private func makeContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -113,6 +113,38 @@ struct PluginCatalogLoadTests {
         catalog.loadCatalog()
         #expect(catalog.packages.count == 1)
         #expect(catalog.packages[0].id == "test-plugin")
+    }
+
+    @Test("Approved capability catalog loads from capability folder")
+    func approvedCatalogLoadsFromCapabilityFolder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-approved-catalog-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = PluginPackage(
+            id: "approved-only",
+            name: "Approved Only",
+            icon: "checkmark.seal",
+            description: "Approved folder package",
+            author: "Stanford",
+            category: "Approved",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        let library = CapabilityLibrary(directory: root)
+        let catalog = PluginCatalog()
+
+        catalog.loadApprovedCapabilities(library: library)
+        #expect(catalog.packages.map(\.id).contains("code-reviewer"))
+
+        try library.install(package)
+        catalog.loadApprovedCapabilities(library: library)
+        #expect(catalog.packages.map(\.id).contains("approved-only"))
+        #expect(catalog.packages.allSatisfy { FileManager.default.fileExists(atPath: library.packageURL(for: $0.id).path) })
     }
 
     @Test("Categories preserves order")

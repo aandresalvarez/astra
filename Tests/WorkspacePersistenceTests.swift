@@ -2,9 +2,10 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
-    let schema = Schema(ASTRASchemaV1.models)
+    let schema = ASTRASchema.current
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
@@ -12,6 +13,8 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
 @MainActor
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
+    workspace.enabledCapabilityIDs = ["stanford.builder"]
+    workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
     context.insert(workspace)
 
     let connector = Connector(
@@ -73,6 +76,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
         model: "claude-sonnet-4-6"
     )
     task.status = .completed
+    task.unreadAt = Date(timeIntervalSince1970: 1_701_234_567)
     task.skills = [skill]
     task.captureSkillSnapshots()
     context.insert(task)
@@ -99,18 +103,21 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v5")
+@Suite("Workspace Persistence v7")
 struct WorkspacePersistenceTests {
-    @Test("v5 export and import preserve IDs, history, artifacts, and redacted credentials")
+    @Test("v7 export and import preserve IDs, history, artifacts, and redacted credentials")
     @MainActor
-    func v5RoundTripPreservesDurableIDs() throws {
+    func v7RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
         let workspace = try makeRichWorkspace(in: context, root: tempRoot)
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.isPinned = true
+        try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
-        #expect(config.version == 5)
+        #expect(config.version == 7)
         #expect(config.id == workspace.id.uuidString)
         #expect(config.skills.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.connectors?.first?.id == workspace.connectors.first?.id.uuidString)
@@ -122,6 +129,9 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.artifacts?.first?.id == workspace.tasks.first?.artifacts.first?.id.uuidString)
         #expect(config.tasks?.first?.skillIDs == [workspace.skills.first?.id.uuidString].compactMap { $0 })
         #expect(config.tasks?.first?.skillSnapshots?.first?.id == workspace.skills.first?.id.uuidString)
+        #expect(config.tasks?.first?.isPinned == true)
+        #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
+        #expect(config.enabledCapabilityIDs == ["stanford.builder"])
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -141,7 +151,11 @@ struct WorkspacePersistenceTests {
         #expect(imported.connectors.first?.id == workspace.connectors.first?.id)
         #expect(imported.connectors.first?.credentialKeys == ["API_TOKEN"])
         #expect(imported.connectors.first?.credentialValues == [""])
+        #expect(imported.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
+        #expect(imported.tasks.first?.isPinned == true)
+        #expect(imported.tasks.first?.unreadAt == sourceTask.unreadAt)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)
         #expect(imported.tasks.first?.events.first?.id == workspace.tasks.first?.events.first?.id)
@@ -227,6 +241,8 @@ struct WorkspacePersistenceTests {
         context.insert(sourceTask)
 
         let schedule = TaskSchedule(name: "Watcher", goal: "Check updates", workspace: workspace)
+        schedule.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        schedule.model = AgentRuntimeID.copilotCLI.defaultModel
         schedule.conversationContext = "User asked for a concise summary."
         schedule.resultMode = .scheduleLog
         schedule.sourceTaskID = sourceTask.id
@@ -242,6 +258,7 @@ struct WorkspacePersistenceTests {
         #expect(config.schedules?.first?.resultMode == ScheduleResultMode.scheduleLog.rawValue)
         #expect(config.schedules?.first?.sourceTaskID == sourceTask.id.uuidString)
         #expect(config.schedules?.first?.runResultsJSON == schedule.runResultsJSON)
+        #expect(config.schedules?.first?.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(config.schedules?.first?.lastFiredAt == schedule.lastFiredAt)
 
         let importedContainer = try makeWorkspacePersistenceContainer()
@@ -251,6 +268,7 @@ struct WorkspacePersistenceTests {
         #expect(importedSchedule.resultMode == .scheduleLog)
         #expect(importedSchedule.sourceTaskID == sourceTask.id)
         #expect(importedSchedule.runResultsJSON == schedule.runResultsJSON)
+        #expect(importedSchedule.resolvedRuntimeID == .copilotCLI)
         #expect(importedSchedule.lastFiredAt == schedule.lastFiredAt)
     }
 
@@ -316,6 +334,9 @@ struct WorkspacePersistenceTests {
         let sourceContainer = try makeWorkspacePersistenceContainer()
         let sourceContext = sourceContainer.mainContext
         let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let sourceTask = try #require(sourceWorkspace.tasks.first)
+        sourceTask.isPinned = true
+        try sourceContext.save()
         let configURL = workspaceFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
         try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
 
@@ -337,6 +358,7 @@ struct WorkspacePersistenceTests {
         #expect(secondImportCount == 0)
         #expect(workspaces.count == 1)
         #expect(workspaces.first?.id == sourceWorkspace.id)
+        #expect(workspaces.first?.tasks.first?.isPinned == true)
     }
 
     @Test("import reuses built-in global skills by name")

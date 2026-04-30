@@ -12,6 +12,8 @@ final class Workspace: Identifiable {
     var lastUsedSkillNames: [String] = []
     var enabledGlobalSkillIDs: [String] = []
     var enabledGlobalConnectorIDs: [String] = []
+    var enabledGlobalToolIDs: [String] = []
+    var enabledCapabilityIDs: [String] = []
     var memories: [String] = []
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []

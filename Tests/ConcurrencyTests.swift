@@ -10,7 +10,7 @@ struct ProcessMonitorTests_ThreadSafety {
 
     @Test("ProcessMonitor state is consistent after concurrent processEvent calls")
     func concurrentProcessEvents() async {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: 1_000_000,
             maxTurns: 0,
             maxRepetitions: 100,
@@ -34,7 +34,7 @@ struct ProcessMonitorTests_ThreadSafety {
 
     @Test("ProcessMonitor budget enforcement works under concurrent access")
     func concurrentBudgetEnforcement() async {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: 100,
             maxTurns: 0,
             maxRepetitions: 100,
@@ -55,7 +55,7 @@ struct ProcessMonitorTests_ThreadSafety {
 
     @Test("ProcessMonitor repetition detection is thread-safe")
     func repetitionDetection() async {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: 1_000_000,
             maxTurns: 0,
             maxRepetitions: 5,
@@ -77,7 +77,7 @@ struct ProcessMonitorTests_ThreadSafety {
 
     @Test("ProcessMonitor turn counting is accurate")
     func turnCounting() {
-        let monitor = ClaudeCodeWorker.ProcessMonitor(
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: 1_000_000,
             maxTurns: 3,
             maxRepetitions: 100,

@@ -118,6 +118,17 @@ struct QueueLockTests {
         }
     }
 
+    @Test("applySettings defaults to restricted permissions")
+    func applySettingsDefaultsRestricted() {
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(claudePath: "/custom/claude", timeoutSeconds: 300, validationModel: "haiku")
+
+        for worker in queue.workers {
+            #expect(worker.skipPermissions == false)
+            #expect(worker.permissionPolicy == .restricted)
+        }
+    }
+
     @Test("cancelAll clears dispatched and active state")
     @MainActor
     func cancelAllClearsAll() {

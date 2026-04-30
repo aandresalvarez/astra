@@ -1,12 +1,15 @@
 import SwiftUI
+import ASTRACore
 
 /// Shared bottom toolbar for both new-task and follow-up composers.
 struct ComposerToolbar: View {
     // MARK: - Required
 
     let model: String
+    var runtimeID: String = AgentRuntimeID.claudeCode.rawValue
     let budget: Int
     var skills: [Skill] = []
+    var availableSkills: [Skill] = []
     var workspace: Workspace?
     let isRunning: Bool
     let hasInput: Bool
@@ -18,6 +21,7 @@ struct ComposerToolbar: View {
 
     var onStop: (() -> Void)?
     var onModelChange: ((String) -> Void)?
+    var onRuntimeChange: ((String) -> Void)?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
     var onToggleSkill: ((Skill, Bool) -> Void)?
@@ -37,6 +41,7 @@ struct ComposerToolbar: View {
     var submitIcon: String = "arrow.up.circle.fill"
     var submitTitle: String?          // nil = icon-only send button
     var submitColor: Color = Stanford.cardinalRed
+    var showSecurityGate: Bool = false
     var showPermissionControls: Bool = false
 
     // MARK: - SSH connections
@@ -50,6 +55,10 @@ struct ComposerToolbar: View {
             plusMenu
 
             modelBudgetPill
+
+            if showSecurityGate || showPermissionControls {
+                permissionModeButton
+            }
 
             if showPermissionControls {
                 teamModeButton
@@ -81,7 +90,9 @@ struct ComposerToolbar: View {
             }
 
             Divider()
-            let userSkills = (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
+            let userSkills = availableSkills.isEmpty
+                ? (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
+                : availableSkills
             if !userSkills.isEmpty {
                 Menu {
                     ForEach(userSkills.sorted { $0.name < $1.name }) { skill in
@@ -131,26 +142,41 @@ struct ComposerToolbar: View {
     private var modelBudgetPill: some View {
         Menu {
             Menu {
-                Button { onModelChange?("claude-opus-4-6") } label: {
-                    HStack {
-                        Text("Opus")
-                        if model.contains("opus") { Image(systemName: "checkmark") }
+                ForEach(AgentRuntimeID.allCases) { runtime in
+                    Button {
+                        onRuntimeChange?(runtime.rawValue)
+                        if !runtime.defaultModels.contains(model) {
+                            onModelChange?(runtime.defaultModel)
+                        }
+                    } label: {
+                        HStack {
+                            Text(runtime.displayName)
+                            if resolvedRuntime == runtime { Image(systemName: "checkmark") }
+                        }
                     }
                 }
-                Button { onModelChange?("claude-sonnet-4-6") } label: {
-                    HStack {
-                        Text("Sonnet")
-                        if model.contains("sonnet") { Image(systemName: "checkmark") }
-                    }
-                }
-                Button { onModelChange?("claude-haiku-4-5-20251001") } label: {
-                    HStack {
-                        Text("Haiku")
-                        if model.contains("haiku") { Image(systemName: "checkmark") }
+            } label: {
+                Label("Provider", systemImage: "server.rack")
+            }
+
+            Menu {
+                ForEach(resolvedRuntime.defaultModels, id: \.self) { candidate in
+                    Button { onModelChange?(candidate) } label: {
+                        HStack {
+                            Text(shortModelName(candidate))
+                            if model == candidate { Image(systemName: "checkmark") }
+                        }
                     }
                 }
             } label: {
                 Label("Model", systemImage: "cpu")
+            }
+            if !resolvedRuntime.defaultModels.contains(model) {
+                Button { onModelChange?(resolvedRuntime.defaultModel) } label: {
+                    HStack {
+                        Text("Use \(shortModelName(resolvedRuntime.defaultModel))")
+                    }
+                }
             }
 
             Menu {
@@ -169,7 +195,7 @@ struct ComposerToolbar: View {
             HStack(spacing: 4) {
                 Image(systemName: "cpu")
                     .font(Stanford.ui(11, weight: .medium))
-                Text("\(shortModelName(model)) · \(budgetSummary(budget))")
+                Text("\(shortRuntimeName(resolvedRuntime)) · \(shortModelName(model)) · \(budgetSummary(budget))")
                     .font(Stanford.caption(12))
             }
             .foregroundStyle(Stanford.coolGrey)
@@ -185,22 +211,37 @@ struct ComposerToolbar: View {
     // MARK: - Permission Controls
 
     private var permissionModeButton: some View {
-        Button { skipPermissions.toggle() } label: {
+        Menu {
+            Button {
+                skipPermissions = false
+            } label: {
+                Label("Review: restricted tools", systemImage: "lock.fill")
+            }
+
+            Button {
+                skipPermissions = true
+            } label: {
+                Label("Auto: full access", systemImage: "lock.open.fill")
+            }
+        } label: {
             HStack(spacing: 3) {
                 Image(systemName: skipPermissions ? "lock.open.fill" : "lock.fill")
                     .font(Stanford.ui(11))
                 Text(skipPermissions ? "Auto" : "Review")
                     .font(Stanford.caption(13))
             }
-            .foregroundStyle(skipPermissions ? Stanford.paloAltoGreen : Stanford.poppy)
+            .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(skipPermissions ? Stanford.paloAltoGreen.opacity(0.12) : Stanford.poppy.opacity(0.12))
+            .background(skipPermissions ? Stanford.poppy.opacity(0.12) : Stanford.paloAltoGreen.opacity(0.12))
             .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .help(skipPermissions ? "Quick run tasks immediately" : "Switch the composer into plan and review flow before creating a runnable task")
-        .accessibilityIdentifier("PermissionToggle")
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help(skipPermissions ? "Auto mode skips CLI permission prompts. Use only for trusted tasks." : "Review mode keeps agents on restricted tools by default.")
+        .accessibilityIdentifier("SecurityGate")
+        .accessibilityLabel("Security Gate")
+        .accessibilityValue(skipPermissions ? "Auto" : "Review")
     }
 
     private var teamModeButton: some View {
@@ -412,9 +453,23 @@ struct ComposerToolbar: View {
     // MARK: - Helpers
 
     private func shortModelName(_ model: String) -> String {
+        if model == "gpt-5" { return "GPT-5" }
+        if model.contains("codex") { return "Codex" }
         if model.contains("opus") { return "Opus" }
         if model.contains("haiku") { return "Haiku" }
+        if model.contains("sonnet") { return "Sonnet" }
         return "Sonnet"
+    }
+
+    private var resolvedRuntime: AgentRuntimeID {
+        AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+    }
+
+    private func shortRuntimeName(_ runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: "Claude"
+        case .copilotCLI: "Copilot"
+        }
     }
 
     private func budgetSummary(_ budget: Int) -> String {

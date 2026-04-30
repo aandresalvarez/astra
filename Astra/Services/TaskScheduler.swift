@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Observable @MainActor
 final class TaskScheduler {
@@ -78,29 +79,15 @@ final class TaskScheduler {
             )
         }
 
+        task.runtimeID = schedule.resolvedRuntimeID.rawValue
         task.status = .queued
         task.originScheduleID = schedule.id
         modelContext.insert(task)
 
-        // Attach skills: schedule-level first, then template defaults as fallback
-        let effectiveSkillIDs: [String]
-        if !schedule.skillIDs.isEmpty {
-            effectiveSkillIDs = schedule.skillIDs
-        } else if let templateID = schedule.templateID,
-                  let template = schedule.workspace?.templates.first(where: { $0.id == templateID }),
-                  !template.defaultSkillIDs.isEmpty {
-            effectiveSkillIDs = template.defaultSkillIDs
-        } else {
-            effectiveSkillIDs = []
-        }
-
-        if !effectiveSkillIDs.isEmpty, let workspace = schedule.workspace {
-            let allSkills = workspace.skills
+        if schedule.workspace != nil {
             let globalDescriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
             let globals = (try? modelContext.fetch(globalDescriptor)) ?? []
-            let skillPool = allSkills + globals
-            let idSet = Set(effectiveSkillIDs)
-            for skill in skillPool where idSet.contains(skill.id.uuidString) {
+            for skill in Self.resolvedSkills(for: schedule, globalSkills: globals) {
                 task.skills.append(skill)
             }
         }
@@ -135,5 +122,27 @@ final class TaskScheduler {
                 await queue.processQueue(modelContext: ctx)
             }
         }
+    }
+
+    static func resolvedSkills(for schedule: TaskSchedule, globalSkills: [Skill]) -> [Skill] {
+        guard let workspace = schedule.workspace else { return [] }
+
+        let effectiveSkillIDs: [String]
+        if !schedule.skillIDs.isEmpty {
+            effectiveSkillIDs = schedule.skillIDs
+        } else if let templateID = schedule.templateID,
+                  let template = workspace.templates.first(where: { $0.id == templateID }),
+                  !template.defaultSkillIDs.isEmpty {
+            effectiveSkillIDs = template.defaultSkillIDs
+        } else {
+            effectiveSkillIDs = []
+        }
+
+        guard !effectiveSkillIDs.isEmpty else { return [] }
+
+        let idSet = Set(effectiveSkillIDs)
+        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills)
+            .activeSkills
+            .filter { idSet.contains($0.id.uuidString) }
     }
 }

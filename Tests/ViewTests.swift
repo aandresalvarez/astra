@@ -9,16 +9,33 @@ private func makeTask(
     title: String = "Test Task",
     goal: String = "Do something",
     status: TaskStatus = .queued,
+    workspace: Workspace? = nil,
     tokensUsed: Int = 0,
     tokenBudget: Int = 50000,
     costUSD: Double = 0,
     model: String = "claude-sonnet-4-6"
 ) -> AgentTask {
-    let task = AgentTask(title: title, goal: goal, tokenBudget: tokenBudget, model: model)
+    let task = AgentTask(title: title, goal: goal, workspace: workspace, tokenBudget: tokenBudget, model: model)
     task.status = status
     task.tokensUsed = tokensUsed
     task.costUSD = costUSD
     return task
+}
+
+private func makeWorkspace(name: String = "Workspace") -> Workspace {
+    Workspace(name: name, primaryPath: "/tmp/\(name)")
+}
+
+private func makeEvent(
+    task: AgentTask,
+    type: String,
+    payload: String,
+    timestamp: Date,
+    run: TaskRun? = nil
+) -> TaskEvent {
+    let event = TaskEvent(task: task, type: type, payload: payload, run: run)
+    event.timestamp = timestamp
+    return event
 }
 
 // MARK: - MarkdownTextView
@@ -33,6 +50,290 @@ struct MarkdownTextViewTests {
         let attributed = MarkdownTextView.markdownAttributed(malformed)
 
         #expect(String(attributed.characters) == malformed)
+    }
+
+    @Test("Bare URLs are linked with the shared markdown linkifier")
+    func bareURLsAreLinked() {
+        let attributed = MarkdownTextView.markdownAttributed("Visit https://example.com/docs")
+        let links = attributed.runs.compactMap(\.link)
+        let expected = URL(string: "https://example.com/docs")!
+
+        #expect(links.contains(expected))
+    }
+
+    @Test("Markdown linkifier returns stable attributed output from cache")
+    func markdownLinkifierCacheIsStable() {
+        MarkdownLinkifier.clearCacheForTests()
+
+        let source = "Read **docs** at https://example.com/docs"
+        let first = MarkdownLinkifier.markdownAttributed(source)
+        let second = MarkdownLinkifier.markdownAttributed(source)
+
+        #expect(String(first.characters) == String(second.characters))
+        #expect(first.runs.compactMap(\.link) == second.runs.compactMap(\.link))
+    }
+}
+
+// MARK: - TaskThreadSnapshot
+
+@Suite("TaskThreadSnapshot")
+struct TaskThreadSnapshotTests {
+
+    @Test("Conversation snapshot preserves chronological run and message behavior")
+    func conversationSnapshotOrdering() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = createdAt
+
+        let firstRun = TaskRun(task: task)
+        firstRun.startedAt = Date(timeIntervalSince1970: 110)
+        firstRun.completedAt = Date(timeIntervalSince1970: 130)
+        firstRun.output = "First run output"
+
+        let secondRun = TaskRun(task: task)
+        secondRun.startedAt = Date(timeIntervalSince1970: 140)
+        secondRun.output = "Second run output"
+
+        let userFollowUp = makeEvent(
+            task: task,
+            type: "user.message",
+            payload: "Continue",
+            timestamp: Date(timeIntervalSince1970: 150)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [userFollowUp],
+            runs: [secondRun, firstRun]
+        )
+
+        #expect(snapshot.conversationItems.count == 4)
+
+        if case .userMessage(let text, _) = snapshot.conversationItems[0] {
+            #expect(text == "Original goal")
+        } else {
+            Issue.record("Expected original goal as first conversation item")
+        }
+
+        if case .agentResponse(let run) = snapshot.conversationItems[1] {
+            #expect(run === firstRun)
+        } else {
+            Issue.record("Expected completed first run before the follow-up")
+        }
+
+        if case .userMessage(let text, _) = snapshot.conversationItems[2] {
+            #expect(text == "Continue")
+        } else {
+            Issue.record("Expected follow-up user message")
+        }
+
+        if case .agentResponse(let run) = snapshot.conversationItems[3] {
+            #expect(run === secondRun)
+        } else {
+            Issue.record("Expected remaining run output at the end")
+        }
+    }
+
+    @Test("Tool activity is grouped once per run")
+    func toolActivityGrouping() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Read", timestamp: Date(timeIntervalSince1970: 1), run: run),
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Bash", timestamp: Date(timeIntervalSince1970: 2), run: run),
+            makeEvent(task: task, type: "tool.use", payload: "Using tool: Read", timestamp: Date(timeIntervalSince1970: 3), run: run),
+            makeEvent(task: task, type: "tool.result", payload: "result", timestamp: Date(timeIntervalSince1970: 4), run: run),
+            makeEvent(task: task, type: "tool.result", payload: "", timestamp: Date(timeIntervalSince1970: 5), run: run)
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.tools == [
+            TaskToolSummary(name: "Read", count: 2),
+            TaskToolSummary(name: "Bash", count: 1)
+        ])
+        #expect(activity.toolResults.count == 1)
+        #expect(activity.toolResults.first?.payload == "result")
+    }
+
+    @Test("Latest agent plan derives from newest ARP todo.replace event")
+    func latestAgentPlanDerivesFromProtocolEvents() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let firstPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Old step", status: .pending)
+        ])).normalizedPayload
+        let secondPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Inspect", status: .done),
+            AstraRunProtocolEvent.TodoItem(text: "Test", status: .pending)
+        ])).normalizedPayload
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [
+                makeEvent(task: task, type: "astra.todo.replace", payload: firstPayload, timestamp: Date(timeIntervalSince1970: 1), run: run),
+                makeEvent(task: task, type: "astra.todo.replace", payload: secondPayload, timestamp: Date(timeIntervalSince1970: 2), run: run)
+            ],
+            runs: [run]
+        )
+
+        #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Inspect", "Test"])
+        #expect(snapshot.latestAgentPlanItems.map(\.isDone) == [true, false])
+        #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
+    }
+
+    @Test("Conversation includes run with ARP completion even when output is empty")
+    func protocolCompletionCreatesConversationItem() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = createdAt
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 110)
+        run.completedAt = Date(timeIntervalSince1970: 120)
+        run.output = ""
+
+        let payload = AstraRunProtocolParsedEvent.valid(.complete(
+            summary: "Implementation complete.",
+            verifiedBy: "swift test"
+        )).normalizedPayload
+        let event = makeEvent(
+            task: task,
+            type: "astra.complete",
+            payload: payload,
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [event],
+            runs: [run]
+        )
+
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected agent response for protocol-only completion")
+            return
+        }
+        #expect(responseRun === run)
+        #expect(snapshot.protocolState(for: run).completionSummary == "Implementation complete.")
+        #expect(snapshot.protocolState(for: run).verifiedBy == "swift test")
+    }
+
+    @Test("Large snapshot fixture preserves per-run activity grouping")
+    func largeSnapshotFixture() {
+        let task = makeTask()
+        let runCount = 750
+        var runs: [TaskRun] = []
+        var events: [TaskEvent] = []
+        runs.reserveCapacity(runCount)
+        events.reserveCapacity(runCount * 4)
+
+        for index in 0..<runCount {
+            let baseTimestamp = Double(index * 10)
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: baseTimestamp)
+            run.completedAt = Date(timeIntervalSince1970: baseTimestamp + 5)
+            run.output = "Run output \(index)"
+            runs.append(run)
+
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 1),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Bash",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 2),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 3),
+                run: run
+            ))
+            events.append(makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "result \(index)",
+                timestamp: Date(timeIntervalSince1970: baseTimestamp + 4),
+                run: run
+            ))
+        }
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events.reversed(),
+            runs: runs.reversed()
+        )
+
+        #expect(snapshot.sortedRuns.count == runCount)
+        #expect(snapshot.sortedEvents.count == runCount * 4)
+        #expect(snapshot.conversationItems.count == runCount + 1)
+
+        for index in stride(from: 0, to: runCount, by: 125) {
+            let activity = snapshot.activity(for: runs[index])
+            #expect(activity.tools == [
+                TaskToolSummary(name: "Read", count: 2),
+                TaskToolSummary(name: "Bash", count: 1)
+            ])
+            #expect(activity.toolResults.count == 1)
+            #expect(activity.toolResults.first?.payload == "result \(index)")
+        }
+    }
+
+    @Test("Generated file scan excludes internal task files")
+    func generatedFileScanExcludesInternalFiles() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generated-files-\(UUID().uuidString)")
+        let nested = root.appendingPathComponent("nested")
+        let outputs = root.appendingPathComponent("outputs")
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        try "internal".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
+        try "output".write(to: outputs.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+        try "nested".write(to: nested.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
+
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = Set(TaskGeneratedFiles.files(in: root.path))
+
+        #expect(paths.contains(root.appendingPathComponent("visible.txt").path))
+        #expect(paths.contains(nested.appendingPathComponent("session_history.md").path))
+        #expect(!paths.contains(root.appendingPathComponent("session_history.md").path))
+        #expect(!paths.contains(outputs.appendingPathComponent("result.txt").path))
+    }
+
+    @Test("Generated file scan can run asynchronously")
+    func generatedFileScanRunsAsync() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generated-files-async-\(UUID().uuidString)")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = await TaskGeneratedFiles.filesAsync(in: root.path)
+
+        #expect(paths == [root.appendingPathComponent("visible.txt").path])
     }
 }
 
@@ -246,6 +547,34 @@ struct AgentTaskPropertyTests {
         #expect(task.budgetProgress == 0)
     }
 
+    @Test("Unread starts clear and is set only for agent-result statuses")
+    func unreadStateFollowsResultStatuses() {
+        let task = makeTask(status: .running)
+        let unreadDate = Date(timeIntervalSince1970: 1_000)
+
+        #expect(task.shouldShowUnread == false)
+
+        task.markUnreadForCurrentStatus(at: unreadDate)
+        #expect(task.shouldShowUnread == false)
+
+        task.status = .completed
+        task.markUnreadForCurrentStatus(at: unreadDate)
+        #expect(task.shouldShowUnread == true)
+        #expect(task.unreadAt == unreadDate)
+
+        task.markRead()
+        #expect(task.shouldShowUnread == false)
+    }
+
+    @Test("Pending user and failed outcomes can be unread")
+    func reviewOutcomesCanBeUnread() {
+        for status in [TaskStatus.pendingUser, .failed, .budgetExceeded] {
+            let task = makeTask(status: status)
+            task.markUnreadForCurrentStatus(at: Date(timeIntervalSince1970: 2_000))
+            #expect(task.shouldShowUnread == true)
+        }
+    }
+
     @Test("threadMessageCount falls back to the original goal")
     func threadMessageCountFallback() {
         let task = makeTask(goal: "Investigate the failing sync job")
@@ -375,6 +704,9 @@ struct TimelineDisplayTests {
         ("agent.thinking", "brain"),
         ("agent.response", "text.bubble"),
         ("tool.use", "wrench"),
+        ("astra.todo.replace", "checklist"),
+        ("astra.complete", "checkmark.seal"),
+        ("astra.protocol.invalid", "exclamationmark.triangle"),
         ("task.completed", "checkmark.circle"),
         ("task.stats", "chart.bar"),
         ("budget.exceeded", "exclamationmark.triangle"),
@@ -387,6 +719,9 @@ struct TimelineDisplayTests {
         ("agent.thinking", "Thinking"),
         ("agent.response", "Response"),
         ("tool.use", "Tool"),
+        ("astra.todo.replace", "Agent Plan"),
+        ("astra.complete", "Agent Completion"),
+        ("astra.protocol.invalid", "Invalid Protocol"),
         ("task.completed", "Completed"),
         ("task.stats", "Stats"),
         ("budget.exceeded", "Budget Exceeded"),
@@ -402,6 +737,9 @@ struct TimelineDisplayTests {
         case "agent.thinking": "brain"
         case "agent.response": "text.bubble"
         case "tool.use": "wrench"
+        case "astra.todo.replace": "checklist"
+        case "astra.complete": "checkmark.seal"
+        case "astra.protocol.invalid": "exclamationmark.triangle"
         case "task.completed": "checkmark.circle"
         case "task.stats": "chart.bar"
         case "budget.exceeded": "exclamationmark.triangle"
@@ -419,6 +757,9 @@ struct TimelineDisplayTests {
         case "agent.thinking": "Thinking"
         case "agent.response": "Response"
         case "tool.use": "Tool"
+        case "astra.todo.replace": "Agent Plan"
+        case "astra.complete": "Agent Completion"
+        case "astra.protocol.invalid": "Invalid Protocol"
         case "task.completed": "Completed"
         case "task.stats": "Stats"
         case "budget.exceeded": "Budget Exceeded"
@@ -464,6 +805,84 @@ struct SidebarGroupingTests {
         let queued = tasks.filter { $0.status == .queued }
         #expect(running.isEmpty)
         #expect(queued.isEmpty)
+    }
+
+    @Test("SidebarTaskIndex groups review tasks by workspace")
+    func sidebarTaskIndexGroupsReviewTasks() {
+        let firstWorkspace = makeWorkspace(name: "First")
+        let secondWorkspace = makeWorkspace(name: "Second")
+
+        let pinnedReview = makeTask(title: "Pinned review", status: .completed, workspace: firstWorkspace)
+        pinnedReview.isPinned = true
+        pinnedReview.updatedAt = Date(timeIntervalSince1970: 200)
+
+        let archived = makeTask(title: "Archived", status: .completed, workspace: firstWorkspace)
+        archived.isDone = true
+
+        let running = makeTask(title: "Running", status: .running, workspace: secondWorkspace)
+
+        let index = SidebarTaskIndex(tasks: [archived, running, pinnedReview], searchText: "")
+
+        #expect(index.reviewTasks(for: firstWorkspace).map(\.id) == [pinnedReview.id])
+        #expect(index.reviewTasks(for: secondWorkspace).map(\.id) == [running.id])
+        #expect(index.pinnedTasks.map(\.id) == [pinnedReview.id])
+        #expect(index.hasAnyTask(in: firstWorkspace))
+    }
+
+    @Test("SidebarTaskIndex surfaces unread tasks under the dock")
+    func sidebarTaskIndexUnreadTasks() {
+        let workspace = makeWorkspace(name: "Unread")
+
+        let olderUnread = makeTask(title: "Older unread", status: .completed, workspace: workspace)
+        olderUnread.unreadAt = Date(timeIntervalSince1970: 200)
+        olderUnread.updatedAt = Date(timeIntervalSince1970: 400)
+
+        let newerUnread = makeTask(title: "Newer unread", status: .pendingUser, workspace: workspace)
+        newerUnread.unreadAt = Date(timeIntervalSince1970: 300)
+        newerUnread.updatedAt = Date(timeIntervalSince1970: 300)
+
+        let read = makeTask(title: "Read", status: .completed, workspace: workspace)
+
+        let archivedUnread = makeTask(title: "Archived unread", status: .completed, workspace: workspace)
+        archivedUnread.unreadAt = Date(timeIntervalSince1970: 500)
+        archivedUnread.isDone = true
+
+        let running = makeTask(title: "Running", status: .running, workspace: workspace)
+        running.unreadAt = Date(timeIntervalSince1970: 600)
+
+        let index = SidebarTaskIndex(
+            tasks: [olderUnread, newerUnread, read, archivedUnread, running],
+            searchText: ""
+        )
+
+        #expect(index.unreadTasks.map(\.id) == [newerUnread.id, olderUnread.id])
+    }
+
+    @Test("SidebarTaskIndex applies search unless the workspace itself matches")
+    func sidebarTaskIndexSearchBehavior() {
+        let matchingWorkspace = makeWorkspace(name: "Deployments")
+        let nonmatchingWorkspace = makeWorkspace(name: "Bugs")
+
+        let workspaceMatchedTask = makeTask(title: "Unrelated", status: .completed, workspace: matchingWorkspace)
+        let taskMatchedTask = makeTask(title: "Deploy fix", status: .completed, workspace: nonmatchingWorkspace)
+        let taskFilteredOut = makeTask(title: "Investigate crash", status: .completed, workspace: nonmatchingWorkspace)
+
+        let index = SidebarTaskIndex(
+            tasks: [workspaceMatchedTask, taskMatchedTask, taskFilteredOut],
+            searchText: "deploy"
+        )
+
+        #expect(index.reviewTasks(
+            for: matchingWorkspace,
+            matchingSearch: true,
+            workspaceMatchesSearch: true
+        ).map(\.id) == [workspaceMatchedTask.id])
+
+        #expect(index.reviewTasks(
+            for: nonmatchingWorkspace,
+            matchingSearch: true,
+            workspaceMatchesSearch: false
+        ).map(\.id) == [taskMatchedTask.id])
     }
 }
 

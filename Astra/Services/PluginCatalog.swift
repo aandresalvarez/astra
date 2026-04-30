@@ -41,6 +41,11 @@ final class PluginCatalog {
         packages = loaded.sorted { $0.category < $1.category || ($0.category == $1.category && $0.name < $1.name) }
     }
 
+    func loadApprovedCapabilities(library: CapabilityLibrary = CapabilityLibrary()) {
+        try? library.syncApprovedPackages(Self.builtInPackages)
+        packages = library.installedPackages()
+    }
+
     var categories: [String] {
         let cats = packages.map(\.category)
         return Array(NSOrderedSet(array: cats)) as? [String] ?? Array(Set(cats)).sorted()
@@ -49,6 +54,9 @@ final class PluginCatalog {
     // MARK: - Install
 
     func isInstalled(_ packageID: String, in workspace: Workspace) -> Bool {
+        if workspace.enabledCapabilityIDs.contains(packageID) || workspace.installedPluginIDSet.contains(packageID) {
+            return true
+        }
         guard let pkg = packages.first(where: { $0.id == packageID }) else { return false }
         let skillNames = Set(pkg.skills.map(\.name))
         let connectorNames = Set(pkg.connectors.map(\.name))
@@ -285,7 +293,12 @@ final class PluginCatalog {
 
     // MARK: - Built-in Package Definitions (Curated)
 
-    static let builtInPackages: [PluginPackage] = [
+    static var builtInPackages: [PluginPackage] {
+        let bundledPackages = ApprovedCapabilityBundle.packages()
+        return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
+    }
+
+    private static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // ────────────────────────────────────────────
         // 1. Code Reviewer — zero config
@@ -514,7 +527,7 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 4. GitHub Workflow — requires setup
+        // 4. GitHub Workflow — requires gh CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "github-workflow",
@@ -524,10 +537,11 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.0.0",
+            version: "2.1.1",
             setupGuide: """
-            Connect your workspace to GitHub. The agent uses the GitHub \
-            REST API to interact with your repositories.
+            Connect your workspace to GitHub using the GitHub CLI. This \
+            capability does not use a stored GitHub connector or token; it \
+            runs `gh` against the current repository or an explicit owner/repo.
 
             What you can do:
             • List and search issues and pull requests
@@ -537,63 +551,51 @@ final class PluginCatalog {
             • Check workflow runs and deployment status
 
             Setup:
-            • Token — a Personal Access Token from github.com/settings/tokens
-            • Repos — the repositories you work with (owner/repo format)
+            • Install GitHub CLI: `brew install gh`
+            • Authenticate locally: `gh auth login`
+            • Run tasks from a cloned GitHub repository, or specify `--repo owner/repo` in commands
             """,
             skills: [PluginSkill(
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
-                description: "Manage issues, PRs, and CI via GitHub REST API",
+                description: "Manage issues, PRs, and CI via GitHub CLI",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a GitHub integration agent. Use curl via Bash to interact with the GitHub REST API.
+                You are a GitHub integration agent. Use the GitHub CLI (`gh`) via Bash for GitHub work. Do not rely on stored connector credentials.
 
                 AUTHENTICATION
-                Use the GITHUB_TOKEN environment variable:
-                curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/..."
+                • Require `gh` to be installed and authenticated locally
+                • If authentication fails, tell the user to run `gh auth login`
+                • Prefer the current git repository context; use `--repo owner/repo` when the user specifies a repository outside the current checkout
 
                 COMMON OPERATIONS
-                • List issues: GET /repos/{owner}/{repo}/issues?state=open
-                • Get issue: GET /repos/{owner}/{repo}/issues/{number}
-                • Create issue: POST /repos/{owner}/{repo}/issues with {"title":"...","body":"...","labels":["bug"]}
-                • List PRs: GET /repos/{owner}/{repo}/pulls?state=open
-                • Get PR diff: GET /repos/{owner}/{repo}/pulls/{number} with Accept: application/vnd.github.diff
-                • PR reviews: GET /repos/{owner}/{repo}/pulls/{number}/reviews
-                • Comment: POST /repos/{owner}/{repo}/issues/{number}/comments with {"body":"..."}
-                • Workflow runs: GET /repos/{owner}/{repo}/actions/runs?per_page=5
-                • Check CI status: GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+                • List issues: gh issue list --state open --limit 30
+                • View issue: gh issue view ISSUE_NUMBER --comments
+                • Create issue: gh issue create --title "..." --body "..." --label "bug"
+                • List PRs: gh pr list --state open --limit 30
+                • View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url
+                • PR diff: gh pr diff PR_NUMBER
+                • Review checks: gh pr checks PR_NUMBER
+                • Workflow runs: gh run list --limit 10
+                • View workflow run: gh run view RUN_ID --log
+                • Comment on issue or PR: gh issue comment NUMBER --body "..." or gh pr comment NUMBER --body "..."
 
                 FORMATTING
-                • Issues/PRs: show number, title, state, author, labels, created date
-                • PR diffs: summarize changes by file, highlight key modifications
-                • CI: show workflow name, status, conclusion, duration
+                • Issues/PRs: show number, title, state, author, labels, and URL
+                • PR diffs: summarize changes by file and highlight risky modifications
+                • CI: show workflow name, status, conclusion, and failing job details
 
                 RULES
-                • Always confirm with the user before creating issues or posting comments
-                • Default to the configured GITHUB_REPOS unless told otherwise
-                • Paginate large result sets (use per_page and page params)
+                • Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows
+                • Prefer `--json` output for structured parsing when available
                 • Include links to issues/PRs in your responses
+                • Never ask the user to paste GitHub credentials when `gh auth login` is the right fix
                 """,
                 environmentKeys: [], environmentValues: []
             )],
-            connectors: [PluginConnector(
-                name: "GitHub",
-                serviceType: "github",
-                icon: "chevron.left.forwardslash.chevron.right",
-                description: "GitHub REST API",
-                baseURL: "https://api.github.com",
-                authMethod: "bearer",
-                credentialHints: [
-                    .init(key: "GITHUB_TOKEN", hint: "Personal access token from github.com/settings/tokens")
-                ],
-                configHints: [
-                    .init(key: "GITHUB_REPOS", hint: "Repositories in owner/repo format, comma-separated", isList: true),
-                    .init(key: "GITHUB_ORG", hint: "Organization name (optional)", isList: false)
-                ],
-                notes: "Uses GitHub REST API. Auth: Bearer token."
-            )],
+            connectors: [],
             localTools: [
                 PluginLocalTool(
                     name: "gh — GitHub CLI",
@@ -602,24 +604,27 @@ final class PluginCatalog {
                     toolType: "cli",
                     command: "gh",
                     arguments: ""
+                )
+            ],
+            templates: [],
+            prerequisites: [
+                CLIPrerequisite(
+                    binary: "gh",
+                    displayName: "GitHub CLI",
+                    purpose: "Runs GitHub commands for repository workflows.",
+                    installURL: URL(string: "https://cli.github.com/"),
+                    installHint: "Install via Homebrew: `brew install gh`",
+                    authHint: "Run `gh auth login`."
                 ),
-                PluginLocalTool(
-                    name: "gh pr list",
-                    description: "List pull requests in the current repo",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "gh",
-                    arguments: "pr list"
-                ),
-                PluginLocalTool(
-                    name: "gh issue list",
-                    description: "List issues in the current repo",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "gh",
-                    arguments: "issue list"
-                ),
-            ], templates: []
+                CLIPrerequisite(
+                    binary: "gh",
+                    livenessArgs: ["auth", "status"],
+                    displayName: "GitHub login",
+                    purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
+                    installHint: "Run `gh auth login`.",
+                    authHint: "Run `gh auth login`."
+                )
+            ]
         ),
 
         // ────────────────────────────────────────────

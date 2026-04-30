@@ -52,6 +52,10 @@ struct TaskDetailView: View {
                 }
 
                 HStack(spacing: 16) {
+                    Label(task.resolvedRuntimeID.displayName, systemImage: "server.rack")
+                        .font(Stanford.caption())
+                        .foregroundStyle(Stanford.coolGrey)
+
                     Label(task.model, systemImage: "cpu")
                         .font(Stanford.caption())
                         .foregroundStyle(Stanford.coolGrey)
@@ -244,6 +248,9 @@ struct TimelineTabView: View {
         case "agent.thinking": return "brain"
         case "agent.response": return "text.bubble"
         case "tool.use": return "wrench"
+        case "astra.todo.replace": return "checklist"
+        case "astra.complete": return "checkmark.seal"
+        case "astra.protocol.invalid": return "exclamationmark.triangle"
         case "task.completed": return "checkmark.circle"
         case "task.stats": return "chart.bar"
         case "budget.exceeded": return "exclamationmark.triangle"
@@ -259,6 +266,9 @@ struct TimelineTabView: View {
         case "agent.thinking": return Stanford.driftwood
         case "agent.response": return Stanford.black
         case "tool.use": return Stanford.poppy
+        case "astra.todo.replace": return Stanford.lagunita
+        case "astra.complete": return Stanford.paloAltoGreen
+        case "astra.protocol.invalid": return Stanford.poppy
         case "task.completed": return Stanford.paloAltoGreen
         case "task.stats": return Stanford.sky
         case "budget.exceeded": return Stanford.cardinalRed
@@ -274,6 +284,9 @@ struct TimelineTabView: View {
         case "agent.thinking": return "Thinking"
         case "agent.response": return "Response"
         case "tool.use": return "Tool"
+        case "astra.todo.replace": return "Agent Plan"
+        case "astra.complete": return "Agent Completion"
+        case "astra.protocol.invalid": return "Invalid Protocol"
         case "task.completed": return "Completed"
         case "task.stats": return "Stats"
         case "budget.exceeded": return "Budget Exceeded"
