@@ -163,7 +163,7 @@ struct ComposerToolbar: View {
                 ForEach(resolvedRuntime.defaultModels, id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
                         HStack {
-                            Text(shortModelName(candidate))
+                            Text(modelDisplayName(candidate))
                             if model == candidate { Image(systemName: "checkmark") }
                         }
                     }
@@ -174,7 +174,7 @@ struct ComposerToolbar: View {
             if !resolvedRuntime.defaultModels.contains(model) {
                 Button { onModelChange?(resolvedRuntime.defaultModel) } label: {
                     HStack {
-                        Text("Use \(shortModelName(resolvedRuntime.defaultModel))")
+                        Text("Use \(modelDisplayName(resolvedRuntime.defaultModel))")
                     }
                 }
             }
@@ -195,8 +195,10 @@ struct ComposerToolbar: View {
             HStack(spacing: 4) {
                 Image(systemName: "cpu")
                     .font(Stanford.ui(11, weight: .medium))
-                Text("\(shortRuntimeName(resolvedRuntime)) · \(shortModelName(model)) · \(budgetSummary(budget))")
+                Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
                     .font(Stanford.caption(12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .foregroundStyle(Stanford.coolGrey)
             .padding(.horizontal, 8)
@@ -204,6 +206,7 @@ struct ComposerToolbar: View {
             .background(Stanford.fog)
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
+        .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
     }
@@ -452,13 +455,8 @@ struct ComposerToolbar: View {
 
     // MARK: - Helpers
 
-    private func shortModelName(_ model: String) -> String {
-        if model == "gpt-5" { return "GPT-5" }
-        if model.contains("codex") { return "Codex" }
-        if model.contains("opus") { return "Opus" }
-        if model.contains("haiku") { return "Haiku" }
-        if model.contains("sonnet") { return "Sonnet" }
-        return "Sonnet"
+    private func modelDisplayName(_ model: String) -> String {
+        model.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var resolvedRuntime: AgentRuntimeID {
