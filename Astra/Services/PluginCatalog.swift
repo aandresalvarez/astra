@@ -467,7 +467,110 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 3. GitHub Workflow — requires gh CLI
+        // 3. REDCap Workflow — requires setup
+        // ────────────────────────────────────────────
+        PluginPackage(
+            id: "redcap-workflow",
+            name: "REDCap Workflow",
+            icon: "tablecells",
+            description: "Query and manage Stanford REDCap projects through the API",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: ["redcap", "stanford", "research", "clinical-data", "api"],
+            version: "1.0.0",
+            setupGuide: """
+            Connect your workspace to Stanford REDCap using the project API token. \
+            The API endpoint is prefilled as https://redcap.stanford.edu/api/.
+
+            What you can do:
+            - Export project metadata, instruments, events, arms, DAGs, reports, and records
+            - Inspect longitudinal event and instrument-event mappings
+            - Import records, metadata, arms, events, DAGs, and instrument-event mappings after explicit confirmation
+            - Download or upload REDCap files when the user asks for that workflow
+
+            Setup:
+            - Add the project API token as REDCAP_API_TOKEN
+            - Keep tokens out of prompts, logs, files, commits, and shell history
+            - Use the task output folder for exports and summaries, especially when data may include PHI
+            """,
+            skills: [PluginSkill(
+                name: "REDCap Agent",
+                icon: "tablecells",
+                description: "Query and manage Stanford REDCap projects via API",
+                allowedTools: ["Read", "Bash", "Glob", "Grep"],
+                disallowedTools: ["Write", "Edit"],
+                customTools: [],
+                behaviorInstructions: """
+                You are a REDCap API specialist for Stanford REDCap. Use curl via Bash to interact with the REDCap API using form-encoded POST requests.
+
+                AUTHENTICATION
+                Use the REDCAP_API_TOKEN environment variable. The Stanford API endpoint is REDCAP_API_URL, prefilled as https://redcap.stanford.edu/api/. Never print, log, echo, save, or commit the token.
+
+                Base curl pattern:
+                curl -sS -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -X POST --data-urlencode "token=$REDCAP_API_TOKEN" --data-urlencode "content=project" --data-urlencode "format=json" --data-urlencode "returnFormat=json" "$REDCAP_API_URL"
+
+                COMMON READ OPERATIONS
+                - Project info: content=project&format=json&returnFormat=json
+                - Metadata: content=metadata&format=json&returnFormat=json
+                - Records: content=record&format=json&type=flat&returnFormat=json
+                - Reports: content=report&format=json&report_id=REPORT_ID&returnFormat=json
+                - Events: content=event&format=json&returnFormat=json
+                - Instrument-event mappings: content=formEventMapping&format=json&returnFormat=json
+                - Instruments/forms: content=instrument&format=json&returnFormat=json
+                - Arms: content=arm&format=json&returnFormat=json
+                - DAGs: content=dag&format=json&returnFormat=json
+                - Users: content=user&format=json&returnFormat=json
+                - Logging: content=log&format=json&returnFormat=json
+
+                WRITE AND DELETE SAFETY
+                - Always confirm with the user before import, update, delete, file upload, DAG/user changes, event changes, or metadata changes.
+                - Prefer a dry-run style explanation first: endpoint, content value, records affected, and the exact file you will send.
+                - For imports, read data from a file in the task output folder or workspace and send it with --data-urlencode data@path when possible.
+
+                DATA HANDLING
+                - Treat REDCap exports as sensitive research data and potential PHI.
+                - Save exports only to the task output folder unless the user explicitly names another location.
+                - Do not paste large record exports into chat. Summarize schema, counts, fields, and validation issues instead.
+                - Use jq or Python for parsing when output is large. Prefer JSON for structured work.
+
+                FORMATTING
+                - Report API calls by content value and purpose, not by token.
+                - For project summaries, include project title, purpose, record count if known, instruments, events, arms, and reports discovered.
+                - For data-quality checks, cite field names, event names, record IDs only when needed, and keep examples minimal.
+                """,
+                environmentKeys: ["REDCAP_API_URL"], environmentValues: ["https://redcap.stanford.edu/api/"]
+            )],
+            connectors: [PluginConnector(
+                name: "REDCap",
+                serviceType: "redcap",
+                icon: "tablecells",
+                description: "Stanford REDCap API",
+                baseURL: "https://redcap.stanford.edu/api/",
+                authMethod: "api_key",
+                credentialHints: [
+                    .init(
+                        key: "REDCAP_API_TOKEN",
+                        hint: "Project API token from REDCap > API. This is stored in Keychain and exposed to tasks as REDCAP_API_TOKEN."
+                    )
+                ],
+                configHints: [],
+                notes: "Uses form-encoded POST requests to the Stanford REDCap API. The API token identifies the project and must never be printed or committed."
+            )],
+            localTools: [
+                PluginLocalTool(
+                    name: "curl - REDCap API",
+                    description: "Call the REDCap API with form-encoded POST requests",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "curl",
+                    arguments: ""
+                )
+            ],
+            templates: []
+        ),
+
+        // ────────────────────────────────────────────
+        // 4. GitHub Workflow — requires gh CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "github-workflow",
@@ -548,27 +651,13 @@ final class PluginCatalog {
             ],
             templates: [],
             prerequisites: [
-                CLIPrerequisite(
-                    binary: "gh",
-                    displayName: "GitHub CLI",
-                    purpose: "Runs GitHub commands for repository workflows.",
-                    installURL: URL(string: "https://cli.github.com/"),
-                    installHint: "Install via Homebrew: `brew install gh`",
-                    authHint: "Run `gh auth login`."
-                ),
-                CLIPrerequisite(
-                    binary: "gh",
-                    livenessArgs: ["auth", "status"],
-                    displayName: "GitHub login",
-                    purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
-                    installHint: "Run `gh auth login`.",
-                    authHint: "Run `gh auth login`."
-                )
+                CommonCLIPrerequisites.githubCLI,
+                CommonCLIPrerequisites.githubAuth
             ]
         ),
 
         // ────────────────────────────────────────────
-        // 4. GCloud Workflow — requires setup + gcloud CLI
+        // 5. GCloud Workflow — requires setup + gcloud CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "gcloud-workflow",

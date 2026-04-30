@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import ASTRA
+import ASTRACore
 
 /// Lightweight contract tests for the onboarding wizard's step machine.
 /// The view itself is mostly SwiftUI glue that's easier to verify by
@@ -14,7 +15,7 @@ struct OnboardingWizardTests {
         let ordered = OnboardingWizardView.Step.allCases
         #expect(ordered == [
             .welcome,
-            .claudeCLI,
+            .requiredCLIs,
             .workspaceRoot,
             .catalogPreview,
             .ready
@@ -27,7 +28,7 @@ struct OnboardingWizardTests {
         // rawValue. If the raw order ever changes, the bar silently
         // breaks — this test locks the assignment in.
         #expect(OnboardingWizardView.Step.welcome.rawValue == 0)
-        #expect(OnboardingWizardView.Step.claudeCLI.rawValue == 1)
+        #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 1)
         #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 2)
         #expect(OnboardingWizardView.Step.catalogPreview.rawValue == 3)
         #expect(OnboardingWizardView.Step.ready.rawValue == 4)
@@ -51,6 +52,19 @@ struct OnboardingWizardTests {
             #expect(!step.title.isEmpty)
             #expect(!step.progressLabel.isEmpty)
         }
+    }
+
+    @Test("Required CLI checks include Claude and GitHub")
+    func requiredCLIChecksIncludeClaudeAndGitHub() {
+        let prerequisites = OnboardingWizardView.requiredCLIPrerequisites
+        #expect(prerequisites.map(\.binary) == ["claude", "gh", "gh"])
+        #expect(prerequisites.map(\.livenessArgs) == [
+            ["--version"],
+            ["--version"],
+            ["auth", "status"]
+        ])
+        #expect(prerequisites[1] == CommonCLIPrerequisites.githubCLI)
+        #expect(prerequisites[2] == CommonCLIPrerequisites.githubAuth)
     }
 
     @Test("Onboarding completion uses the Astra-specific storage key")

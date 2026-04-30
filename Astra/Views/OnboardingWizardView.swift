@@ -2,10 +2,10 @@ import SwiftUI
 import ASTRACore
 
 /// Multi-step first-run wizard. Owns its own step state and the
-/// completion flag in `@AppStorage`. Drives the Claude-CLI probe up
-/// front so the user knows on page one whether their machine is ready,
-/// then walks them through workspace setup and a preview of which
-/// catalog items are plug-and-play vs. CLI-dependent.
+/// completion flag in `@AppStorage`. Drives required CLI probes up
+/// front so the user knows whether their machine can run core agent and
+/// GitHub workflows, then walks them through workspace setup and a
+/// preview of which catalog items are plug-and-play vs. CLI-dependent.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
 /// the wizard matches the rest of the app — cardinal red for primary
@@ -15,7 +15,7 @@ import ASTRACore
 ///
 /// Steps:
 ///   0. Welcome — what ASTRA is + what it needs
-///   1. Claude CLI — probe + install instructions if missing
+///   1. Required CLIs — Claude + GitHub CLI probes and install help
 ///   2. Workspace root — pick where projects live
 ///   3. Catalog preview — optional extras the user can install later
 ///   4. Ready — "start your first workspace"
@@ -27,6 +27,12 @@ struct OnboardingWizardView: View {
     /// Called when the user hits "Create First Workspace" on the final step.
     /// The wrapping ContentView opens the actual workspace-creation sheet.
     var onCreateWorkspace: () -> Void
+
+    static let requiredCLIPrerequisites: [CLIPrerequisite] = [
+        CommonCLIPrerequisites.claude,
+        CommonCLIPrerequisites.githubCLI,
+        CommonCLIPrerequisites.githubAuth
+    ]
 
     /// Optional hook for testing — force a step on init.
     init(
@@ -41,7 +47,7 @@ struct OnboardingWizardView: View {
 
     enum Step: Int, CaseIterable, Identifiable {
         case welcome = 0
-        case claudeCLI
+        case requiredCLIs
         case workspaceRoot
         case catalogPreview
         case ready
@@ -50,7 +56,7 @@ struct OnboardingWizardView: View {
         var title: String {
             switch self {
             case .welcome:        "Welcome to ASTRA"
-            case .claudeCLI:      "Claude CLI"
+            case .requiredCLIs:   "Required CLIs"
             case .workspaceRoot:  "Workspace Root"
             case .catalogPreview: "Catalog Preview"
             case .ready:          "You're Ready"
@@ -63,7 +69,7 @@ struct OnboardingWizardView: View {
         var progressLabel: String {
             switch self {
             case .welcome:        "Welcome"
-            case .claudeCLI:      "Claude"
+            case .requiredCLIs:   "CLIs"
             case .workspaceRoot:  "Setup"
             case .catalogPreview: "Catalog"
             case .ready:          "Done"
@@ -78,6 +84,9 @@ struct OnboardingWizardView: View {
     @State private var currentStep: Step
     @State private var claudeStatus: HealthStatus?
     @State private var isProbingClaude = false
+    @State private var githubStatus: HealthStatus?
+    @State private var githubAuthStatus: HealthStatus?
+    @State private var isProbingGitHub = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -160,7 +169,7 @@ struct OnboardingWizardView: View {
     private var stepContent: some View {
         switch currentStep {
         case .welcome:        welcomeStep
-        case .claudeCLI:      claudeStep
+        case .requiredCLIs:   cliStep
         case .workspaceRoot:  workspaceStep
         case .catalogPreview: catalogStep
         case .ready:          readyStep
@@ -181,33 +190,34 @@ struct OnboardingWizardView: View {
             bulletList([
                 ("square.stack.3d.up.fill", "Queue AI tasks across multiple workspaces"),
                 ("puzzlepiece.extension.fill", "Pick skills, connectors, and tools from a catalog"),
-                ("checkmark.shield.fill", "We'll verify your Mac is set up before anything runs")
+                ("checkmark.shield.fill", "We'll verify Claude and GitHub CLI before anything runs")
             ])
 
             calloutBox(
                 icon: "info.circle.fill",
                 title: "What we'll check",
-                body: "This wizard probes the claude CLI, picks a home folder for your workspaces, and previews optional CLIs (gcloud, docker) you might want to install later. It takes less than a minute.",
+                body: "This wizard probes Claude CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces and previews optional CLIs you might want later. It takes less than a minute.",
                 tint: Stanford.sky
             )
         }
     }
 
-    private var claudeStep: some View {
+    private var cliStep: some View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "terminal.fill",
-                title: "Claude CLI",
-                subtitle: "ASTRA drives the claude command to run agents on your code.",
+                title: "Required CLIs",
+                subtitle: "ASTRA checks Claude for agents and gh for GitHub workflows.",
                 tint: Stanford.lagunita
             )
 
             claudeProbeCard
+            githubProbeCard
 
             calloutBox(
                 icon: "arrow.down.circle.fill",
-                title: "If it's missing or not authenticated",
-                body: "Install the Claude CLI from docs.claude.com/en/docs/claude-code/install, then run claude login in a terminal. Hit Re-check below when you're done.",
+                title: "If anything is missing or not authenticated",
+                body: "Install Claude CLI with npm install -g @anthropic-ai/claude-code, then run claude /login. Install GitHub CLI with brew install gh, then run gh auth login. Hit Re-check when you're done.",
                 tint: Stanford.sky
             )
         }
@@ -283,7 +293,8 @@ struct OnboardingWizardView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("Catalog: needs credentials or a CLI", color: Stanford.poppy)
-                catalogRow("list.bullet.clipboard", "Jira / GitHub", "API token")
+                catalogRow("list.bullet.clipboard", "Jira", "API token")
+                catalogRow("chevron.left.forwardslash.chevron.right", "GitHub Workflow", "gh CLI")
                 catalogRow("cloud.fill", "Google Cloud", "gcloud CLI")
             }
 
@@ -310,6 +321,11 @@ struct OnboardingWizardView: View {
                     title: "Claude CLI",
                     status: claudeStatusSummary,
                     ready: isClaudeHealthy
+                )
+                readinessRow(
+                    title: "GitHub CLI",
+                    status: githubStatusSummary,
+                    ready: isGitHubHealthy
                 )
                 readinessRow(
                     title: "Workspace root",
@@ -383,6 +399,68 @@ struct OnboardingWizardView: View {
         }
     }
 
+    private var githubProbeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                githubStatusIcon
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("gh CLI")
+                        .font(Stanford.body(14).weight(.semibold))
+                        .foregroundStyle(Stanford.black)
+                    Text(githubStatusSummary)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(githubStatusColor)
+                }
+                Spacer()
+                Button {
+                    Task { await probeGitHub(forceRefresh: true) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(Stanford.ui(11))
+                        Text("Re-check")
+                            .font(Stanford.caption(12))
+                    }
+                }
+                .disabled(isProbingGitHub)
+            }
+
+            if case .healthy(let path, _) = githubStatus {
+                Text("Path: \(path)")
+                    .font(Stanford.mono(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .textSelection(.enabled)
+
+                Divider().opacity(0.45)
+
+                HStack(spacing: 8) {
+                    Image(systemName: githubAuthStatusSymbol)
+                        .font(Stanford.ui(13))
+                        .foregroundStyle(githubAuthStatusColor)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("GitHub login")
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(Stanford.black)
+                        Text(githubAuthStatusSummary)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(githubAuthStatusColor)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(githubStatusColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(githubStatusColor.opacity(0.25), lineWidth: 1)
+        )
+        .task {
+            await probeGitHub(forceRefresh: false)
+        }
+    }
+
     private var claudeStatusIcon: some View {
         Group {
             if isProbingClaude {
@@ -429,6 +507,93 @@ struct OnboardingWizardView: View {
     private var isClaudeHealthy: Bool {
         if case .healthy = claudeStatus { return true }
         return false
+    }
+
+    private var githubStatusIcon: some View {
+        Group {
+            if isProbingGitHub {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: githubStatusSymbol)
+                    .font(Stanford.ui(20))
+                    .foregroundStyle(githubStatusColor)
+            }
+        }
+        .frame(width: 30, height: 30)
+    }
+
+    private var githubStatusSymbol: String {
+        if isGitHubHealthy { return "checkmark.circle.fill" }
+        switch githubStatus {
+        case .healthy: return "exclamationmark.triangle.fill"
+        case .unauthenticated: return "exclamationmark.triangle.fill"
+        case .unresponsive: return "exclamationmark.octagon.fill"
+        case .missingBinary: return "xmark.octagon.fill"
+        case .none: return "circle.dotted"
+        }
+    }
+
+    private var githubAuthStatusSymbol: String {
+        switch githubAuthStatus {
+        case .healthy: "checkmark.circle.fill"
+        case .unauthenticated: "exclamationmark.triangle.fill"
+        case .unresponsive: "exclamationmark.triangle.fill"
+        case .missingBinary: "xmark.octagon.fill"
+        case .none: "circle.dotted"
+        }
+    }
+
+    private var githubStatusColor: Color {
+        if isGitHubHealthy { return Stanford.paloAltoGreen }
+        switch githubStatus {
+        case .healthy: return Stanford.poppy
+        case .unauthenticated: return Stanford.poppy
+        case .unresponsive: return Stanford.cardinalRed
+        case .missingBinary: return Stanford.cardinalRed
+        case .none: return Stanford.coolGrey
+        }
+    }
+
+    private var githubAuthStatusColor: Color {
+        switch githubAuthStatus {
+        case .healthy:         Stanford.paloAltoGreen
+        case .unauthenticated: Stanford.poppy
+        case .unresponsive:    Stanford.poppy
+        case .missingBinary:   Stanford.cardinalRed
+        case .none:            Stanford.coolGrey
+        }
+    }
+
+    private var githubStatusSummary: String {
+        switch githubStatus {
+        case .healthy(_, let version):
+            if isGitHubHealthy {
+                return "Ready — \(version)"
+            }
+            return githubAuthStatusSummary
+        case .unauthenticated(let detail): return detail
+        case .unresponsive(let detail): return detail
+        case .missingBinary: return "Not installed on this Mac"
+        case .none: return isProbingGitHub ? "Checking…" : "Not yet checked"
+        }
+    }
+
+    private var githubAuthStatusSummary: String {
+        switch githubAuthStatus {
+        case .healthy: "Authenticated"
+        case .unauthenticated: "Not authenticated"
+        case .unresponsive: "Not authenticated"
+        case .missingBinary: "Not installed on this Mac"
+        case .none: isProbingGitHub ? "Checking login…" : "Login not checked"
+        }
+    }
+
+    private var isGitHubHealthy: Bool {
+        guard case .healthy = githubStatus,
+              case .healthy = githubAuthStatus else {
+            return false
+        }
+        return true
     }
 
     // MARK: - Reusable Blocks
@@ -619,6 +784,22 @@ struct OnboardingWizardView: View {
         if case .healthy(let path, _) = claudeStatus, claudePath.isEmpty {
             claudePath = path
         }
+    }
+
+    private func probeGitHub(forceRefresh: Bool) async {
+        isProbingGitHub = true
+        defer { isProbingGitHub = false }
+
+        if forceRefresh {
+            await preflightCache.invalidate(binary: "gh")
+        }
+
+        githubStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubCLI)
+        guard case .healthy = githubStatus else {
+            githubAuthStatus = nil
+            return
+        }
+        githubAuthStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubAuth)
     }
 
     private var resolvedWorkspaceRoot: String {

@@ -96,6 +96,24 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access."
     )
 
+    public static let githubCLI = CLIPrerequisite(
+        binary: "gh",
+        displayName: "GitHub CLI",
+        purpose: "Runs GitHub commands for repository workflows.",
+        installURL: URL(string: "https://cli.github.com/"),
+        installHint: "Install via Homebrew: `brew install gh`",
+        authHint: "Run `gh auth login`."
+    )
+
+    public static let githubAuth = CLIPrerequisite(
+        binary: "gh",
+        livenessArgs: ["auth", "status"],
+        displayName: "GitHub login",
+        purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
+        installHint: "Run `gh auth login`.",
+        authHint: "Run `gh auth login`."
+    )
+
     public static let gcloud = CLIPrerequisite(
         binary: "gcloud",
         livenessArgs: ["--version"],
