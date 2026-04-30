@@ -93,6 +93,7 @@ final class AgentRuntimeWorker {
 
         task.status = .running
         task.updatedAt = Date()
+        task.markRead()
 
         let run = TaskRun(task: task)
         modelContext.insert(run)
@@ -109,6 +110,7 @@ final class AgentRuntimeWorker {
             run.completedAt = Date()
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "Claude CLI not found at '\(claudePath)'. Check Settings.", run: run)
             modelContext.insert(event)
@@ -128,6 +130,7 @@ final class AgentRuntimeWorker {
             run.completedAt = Date()
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
@@ -152,6 +155,7 @@ final class AgentRuntimeWorker {
             run.completedAt = Date()
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
             modelContext.insert(event)
@@ -412,10 +416,12 @@ final class AgentRuntimeWorker {
         // Compact events if they've grown too large
         Self.compactEvents(for: task, modelContext: modelContext)
 
-        task.updatedAt = Date()
+        let finishedAt = Date()
+        task.updatedAt = finishedAt
         if task.isTerminal {
-            task.completedAt = Date()
+            task.completedAt = finishedAt
         }
+        task.markUnreadForCurrentStatus(at: finishedAt)
 
         // Auto-export workspace config so Import picks up tasks
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -456,6 +462,7 @@ final class AgentRuntimeWorker {
 
         task.status = .running
         task.updatedAt = Date()
+        task.markRead()
 
         let run = TaskRun(task: task)
         modelContext.insert(run)
@@ -601,7 +608,12 @@ final class AgentRuntimeWorker {
         // Compact events if they've grown too large
         Self.compactEvents(for: task, modelContext: modelContext)
 
-        task.updatedAt = Date()
+        let finishedAt = Date()
+        task.updatedAt = finishedAt
+        if task.isTerminal {
+            task.completedAt = finishedAt
+        }
+        task.markUnreadForCurrentStatus(at: finishedAt)
 
         // Auto-export workspace config so Import picks up follow-up runs
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -637,6 +649,7 @@ final class AgentRuntimeWorker {
         task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
         task.status = .running
         task.updatedAt = Date()
+        task.markRead()
 
         let run = TaskRun(task: task)
         run.runtimeID = AgentRuntimeID.copilotCLI.rawValue
@@ -656,6 +669,7 @@ final class AgentRuntimeWorker {
             run.stopReason = "missing_copilot"
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`.", run: run)
             modelContext.insert(event)
@@ -675,6 +689,7 @@ final class AgentRuntimeWorker {
             run.stopReason = "workspace_not_found"
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
@@ -700,6 +715,7 @@ final class AgentRuntimeWorker {
             run.stopReason = "isolation_failed"
             task.status = .failed
             task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
                 payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
             modelContext.insert(event)
@@ -880,10 +896,12 @@ final class AgentRuntimeWorker {
 
         IsolationService.cleanup(task: task, executionPath: executionPath)
         Self.compactEvents(for: task, modelContext: modelContext)
-        task.updatedAt = Date()
+        let finishedAt = Date()
+        task.updatedAt = finishedAt
         if task.isTerminal {
-            task.completedAt = Date()
+            task.completedAt = finishedAt
         }
+        task.markUnreadForCurrentStatus(at: finishedAt)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         isRunning = false
     }

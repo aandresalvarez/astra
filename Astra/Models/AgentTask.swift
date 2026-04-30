@@ -67,6 +67,7 @@ final class AgentTask {
     var skillSnapshotsJSON: String  // JSON-encoded task-time skill definitions for durable history
     var isPinned: Bool
     var isDone: Bool
+    var unreadAt: Date?
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -151,6 +152,7 @@ final class AgentTask {
         self.skillSnapshotsJSON = "[]"
         self.isPinned = false
         self.isDone = false
+        self.unreadAt = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }
@@ -185,6 +187,22 @@ final class AgentTask {
 
     var isTerminal: Bool {
         [.completed, .failed, .cancelled, .budgetExceeded].contains(status)
+    }
+
+    var shouldShowUnread: Bool {
+        unreadAt != nil
+    }
+
+    func markUnreadForCurrentStatus(at date: Date = Date()) {
+        if [.completed, .failed, .pendingUser, .budgetExceeded].contains(status) {
+            unreadAt = date
+        } else {
+            unreadAt = nil
+        }
+    }
+
+    func markRead() {
+        unreadAt = nil
     }
 
     var budgetProgress: Double {

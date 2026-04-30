@@ -547,6 +547,34 @@ struct AgentTaskPropertyTests {
         #expect(task.budgetProgress == 0)
     }
 
+    @Test("Unread starts clear and is set only for agent-result statuses")
+    func unreadStateFollowsResultStatuses() {
+        let task = makeTask(status: .running)
+        let unreadDate = Date(timeIntervalSince1970: 1_000)
+
+        #expect(task.shouldShowUnread == false)
+
+        task.markUnreadForCurrentStatus(at: unreadDate)
+        #expect(task.shouldShowUnread == false)
+
+        task.status = .completed
+        task.markUnreadForCurrentStatus(at: unreadDate)
+        #expect(task.shouldShowUnread == true)
+        #expect(task.unreadAt == unreadDate)
+
+        task.markRead()
+        #expect(task.shouldShowUnread == false)
+    }
+
+    @Test("Pending user and failed outcomes can be unread")
+    func reviewOutcomesCanBeUnread() {
+        for status in [TaskStatus.pendingUser, .failed, .budgetExceeded] {
+            let task = makeTask(status: status)
+            task.markUnreadForCurrentStatus(at: Date(timeIntervalSince1970: 2_000))
+            #expect(task.shouldShowUnread == true)
+        }
+    }
+
     @Test("threadMessageCount falls back to the original goal")
     func threadMessageCountFallback() {
         let task = makeTask(goal: "Investigate the failing sync job")
@@ -799,6 +827,35 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: secondWorkspace).map(\.id) == [running.id])
         #expect(index.pinnedTasks.map(\.id) == [pinnedReview.id])
         #expect(index.hasAnyTask(in: firstWorkspace))
+    }
+
+    @Test("SidebarTaskIndex surfaces unread tasks under the dock")
+    func sidebarTaskIndexUnreadTasks() {
+        let workspace = makeWorkspace(name: "Unread")
+
+        let olderUnread = makeTask(title: "Older unread", status: .completed, workspace: workspace)
+        olderUnread.unreadAt = Date(timeIntervalSince1970: 200)
+        olderUnread.updatedAt = Date(timeIntervalSince1970: 400)
+
+        let newerUnread = makeTask(title: "Newer unread", status: .pendingUser, workspace: workspace)
+        newerUnread.unreadAt = Date(timeIntervalSince1970: 300)
+        newerUnread.updatedAt = Date(timeIntervalSince1970: 300)
+
+        let read = makeTask(title: "Read", status: .completed, workspace: workspace)
+
+        let archivedUnread = makeTask(title: "Archived unread", status: .completed, workspace: workspace)
+        archivedUnread.unreadAt = Date(timeIntervalSince1970: 500)
+        archivedUnread.isDone = true
+
+        let running = makeTask(title: "Running", status: .running, workspace: workspace)
+        running.unreadAt = Date(timeIntervalSince1970: 600)
+
+        let index = SidebarTaskIndex(
+            tasks: [olderUnread, newerUnread, read, archivedUnread, running],
+            searchText: ""
+        )
+
+        #expect(index.unreadTasks.map(\.id) == [newerUnread.id, olderUnread.id])
     }
 
     @Test("SidebarTaskIndex applies search unless the workspace itself matches")

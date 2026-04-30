@@ -76,6 +76,19 @@ struct ContentView: View {
         ].joined(separator: "|")
     }
 
+    private var selectedTaskBinding: Binding<AgentTask?> {
+        Binding(
+            get: { selectedTask },
+            set: { setSelectedTask($0) }
+        )
+    }
+
+    private var selectedTaskUnreadSignature: String {
+        guard let selectedTask else { return "" }
+        let unread = selectedTask.unreadAt?.timeIntervalSince1970 ?? 0
+        return "\(selectedTask.id.uuidString):\(unread)"
+    }
+
     private var rightRailInspectorBinding: Binding<Bool> {
         Binding(
             get: {
@@ -91,12 +104,12 @@ struct ContentView: View {
         NavigationSplitView {
             TaskSidebarView(
                 tasks: allTasks,
-                selectedTask: $selectedTask,
+                selectedTask: selectedTaskBinding,
                 taskQueue: runtime.taskQueue,
                 workspaces: workspaces,
                 selectedWorkspace: $selectedWorkspace,
                 onNewTask: {
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     isComposingTask = true
                 },
                 onRunQueue: { runQueue() },
@@ -166,7 +179,7 @@ struct ContentView: View {
                 SearchPanelOverlay(
                     tasks: allTasks,
                     workspaces: workspaces,
-                    selectedTask: $selectedTask,
+                    selectedTask: selectedTaskBinding,
                     selectedWorkspace: $selectedWorkspace,
                     isActive: $isSearchActive
                 )
@@ -284,6 +297,9 @@ struct ContentView: View {
         }
         .onChange(of: selectedWorkspace) {
             handleSelectedWorkspaceChanged()
+        }
+        .onChange(of: selectedTaskUnreadSignature) {
+            markSelectedTaskReadIfNeeded()
         }
         .environment(\.preflightCache, runtime.preflightCache)
         // Publish window-scoped actions so File menu commands (New /
@@ -412,12 +428,12 @@ struct ContentView: View {
                 sshReloadTrigger: sshReloadTrigger,
                 draftToLoad: task,
                 onQuickRun: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                     runSingleTask(task)
                 },
                 onTaskCreated: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onAddSSHConnection: {
@@ -441,9 +457,9 @@ struct ContentView: View {
                 onToggleDone: { t in toggleDone(t) },
                 onMoveToDraft: { task in
                     isComposingTask = false
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     DispatchQueue.main.async {
-                        selectedTask = task
+                        setSelectedTask(task)
                     }
                 },
                 onManageSkills: {
@@ -452,7 +468,7 @@ struct ContentView: View {
                     showingConfigure = true
                 },
                 onForkTask: { forkedTask in
-                    selectedTask = forkedTask
+                    setSelectedTask(forkedTask)
                 }
             )
         } else if isComposingTask, selectedWorkspace != nil {
@@ -461,12 +477,12 @@ struct ContentView: View {
                 workspace: selectedWorkspace,
                 sshReloadTrigger: sshReloadTrigger,
                 onQuickRun: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                     runSingleTask(task)
                 },
                 onTaskCreated: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onAddSSHConnection: {
@@ -484,11 +500,11 @@ struct ContentView: View {
                 tasks: filteredTasks,
                 taskQueue: runtime.taskQueue,
                 onCreateTask: {
-                    selectedTask = nil
+                    setSelectedTask(nil)
                     isComposingTask = true
                 },
                 onOpenTask: { task in
-                    selectedTask = task
+                    setSelectedTask(task)
                     isComposingTask = false
                 },
                 onDeleteTask: { task in
@@ -777,6 +793,29 @@ struct ContentView: View {
 
     // MARK: - Task Actions
 
+    private func setSelectedTask(_ task: AgentTask?) {
+        selectedTask = task
+        markTaskRead(task)
+    }
+
+    private func markSelectedTaskReadIfNeeded() {
+        markTaskRead(selectedTask)
+    }
+
+    private func markTaskRead(_ task: AgentTask?) {
+        guard let task, task.unreadAt != nil else { return }
+        task.markRead()
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
+                "operation": "mark_task_read",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
     private func runQueue() {
         applySettings()
         coordinator.runQueue()
@@ -794,7 +833,7 @@ struct ContentView: View {
 
     private func deleteTask(_ task: AgentTask) {
         if selectedTask?.id == task.id {
-            selectedTask = nil
+            setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
     }

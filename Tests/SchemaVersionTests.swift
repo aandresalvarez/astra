@@ -17,6 +17,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV2.models.count == 10)
     }
 
+    @Test("SchemaV3 declares all 10 model types")
+    func v3ModelCount() {
+        #expect(ASTRASchemaV3.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -27,14 +32,19 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 and SchemaV2")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 2)
+    @Test("SchemaV3 version identifier is 3.0.0")
+    func v3VersionIdentifier() {
+        #expect(ASTRASchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V2 stage")
+    @Test("Migration plan lists SchemaV1, SchemaV2, and SchemaV3")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 3)
+    }
+
+    @Test("Migration plan has V1 to V2 and V2 to V3 stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 1)
+        #expect(ASTRAMigrationPlan.stages.count == 2)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -115,8 +125,8 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("SchemaV1 store migrates to SchemaV2 runtime fields")
-    func legacyStoreMigratesToRuntimeFields() throws {
+    @Test("SchemaV1 store migrates to current runtime and unread fields")
+    func legacyStoreMigratesToCurrentFields() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-schema-migration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -163,6 +173,7 @@ struct SchemaVersionTests {
         let tasks = try context.fetch(FetchDescriptor<AgentTask>())
         let migratedTask = try #require(tasks.first)
         #expect(migratedTask.resolvedRuntimeID == .claudeCode)
+        #expect(migratedTask.unreadAt == nil)
 
         let runs = try context.fetch(FetchDescriptor<TaskRun>())
         let migratedRun = try #require(runs.first)
@@ -173,5 +184,46 @@ struct SchemaVersionTests {
         let schedules = try context.fetch(FetchDescriptor<TaskSchedule>())
         let migratedSchedule = try #require(schedules.first)
         #expect(migratedSchedule.resolvedRuntimeID == .claudeCode)
+    }
+
+    @MainActor
+    @Test("SchemaV2 store migrates to SchemaV3 unread fields")
+    func v2StoreMigratesToUnreadFields() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v2-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV2.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV2.Workspace()
+        oldWorkspace.name = "Legacy V2"
+        oldWorkspace.primaryPath = "/tmp/legacy-v2"
+        oldContext.insert(oldWorkspace)
+
+        let oldTask = ASTRASchemaV2.AgentTask()
+        oldTask.title = "Legacy V2 Task"
+        oldTask.goal = "Do work"
+        oldTask.workspace = oldWorkspace
+        oldContext.insert(oldTask)
+
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let tasks = try context.fetch(FetchDescriptor<AgentTask>())
+        let migratedTask = try #require(tasks.first)
+        #expect(migratedTask.resolvedRuntimeID == .claudeCode)
+        #expect(migratedTask.unreadAt == nil)
     }
 }

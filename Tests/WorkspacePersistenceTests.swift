@@ -76,6 +76,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
         model: "claude-sonnet-4-6"
     )
     task.status = .completed
+    task.unreadAt = Date(timeIntervalSince1970: 1_701_234_567)
     task.skills = [skill]
     task.captureSkillSnapshots()
     context.insert(task)
@@ -129,6 +130,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.skillIDs == [workspace.skills.first?.id.uuidString].compactMap { $0 })
         #expect(config.tasks?.first?.skillSnapshots?.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.tasks?.first?.isPinned == true)
+        #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
 
         let encoder = JSONEncoder()
@@ -153,6 +155,7 @@ struct WorkspacePersistenceTests {
         #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
+        #expect(imported.tasks.first?.unreadAt == sourceTask.unreadAt)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)
         #expect(imported.tasks.first?.events.first?.id == workspace.tasks.first?.events.first?.id)

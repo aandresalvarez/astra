@@ -14,13 +14,18 @@ struct TaskRowView: View {
         }
     }
 
+    private var titleWeight: Font.Weight {
+        if task.shouldShowUnread { return .semibold }
+        return isSelected ? .medium : .regular
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             statusDot
                 .frame(width: 8, height: 8)
 
             Text(task.title)
-                .font(Stanford.ui(16, weight: isSelected ? .medium : .regular))
+                .font(Stanford.ui(16, weight: titleWeight))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -39,8 +44,8 @@ struct TaskRowView: View {
                     .foregroundStyle(statusColor.opacity(0.8))
             } else {
                 Text(relativeTime(task.updatedAt))
-                    .font(Stanford.caption(13))
-                    .foregroundStyle(.tertiary)
+                    .font(Stanford.caption(13).weight(task.shouldShowUnread ? .semibold : .regular))
+                    .foregroundStyle(task.shouldShowUnread ? .primary : .tertiary)
             }
         }
         .padding(.horizontal, 10)

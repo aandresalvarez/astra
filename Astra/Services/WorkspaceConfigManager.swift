@@ -167,6 +167,7 @@ enum WorkspaceConfigManager {
         var createdAt: Date
         var updatedAt: Date
         var completedAt: Date?
+        var unreadAt: Date?
         var isolationStrategy: String?
         var validationStrategy: String?
         var testCommand: String?
@@ -706,6 +707,7 @@ enum WorkspaceConfigManager {
             createdAt: task.createdAt,
             updatedAt: task.updatedAt,
             completedAt: task.completedAt,
+            unreadAt: task.unreadAt,
             isolationStrategy: task.isolationStrategy.rawValue,
             validationStrategy: task.validationStrategy.rawValue,
             testCommand: task.testCommand,
@@ -1098,6 +1100,7 @@ enum WorkspaceConfigManager {
         task.createdAt = config.createdAt
         task.updatedAt = config.updatedAt
         task.completedAt = config.completedAt
+        task.unreadAt = config.unreadAt
         if let value = config.isolationStrategy {
             task.isolationStrategy = IsolationStrategy(rawValue: value) ?? .sameDirectory
         }

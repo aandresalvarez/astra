@@ -70,6 +70,7 @@ struct TaskSidebarView: View {
             }
 
             pinnedDock(using: taskIndex)
+            unreadDock(using: taskIndex)
 
             List {
                 workspaceSection(using: taskIndex)
@@ -301,6 +302,79 @@ struct TaskSidebarView: View {
         }
         .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
+    }
+
+    // MARK: - Unreads Section
+
+    @ViewBuilder
+    private func unreadDock(using taskIndex: SidebarTaskIndex) -> some View {
+        if !taskIndex.unreadTasks.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                unreadHeader(count: taskIndex.unreadTasks.count)
+
+                ScrollView(.vertical, showsIndicators: taskIndex.unreadTasks.count > 3) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(taskIndex.unreadTasks) { task in
+                            unreadTaskRow(for: task)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 2)
+                }
+                .frame(height: unreadContentHeight(using: taskIndex))
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func unreadHeader(count: Int) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "circle.fill")
+                    .font(Stanford.ui(6, weight: .medium))
+                    .foregroundStyle(Stanford.cardinalRed)
+                Text("Unreads")
+                    .font(Stanford.caption(14))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            SidebarCountBadge(count: count)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
+    }
+
+    private func unreadContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
+        let rowHeight = Stanford.sidebarThreadRowHeight + 2
+        let taskHeight = CGFloat(taskIndex.unreadTasks.count) * rowHeight
+        return min(taskHeight + 2, 156)
+    }
+
+    private func unreadTaskRow(for task: AgentTask) -> some View {
+        let isHovered = hoveredTaskID == task.id
+
+        return HStack(spacing: 0) {
+            Button {
+                selectedTask = task
+            } label: {
+                SidebarThreadRow(
+                    task: task,
+                    isSelected: selectedTask?.id == task.id,
+                    isHovered: isHovered,
+                    subtitle: task.workspace?.name
+                )
+            }
+            .buttonStyle(.plain)
+
+            taskOptionsMenu(for: task, isHovered: isHovered)
+        }
+        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
+        .contextMenu {
+            taskContextMenu(for: task)
+        }
     }
 
     @ViewBuilder
@@ -770,73 +844,21 @@ struct TaskSidebarView: View {
     }
 
     private func compactTaskRow(for task: AgentTask) -> some View {
-        Button {
-            selectedTask = task
-        } label: {
-            SidebarThreadRow(
-                task: task,
-                isSelected: selectedTask?.id == task.id,
-                // Hover signal is shared with the .overlay below — same
-                // source of truth for the menu and the timestamp's
-                // opacity, so they can't fall out of sync.
-                isHovered: hoveredTaskID == task.id
-            )
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topTrailing) {
-            if hoveredTaskID == task.id {
-                Menu {
-                    Button {
-                        withAnimation {
-                            togglePinned(for: task)
-                        }
-                    } label: {
-                        Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
-                    }
+        let isHovered = hoveredTaskID == task.id
 
-                    Button {
-                        renameTaskText = task.title
-                        renamingTask = task
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-
-                    if task.status != .running {
-                        Button {
-                            if let onToggleDone {
-                                onToggleDone(task)
-                            } else {
-                                withAnimation {
-                                    task.isDone.toggle()
-                                    task.updatedAt = Date()
-                                    try? modelContext.save()
-                                }
-                            }
-                        } label: {
-                            Label(task.isDone ? "Reopen" : "Mark as Done", systemImage: task.isDone ? "arrow.uturn.backward" : "checkmark.circle")
-                        }
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        onDeleteTask?(task)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(Stanford.ui(12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .padding(.top, 4)
-                .padding(.trailing, 4)
+        return HStack(spacing: 0) {
+            Button {
+                selectedTask = task
+            } label: {
+                SidebarThreadRow(
+                    task: task,
+                    isSelected: selectedTask?.id == task.id,
+                    isHovered: isHovered
+                )
             }
+            .buttonStyle(.plain)
+
+            taskOptionsMenu(for: task, includePinToggle: true, isHovered: isHovered)
         }
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .onDrag {
@@ -871,6 +893,42 @@ struct TaskSidebarView: View {
         }
         .listRowInsets(EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 8))
         .listRowBackground(Color.clear)
+    }
+
+    private func taskOptionsMenu(
+        for task: AgentTask,
+        includePinToggle: Bool = false,
+        isHovered: Bool
+    ) -> some View {
+        Menu {
+            if includePinToggle {
+                Button {
+                    withAnimation {
+                        togglePinned(for: task)
+                    }
+                } label: {
+                    Label(task.isPinned ? "Unpin" : "Pin", systemImage: task.isPinned ? "pin.slash" : "pin")
+                }
+
+                Divider()
+            }
+
+            taskContextMenu(for: task)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(Stanford.ui(12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 24, height: 24, alignment: .center)
+        .opacity(isHovered ? 1 : 0)
+        .allowsHitTesting(isHovered)
+        .accessibilityHidden(!isHovered)
+        .help("Task options")
     }
 
     private func taskRow(for task: AgentTask) -> some View {
@@ -1052,6 +1110,15 @@ private struct SidebarThreadRow: View {
     let isHovered: Bool
     var subtitle: String?
 
+    private var titleWeight: Font.Weight {
+        if task.shouldShowUnread { return .semibold }
+        return isSelected ? .medium : .regular
+    }
+
+    private var metadataWeight: Font.Weight {
+        task.shouldShowUnread ? .semibold : .regular
+    }
+
     private var showIcon: Bool {
         isSelected || isHovered || isActionableStatus
     }
@@ -1088,7 +1155,7 @@ private struct SidebarThreadRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.title)
-                    .font(Stanford.ui(14, weight: isSelected ? .medium : .regular))
+                    .font(Stanford.ui(14, weight: titleWeight))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1109,8 +1176,8 @@ private struct SidebarThreadRow: View {
             // Keep the layout in place (no width shift) by using opacity,
             // not conditional removal.
             Text(relativeTime(task.updatedAt))
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
+                .font(Stanford.caption(11).weight(metadataWeight))
+                .foregroundStyle(task.shouldShowUnread ? .primary : .secondary)
                 .lineLimit(1)
                 .fixedSize()
                 .frame(minWidth: 24, alignment: .trailing)
@@ -1310,7 +1377,7 @@ struct SearchPanelOverlay: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 18)
                                     Text(task.title)
-                                        .font(Stanford.ui(14))
+                                        .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
                                     Spacer()

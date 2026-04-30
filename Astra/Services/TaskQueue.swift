@@ -246,6 +246,7 @@ final class TaskQueue {
 
         sourceTask.status = scheduledTask.status
         sourceTask.isDone = false
+        sourceTask.markUnreadForCurrentStatus(at: sourceTask.updatedAt)
     }
 
     private static let dateFormatter: DateFormatter = {

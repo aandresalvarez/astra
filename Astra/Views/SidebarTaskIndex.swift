@@ -7,6 +7,7 @@ struct SidebarTaskIndex {
     private let anyTaskWorkspaceIDs: Set<UUID>
 
     let pinnedTasks: [AgentTask]
+    let unreadTasks: [AgentTask]
 
     init(tasks: [AgentTask], searchText: String) {
         self.searchText = searchText
@@ -15,6 +16,7 @@ struct SidebarTaskIndex {
         var matchingGroups: [UUID: [AgentTask]] = [:]
         var workspaceIDs = Set<UUID>()
         var pinned: [AgentTask] = []
+        var unread: [AgentTask] = []
 
         for task in tasks {
             guard let workspaceID = task.workspace?.id else { continue }
@@ -26,6 +28,9 @@ struct SidebarTaskIndex {
             if task.isPinned {
                 pinned.append(task)
             }
+            if Self.isUnreadTask(task) {
+                unread.append(task)
+            }
             if searchText.isEmpty || Self.taskMatchesSearch(task, searchText: searchText) {
                 matchingGroups[workspaceID, default: []].append(task)
             }
@@ -35,6 +40,9 @@ struct SidebarTaskIndex {
         matchingReviewTasksByWorkspaceID = matchingGroups
         anyTaskWorkspaceIDs = workspaceIDs
         pinnedTasks = pinned.sorted { $0.updatedAt > $1.updatedAt }
+        unreadTasks = unread.sorted {
+            ($0.unreadAt ?? $0.updatedAt) > ($1.unreadAt ?? $1.updatedAt)
+        }
     }
 
     func reviewTasks(
@@ -58,6 +66,15 @@ struct SidebarTaskIndex {
         !task.isDone && (
             task.status == .running ||
             KanbanCategory.review.includes(task)
+        )
+    }
+
+    static func isUnreadTask(_ task: AgentTask) -> Bool {
+        !task.isDone && task.shouldShowUnread && (
+            task.status == .completed ||
+            task.status == .pendingUser ||
+            task.status == .failed ||
+            task.status == .budgetExceeded
         )
     }
 
