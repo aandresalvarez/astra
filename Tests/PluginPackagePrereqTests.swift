@@ -97,6 +97,18 @@ struct PluginPackagePrereqTests {
         #expect(gcp?.prerequisites.last?.semantic == .stdoutNonEmpty)
     }
 
+    @Test("Built-in GitHub package is CLI-only and requires gh")
+    func builtInGitHubIsCLIOnly() {
+        let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
+        #expect(github != nil)
+        #expect(github?.connectors.isEmpty == true)
+        #expect(github?.localTools.map(\.command) == ["gh"])
+        #expect(github?.prerequisites.count == 2)
+        #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])
+        #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status"])
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
+    }
+
     @Test("Built-in Docker package has docker prereq")
     func builtInDockerHasPrereq() {
         let docker = PluginCatalog.builtInPackages.first { $0.id == "docker-manager" }

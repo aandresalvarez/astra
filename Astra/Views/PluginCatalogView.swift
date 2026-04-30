@@ -11,11 +11,11 @@ enum CatalogFocus: String {
 
     var title: String {
         switch self {
-        case .all: "Catalog"
-        case .skills: "Catalog"
-        case .connectors: "Catalog"
-        case .tools: "Catalog"
-        case .templates: "Catalog"
+        case .all: "Manage Capabilities"
+        case .skills: "Manage Capabilities"
+        case .connectors: "Manage Capabilities"
+        case .tools: "Manage Capabilities"
+        case .templates: "Manage Capabilities"
         }
     }
 
@@ -31,11 +31,11 @@ enum CatalogFocus: String {
 
     var searchPlaceholder: String {
         switch self {
-        case .all: "Search catalog..."
-        case .skills: "Search skills..."
-        case .connectors: "Search connectors..."
-        case .tools: "Search tools..."
-        case .templates: "Search templates..."
+        case .all: "Search capabilities..."
+        case .skills: "Search skill capabilities..."
+        case .connectors: "Search connector capabilities..."
+        case .tools: "Search tool capabilities..."
+        case .templates: "Search template capabilities..."
         }
     }
 
@@ -65,15 +65,29 @@ enum CatalogFocus: String {
     }
 }
 
+enum CapabilityManagementPresentation {
+    case modal
+    case embedded
+}
+
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
     var focus: CatalogFocus = .all
+    var presentation: CapabilityManagementPresentation = .modal
     var onInstall: ((PluginPackage) -> Void)?
+    var onEditElement: ((ConfigureTab, UUID) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(\.preflightCache) private var preflightCache
+    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
+    private var globalSkills: [Skill]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+
     @State private var searchText = ""
     @State private var selectedCategory: String?
     @State private var expandedPackageID: String?
@@ -85,8 +99,24 @@ struct PluginCatalogView: View {
     /// red/amber. Drives the install button's disabled state.
     @State private var packagePrereqReady: [String: Bool] = [:]
 
+    private var capabilities: WorkspaceCapabilities {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        )
+    }
+
+    private var inventoryPackages: [PluginPackage] {
+        CapabilityCatalogInventory.packages(
+            catalogPackages: catalog.packages,
+            capabilities: capabilities
+        )
+    }
+
     private var focusedPackages: [PluginPackage] {
-        catalog.packages.filter { focus.matches($0) }
+        inventoryPackages.filter { focus.matches($0) }
     }
 
     private var filteredPackages: [PluginPackage] {
@@ -105,13 +135,18 @@ struct PluginCatalogView: View {
         return result
     }
 
-    private var installedCount: Int {
-        focusedPackages.filter { catalog.isInstalled($0.id, in: workspace) }.count
+    private var enabledCount: Int {
+        focusedPackages.filter { packageState($0).isEnabled }.count
     }
 
     private var visibleCategories: [String] {
         let cats = focusedPackages.map(\.category)
         return Array(NSOrderedSet(array: cats)) as? [String] ?? Array(Set(cats)).sorted()
+    }
+
+    private var isEmbedded: Bool {
+        if case .embedded = presentation { return true }
+        return false
     }
 
     var body: some View {
@@ -150,7 +185,12 @@ struct PluginCatalogView: View {
                 }
             }
         }
-        .frame(width: 740, height: 600)
+        .frame(width: isEmbedded ? nil : 740, height: isEmbedded ? nil : 600)
+        .frame(
+            maxWidth: isEmbedded ? .infinity : nil,
+            maxHeight: isEmbedded ? .infinity : nil,
+            alignment: .topLeading
+        )
         .onAppear {
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
@@ -169,6 +209,7 @@ struct PluginCatalogView: View {
                 onInstalled: { pkg in
                     installingPackage = nil
                     onInstall?(pkg)
+                    catalog.loadApprovedCapabilities()
                 }
             )
         }
@@ -197,7 +238,7 @@ struct PluginCatalogView: View {
                 Text(focus.title)
                     .font(Stanford.heading(20))
                     .foregroundStyle(Stanford.black)
-                Text("\(focusedPackages.count) available \u{00B7} \(installedCount) installed \u{00B7} \(focus.subtitle)")
+                Text("\(focusedPackages.count) available \u{00B7} \(enabledCount) enabled \u{00B7} \(focus.subtitle)")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -212,8 +253,10 @@ struct PluginCatalogView: View {
             }
             .buttonStyle(.bordered)
 
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.cancelAction)
+            if !isEmbedded {
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, 18)
@@ -300,7 +343,8 @@ struct PluginCatalogView: View {
     // MARK: - Package Card
 
     private func packageCard(_ package: PluginPackage) -> some View {
-        let installed = catalog.isInstalled(package.id, in: workspace)
+        let state = packageState(package)
+        let enabled = state.isEnabled
         let isExpanded = expandedPackageID == package.id
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -314,9 +358,9 @@ struct PluginCatalogView: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: package.icon)
                             .font(Stanford.ui(18, weight: .medium))
-                            .foregroundStyle(installed ? .secondary : Stanford.lagunita)
+                            .foregroundStyle(enabled ? .secondary : Stanford.lagunita)
                             .frame(width: 36, height: 36)
-                            .background((installed ? Color.secondary : Stanford.lagunita).opacity(0.1))
+                            .background((enabled ? Color.secondary : Stanford.lagunita).opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
 
                         VStack(alignment: .leading, spacing: 3) {
@@ -324,7 +368,7 @@ struct PluginCatalogView: View {
                                 Text(package.name)
                                     .font(Stanford.body(14))
                                     .fontWeight(.semibold)
-                                    .foregroundStyle(installed ? .secondary : Stanford.black)
+                                    .foregroundStyle(enabled ? .secondary : Stanford.black)
                                     .lineLimit(1)
 
                                 if package.requiresSetup {
@@ -337,7 +381,7 @@ struct PluginCatalogView: View {
 
                             Text(package.description)
                                 .font(Stanford.caption(12))
-                                .foregroundStyle(installed ? Color.secondary.opacity(0.6) : .secondary)
+                                .foregroundStyle(enabled ? Color.secondary.opacity(0.6) : .secondary)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -356,7 +400,7 @@ struct PluginCatalogView: View {
                             ForEach(package.contentParts, id: \.self) { part in
                                 Text(part)
                                     .font(Stanford.caption(10))
-                                    .foregroundStyle(installed ? Stanford.coolGrey.opacity(0.5) : Stanford.coolGrey)
+                                    .foregroundStyle(enabled ? Stanford.coolGrey.opacity(0.5) : Stanford.coolGrey)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(Color.primary.opacity(0.04))
@@ -366,15 +410,35 @@ struct PluginCatalogView: View {
 
                         Spacer()
 
-                        if installed {
-                            HStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(Stanford.ui(12))
-                                Text("Installed")
-                                    .font(Stanford.caption(11))
-                                    .fontWeight(.medium)
+                        if enabled {
+                            HStack(spacing: 8) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(Stanford.ui(12))
+                                    Text("Enabled")
+                                        .font(Stanford.caption(11))
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundStyle(Stanford.paloAltoGreen)
+
+                                Button {
+                                    disableCapability(package)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "minus.circle")
+                                            .font(Stanford.ui(12))
+                                        Text("Disable")
+                                            .font(Stanford.caption(12))
+                                            .fontWeight(.semibold)
+                                    }
+                                    .foregroundStyle(Stanford.cardinalRed)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 4)
+                                    .background(Stanford.cardinalRed.opacity(0.06))
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .foregroundStyle(Stanford.paloAltoGreen)
                         } else {
                             installButton(for: package)
                         }
@@ -387,20 +451,32 @@ struct PluginCatalogView: View {
 
             // Expanded detail
             if isExpanded {
-                expandedDetail(package, installed: installed)
+                expandedDetail(package, enabled: enabled)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(installed ? Color.primary.opacity(0.02) : Color(nsColor: .controlBackgroundColor))
+        .background(enabled ? Color.primary.opacity(0.02) : Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
                     isExpanded ? Stanford.lagunita.opacity(0.25) :
-                    installed ? Color.primary.opacity(0.04) : Color.primary.opacity(0.08),
+                    enabled ? Color.primary.opacity(0.04) : Color.primary.opacity(0.08),
                     lineWidth: 1
                 )
         )
+    }
+
+    private func disableCapability(_ package: PluginPackage) {
+        let state = packageState(package)
+
+        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
+        workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
+        workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
+        workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        catalog.loadApprovedCapabilities()
     }
 
     private func installButton(for package: PluginPackage) -> some View {
@@ -420,7 +496,7 @@ struct PluginCatalogView: View {
             HStack(spacing: 4) {
                 Image(systemName: prereqBlocks ? "exclamationmark.triangle.fill" : "plus.circle.fill")
                     .font(Stanford.ui(12))
-                Text(prereqBlocks ? "Install anyway" : "Install")
+                Text(prereqBlocks ? "Enable anyway" : "Enable")
                     .font(Stanford.caption(12))
                     .fontWeight(.semibold)
             }
@@ -432,8 +508,8 @@ struct PluginCatalogView: View {
         }
         .buttonStyle(.plain)
         .help(prereqBlocks
-              ? "Some prerequisites aren't ready. Installation will still add the package, but tasks using it may fail until you fix them."
-              : "Install \(package.name)")
+              ? "Some prerequisites aren't ready. Enabling will still add the package, but tasks using it may fail until you fix them."
+              : "Enable \(package.name)")
     }
 
     private func installCapability(
@@ -452,6 +528,7 @@ struct PluginCatalogView: View {
                 baseURLOverrides: baseURLOverrides
             )
             onInstall?(package)
+            catalog.loadApprovedCapabilities()
         } catch {
             installError = error.localizedDescription
         }
@@ -543,8 +620,10 @@ struct PluginCatalogView: View {
 
     // MARK: - Expanded Detail
 
-    private func expandedDetail(_ package: PluginPackage, installed: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func expandedDetail(_ package: PluginPackage, enabled: Bool) -> some View {
+        let state = packageState(package)
+
+        return VStack(alignment: .leading, spacing: 10) {
             Divider()
                 .padding(.horizontal, 12)
 
@@ -623,6 +702,10 @@ struct PluginCatalogView: View {
                     )
                 }
 
+                if enabled, onEditElement != nil {
+                    capabilityConfigurationLinks(state)
+                }
+
                 // Tags
                 if !package.tags.isEmpty {
                     FlowLayout(spacing: 4) {
@@ -638,8 +721,8 @@ struct PluginCatalogView: View {
                     }
                 }
 
-                // Install button in expanded view too
-                if !installed {
+                // Enable button in expanded view too
+                if !enabled {
                     HStack {
                         Spacer()
                         installButton(for: package)
@@ -648,6 +731,85 @@ struct PluginCatalogView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
+        }
+    }
+
+    private func capabilityConfigurationLinks(_ state: CapabilityPackageState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().opacity(0.35)
+
+            if !state.linkedSkills.isEmpty {
+                capabilityConfigurationGroup(
+                    "Behavior",
+                    items: state.linkedSkills,
+                    icon: ConfigureTab.skills.icon,
+                    color: ConfigureTab.skills.color,
+                    title: { $0.name.isEmpty ? "Untitled Skill" : $0.name },
+                    action: { onEditElement?(.skills, $0.id) }
+                )
+            }
+
+            if !state.linkedConnectors.isEmpty {
+                capabilityConfigurationGroup(
+                    "Connectors",
+                    items: state.linkedConnectors,
+                    icon: ConfigureTab.connectors.icon,
+                    color: ConfigureTab.connectors.color,
+                    title: { $0.name.isEmpty ? "Untitled Connector" : $0.name },
+                    action: { onEditElement?(.connectors, $0.id) }
+                )
+            }
+
+            if !state.linkedTools.isEmpty {
+                capabilityConfigurationGroup(
+                    "Tools",
+                    items: state.linkedTools,
+                    icon: ConfigureTab.tools.icon,
+                    color: ConfigureTab.tools.color,
+                    title: { $0.name.isEmpty ? "Untitled Tool" : $0.name },
+                    action: { onEditElement?(.tools, $0.id) }
+                )
+            }
+        }
+    }
+
+    private func capabilityConfigurationGroup<Item: Identifiable>(
+        _ title: String,
+        items: [Item],
+        icon: String,
+        color: Color,
+        title itemTitle: @escaping (Item) -> String,
+        action: @escaping (Item) -> Void
+    ) -> some View where Item.ID == UUID {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(Stanford.ui(9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .tracking(0.4)
+
+            ForEach(items) { item in
+                Button {
+                    action(item)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: icon)
+                            .font(Stanford.ui(10, weight: .medium))
+                            .foregroundStyle(color)
+                            .frame(width: 14)
+                        Text(itemTitle(item))
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.black)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text("Edit")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -687,6 +849,14 @@ struct PluginCatalogView: View {
                 .padding(.leading, 15)
             }
         }
+    }
+
+    private func packageState(_ package: PluginPackage) -> CapabilityPackageState {
+        CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
     }
 }
 
@@ -732,7 +902,7 @@ struct PluginInstallSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Install \(package.name)")
+                    Text("Enable \(package.name)")
                         .font(Stanford.heading(18))
                         .foregroundStyle(Stanford.black)
                     Text(package.description)
@@ -843,7 +1013,7 @@ struct PluginInstallSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Install") {
+                Button("Enable") {
                     installCapability()
                 }
                 .buttonStyle(.borderedProminent)

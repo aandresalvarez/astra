@@ -54,6 +54,7 @@ struct ConfigureView: View {
     @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
     private var globalTools: [LocalTool]
     @State private var selectedTab: ConfigureTab = .capabilities
+    @State private var selectedFocusItemID: UUID?
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -64,10 +65,25 @@ struct ConfigureView: View {
         )
     }
 
+    private var enabledCapabilityCount: Int {
+        var activeIDs = Set(workspace.enabledCapabilityIDs)
+        for package in configureCapabilityPackages where packageState(package).isEnabled {
+            activeIDs.insert(package.id)
+        }
+        return activeIDs.count
+    }
+
+    private var configureCapabilityPackages: [PluginPackage] {
+        CapabilityCatalogInventory.packages(
+            catalogPackages: CapabilityLibrary().installedPackages() + PluginCatalog.builtInPackages,
+            capabilities: capabilities
+        )
+    }
+
     private func count(for tab: ConfigureTab) -> Int {
         switch tab {
         case .capabilities:
-            workspace.enabledCapabilityIDs.count
+            enabledCapabilityCount
         case .connectors:
             capabilities.activeConnectors.count
         case .tools:
@@ -77,6 +93,14 @@ struct ConfigureView: View {
         case .templates:
             workspace.templates.count
         }
+    }
+
+    private func packageState(_ package: PluginPackage) -> CapabilityPackageState {
+        CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
     }
 
     var body: some View {
@@ -115,22 +139,42 @@ struct ConfigureView: View {
                 ZStack(alignment: .topLeading) {
                     switch selectedTab {
                     case .capabilities:
-                        CapabilitiesTabContent(workspace: workspace)
+                        CapabilitiesTabContent(workspace: workspace) { tab, itemID in
+                            selectedFocusItemID = itemID
+                            selectedTab = tab
+                        }
                     case .connectors:
-                        ConnectorsTabContent(workspace: workspace, focusItemID: focusItemID)
+                        ConnectorsTabContent(
+                            workspace: workspace,
+                            focusItemID: selectedFocusItemID,
+                            onManageCapabilities: {
+                                selectedFocusItemID = nil
+                                selectedTab = .capabilities
+                            }
+                        )
                     case .tools:
-                        ToolsTabContent(workspace: workspace, focusItemID: focusItemID)
+                        ToolsTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
                     case .skills:
-                        SkillsTabContent(workspace: workspace, focusItemID: focusItemID)
+                        SkillsTabContent(
+                            workspace: workspace,
+                            focusItemID: selectedFocusItemID,
+                            onManageCapabilities: {
+                                selectedFocusItemID = nil
+                                selectedTab = .capabilities
+                            }
+                        )
                     case .templates:
-                        TemplatesTabContent(workspace: workspace, focusItemID: focusItemID)
+                        TemplatesTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .frame(minWidth: 1080, idealWidth: 1260, maxWidth: 1440, minHeight: 720, idealHeight: 820)
-        .onAppear { selectedTab = initialTab }
+        .onAppear {
+            selectedTab = initialTab
+            selectedFocusItemID = focusItemID
+        }
     }
 }
 
@@ -274,202 +318,17 @@ private struct ConfigureCardChip: View {
 
 struct CapabilitiesTabContent: View {
     var workspace: Workspace
-    @Environment(\.modelContext) private var modelContext
-    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
-    private var globalSkills: [Skill]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
-    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
-    private var globalTools: [LocalTool]
-    @State private var packages: [PluginPackage] = []
-    @State private var showCreateWizard = false
-    @State private var installError: String?
-
-    private let library = CapabilityLibrary()
-
-    private var availablePackages: [PluginPackage] {
-        uniquePackages(packages)
-    }
+    var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
+    @State private var catalog = PluginCatalog()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Capabilities")
-                        .font(Stanford.heading(18))
-                    Text("Install, create, and enable reusable bundles")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button { showCreateWizard = true } label: {
-                    Label("New Capability", systemImage: "plus")
-                        .font(Stanford.body(13))
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            Divider()
-
-            if availablePackages.isEmpty {
-                emptyState
-            } else {
-                ConfigureSelectionList(maxContentWidth: 980) {
-                    ConfigureSelectionSection("Installed & Built-in") {
-                        ForEach(availablePackages) { package in
-                            capabilityCard(package)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear(perform: refreshPackages)
-        .sheet(isPresented: $showCreateWizard) {
-            CapabilityCreationWizardView(workspace: workspace) { package, enableHere in
-                if enableHere {
-                    installOrEnable(package)
-                } else {
-                    do {
-                        try library.install(package)
-                        refreshPackages()
-                    } catch {
-                        installError = error.localizedDescription
-                    }
-                }
-            }
-        }
-        .alert("Capability could not be installed", isPresented: Binding(
-            get: { installError != nil },
-            set: { if !$0 { installError = nil } }
-        )) {
-            Button("OK", role: .cancel) { installError = nil }
-        } message: {
-            Text(installError ?? "")
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: ConfigureTab.capabilities.icon)
-                .font(Stanford.ui(36))
-                .foregroundStyle(ConfigureTab.capabilities.color.opacity(0.5))
-            Text("No Capabilities Installed")
-                .font(Stanford.heading(18))
-                .foregroundStyle(Stanford.black)
-            Button { showCreateWizard = true } label: {
-                Label("Create Capability", systemImage: "plus")
-                    .font(Stanford.body(14))
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(ConfigureTab.capabilities.color)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func capabilityCard(_ package: PluginPackage) -> some View {
-        let installed = packages.contains { $0.id == package.id } || workspace.installedPluginIDSet.contains(package.id)
-        let enabled = workspace.enabledCapabilityIDs.contains(package.id) || workspace.installedPluginIDSet.contains(package.id)
-        let source = package.sourceMetadata?.displayName ?? "Unknown source"
-
-        return ConfigureSelectionCard {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 10) {
-                    ConfigureCardIcon(systemName: package.icon, color: ConfigureTab.capabilities.color)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(package.name)
-                            .font(Stanford.body(14))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(Stanford.black)
-                            .lineLimit(1)
-                        Text(package.description.isEmpty ? source : package.description)
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                HStack(spacing: 6) {
-                    ConfigureCardChip(title: package.version)
-                    ConfigureCardChip(title: source, color: ConfigureTab.capabilities.color)
-                    if enabled {
-                        ConfigureCardChip(title: "Enabled here")
-                    } else if installed {
-                        ConfigureCardChip(title: "Installed")
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    ForEach(package.contentParts, id: \.self) { part in
-                        ConfigureCardChip(title: part)
-                    }
-                    Spacer()
-                    Button {
-                        if enabled {
-                            disable(package)
-                        } else {
-                            installOrEnable(package)
-                        }
-                    } label: {
-                        Label(
-                            enabled ? "Disable" : installed ? "Enable" : "Install",
-                            systemImage: enabled ? "minus.circle" : "plus.circle"
-                        )
-                            .font(Stanford.caption(12))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    private func refreshPackages() {
-        try? library.seedApprovedPackages(PluginCatalog.builtInPackages)
-        packages = library.installedPackages()
-    }
-
-    private func installOrEnable(_ package: PluginPackage) {
-        do {
-            try CapabilityInstaller(library: library).install(
-                package,
-                into: workspace,
-                modelContext: modelContext
-            )
-            refreshPackages()
-        } catch {
-            installError = error.localizedDescription
-        }
-    }
-
-    private func disable(_ package: PluginPackage) {
-        let skillNames = Set(package.skills.map(\.name))
-        let connectorNames = Set(package.connectors.map(\.name))
-        let toolNames = Set(package.localTools.map(\.name))
-        let skillIDs = Set(globalSkills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString })
-        let connectorIDs = Set(globalConnectors.filter { connectorNames.contains($0.name) }.map { $0.id.uuidString })
-        let toolIDs = Set(globalTools.filter { toolNames.contains($0.name) }.map { $0.id.uuidString })
-
-        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
-        workspace.enabledGlobalSkillIDs.removeAll { skillIDs.contains($0) }
-        workspace.enabledGlobalConnectorIDs.removeAll { connectorIDs.contains($0) }
-        workspace.enabledGlobalToolIDs.removeAll { toolIDs.contains($0) }
-        workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        refreshPackages()
-    }
-
-    private func uniquePackages(_ values: [PluginPackage]) -> [PluginPackage] {
-        var seen = Set<String>()
-        return values.filter { seen.insert($0.id).inserted }
-            .sorted {
-                if $0.category != $1.category { return $0.category < $1.category }
-                return $0.name < $1.name
-            }
+        PluginCatalogView(
+            workspace: workspace,
+            catalog: catalog,
+            focus: .all,
+            presentation: .embedded,
+            onEditElement: onEditElement
+        )
     }
 }
 
@@ -1078,9 +937,9 @@ struct CapabilityCreationWizardView: View {
 struct ConnectorsTabContent: View {
     var workspace: Workspace
     var focusItemID: UUID?
+    var onManageCapabilities: () -> Void = {}
     @Environment(\.modelContext) private var modelContext
     @State private var selectedConnector: Connector?
-    @State private var showCatalog = false
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
 
@@ -1116,20 +975,16 @@ struct ConnectorsTabContent: View {
                 Spacer()
 
                 HStack(spacing: 10) {
-                    if showCatalog || showingDetail {
+                    if showingDetail {
                         Button {
-                            if showCatalog {
-                                showCatalog = false
-                            } else {
-                                selectedConnector = nil
-                            }
+                            selectedConnector = nil
                         } label: {
                             Label("Back", systemImage: "chevron.left")
                                 .font(Stanford.body(13))
                         }
                     } else {
-                        Button { showCatalog = true } label: {
-                            Label("Add from Catalog", systemImage: "square.grid.2x2")
+                        Button { onManageCapabilities() } label: {
+                            Label("Manage Capabilities", systemImage: "square.grid.2x2")
                                 .font(Stanford.body(13))
                         }
 
@@ -1146,11 +1001,7 @@ struct ConnectorsTabContent: View {
             Divider()
 
             ZStack(alignment: .topLeading) {
-                if showCatalog {
-                    PluginCatalogView(workspace: workspace, catalog: PluginCatalog(), focus: .connectors, onInstall: { _ in
-                        showCatalog = false
-                    })
-                } else if let connector = selectedConnector {
+                if let connector = selectedConnector {
                     ConnectorEditorView(connector: connector, workspace: workspace, onDelete: {
                         deleteConnector(connector)
                     }, onDuplicate: { copy in
@@ -1264,9 +1115,9 @@ struct ConnectorsTabContent: View {
                 }
 
                 Button {
-                    showCatalog = true
+                    onManageCapabilities()
                 } label: {
-                    Label("Add from Catalog", systemImage: "square.grid.2x2")
+                    Label("Manage Capabilities", systemImage: "square.grid.2x2")
                         .font(Stanford.body(14))
                 }
                 .buttonStyle(.borderedProminent)
@@ -1630,9 +1481,9 @@ struct ToolsTabContent: View {
 struct SkillsTabContent: View {
     var workspace: Workspace
     var focusItemID: UUID?
+    var onManageCapabilities: () -> Void = {}
     @Environment(\.modelContext) private var modelContext
     @State private var selectedSkill: Skill?
-    @State private var showCatalog = false
 
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
@@ -1670,20 +1521,16 @@ struct SkillsTabContent: View {
                 Spacer()
 
                 HStack(spacing: 10) {
-                    if showCatalog || showingDetail {
+                    if showingDetail {
                         Button {
-                            if showCatalog {
-                                showCatalog = false
-                            } else {
-                                selectedSkill = nil
-                            }
+                            selectedSkill = nil
                         } label: {
                             Label("Back", systemImage: "chevron.left")
                                 .font(Stanford.body(13))
                         }
                     } else {
-                        Button { showCatalog = true } label: {
-                            Label("Add from Catalog", systemImage: "square.grid.2x2")
+                        Button { onManageCapabilities() } label: {
+                            Label("Manage Capabilities", systemImage: "square.grid.2x2")
                                 .font(Stanford.body(13))
                         }
 
@@ -1700,11 +1547,7 @@ struct SkillsTabContent: View {
             Divider()
 
             ZStack(alignment: .topLeading) {
-                if showCatalog {
-                    PluginCatalogView(workspace: workspace, catalog: PluginCatalog(), focus: .skills, onInstall: { _ in
-                        showCatalog = false
-                    })
-                } else if let skill = selectedSkill {
+                if let skill = selectedSkill {
                     SkillEditorView(skill: skill, workspace: workspace, onDelete: {
                         deleteSkill(skill)
                     })
@@ -1805,9 +1648,9 @@ struct SkillsTabContent: View {
                 }
 
                 Button {
-                    showCatalog = true
+                    onManageCapabilities()
                 } label: {
-                    Label("Add from Catalog", systemImage: "square.grid.2x2")
+                    Label("Manage Capabilities", systemImage: "square.grid.2x2")
                         .font(Stanford.body(14))
                 }
                 .buttonStyle(.borderedProminent)

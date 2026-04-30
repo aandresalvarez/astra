@@ -44,7 +44,7 @@ struct WorkspaceRightRailView: View {
     let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    var onBrowseCatalog: (() -> Void)?
+    var onManageCapabilities: (() -> Void)?
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
@@ -254,11 +254,11 @@ struct WorkspaceRightRailView: View {
         VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
             collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
                 HStack(spacing: 10) {
-                    if let onBrowseCatalog {
+                    if let onManageCapabilities {
                         Button {
-                            onBrowseCatalog()
+                            onManageCapabilities()
                         } label: {
-                            Text("Browse catalog")
+                            Text("Manage capabilities")
                                 .font(Stanford.caption(11).weight(.medium))
                                 .foregroundStyle(Stanford.lagunita)
                         }
@@ -316,7 +316,7 @@ struct WorkspaceRightRailView: View {
             if railCapabilityItems.isEmpty {
                 EmptyRailState(
                     title: "No capabilities enabled",
-                    description: "Browse the catalog to enable approved capabilities for this workspace."
+                    description: "Open Manage Capabilities to enable approved capabilities for this workspace."
                 )
             } else {
                 ForEach(railCapabilityItems) { item in
@@ -335,6 +335,7 @@ struct WorkspaceRightRailView: View {
                 title: item.name,
                 subtitle: item.summary,
                 color: item.color,
+                readiness: item.readiness,
                 isExpanded: isExpanded,
                 isOn: capabilityEnabledBinding(item),
                 onTap: {
@@ -374,6 +375,10 @@ struct WorkspaceRightRailView: View {
                 capabilityDetailGroup("Requirements", values: item.requirementNames)
             }
 
+            if item.readiness.level == .needsAttention {
+                capabilityDetailGroup("Needs attention", values: item.readiness.messages)
+            }
+
             Button {
                 openCapabilityConfiguration(item)
             } label: {
@@ -405,30 +410,21 @@ struct WorkspaceRightRailView: View {
     }
 
     private var railCapabilityItems: [RailCapabilityItem] {
-        let packageItems = approvedCapabilityPackages.map(makePackageCapabilityItem)
-        let packageSkillNames = Set(approvedCapabilityPackages.flatMap { package in
-            package.skills.map(\.name) + [package.name]
-        })
-
-        let standaloneSkills = uniqueSkills(capabilities.workspaceSkills + capabilities.availableGlobalSkills)
-            .filter { !packageSkillNames.contains($0.name) }
-            .map(makeSkillCapabilityItem)
-
-        return (packageItems + standaloneSkills).sorted {
+        CapabilityCatalogInventory.packages(
+            catalogPackages: approvedCapabilityPackages,
+            capabilities: capabilities
+        ).map(makePackageCapabilityItem).sorted {
             if $0.isEnabled != $1.isEnabled { return $0.isEnabled && !$1.isEnabled }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 
     private func makePackageCapabilityItem(_ package: PluginPackage) -> RailCapabilityItem {
-        let packageSkillNames = package.skills.map(\.name)
-        let linkedSkills = uniqueSkills((capabilities.workspaceSkills + capabilities.availableGlobalSkills).filter { skill in
-            packageSkillNames.contains(skill.name) || skill.name == package.name
-        })
-        let linkedConnectors = linkedConnectors(for: package, linkedSkills: linkedSkills)
-        let linkedTools = linkedTools(for: package, linkedSkills: linkedSkills)
-        let isEnabled = workspace.enabledCapabilityIDs.contains(package.id) ||
-            hasEnabledElements(package: package, linkedSkills: linkedSkills, linkedConnectors: linkedConnectors, linkedTools: linkedTools)
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
 
         return RailCapabilityItem(
             id: "package:\(package.id)",
@@ -436,11 +432,12 @@ struct WorkspaceRightRailView: View {
             icon: package.icon,
             summary: package.description.isEmpty ? package.contentSummary : package.description,
             color: Stanford.lagunita,
-            isEnabled: isEnabled,
+            isEnabled: state.isEnabled,
+            readiness: state.readiness,
             source: .package(package),
-            skillNames: (package.skills.map(\.name) + linkedSkills.map(\.name)).uniqueSorted(),
-            connectorNames: (package.connectors.map(\.name) + linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
-            toolNames: (package.localTools.map(\.name) + linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
+            skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
+            connectorNames: (package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
+            toolNames: (package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
             requirementNames: package.prerequisites.map(\.displayName).uniqueSorted()
         )
     }
@@ -448,19 +445,42 @@ struct WorkspaceRightRailView: View {
     private func makeSkillCapabilityItem(_ skill: Skill) -> RailCapabilityItem {
         let connectors = uniqueConnectors(skill.connectors)
         let tools = uniqueTools(skill.localTools)
+        let isEnabled = skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : true
         return RailCapabilityItem(
             id: "skill:\(skill.id.uuidString)",
             name: skill.name.isEmpty ? "Untitled Capability" : skill.name,
             icon: skill.icon,
             summary: skill.skillDescription.isEmpty ? "\(skill.allowedTools.count) permissions" : skill.skillDescription,
             color: Stanford.lagunita,
-            isEnabled: skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : true,
+            isEnabled: isEnabled,
+            readiness: readinessForSkill(isEnabled: isEnabled, connectors: connectors),
             source: .skill(skill),
             skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
             connectorNames: connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }.uniqueSorted(),
             toolNames: tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }.uniqueSorted(),
             requirementNames: []
         )
+    }
+
+    private func readinessForSkill(isEnabled: Bool, connectors: [Connector]) -> CapabilityReadiness {
+        guard isEnabled else { return .inactive }
+
+        let messages = connectors.flatMap { connector -> [String] in
+            guard connector.authMethod != "none" else { return [] }
+            let name = connector.name.isEmpty ? "Connector" : connector.name
+            let missing = connector.missingCredentialKeys()
+            if !missing.isEmpty {
+                return ["\(name): missing \(missing.joined(separator: ", "))"]
+            }
+            if connector.credentialKeys.isEmpty {
+                return ["\(name): no credentials configured"]
+            }
+            return []
+        }
+
+        return messages.isEmpty
+            ? .ready
+            : CapabilityReadiness(level: .needsAttention, messages: messages)
     }
 
     private func linkedConnectors(for package: PluginPackage, linkedSkills: [Skill]) -> [Connector] {
@@ -540,17 +560,16 @@ struct WorkspaceRightRailView: View {
     }
 
     private func disablePackageCapability(_ package: PluginPackage) {
-        let skillNames = Set(package.skills.map(\.name))
-        let connectorNames = Set(package.connectors.map(\.name))
-        let toolNames = Set(package.localTools.map(\.name))
-        let skillIDs = Set(globalSkills.filter { skillNames.contains($0.name) || $0.name == package.name }.map { $0.id.uuidString })
-        let connectorIDs = Set(globalConnectors.filter { connectorNames.contains($0.name) }.map { $0.id.uuidString })
-        let toolIDs = Set(globalTools.filter { toolNames.contains($0.name) }.map { $0.id.uuidString })
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
 
         workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
-        workspace.enabledGlobalSkillIDs.removeAll { skillIDs.contains($0) }
-        workspace.enabledGlobalConnectorIDs.removeAll { connectorIDs.contains($0) }
-        workspace.enabledGlobalToolIDs.removeAll { toolIDs.contains($0) }
+        workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
+        workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
+        workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
@@ -1623,6 +1642,7 @@ private struct RailCapabilityItem: Identifiable {
     let summary: String
     let color: Color
     let isEnabled: Bool
+    let readiness: CapabilityReadiness
     let source: Source
     let skillNames: [String]
     let connectorNames: [String]
@@ -1635,9 +1655,32 @@ private struct CapabilityRailRow: View {
     let title: String
     let subtitle: String
     let color: Color
+    let readiness: CapabilityReadiness
     let isExpanded: Bool
     let isOn: Binding<Bool>
     let onTap: () -> Void
+
+    private var readinessColor: Color {
+        switch readiness.level {
+        case .ready:
+            return Stanford.paloAltoGreen
+        case .needsAttention:
+            return Stanford.poppy
+        case .inactive:
+            return Color.secondary.opacity(0.35)
+        }
+    }
+
+    private var readinessLabel: String {
+        switch readiness.level {
+        case .ready:
+            return "Functional"
+        case .needsAttention:
+            return "Needs attention"
+        case .inactive:
+            return "Disabled"
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1649,10 +1692,18 @@ private struct CapabilityRailRow: View {
                         .frame(width: 18)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(title.isEmpty ? "Untitled Capability" : title)
+                                .font(Stanford.caption(12).weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Circle()
+                                .fill(readinessColor)
+                                .frame(width: 6, height: 6)
+                                .help(readiness.messages.joined(separator: "\n"))
+                                .accessibilityLabel(readinessLabel)
+                        }
 
                         Text(subtitle.isEmpty ? "No details" : subtitle)
                             .font(Stanford.caption(10))

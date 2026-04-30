@@ -16,7 +16,7 @@ struct WorkspaceHomeView: View {
     let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    var onBrowseCatalog: (() -> Void)?
+    var onManageCapabilities: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingInstructions = false

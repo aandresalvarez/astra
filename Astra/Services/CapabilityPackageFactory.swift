@@ -89,7 +89,7 @@ struct CapabilityPackageFactory {
         )
     }
 
-    private static func makeConnector(_ connector: Connector) -> PluginConnector {
+    static func makeConnector(_ connector: Connector) -> PluginConnector {
         PluginConnector(
             name: connector.name,
             serviceType: connector.serviceType,
@@ -107,7 +107,7 @@ struct CapabilityPackageFactory {
         )
     }
 
-    private static func makeLocalTool(_ tool: LocalTool) -> PluginLocalTool {
+    static func makeLocalTool(_ tool: LocalTool) -> PluginLocalTool {
         PluginLocalTool(
             name: tool.name,
             description: tool.toolDescription,

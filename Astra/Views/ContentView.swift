@@ -25,7 +25,6 @@ struct ContentView: View {
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
-    @State private var showingPluginCatalog = false
     @State private var renamingWorkspace: Workspace?
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
@@ -98,7 +97,7 @@ struct ContentView: View {
                     showingWorkspaceEditor = true
                 },
                 onImportWorkspace: { importWorkspace() },
-                onShowConfigure: { showingConfigure = true },
+                onShowConfigure: { openCapabilitiesManager() },
                 onShowLogs: { showingLogs = true },
                 onShowDashboard: { showingDashboard = true },
                 onDeleteWorkspace: { ws in deleteWorkspace(ws) },
@@ -242,11 +241,6 @@ struct ContentView: View {
         }
         .sheet(item: $editingSchedule) { schedule in
             ScheduleEditorView(workspace: schedule.workspace ?? selectedWorkspace!, schedule: schedule)
-        }
-        .sheet(isPresented: $showingPluginCatalog) {
-            if let ws = selectedWorkspace {
-                PluginCatalogView(workspace: ws, catalog: runtime.pluginCatalog)
-            }
         }
         .alert("New Workspace", isPresented: $showingNewWorkspace) {
             TextField("Workspace name", text: $newWorkspaceName)
@@ -399,13 +393,13 @@ struct ContentView: View {
                     WorkspaceRightRailView(
                         workspace: workspace,
                         selectedTask: selectedTask,
-                        onConfigure: { configureInitialTab = .capabilities; configureFocusItemID = nil; showingConfigure = true },
+                        onConfigure: { openCapabilitiesManager() },
                         onEditWorkspace: { showingWorkspaceEditor = true },
                         onShowDashboard: { showingDashboard = true },
                         onShowLogs: { showingLogs = true },
                         onNewSchedule: { showingNewSchedule = true },
                         onEditSchedule: { schedule in editingSchedule = schedule },
-                        onBrowseCatalog: { showingPluginCatalog = true },
+                        onManageCapabilities: { openCapabilitiesManager() },
                         onOpenConfigureTab: { tab, itemID in
                             configureInitialTab = tab
                             configureFocusItemID = itemID
@@ -516,17 +510,23 @@ struct ContentView: View {
                     setDoneState(task, to: isDone)
                 },
                 onRunQueue: { runQueue() },
-                onConfigure: { configureInitialTab = .capabilities; configureFocusItemID = nil; showingConfigure = true },
+                onConfigure: { openCapabilitiesManager() },
                 onShowDashboard: { showingDashboard = true },
                 onShowLogs: { showingLogs = true },
                 onNewSchedule: { showingNewSchedule = true },
                 onEditSchedule: { schedule in editingSchedule = schedule },
-                onBrowseCatalog: { showingPluginCatalog = true }
+                onManageCapabilities: { openCapabilitiesManager() }
             )
         } else {
             // Onboarding — no workspace
             onboardingView
         }
+    }
+
+    private func openCapabilitiesManager() {
+        configureInitialTab = .capabilities
+        configureFocusItemID = nil
+        showingConfigure = true
     }
 
     /// Empty-state shown when the user has completed onboarding but no

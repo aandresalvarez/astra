@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 private func makeCapabilitiesPersistenceContainer() throws -> ModelContainer {
     let schema = Schema(ASTRASchemaV1.models)
@@ -101,6 +102,149 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.workspaceTools.map(\.name) == ["Local Tool"])
         #expect(capabilities.enabledGlobalTools.map(\.name) == ["Shared Tool"])
         #expect(capabilities.activeTools.map(\.name) == ["Attached Tool", "Local Tool", "Shared Tool"])
+    }
+
+    @Test("package state treats enabled linked elements as enabled capability")
+    @MainActor
+    func packageStateDetectsEnabledLinkedElements() {
+        let workspace = Workspace(name: "Package State", primaryPath: "/tmp/package-state")
+
+        let connector = Connector(name: "Jira", serviceType: "jira")
+        connector.isGlobal = true
+        connector.authMethod = "basic"
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        skill.connectors = [connector]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "list.clipboard",
+            description: "Query and update Jira tickets",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Jira Agent",
+                icon: "list.clipboard",
+                description: "Jira behavior",
+                allowedTools: ["Read"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use Jira carefully.",
+                environmentKeys: [],
+                environmentValues: []
+            )],
+            connectors: [PluginConnector(
+                name: "Jira",
+                serviceType: "jira",
+                icon: "list.clipboard",
+                description: "Jira API",
+                baseURL: "",
+                authMethod: "bearer",
+                credentialHints: [],
+                configHints: [],
+                notes: ""
+            )],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [skill],
+            globalConnectors: [connector]
+        )
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
+
+        #expect(state.isEnabled)
+        #expect(state.linkedSkills.map(\.name) == ["Jira Agent"])
+        #expect(state.linkedConnectors.map(\.name) == ["Jira"])
+        #expect(state.skillIDStrings == [skill.id.uuidString])
+        #expect(state.connectorIDStrings == [connector.id.uuidString])
+        #expect(state.readiness.level == .needsAttention)
+        #expect(state.readiness.messages == ["Jira: missing JIRA_EMAIL, JIRA_API_TOKEN"])
+    }
+
+    @Test("catalog inventory includes workspace-only capabilities")
+    @MainActor
+    func catalogInventoryIncludesWorkspaceOnlyCapabilities() {
+        let workspace = Workspace(name: "Catalog Inventory", primaryPath: "/tmp/catalog-inventory")
+
+        let connector = Connector(name: "Google Cloud", serviceType: "gcloud")
+        let tool = LocalTool(name: "bq — BigQuery CLI", toolType: "cli", command: "bq")
+        let skill = Skill(
+            name: "Bigquery Analyst",
+            icon: "folder.fill",
+            skillDescription: "queries - no write permissions",
+            allowedTools: ["Read", "Bash"]
+        )
+        skill.workspace = workspace
+        skill.connectors = [connector]
+        skill.localTools = [tool]
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        let packages = CapabilityCatalogInventory.packages(catalogPackages: [], capabilities: capabilities)
+        guard let package = packages.first else {
+            Issue.record("Expected a workspace capability package")
+            return
+        }
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+
+        #expect(packages.map(\.name) == ["Bigquery Analyst"])
+        #expect(package.category == "Workspace")
+        #expect(package.sourceMetadata?.kind == "workspace")
+        #expect(package.skills.map(\.name) == ["Bigquery Analyst"])
+        #expect(package.connectors.map(\.name) == ["Google Cloud"])
+        #expect(package.localTools.map(\.name) == ["bq — BigQuery CLI"])
+        #expect(state.isEnabled)
+    }
+
+    @Test("catalog inventory does not duplicate capabilities represented by approved packages")
+    @MainActor
+    func catalogInventorySkipsSkillsRepresentedByApprovedPackages() {
+        let workspace = Workspace(name: "Catalog Dedupe", primaryPath: "/tmp/catalog-dedupe")
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.workspace = workspace
+
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "list.clipboard",
+            description: "Query and update Jira tickets",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Jira Agent",
+                icon: "list.clipboard",
+                description: "Jira behavior",
+                allowedTools: ["Read"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use Jira carefully.",
+                environmentKeys: [],
+                environmentValues: []
+            )],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        let packages = CapabilityCatalogInventory.packages(catalogPackages: [package], capabilities: capabilities)
+
+        #expect(packages.map(\.id) == ["jira-workflow"])
+        #expect(packages.map(\.name) == ["Jira Workflow"])
     }
 
     @Test("promoting a workspace connector to shared keeps it enabled here")

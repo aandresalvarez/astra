@@ -3,6 +3,7 @@ import SwiftData
 
 struct SkillsManagerView: View {
     var workspace: Workspace
+    var onManageCapabilities: (() -> Void)?
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @State private var selectedSkill: Skill?
@@ -20,8 +21,6 @@ struct SkillsManagerView: View {
         return ws + globals
     }
 
-    @State private var showCatalog = false
-
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -30,10 +29,12 @@ struct SkillsManagerView: View {
                     .font(Stanford.heading(22))
                     .foregroundStyle(Stanford.black)
                 Spacer()
-                Button { showCatalog.toggle() } label: {
-                    Label("Add from Catalog", systemImage: "square.grid.2x2")
+                if let onManageCapabilities {
+                    Button { onManageCapabilities() } label: {
+                        Label("Manage Capabilities", systemImage: "square.grid.2x2")
+                    }
+                    .help("Open Manage Capabilities")
                 }
-                .help("Open the shared catalog, filtered to skills")
                 Button { createSkill() } label: {
                     Label("New Skill", systemImage: "plus")
                 }
@@ -44,70 +45,64 @@ struct SkillsManagerView: View {
 
             Divider()
 
-            if showCatalog {
-                PluginCatalogView(workspace: workspace, catalog: PluginCatalog(), focus: .skills, onInstall: { _ in
-                    showCatalog = false
-                })
-            } else {
-                // Master / Detail
-                HStack(spacing: 0) {
-                    // Skill list
-                    VStack(spacing: 0) {
-                        List(selection: $selectedSkill) {
-                            if !workspaceSkills.isEmpty {
-                                Section("Workspace") {
-                                    ForEach(workspaceSkills) { skill in
-                                        skillRow(skill)
-                                            .tag(skill)
-                                    }
-                                }
-                            }
-                            let availableGlobals = globalSkills.filter { gs in
-                                !gs.isSystemBuiltIn &&
-                                !workspaceSkills.contains { $0.id == gs.id }
-                            }
-                            if !availableGlobals.isEmpty {
-                                Section("Shared Library") {
-                                    ForEach(availableGlobals) { skill in
-                                        HStack(spacing: 6) {
-                                            let enabled = workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
-                                            Button {
-                                                toggleGlobalSkill(skill)
-                                            } label: {
-                                                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
-                                                    .foregroundStyle(enabled ? Stanford.paloAltoGreen : Stanford.coolGrey.opacity(0.4))
-                                                    .font(Stanford.ui(15))
-                                            }
-                                            .buttonStyle(.plain)
-                                            .help(enabled ? "Disable in this workspace" : "Enable in this workspace")
-
-                                            skillRow(skill)
-                                        }
+            // Master / Detail
+            HStack(spacing: 0) {
+                // Skill list
+                VStack(spacing: 0) {
+                    List(selection: $selectedSkill) {
+                        if !workspaceSkills.isEmpty {
+                            Section("Workspace") {
+                                ForEach(workspaceSkills) { skill in
+                                    skillRow(skill)
                                         .tag(skill)
-                                    }
                                 }
                             }
                         }
-                        .listStyle(.sidebar)
-                    }
-                    .frame(width: 200)
-                    .background(Stanford.fog)
+                        let availableGlobals = globalSkills.filter { gs in
+                            !gs.isSystemBuiltIn &&
+                            !workspaceSkills.contains { $0.id == gs.id }
+                        }
+                        if !availableGlobals.isEmpty {
+                            Section("Shared Library") {
+                                ForEach(availableGlobals) { skill in
+                                    HStack(spacing: 6) {
+                                        let enabled = workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
+                                        Button {
+                                            toggleGlobalSkill(skill)
+                                        } label: {
+                                            Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(enabled ? Stanford.paloAltoGreen : Stanford.coolGrey.opacity(0.4))
+                                                .font(Stanford.ui(15))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help(enabled ? "Disable in this workspace" : "Enable in this workspace")
 
-                    Divider()
-
-                    // Editor
-                    if let skill = selectedSkill {
-                        SkillEditorView(skill: skill, workspace: workspace, onDelete: {
-                            deleteSkill(skill)
-                        })
-                    } else {
-                        ContentUnavailableView(
-                            "Select a Skill",
-                            systemImage: "puzzlepiece.extension",
-                            description: Text("Select a skill to edit or click + to create one.")
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        skillRow(skill)
+                                    }
+                                    .tag(skill)
+                                }
+                            }
+                        }
                     }
+                    .listStyle(.sidebar)
+                }
+                .frame(width: 200)
+                .background(Stanford.fog)
+
+                Divider()
+
+                // Editor
+                if let skill = selectedSkill {
+                    SkillEditorView(skill: skill, workspace: workspace, onDelete: {
+                        deleteSkill(skill)
+                    })
+                } else {
+                    ContentUnavailableView(
+                        "Select a Skill",
+                        systemImage: "puzzlepiece.extension",
+                        description: Text("Select a skill to edit or click + to create one.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
