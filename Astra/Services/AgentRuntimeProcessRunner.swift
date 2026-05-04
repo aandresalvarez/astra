@@ -77,11 +77,7 @@ final class AgentRuntimeProcessRunner {
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
-                lineBuffer.append(chunk)
-                var buffer = lineBuffer.value
-                while let newlineIndex = buffer.firstIndex(of: "\n") {
-                    let line = String(buffer[buffer.startIndex..<newlineIndex])
-                    buffer = String(buffer[buffer.index(after: newlineIndex)...])
+                for line in lineBuffer.appendAndDrainLines(chunk) {
                     if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                         onLine(line)
                         for parsed in StreamEventParser.parseAll(line: line) {
@@ -91,7 +87,6 @@ final class AgentRuntimeProcessRunner {
                         }
                     }
                 }
-                lineBuffer.value = buffer
             }
 
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -105,7 +100,7 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                let remaining = lineBuffer.value
+                let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)
                     for parsed in StreamEventParser.parseAll(line: remaining) {
@@ -167,6 +162,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             let executable = copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath
+            let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
             let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
             let model = Self.model(task.model, for: .copilotCLI)
             let plan = CopilotCLIRuntime.buildCommand(
@@ -183,6 +179,13 @@ final class AgentRuntimeProcessRunner {
                 copilotHome: copilotHome
             )
 
+            AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "provider_version": providerVersion ?? "unknown",
+                "executable_configured": String(!copilotPath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable))
+            ], level: .debug)
+
             AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "phase": "run",
@@ -197,7 +200,14 @@ final class AgentRuntimeProcessRunner {
                 "permission_policy": permissionPolicy.rawValue,
                 "allowed_tools_count": String(allowed.count),
                 "additional_paths_count": String(task.workspace?.additionalPaths.count ?? 0),
-                "task_env_count": String(taskEnv.count)
+                "task_env_count": String(taskEnv.count),
+                "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
+                "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
+                "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
+                "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
+                "uses_silent": String(plan.arguments.contains("--silent")),
+                "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
+                "uses_allow_tool": String(plan.arguments.contains("--allow-tool"))
             ], level: .debug)
 
             try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
@@ -231,11 +241,7 @@ final class AgentRuntimeProcessRunner {
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
-                lineBuffer.append(chunk)
-                var buffer = lineBuffer.value
-                while let newlineIndex = buffer.firstIndex(of: "\n") {
-                    let line = String(buffer[buffer.startIndex..<newlineIndex])
-                    buffer = String(buffer[buffer.index(after: newlineIndex)...])
+                for line in lineBuffer.appendAndDrainLines(chunk) {
                     guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                     onLine(line, plan.parsesJSONLines)
                     let parsedEvents = plan.parsesJSONLines
@@ -247,7 +253,6 @@ final class AgentRuntimeProcessRunner {
                         }
                     }
                 }
-                lineBuffer.value = buffer
             }
 
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -261,7 +266,7 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                let remaining = lineBuffer.value
+                let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onLine(remaining, plan.parsesJSONLines)
                     let parsedEvents = plan.parsesJSONLines
@@ -280,6 +285,7 @@ final class AgentRuntimeProcessRunner {
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
+                    providerVersion: providerVersion,
                     budgetExceeded: monitor.budgetExceeded,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
@@ -291,7 +297,7 @@ final class AgentRuntimeProcessRunner {
             do {
                 try process.run()
             } catch {
-                resumeOnce(AgentProcessResult(exitCode: -1, error: error.localizedDescription))
+                resumeOnce(AgentProcessResult(exitCode: -1, error: error.localizedDescription, providerVersion: providerVersion))
                 return
             }
 
@@ -370,11 +376,7 @@ final class AgentRuntimeProcessRunner {
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
-                lineBuffer.append(chunk)
-                var buffer = lineBuffer.value
-                while let newlineIndex = buffer.firstIndex(of: "\n") {
-                    let line = String(buffer[buffer.startIndex..<newlineIndex])
-                    buffer = String(buffer[buffer.index(after: newlineIndex)...])
+                for line in lineBuffer.appendAndDrainLines(chunk) {
                     if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                         onLine(line)
                         for parsed in StreamEventParser.parseAll(line: line) {
@@ -384,7 +386,6 @@ final class AgentRuntimeProcessRunner {
                         }
                     }
                 }
-                lineBuffer.value = buffer
             }
 
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -398,7 +399,7 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                let remaining = lineBuffer.value
+                let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)
                     for parsed in StreamEventParser.parseAll(line: remaining) {

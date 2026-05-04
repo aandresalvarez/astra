@@ -5,18 +5,38 @@ import SwiftData
 enum WorkspacePersistenceCoordinator {
     private static var pendingExports: [UUID: Task<Void, Never>] = [:]
 
-    static func saveAndAutoExport(workspace: Workspace?, modelContext: ModelContext) {
+    @discardableResult
+    static func saveAndAutoExport(
+        workspace: Workspace?,
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) -> Bool {
+        var didSave = false
         do {
             try modelContext.save()
+            didSave = true
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
         } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
             AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
 
-        guard let workspace else { return }
+        guard let workspace else { return didSave }
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        return didSave
     }
 
     static func scheduleAutoExport(

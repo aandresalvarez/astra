@@ -80,6 +80,18 @@ enum CopilotCLIRuntime {
         return CopilotCLICapabilities(helpText: help)
     }
 
+    static func versionSummary(executablePath: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return nil
+        }
+        for args in [["--version"], ["version"]] {
+            if let version = probeVersion(executablePath: executablePath, args: args) {
+                return version
+            }
+        }
+        return nil
+    }
+
     static func channelHome() -> String {
         let appSupport = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
@@ -209,5 +221,49 @@ enum CopilotCLIRuntime {
             }
             return []
         }
+    }
+
+    private static func probeVersion(executablePath: String, args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = args
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let result = semaphore.wait(timeout: .now() + 2)
+        guard result == .success else {
+            process.terminate()
+            return nil
+        }
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = (String(data: outputData, encoding: .utf8) ?? "")
+            + "\n"
+            + (String(data: errorData, encoding: .utf8) ?? "")
+        let firstLine = output
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let firstLine, !firstLine.isEmpty else {
+            return nil
+        }
+        return firstLine
     }
 }

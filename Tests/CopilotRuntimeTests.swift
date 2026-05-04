@@ -38,6 +38,17 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Assistant message delta maps Copilot data payload to text")
+    func assistantMessageDeltaDataPayload() {
+        let line = #"{"type":"assistant.message_delta","data":{"messageId":"msg-1","deltaContent":"Hello"},"id":"evt-1"}"#
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .text(let text) = parsed {
+            #expect(text == "Hello")
+        } else {
+            Issue.record("Expected text event")
+        }
+    }
+
     @Test("Assistant final message maps to completion summary")
     func assistantFinalMessage() {
         let line = #"{"type":"assistant.message","message":{"content":[{"type":"text","text":"final answer"}]}}"#
@@ -46,6 +57,28 @@ struct CopilotStreamEventParserTests {
             #expect(summary == "final answer")
         } else {
             Issue.record("Expected completed event")
+        }
+    }
+
+    @Test("Assistant final message maps Copilot data payload to completion summary")
+    func assistantFinalMessageDataPayload() {
+        let line = #"{"type":"assistant.message","data":{"content":"final answer"}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .completed(let summary) = parsed.first {
+            #expect(summary == "final answer")
+        } else {
+            Issue.record("Expected completed event")
+        }
+    }
+
+    @Test("Assistant reasoning delta maps Copilot data payload to thinking")
+    func assistantReasoningDeltaDataPayload() {
+        let line = #"{"type":"assistant.reasoning_delta","data":{"deltaContent":"checking repository state"}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .thinking(let text) = parsed.first {
+            #expect(text == "checking repository state")
+        } else {
+            Issue.record("Expected thinking event")
         }
     }
 
@@ -87,11 +120,36 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Tool call maps Copilot data payload to tool use")
+    func toolCallDataPayload() {
+        let line = #"{"type":"tool_call","id":"event-1","data":{"toolUseId":"call-1","toolName":"github","input":{"command":"gh pr list"}}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .toolUse(let name, let id, let inputSummary) = parsed.first {
+            #expect(name == "github")
+            #expect(id == "call-1")
+            #expect(inputSummary?.contains("gh pr list") == true)
+        } else {
+            Issue.record("Expected tool use")
+        }
+    }
+
     @Test("Tool result maps to tool result")
     func toolResult() {
         let line = #"{"type":"tool_result","toolUseId":"call-1","output":"ok"}"#
         let parsed = CopilotStreamEventParser.parse(line: line)
         if case .toolResult(let id, let content) = parsed {
+            #expect(id == "call-1")
+            #expect(content == "ok")
+        } else {
+            Issue.record("Expected tool result")
+        }
+    }
+
+    @Test("Tool result maps Copilot data payload to tool result")
+    func toolResultDataPayload() {
+        let line = #"{"type":"tool_result","id":"event-2","data":{"toolUseId":"call-1","output":"ok"}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .toolResult(let id, let content) = parsed.first {
             #expect(id == "call-1")
             #expect(content == "ok")
         } else {
@@ -124,6 +182,36 @@ struct CopilotStreamEventParserTests {
             #expect(!isError)
         } else {
             Issue.record("Expected result stats")
+        }
+    }
+
+    @Test("Usage event maps Copilot data payload to result stats")
+    func usageStatsDataPayload() {
+        let line = #"{"type":"result","data":{"usage":{"input_tokens":120,"output_tokens":30,"cost_usd":0.01},"duration_ms":500,"turns":2,"summary":"done"}}"#
+        let events = CopilotStreamEventParser.parseAll(line: line)
+        #expect(events.count == 1)
+        if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = events.first {
+            #expect(text == "done")
+            #expect(cost == 0.01)
+            #expect(input == 120)
+            #expect(output == 30)
+            #expect(duration == 500)
+            #expect(turns == 2)
+            #expect(!isError)
+        } else {
+            Issue.record("Expected result stats")
+        }
+    }
+
+    @Test("Error event maps Copilot data payload to failure")
+    func errorDataPayload() {
+        let line = #"{"type":"error","data":{"message":"GitHub authentication failed"}}"#
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .result(let text, _, _, _, _, _, let isError) = parsed {
+            #expect(text == "GitHub authentication failed")
+            #expect(isError)
+        } else {
+            Issue.record("Expected failed result")
         }
     }
 
@@ -301,6 +389,10 @@ struct CopilotWorkerExecutionTests {
           echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
           exit 0
         fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from fake copilot"}}'
         printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
         printf 'changed\\n' > copilot-output.txt
@@ -332,11 +424,71 @@ struct CopilotWorkerExecutionTests {
         #expect(task.status == .completed)
         let run = try #require(task.runs.first)
         #expect(run.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(run.providerVersion == "copilot fake 1.0")
         #expect(run.output.contains("hello from fake copilot"))
         #expect(run.inputTokens == 2)
         #expect(run.outputTokens == 3)
         #expect(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("copilot-output.txt").path))
         #expect(run.fileChanges.contains { $0.path.hasSuffix("copilot-output.txt") })
+    }
+
+    @Test("Worker records Copilot data message deltas as visible output")
+    func fakeCopilotDataMessageDeltasRecordOutput() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-data-delta-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"messageId":"msg-1","deltaContent":"Hello"},"id":"evt-1"}'
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"messageId":"msg-1","deltaContent":" from"},"id":"evt-2"}'
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"messageId":"msg-1","deltaContent":" Copilot"},"id":"evt-3"}'
+        printf '%s\\n' '{"type":"result","data":{"usage":{"input_tokens":4,"output_tokens":5},"duration_ms":20,"turns":1}}'
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Data Delta", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Say hello", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .completed)
+        let run = try #require(task.runs.first)
+        #expect(run.providerVersion == "copilot fake 1.0")
+        #expect(run.output == "Hello from Copilot")
+        #expect(run.inputTokens == 4)
+        #expect(run.outputTokens == 5)
+        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == "Hello" })
+        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == " from" })
+        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == " Copilot" })
     }
 
     @Test("Worker records Copilot edits to files that were already dirty")
@@ -360,6 +512,10 @@ struct CopilotWorkerExecutionTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
           exit 0
         fi
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"edited dirty file"}}'

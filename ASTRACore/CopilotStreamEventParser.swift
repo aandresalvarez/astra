@@ -64,7 +64,7 @@ public enum CopilotStreamEventParser {
     }
 
     private static func events(from object: [String: Any], raw: String) -> [AgentEvent] {
-        let type = firstString(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"]) ?? "unknown"
+        let type = firstStringIncludingPayload(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"]) ?? "unknown"
         let normalized = type.lowercased()
 
         if normalized.hasPrefix("session.") {
@@ -101,7 +101,7 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized == "agent_message_chunk",
-           let text = nestedString(object, path: ["content", "text"]) {
+           let text = textValue(in: object) {
             return [.text(text: text)]
         }
 
@@ -112,7 +112,7 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized.contains("permission") || normalized.contains("approval") {
-            let tool = firstString(in: object, keys: ["tool", "toolName", "name", "command"]) ?? "unknown"
+            let tool = toolName(in: object)
             let reason = textValue(in: object) ?? raw
             return [.permissionRequested(tool: tool, reason: reason)]
         }
@@ -122,34 +122,32 @@ public enum CopilotStreamEventParser {
         }
 
         if isToolUse(normalized, object: object) {
-            let name = firstString(in: object, keys: ["tool", "toolName", "name", "command"])
-                ?? nestedString(object, path: ["tool", "name"])
-                ?? "tool"
-            let id = firstString(in: object, keys: ["id", "toolUseId", "tool_call_id", "callId"]) ?? ""
+            let name = toolName(in: object)
+            let id = toolID(in: object)
             return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: object))]
         }
 
         if isToolResult(normalized, object: object) {
-            let id = firstString(in: object, keys: ["id", "toolUseId", "tool_call_id", "callId"]) ?? ""
+            let id = toolID(in: object)
             return [.toolResult(id: id, content: textValue(in: object) ?? raw)]
         }
 
         if normalized.contains("usage") || normalized.contains("stats") || normalized == "result" {
-            let input = intValue(in: object, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
-                ?? nestedInt(object, path: ["usage", "input_tokens"])
-                ?? nestedInt(object, path: ["usage", "inputTokens"])
-                ?? nestedInt(object, path: ["usage", "prompt_tokens"])
+            let input = intValueIncludingPayload(in: object, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "input_tokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "inputTokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "prompt_tokens"])
                 ?? 0
-            let output = intValue(in: object, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"])
-                ?? nestedInt(object, path: ["usage", "output_tokens"])
-                ?? nestedInt(object, path: ["usage", "outputTokens"])
-                ?? nestedInt(object, path: ["usage", "completion_tokens"])
+            let output = intValueIncludingPayload(in: object, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "output_tokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "outputTokens"])
+                ?? nestedIntIncludingPayload(object, path: ["usage", "completion_tokens"])
                 ?? 0
-            let cost = doubleValue(in: object, keys: ["costUSD", "cost_usd", "total_cost_usd"])
-                ?? nestedDouble(object, path: ["usage", "costUSD"])
-                ?? nestedDouble(object, path: ["usage", "cost_usd"])
-            let duration = intValue(in: object, keys: ["duration_ms", "durationMs"])
-            let turns = intValue(in: object, keys: ["turns", "num_turns", "numTurns"])
+            let cost = doubleValueIncludingPayload(in: object, keys: ["costUSD", "cost_usd", "total_cost_usd"])
+                ?? nestedDoubleIncludingPayload(object, path: ["usage", "costUSD"])
+                ?? nestedDoubleIncludingPayload(object, path: ["usage", "cost_usd"])
+            let duration = intValueIncludingPayload(in: object, keys: ["duration_ms", "durationMs"])
+            let turns = intValueIncludingPayload(in: object, keys: ["turns", "num_turns", "numTurns"])
 
             var events: [AgentEvent] = []
             if input > 0 || output > 0 || cost != nil || duration != nil || turns != nil {
@@ -201,7 +199,7 @@ public enum CopilotStreamEventParser {
         if type.contains("tool") && (type.contains("use") || type.contains("call") || type.contains("start")) {
             return true
         }
-        if object["tool"] != nil || object["toolName"] != nil || object["tool_call_id"] != nil {
+        if hasAnyKey(in: object, keys: ["tool", "toolName", "tool_call_id", "toolUseId", "callId"]) {
             return !isToolResult(type, object: object)
         }
         return false
@@ -209,21 +207,25 @@ public enum CopilotStreamEventParser {
 
     private static func isToolResult(_ type: String, object: [String: Any]) -> Bool {
         type.contains("tool") && (type.contains("result") || type.contains("output") || type.contains("complete"))
-            || object["toolResult"] != nil
+            || hasAnyKey(in: object, keys: ["toolResult"])
     }
 
     private static func inputSummary(in object: [String: Any]) -> String? {
-        if let command = firstString(in: object, keys: ["command", "cmd"]) {
+        if let command = firstStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
             return command
         }
         if let input = object["input"] ?? object["arguments"] ?? object["args"] {
+            return stableJSONString(input)
+        }
+        if let payload = payloadObject(in: object),
+           let input = payload["input"] ?? payload["arguments"] ?? payload["args"] {
             return stableJSONString(input)
         }
         return nil
     }
 
     private static func textValue(in object: [String: Any]) -> String? {
-        if let text = firstString(in: object, keys: ["text", "message", "content", "delta", "chunk", "output", "result", "summary"]) {
+        if let text = firstStringIncludingPayload(in: object, keys: ["text", "message", "content", "delta", "deltaContent", "delta_content", "chunk", "output", "result", "summary"]) {
             return text
         }
         if let text = nestedString(object, path: ["content", "text"]) {
@@ -238,11 +240,22 @@ public enum CopilotStreamEventParser {
         if let text = nestedString(object, path: ["delta", "content"]) {
             return text
         }
+        if let text = nestedStringIncludingPayload(object, path: ["content", "text"])
+            ?? nestedStringIncludingPayload(object, path: ["message", "content"])
+            ?? nestedStringIncludingPayload(object, path: ["message", "text"])
+            ?? nestedStringIncludingPayload(object, path: ["delta", "text"])
+            ?? nestedStringIncludingPayload(object, path: ["delta", "content"]) {
+            return text
+        }
         if let text = nestedContentText(object["content"]) {
             return text
         }
         if let message = object["message"] as? [String: Any],
            let text = nestedContentText(message["content"]) {
+            return text
+        }
+        if let payload = payloadObject(in: object),
+           let text = nestedContentText(payload) {
             return text
         }
         if let delta = object["delta"] as? [String: Any],
@@ -253,11 +266,12 @@ public enum CopilotStreamEventParser {
     }
 
     private static func sessionEvent(from object: [String: Any], type: String, raw: String) -> [AgentEvent] {
-        let sessionID = firstString(in: object, keys: ["session_id", "sessionId", "id"])
-            ?? nestedString(object, path: ["session", "id"])
-            ?? nestedString(object, path: ["session", "sessionId"])
-        let model = firstString(in: object, keys: ["model"])
-            ?? nestedString(object, path: ["session", "model"])
+        let sessionID = firstStringIncludingPayload(in: object, keys: ["session_id", "sessionId"])
+            ?? payloadObject(in: object).flatMap { firstString(in: $0, keys: ["id"]) }
+            ?? nestedStringIncludingPayload(object, path: ["session", "id"])
+            ?? nestedStringIncludingPayload(object, path: ["session", "sessionId"])
+        let model = firstStringIncludingPayload(in: object, keys: ["model"])
+            ?? nestedStringIncludingPayload(object, path: ["session", "model"])
         if sessionID != nil || model != nil {
             return [.started(sessionID: sessionID, model: model)]
         }
@@ -269,7 +283,10 @@ public enum CopilotStreamEventParser {
             return text
         }
         if let dictionary = value as? [String: Any] {
-            if let text = firstString(in: dictionary, keys: ["text", "content", "delta", "message", "summary"]) {
+            if let text = firstString(in: dictionary, keys: ["text", "content", "delta", "deltaContent", "delta_content", "message", "summary", "chunk", "output", "result"]) {
+                return text
+            }
+            if let text = nestedContentText(dictionary["data"]) {
                 return text
             }
             if let text = nestedContentText(dictionary["content"]) {
@@ -296,6 +313,65 @@ public enum CopilotStreamEventParser {
             }
             let text = parts.joined()
             return text.isEmpty ? nil : text
+        }
+        return nil
+    }
+
+    private static func toolName(in object: [String: Any]) -> String {
+        firstStringIncludingPayload(in: object, keys: ["tool", "toolName", "name", "command"])
+            ?? nestedString(object, path: ["tool", "name"])
+            ?? nestedString(object, path: ["data", "tool", "name"])
+            ?? "tool"
+    }
+
+    private static func toolID(in object: [String: Any]) -> String {
+        firstString(in: object, keys: ["toolUseId", "tool_call_id", "callId"])
+            ?? payloadObject(in: object).flatMap { firstString(in: $0, keys: ["toolUseId", "tool_call_id", "callId", "id"]) }
+            ?? firstString(in: object, keys: ["id"])
+            ?? ""
+    }
+
+    private static func firstStringIncludingPayload(in object: [String: Any], keys: [String]) -> String? {
+        firstString(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { firstString(in: $0, keys: keys) }
+    }
+
+    private static func intValueIncludingPayload(in object: [String: Any], keys: [String]) -> Int? {
+        intValue(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { intValue(in: $0, keys: keys) }
+    }
+
+    private static func doubleValueIncludingPayload(in object: [String: Any], keys: [String]) -> Double? {
+        doubleValue(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { doubleValue(in: $0, keys: keys) }
+    }
+
+    private static func nestedIntIncludingPayload(_ object: [String: Any], path: [String]) -> Int? {
+        nestedInt(object, path: path)
+            ?? payloadObject(in: object).flatMap { nestedInt($0, path: path) }
+    }
+
+    private static func nestedDoubleIncludingPayload(_ object: [String: Any], path: [String]) -> Double? {
+        nestedDouble(object, path: path)
+            ?? payloadObject(in: object).flatMap { nestedDouble($0, path: path) }
+    }
+
+    private static func hasAnyKey(in object: [String: Any], keys: [String]) -> Bool {
+        if keys.contains(where: { object[$0] != nil }) {
+            return true
+        }
+        guard let payload = payloadObject(in: object) else {
+            return false
+        }
+        return keys.contains { payload[$0] != nil }
+    }
+
+    private static func payloadObject(in object: [String: Any]) -> [String: Any]? {
+        if let data = object["data"] as? [String: Any] {
+            return data
+        }
+        if let payload = object["payload"] as? [String: Any] {
+            return payload
         }
         return nil
     }
@@ -329,6 +405,11 @@ public enum CopilotStreamEventParser {
 
     private static func nestedString(_ object: [String: Any], path: [String]) -> String? {
         nestedValue(object, path: path) as? String
+    }
+
+    private static func nestedStringIncludingPayload(_ object: [String: Any], path: [String]) -> String? {
+        nestedString(object, path: path)
+            ?? payloadObject(in: object).flatMap { nestedString($0, path: path) }
     }
 
     private static func nestedInt(_ object: [String: Any], path: [String]) -> Int? {

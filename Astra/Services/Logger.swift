@@ -69,9 +69,11 @@ enum AuditEvent: String, CaseIterable {
     case workerPermissionDenied = "worker.permission_denied"
     case workerEnvironmentInjected = "worker.environment_injected"
     case runtimeCommandPlanned = "runtime.command_planned"
+    case runtimeProviderDetected = "runtime.provider_detected"
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"
     case runtimeEmptyOutput = "runtime.empty_output"
+    case runtimePersistenceSummary = "runtime.persistence_summary"
 
     case specExtractionStarted = "spec.extraction_started"
     case specExtractionCompleted = "spec.extraction_completed"
@@ -104,6 +106,8 @@ enum AuditEvent: String, CaseIterable {
     case pluginInstalled = "plugin.installed"
     case capabilityInstalled = "capability.installed"
     case capabilityEnabled = "capability.enabled"
+    case capabilityDisabled = "capability.disabled"
+    case capabilityResolved = "capability.resolved"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
     case workspaceRecovered = "workspace.recovered"
@@ -129,6 +133,7 @@ enum AuditEvent: String, CaseIterable {
     case appUpdateBlocked = "app_update.blocked"
     case appUpdateBackupCreated = "app_update.backup_created"
     case appUpdateInstallRequested = "app_update.install_requested"
+    case threadSnapshotBuilt = "thread.snapshot_built"
 }
 
 // MARK: - Log Sanitizer
@@ -241,7 +246,7 @@ enum AppLogger {
         let categories = [
             "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
             "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-            "Keychain", "Updater", "Performance", "General"
+            "Keychain", "Updater", "Performance", "Capabilities", "General"
         ]
         var dict: [String: os.Logger] = [:]
         for cat in categories {

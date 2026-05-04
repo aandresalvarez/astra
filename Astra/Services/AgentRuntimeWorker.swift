@@ -164,6 +164,7 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = buildPrompt(for: task)
+        Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
         AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
             "model": task.model,
             "token_budget": String(task.tokenBudget),
@@ -424,7 +425,12 @@ final class AgentRuntimeWorker {
         task.markUnreadForCurrentStatus(at: finishedAt)
 
         // Auto-export workspace config so Import picks up tasks
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: Self.runPersistenceFields(task: task, run: run, phase: "run")
+        )
 
         isRunning = false
     }
@@ -439,6 +445,16 @@ final class AgentRuntimeWorker {
     ) async {
         if runtimeConfiguration.selectedRuntime(for: task) == .copilotCLI {
             let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+            AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
+                "mode": "fresh_follow_up",
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "message_length": String(message.count),
+                "prompt_chars": String(prompt.count),
+                "history_run_count": String(task.runs.count),
+                "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
+                "has_session_id": String(task.sessionId != nil),
+                "workspace_id": task.workspace?.id.uuidString ?? "none"
+            ])
             await executeCopilot(
                 task: task,
                 modelContext: modelContext,
@@ -476,7 +492,12 @@ final class AgentRuntimeWorker {
 
         AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
             "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
+            "runtime": AgentRuntimeID.claudeCode.rawValue,
             "message_length": String(message.count),
+            "prompt_chars": String(followUpPrompt.count),
+            "history_run_count": String(task.runs.count),
+            "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
+            "has_session_id": String(task.sessionId != nil),
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
 
@@ -616,7 +637,12 @@ final class AgentRuntimeWorker {
         task.markUnreadForCurrentStatus(at: finishedAt)
 
         // Auto-export workspace config so Import picks up follow-up runs
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: Self.runPersistenceFields(task: task, run: run, phase: "resume")
+        )
 
         isRunning = false
     }
@@ -635,6 +661,7 @@ final class AgentRuntimeWorker {
             "status": task.status.rawValue,
             "model": task.model,
             "runtime": AgentRuntimeID.copilotCLI.rawValue,
+            "phase": auditPhase,
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
         guard !isRunning else {
@@ -724,6 +751,7 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
         let startTime = Date()
         let beforeGitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
         let beforeDirtyFingerprints = AgentFileChangeDetector.fileFingerprints(
@@ -798,6 +826,7 @@ final class AgentRuntimeWorker {
 
         run.completedAt = Date()
         run.exitCode = result.exitCode
+        run.providerVersion = result.providerVersion
         Self.logCopilotStreamTelemetry(
             snapshot: streamSnapshot,
             task: task,
@@ -917,7 +946,12 @@ final class AgentRuntimeWorker {
             task.completedAt = finishedAt
         }
         task.markUnreadForCurrentStatus(at: finishedAt)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: Self.runPersistenceFields(task: task, run: run, phase: auditPhase)
+        )
         isRunning = false
     }
 
@@ -963,12 +997,14 @@ final class AgentRuntimeWorker {
         AppLogger.audit(.runtimeStreamSummary, category: "Worker", taskID: task.id, fields: fields, level: streamLevel)
 
         for sample in snapshot.unknownSamples {
-            AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: task.id, fields: [
+            var fields = [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "phase": phase,
                 "event_type": sample.type,
                 "sample": sample.sample
-            ], level: .warning)
+            ]
+            fields.merge(unknownEventShapeFields(raw: sample.sample)) { current, _ in current }
+            AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: task.id, fields: fields, level: .warning)
         }
 
         if completedWithoutOutput {
@@ -983,6 +1019,82 @@ final class AgentRuntimeWorker {
                 "unknown_events": String(snapshot.unknownEventCount)
             ], level: .warning)
         }
+    }
+
+    @MainActor
+    private static func logCapabilityResolution(for task: AgentTask, runtime: AgentRuntimeID, phase: String) {
+        let resolver = TaskCapabilityResolver(task: task)
+        let connectors = resolver.allConnectors
+        let tools = resolver.allLocalTools
+        AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
+            "runtime": runtime.rawValue,
+            "phase": phase,
+            "workspace_id": task.workspace?.id.uuidString ?? "none",
+            "workspace_enabled_capabilities_count": String(task.workspace?.enabledCapabilityIDs.count ?? 0),
+            "workspace_enabled_global_skills_count": String(task.workspace?.enabledGlobalSkillIDs.count ?? 0),
+            "workspace_enabled_global_connectors_count": String(task.workspace?.enabledGlobalConnectorIDs.count ?? 0),
+            "workspace_enabled_global_tools_count": String(task.workspace?.enabledGlobalToolIDs.count ?? 0),
+            "task_skill_count": String(task.skills.count),
+            "task_skill_snapshot_count": String(task.skillSnapshots.count),
+            "connector_count": String(connectors.count),
+            "local_tool_count": String(tools.count),
+            "skill_names": compactNames(task.skills.map(\.name)),
+            "connector_names": compactNames(connectors.map(\.name)),
+            "local_tool_names": compactNames(tools.map(\.name))
+        ], level: .debug)
+    }
+
+    @MainActor
+    private static func runPersistenceFields(task: AgentTask, run: TaskRun, phase: String) -> [String: String] {
+        let runEvents = task.events.filter { $0.run?.id == run.id }
+        return [
+            "phase": phase,
+            "runtime": run.runtimeID ?? task.resolvedRuntimeID.rawValue,
+            "task_status": task.status.rawValue,
+            "run_status": run.status.rawValue,
+            "run_stop_reason": run.stopReason,
+            "exit_code": run.exitCode.map(String.init) ?? "none",
+            "run_output_chars": String(run.output.count),
+            "response_event_count": String(runEvents.filter { $0.type == "agent.response" }.count),
+            "thinking_event_count": String(runEvents.filter { $0.type == "agent.thinking" }.count),
+            "tool_use_event_count": String(runEvents.filter { $0.type == "tool.use" }.count),
+            "tool_result_event_count": String(runEvents.filter { $0.type == "tool.result" }.count),
+            "error_event_count": String(runEvents.filter { $0.type == "error" }.count),
+            "run_event_count": String(runEvents.count),
+            "file_changes": String(run.fileChanges.count),
+            "tokens_input": String(run.inputTokens),
+            "tokens_output": String(run.outputTokens),
+            "provider_version": run.providerVersion ?? "unknown"
+        ]
+    }
+
+    private static func compactNames(_ names: [String], limit: Int = 8) -> String {
+        let visible = names.prefix(limit).joined(separator: ",")
+        let remaining = names.count - min(names.count, limit)
+        guard remaining > 0 else { return visible }
+        return visible.isEmpty ? "+\(remaining)_more" : "\(visible),+\(remaining)_more"
+    }
+
+    private static func unknownEventShapeFields(raw: String) -> [String: String] {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["raw_length": String(raw.count)]
+        }
+
+        var fields: [String: String] = [
+            "raw_length": String(raw.count),
+            "top_level_keys": object.keys.sorted().joined(separator: ",")
+        ]
+        if let dataObject = object["data"] as? [String: Any] {
+            fields["data_keys"] = dataObject.keys.sorted().joined(separator: ",")
+        }
+        if let payloadObject = object["payload"] as? [String: Any] {
+            fields["payload_keys"] = payloadObject.keys.sorted().joined(separator: ",")
+        }
+        if let type = object["type"] as? String {
+            fields["type_field"] = type
+        }
+        return fields
     }
 
     @MainActor

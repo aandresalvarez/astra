@@ -15,6 +15,29 @@ final class AgentLockedBuffer: @unchecked Sendable {
         _value += string
         lock.unlock()
     }
+
+    func appendAndDrainLines(_ string: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        _value += string
+        var lines: [String] = []
+        while let newlineIndex = _value.firstIndex(of: "\n") {
+            let line = String(_value[_value.startIndex..<newlineIndex])
+            lines.append(line)
+            _value = String(_value[_value.index(after: newlineIndex)...])
+        }
+        return lines
+    }
+
+    func drainRemaining() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let remaining = _value
+        _value = ""
+        return remaining
+    }
 }
 
 struct AgentRuntimeStreamTelemetrySnapshot: Sendable {
@@ -200,6 +223,7 @@ final class AgentRuntimeEventPipelineBox: @unchecked Sendable {
 struct AgentProcessResult {
     let exitCode: Int
     let error: String?
+    let providerVersion: String?
     let budgetExceeded: Bool
     let timedOut: Bool
     let repetitionKilled: Bool
@@ -208,6 +232,7 @@ struct AgentProcessResult {
     init(
         exitCode: Int,
         error: String? = nil,
+        providerVersion: String? = nil,
         budgetExceeded: Bool = false,
         timedOut: Bool = false,
         repetitionKilled: Bool = false,
@@ -215,6 +240,7 @@ struct AgentProcessResult {
     ) {
         self.exitCode = exitCode
         self.error = error
+        self.providerVersion = providerVersion
         self.budgetExceeded = budgetExceeded
         self.timedOut = timedOut
         self.repetitionKilled = repetitionKilled

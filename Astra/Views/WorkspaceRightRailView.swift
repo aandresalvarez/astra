@@ -571,6 +571,15 @@ struct WorkspaceRightRailView: View {
                     refreshApprovedCapabilities()
                 } catch {
                     capabilityError = error.localizedDescription
+                    AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
+                        "result": "failed",
+                        "package_id": package.id,
+                        "workspace_id": workspace.id.uuidString,
+                        "readiness_level": String(describing: item.readiness.level),
+                        "readiness_messages_count": String(item.readiness.messages.count),
+                        "requirement_count": String(item.requirementNames.count),
+                        "error_type": String(describing: type(of: error))
+                    ], level: .error)
                 }
             } else {
                 disablePackageCapability(package)
@@ -587,6 +596,13 @@ struct WorkspaceRightRailView: View {
             }
             workspace.updatedAt = Date()
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+            AppLogger.audit(enabled ? .capabilityEnabled : .capabilityDisabled, category: "Capabilities", fields: [
+                "source": "skill",
+                "skill_id": skill.id.uuidString,
+                "workspace_id": workspace.id.uuidString,
+                "readiness_level": String(describing: item.readiness.level),
+                "readiness_messages_count": String(item.readiness.messages.count)
+            ])
         }
     }
 
@@ -607,6 +623,16 @@ struct WorkspaceRightRailView: View {
         }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+            "source": "package",
+            "package_id": package.id,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count),
+            "readiness_level": String(describing: state.readiness.level),
+            "readiness_messages_count": String(state.readiness.messages.count)
+        ])
     }
 
     private func openCapabilityConfiguration(_ item: RailCapabilityItem) {
