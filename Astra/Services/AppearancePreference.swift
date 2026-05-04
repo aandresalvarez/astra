@@ -6,6 +6,7 @@ enum AppStorageKeys {
     static let onboardingEnabledCapabilityIDs = "astra.onboardingEnabledCapabilityIDs"
     static let skipPermissions = "skipPermissions"
     static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
+    static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
 }
 
 /// User-controllable override for light/dark mode. Persisted in

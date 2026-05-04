@@ -282,6 +282,69 @@ struct AgentRuntimeStreamTelemetryTests {
     }
 }
 
+@Suite("Agent Runtime Failure Diagnostics")
+struct AgentRuntimeFailureDiagnosticsTests {
+    @Test("Classifies selected model failures without treating the model as statically invalid")
+    func classifiesModelUnavailable() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 1,
+            rawError: "Error: model gpt-5 is not available for this organization",
+            providerVersion: "GitHub Copilot CLI 1.0.40",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .modelUnavailable)
+        #expect(diagnostic.userMessage.contains("could not use model `gpt-5`"))
+        #expect(diagnostic.userMessage.contains("organization policy"))
+    }
+
+    @Test("Classifies provider configuration errors and redacts sensitive output")
+    func classifiesProviderConfigurationAndRedacts() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 1,
+            rawError: "OPENAI_API_KEY=sk-test-secret failed for person@example.invalid in /Users/example/project: provider endpoint missing",
+            providerVersion: "GitHub Copilot CLI 1.0.40",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .providerConfigurationInvalid)
+        #expect(!diagnostic.redactedSummary.contains("sk-test-secret"))
+        #expect(!diagnostic.redactedSummary.contains("person@example.invalid"))
+        #expect(!diagnostic.redactedSummary.contains("/Users/example/project"))
+        #expect(diagnostic.redactedSummary.contains("[redacted-email]"))
+        #expect(diagnostic.redactedSummary.contains("[redacted-path]"))
+    }
+
+    @Test("Includes stream counters in failure audit fields")
+    func includesStreamCountersInAuditFields() {
+        let telemetry = AgentRuntimeStreamTelemetry()
+        telemetry.recordRawLine(parsesJSONLines: true)
+        telemetry.recordParsed([])
+        let snapshot = telemetry.snapshot()
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 1,
+            rawError: nil,
+            providerVersion: "GitHub Copilot CLI 1.0.40",
+            stream: snapshot
+        )
+
+        let fields = diagnostic.auditFields(phase: "run", stream: snapshot)
+        #expect(diagnostic.category == .noVisibleOutput)
+        #expect(fields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(fields["model"] == "gpt-5")
+        #expect(fields["raw_lines"] == "1")
+        #expect(fields["json_lines"] == "1")
+        #expect(fields["parsed_events"] == "0")
+        #expect(fields["failure_category"] == AgentRuntimeFailureCategory.noVisibleOutput.rawValue)
+    }
+}
+
 @Suite("Copilot CLI Command Planning")
 struct CopilotCLICommandPlanningTests {
     @Test("Newer CLI capabilities use JSONL streaming flags")
@@ -550,6 +613,62 @@ struct CopilotWorkerExecutionTests {
         let run = try #require(task.runs.first)
         #expect(run.fileChanges.contains { $0.path.hasSuffix("dirty.txt") })
         #expect(run.fileChanges.contains { $0.path.hasSuffix("new-file.txt") })
+    }
+
+    @Test("Worker surfaces classified Copilot provider failures")
+    func fakeCopilotFailureRecordsDiagnostic() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-failure-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' 'Error: model gpt-5 is not available for this organization and OPENAI_API_KEY=sk-test-secret for person@example.invalid' >&2
+        exit 1
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Failure", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Use gpt", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .failed)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.exitCode == 1)
+        let errorEvent = try #require(task.events.first { $0.type == "error" })
+        #expect(errorEvent.payload.contains("could not use model `gpt-5`"))
+        #expect(errorEvent.payload.contains("Provider error:"))
+        #expect(!errorEvent.payload.contains("sk-test-secret"))
+        #expect(!errorEvent.payload.contains("person@example.invalid"))
     }
 
     @discardableResult

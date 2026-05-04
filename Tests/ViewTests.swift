@@ -70,6 +70,79 @@ struct ContentSelectionResolverTests {
     }
 }
 
+// MARK: - Content Detail Presentation
+
+@Suite("ContentDetailPresentation")
+struct ContentDetailPresentationTests {
+
+    @Test("Zero-task workspaces open directly into the new-task composer")
+    func zeroTaskWorkspaceShowsComposer() {
+        let workspace = makeWorkspace(name: "GitHub PRs")
+
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        #expect(presentation == .newTaskComposer)
+    }
+
+    @Test("Workspaces with tasks show the workspace home")
+    func workspaceWithTasksShowsHome() {
+        let workspace = makeWorkspace(name: "GitHub PRs")
+        let task = makeTask(workspace: workspace)
+        workspace.tasks.append(task)
+
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        #expect(presentation == .workspaceHome)
+    }
+
+    @Test("Selected tasks take precedence over empty workspace composer")
+    func selectedTaskTakesPrecedence() {
+        let workspace = makeWorkspace(name: "GitHub PRs")
+        let task = makeTask(status: .queued, workspace: workspace)
+
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: task,
+            effectiveWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        #expect(presentation == .existingTask)
+    }
+}
+
+// MARK: - New Workspace
+
+@Suite("NewWorkspaceDraft")
+struct NewWorkspaceDraftTests {
+
+    @Test("Blank workspace names cannot be created")
+    func blankNameCannotCreate() {
+        let draft = NewWorkspaceDraft(name: "   ", instructions: "Context")
+
+        #expect(!draft.canCreate)
+    }
+
+    @Test("Workspace draft trims name and optional instructions")
+    func trimsNameAndInstructions() {
+        let draft = NewWorkspaceDraft(
+            name: "  GitHub PRs  ",
+            instructions: "\nUse alvaro as my GitHub username.  \n"
+        )
+
+        #expect(draft.canCreate)
+        #expect(draft.trimmedName == "GitHub PRs")
+        #expect(draft.trimmedInstructions == "Use alvaro as my GitHub username.")
+    }
+}
+
 // MARK: - MarkdownTextView
 
 @Suite("MarkdownTextView")

@@ -834,6 +834,26 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             exitCode: result.exitCode
         )
+        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: task.model,
+            exitCode: result.exitCode,
+            rawError: result.error,
+            providerVersion: result.providerVersion,
+            stream: streamSnapshot,
+            timedOut: result.timedOut,
+            budgetExceeded: result.budgetExceeded || result.repetitionKilled,
+            maxTurnsExceeded: result.maxTurnsExceeded
+        )
+        if let failureDiagnostic {
+            AppLogger.audit(
+                .runtimeFailureDiagnostic,
+                category: "Worker",
+                taskID: task.id,
+                fields: failureDiagnostic.auditFields(phase: auditPhase, stream: streamSnapshot),
+                level: .error
+            )
+        }
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "runtime": AgentRuntimeID.copilotCLI.rawValue,
@@ -915,7 +935,9 @@ final class AgentRuntimeWorker {
             run.status = .failed
             run.stopReason = "failed"
             task.status = .failed
-            let payload = enrichedFailurePayload(
+            let payload = failureDiagnostic?.userFacingPayload(
+                prefix: "Copilot exited with code \(result.exitCode)."
+            ) ?? enrichedFailurePayload(
                 prefix: "Copilot exited with code \(result.exitCode).",
                 rawError: result.error
             )

@@ -124,7 +124,7 @@ struct WorkspaceHomeView: View {
                 instructionsCard
                     .padding(.bottom, 20)
 
-                // Kanban board
+                // Tasks
                 KanbanBoardView(
                     tasks: tasks,
                     onOpenTask: onOpenTask,

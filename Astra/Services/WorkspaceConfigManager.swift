@@ -313,31 +313,81 @@ enum WorkspaceConfigManager {
 
     /// Auto-save config to the workspace's primary path for recovery.
     static func autoExport(workspace: Workspace) {
-        guard !workspace.primaryPath.isEmpty else { return }
-        let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+        let target = autoExportTarget(for: workspace.primaryPath)
+        guard let url = target.url else {
+            logAutoExportSkipped(workspace: workspace, reason: target.reason)
+            return
+        }
         do {
             try exportToFile(workspace: workspace, url: url)
         } catch {
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
-                "result": "auto_export_failed",
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+            var fields = autoExportFailureFields(error: error, workspace: workspace, url: url)
+            fields["result"] = "auto_export_failed"
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
         }
     }
 
     static func autoExport(workspace: Workspace, modelContext: ModelContext) {
-        guard !workspace.primaryPath.isEmpty else { return }
-        let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+        let target = autoExportTarget(for: workspace.primaryPath)
+        guard let url = target.url else {
+            logAutoExportSkipped(workspace: workspace, reason: target.reason)
+            return
+        }
         do {
             try exportToFile(workspace: workspace, modelContext: modelContext, url: url)
         } catch {
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
-                "result": "auto_export_failed",
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+            var fields = autoExportFailureFields(error: error, workspace: workspace, url: url)
+            fields["result"] = "auto_export_failed"
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
         }
+    }
+
+    struct AutoExportTarget {
+        let url: URL?
+        let reason: String
+    }
+
+    static func autoExportTarget(for workspacePath: String) -> AutoExportTarget {
+        guard !workspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return AutoExportTarget(url: nil, reason: "primary_path_empty")
+        }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return AutoExportTarget(url: nil, reason: "primary_path_unavailable")
+        }
+
+        let configPath = WorkspaceFileLayout.workspaceConfigFile(for: workspacePath)
+        guard !configPath.isEmpty else {
+            return AutoExportTarget(url: nil, reason: "config_path_empty")
+        }
+
+        return AutoExportTarget(url: URL(fileURLWithPath: configPath), reason: "ready")
+    }
+
+    private static func logAutoExportSkipped(workspace: Workspace, reason: String) {
+        AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            "result": "auto_export_skipped",
+            "reason": reason,
+            "workspace_id": workspace.id.uuidString
+        ], level: .debug)
+    }
+
+    private static func autoExportFailureFields(error: Error, workspace: Workspace, url: URL) -> [String: String] {
+        let nsError = error as NSError
+        let parent = url.deletingLastPathComponent()
+        let parentExists = FileManager.default.fileExists(atPath: parent.path)
+        let parentWritable = FileManager.default.isWritableFile(atPath: parent.path)
+        return [
+            "workspace_id": workspace.id.uuidString,
+            "config_file": url.lastPathComponent,
+            "error_type": String(describing: type(of: error)),
+            "error_domain": nsError.domain,
+            "error_code": String(nsError.code),
+            "error_description": nsError.localizedDescription,
+            "parent_exists": String(parentExists),
+            "parent_writable": String(parentWritable)
+        ]
     }
 
     // MARK: - Import

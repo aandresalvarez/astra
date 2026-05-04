@@ -361,6 +361,27 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.tasks.first?.isPinned == true)
     }
 
+    @Test("auto-export skips unavailable workspace paths")
+    func autoExportTargetSkipsUnavailableWorkspacePaths() {
+        let missing = "/tmp/astra_missing_workspace_\(UUID().uuidString)"
+        let missingTarget = WorkspaceConfigManager.autoExportTarget(for: missing)
+
+        #expect(missingTarget.url == nil)
+        #expect(missingTarget.reason == "primary_path_unavailable")
+    }
+
+    @Test("auto-export targets existing workspace folders")
+    func autoExportTargetUsesExistingWorkspaceFolder() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_export_target_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let target = WorkspaceConfigManager.autoExportTarget(for: root.path)
+
+        #expect(target.reason == "ready")
+        #expect(target.url?.path == root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path)
+    }
+
     @Test("import reuses built-in global skills by name")
     @MainActor
     func importReusesBuiltInGlobalSkillsByName() throws {

@@ -7,6 +7,56 @@ enum ContentSelectionResolver {
     }
 }
 
+enum ContentDetailPresentation: Equatable {
+    case draftTask
+    case existingTask
+    case newTaskComposer
+    case workspaceHome
+    case noWorkspace
+
+    static func resolve(
+        selectedTask: AgentTask?,
+        effectiveWorkspace: Workspace?,
+        isComposingTask: Bool
+    ) -> ContentDetailPresentation {
+        if let selectedTask {
+            return selectedTask.status == .draft ? .draftTask : .existingTask
+        }
+
+        guard let effectiveWorkspace else {
+            return .noWorkspace
+        }
+
+        if isComposingTask || effectiveWorkspace.tasks.isEmpty {
+            return .newTaskComposer
+        }
+
+        return .workspaceHome
+    }
+}
+
+struct NewWorkspaceDraft: Equatable {
+    var name = ""
+    var instructions = ""
+
+    var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var trimmedInstructions: String {
+        instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var canCreate: Bool {
+        !trimmedName.isEmpty
+    }
+
+    mutating func clear() {
+        name = ""
+        instructions = ""
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     @Environment(\.modelContext) private var modelContext
@@ -24,7 +74,7 @@ struct ContentView: View {
     @State private var editingSSHConnection: SSHConnection?
     @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
-    @State private var newWorkspaceName = ""
+    @State private var newWorkspaceDraft = NewWorkspaceDraft()
     @State private var shouldApplyOnboardingCapabilitiesToNextWorkspace = false
     @State private var onboardingCapabilityConfiguration = OnboardingCapabilityConfiguration()
     @State private var runtime = AppRuntimeController()
@@ -297,16 +347,16 @@ struct ContentView: View {
                 ScheduleEditorView(workspace: ws, schedule: schedule)
             }
         }
-        .alert("New Workspace", isPresented: $showingNewWorkspace) {
-            TextField("Workspace name", text: $newWorkspaceName)
-            Button("Cancel", role: .cancel) {
-                newWorkspaceName = ""
-                shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-                onboardingCapabilityConfiguration.clearSecrets()
-            }
-            Button("Create") { finalizeNewWorkspace() }
-        } message: {
-            Text("A folder will be created automatically in your workspaces root directory.")
+        .sheet(isPresented: $showingNewWorkspace, onDismiss: resetNewWorkspaceDraft) {
+            NewWorkspaceSheet(
+                draft: $newWorkspaceDraft,
+                rootPath: resolvedRoot,
+                onCancel: {
+                    resetNewWorkspaceDraft()
+                    showingNewWorkspace = false
+                },
+                onCreate: finalizeNewWorkspace
+            )
         }
         .alert(item: $linkedScheduleWarning) { warning in
             Alert(
@@ -574,7 +624,14 @@ struct ContentView: View {
     // MARK: - Workspace Management
 
     private func createWorkspace() {
+        newWorkspaceDraft.clear()
         showingNewWorkspace = true
+    }
+
+    private func resetNewWorkspaceDraft() {
+        newWorkspaceDraft.clear()
+        shouldApplyOnboardingCapabilitiesToNextWorkspace = false
+        onboardingCapabilityConfiguration.clearSecrets()
     }
 
     private func restoreWorkspaceSelection() {
@@ -614,16 +671,15 @@ struct ContentView: View {
     }
 
     private func finalizeNewWorkspace() {
-        let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        let workspace = coordinator.createWorkspace(name: name, rootPath: resolvedRoot)
+        guard newWorkspaceDraft.canCreate else { return }
+        let workspace = coordinator.createWorkspace(name: newWorkspaceDraft.trimmedName, rootPath: resolvedRoot)
+        workspace.instructions = newWorkspaceDraft.trimmedInstructions
         if shouldApplyOnboardingCapabilitiesToNextWorkspace {
             applyOnboardingCapabilities(to: workspace)
-            shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-            onboardingCapabilityConfiguration.clearSecrets()
         }
         selectedWorkspace = workspace
-        newWorkspaceName = ""
+        showingNewWorkspace = false
+        resetNewWorkspaceDraft()
     }
 
     private func applyOnboardingCapabilities(to workspace: Workspace) {
@@ -1164,35 +1220,44 @@ private struct ContentDetailContentView: View {
     let onImportWorkspace: () -> Void
 
     var body: some View {
-        if let task = selectedTask, task.status == .draft {
-            ChatPanelView(
-                taskQueue: taskQueue,
-                workspace: task.workspace ?? effectiveWorkspace,
-                sshReloadTrigger: sshReloadTrigger,
-                draftToLoad: task,
-                onQuickRun: onQuickRun,
-                onTaskCreated: onTaskCreated,
-                onAddSSHConnection: onAddSSHConnection,
-                onManageSkills: onManageSkills
-            )
-            .id(task.id)
-        } else if let task = selectedTask {
-            TaskMainView(
-                task: task,
-                taskQueue: taskQueue,
-                onRunTask: onRunTask,
-                onCancelTask: onCancelTask,
-                onRetryTask: onRetryTask,
-                onResumeTask: onResumeTask,
-                onApproveTask: onApproveTask,
-                onToggleDone: onToggleDone,
-                sshReloadTrigger: sshReloadTrigger,
-                onMoveToDraft: onMoveToDraft,
-                onManageSkills: onManageSkills,
-                onForkTask: onForkTask
-            )
-            .id(task.id)
-        } else if isComposingTask, effectiveWorkspace != nil {
+        switch ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: effectiveWorkspace,
+            isComposingTask: isComposingTask
+        ) {
+        case .draftTask:
+            if let task = selectedTask {
+                ChatPanelView(
+                    taskQueue: taskQueue,
+                    workspace: task.workspace ?? effectiveWorkspace,
+                    sshReloadTrigger: sshReloadTrigger,
+                    draftToLoad: task,
+                    onQuickRun: onQuickRun,
+                    onTaskCreated: onTaskCreated,
+                    onAddSSHConnection: onAddSSHConnection,
+                    onManageSkills: onManageSkills
+                )
+                .id(task.id)
+            }
+        case .existingTask:
+            if let task = selectedTask {
+                TaskMainView(
+                    task: task,
+                    taskQueue: taskQueue,
+                    onRunTask: onRunTask,
+                    onCancelTask: onCancelTask,
+                    onRetryTask: onRetryTask,
+                    onResumeTask: onResumeTask,
+                    onApproveTask: onApproveTask,
+                    onToggleDone: onToggleDone,
+                    sshReloadTrigger: sshReloadTrigger,
+                    onMoveToDraft: onMoveToDraft,
+                    onManageSkills: onManageSkills,
+                    onForkTask: onForkTask
+                )
+                .id(task.id)
+            }
+        case .newTaskComposer:
             ChatPanelView(
                 taskQueue: taskQueue,
                 workspace: effectiveWorkspace,
@@ -1202,27 +1267,183 @@ private struct ContentDetailContentView: View {
                 onAddSSHConnection: onAddSSHConnection,
                 onManageSkills: onManageSkills
             )
-        } else if let workspace = effectiveWorkspace {
-            WorkspaceHomeContainerView(
-                workspace: workspace,
-                taskQueue: taskQueue,
-                onCreateTask: onCreateTask,
-                onOpenTask: onOpenTask,
-                onDeleteTask: onDeleteTask,
-                onSetDoneState: onSetDoneState,
-                onRunQueue: onRunQueue,
-                onConfigure: onConfigure,
-                onShowDashboard: onShowDashboard,
-                onShowLogs: onShowLogs,
-                onNewSchedule: onNewSchedule,
-                onEditSchedule: onEditSchedule,
-                onManageCapabilities: onManageCapabilities
-            )
-        } else {
+        case .workspaceHome:
+            if let workspace = effectiveWorkspace {
+                WorkspaceHomeContainerView(
+                    workspace: workspace,
+                    taskQueue: taskQueue,
+                    onCreateTask: onCreateTask,
+                    onOpenTask: onOpenTask,
+                    onDeleteTask: onDeleteTask,
+                    onSetDoneState: onSetDoneState,
+                    onRunQueue: onRunQueue,
+                    onConfigure: onConfigure,
+                    onShowDashboard: onShowDashboard,
+                    onShowLogs: onShowLogs,
+                    onNewSchedule: onNewSchedule,
+                    onEditSchedule: onEditSchedule,
+                    onManageCapabilities: onManageCapabilities
+                )
+            }
+        case .noWorkspace:
             WorkspaceEmptyStateView(
                 onCreateWorkspace: onCreateWorkspace,
                 onImportWorkspace: onImportWorkspace
             )
+        }
+    }
+}
+
+private struct NewWorkspaceSheet: View {
+    @Binding var draft: NewWorkspaceDraft
+    let rootPath: String
+    let onCancel: () -> Void
+    let onCreate: () -> Void
+
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case name
+        case instructions
+    }
+
+    private var displayedRootPath: String {
+        (rootPath as NSString).abbreviatingWithTildeInPath
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            header
+            formFields
+            footer
+        }
+        .padding(24)
+        .frame(width: 560)
+        .background(Stanford.panelBackground)
+        .onAppear {
+            focusedField = .name
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Stanford.lagunita.opacity(0.12))
+                Image(systemName: "folder.badge.plus")
+                    .font(Stanford.ui(20, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("New Workspace")
+                    .font(Stanford.heading(22))
+                    .foregroundStyle(Stanford.black)
+
+                Text("Create a focused place for a project, team, or recurring workflow.")
+                    .font(Stanford.body(14))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var formFields: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Workspace name")
+                    .font(Stanford.caption(13).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+
+                TextField("Example: GitHub PRs", text: $draft.name)
+                    .textFieldStyle(.plain)
+                    .font(Stanford.body(15))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Stanford.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(focusedField == .name ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
+                    )
+                    .focused($focusedField, equals: .name)
+                    .onSubmit {
+                        if draft.canCreate {
+                            onCreate()
+                        }
+                    }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.alignleft")
+                        .font(Stanford.ui(12, weight: .medium))
+                        .foregroundStyle(Stanford.lagunita)
+                    Text("Workspace instructions")
+                        .font(Stanford.caption(13).weight(.semibold))
+                        .foregroundStyle(Stanford.black)
+                    Text("Optional")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+
+                Text("Add context that helps the AI agents understand this workspace: the type of work, important people or usernames, project conventions, preferred tools, or anything that helps them ask fewer repeat questions. You can always add or edit this later.")
+                    .font(Stanford.body(13))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $draft.instructions)
+                        .font(Stanford.body(14))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 118)
+                        .background(Stanford.cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(focusedField == .instructions ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
+                        )
+                        .focused($focusedField, equals: .instructions)
+
+                    if draft.instructions.isEmpty {
+                        Text("Example: This workspace is for GitHub PR review. My GitHub username is alvaro, prefer concise summaries, and ask before changing release files.")
+                            .font(Stanford.body(14))
+                            .foregroundStyle(Stanford.coolGrey.opacity(0.62))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 15)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+
+            HStack(spacing: 7) {
+                Image(systemName: "folder")
+                    .font(Stanford.ui(11, weight: .medium))
+                    .foregroundStyle(Stanford.coolGrey)
+                Text("Folder will be created in \(displayedRootPath)")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Spacer()
+
+            Button("Cancel", action: onCancel)
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .keyboardShortcut(.cancelAction)
+
+            Button("Create", action: onCreate)
+                .buttonStyle(StanfordButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(!draft.canCreate)
+                .opacity(draft.canCreate ? 1 : 0.45)
         }
     }
 }

@@ -44,6 +44,8 @@ enum AuditEvent: String, CaseIterable {
     case appActivated = "app.activated"
     case dataStoreSelected = "data.store.selected"
     case dataStoreRecovered = "data.store.recovered"
+    case diagnosticsGenerated = "diagnostics.generated"
+    case diagnosticsGenerationFailed = "diagnostics.generation_failed"
 
     case taskCreated = "task.created"
     case taskStarted = "task.started"
@@ -73,6 +75,7 @@ enum AuditEvent: String, CaseIterable {
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"
     case runtimeEmptyOutput = "runtime.empty_output"
+    case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
 
     case specExtractionStarted = "spec.extraction_started"
@@ -147,7 +150,7 @@ enum LogSanitizer {
         output = replace(pattern: #"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#, in: output, with: "[redacted-email]")
         output = replace(pattern: #"(?i)\bhttps?://[^/\s:@]+:[^@\s]+@[^\s]+"#, in: output, with: "[redacted-url]")
         output = replace(pattern: #"(?i)(authorization|bearer|token|api[_-]?key|secret|password|credential)\s*[:=]\s*['"]?[^'"\s,;)]+"#, in: output, with: "$1=[redacted-secret]")
-        output = replace(pattern: #"(?i)\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)[A-Z0-9_]*\b"#, in: output, with: "[redacted-secret-key]")
+        output = replace(pattern: #"\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)[A-Z0-9_]*\b"#, in: output, with: "[redacted-secret-key]")
         output = replace(pattern: #"/Users/[^,\s\)\"']+"#, in: output, with: "[redacted-path]")
         output = replace(pattern: #"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9._ -]+){2,}"#, in: output, with: "[redacted-path]")
         output = replace(pattern: #"\b[A-Fa-f0-9]{32,}\b"#, in: output, with: "[redacted-token]")
@@ -200,9 +203,9 @@ struct LogEntry: Identifiable, Codable {
     let message: String
     let taskID: UUID?
 
-    init(level: LogLevel, category: String, message: String, taskID: UUID? = nil) {
+    init(level: LogLevel, category: String, message: String, taskID: UUID? = nil, timestamp: Date = Date()) {
         self.id = UUID()
-        self.timestamp = Date()
+        self.timestamp = timestamp
         self.level = level.rawValue
         self.category = category
         self.message = message
@@ -246,7 +249,7 @@ enum AppLogger {
         let categories = [
             "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
             "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-            "Keychain", "Updater", "Performance", "Capabilities", "General"
+            "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics", "General"
         ]
         var dict: [String: os.Logger] = [:]
         for cat in categories {

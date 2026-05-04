@@ -395,6 +395,7 @@ enum SpecEngine {
             }
         }
 
+        var lastFailureFields: [String: String] = [:]
         for candidate in modelCandidates {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: claudePath)
@@ -413,11 +414,14 @@ enum SpecEngine {
             let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
 
             guard result.exitCode == 0 else {
+                lastFailureFields = titleGenerationFailureFields(result: result, model: candidate)
                 AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
                     "operation": "title_generation",
                     "model": candidate,
-                    "error": String(result.stderr.prefix(160))
-                ], level: .warning)
+                    "result": "candidate_failed",
+                    "exit_code": String(result.exitCode),
+                    "error_summary": lastFailureFields["error_summary"] ?? "none"
+                ], level: .debug)
                 continue
             }
 
@@ -428,7 +432,26 @@ enum SpecEngine {
             return title
         }
 
+        var fields = lastFailureFields
+        fields["operation"] = "title_generation"
+        fields["result"] = "all_candidates_failed"
+        fields["candidate_count"] = String(modelCandidates.count)
+        AppLogger.audit(.specExtractionFailed, category: "Worker", fields: fields, level: .warning)
         return nil
+    }
+
+    private static func titleGenerationFailureFields(result: AsyncProcessRunner.Output, model: String) -> [String: String] {
+        let rawSummary = !result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.stderr
+            : result.stdout
+        let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "model": model,
+            "exit_code": String(result.exitCode),
+            "stderr_chars": String(result.stderr.count),
+            "stdout_chars": String(result.stdout.count),
+            "error_summary": summary.isEmpty ? "empty_process_output" : String(summary.prefix(240))
+        ]
     }
 
     /// Extract spec from a full conversation context instead of a single user input.

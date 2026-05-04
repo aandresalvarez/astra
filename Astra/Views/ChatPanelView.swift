@@ -395,6 +395,7 @@ struct ChatPanelView: View {
     @State private var isPlanMode = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State private var newTaskPromptIndex = 0
+    @FocusState private var isComposerFocused: Bool
 
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
@@ -568,6 +569,7 @@ struct ChatPanelView: View {
         .navigationSubtitle(workspace?.name ?? "Astra")
         .onAppear {
             loadSSHConnections()
+            focusComposerInput()
             if let draft = draftToLoad {
                 loadDraftMessages(draft)
             }
@@ -846,6 +848,7 @@ struct ChatPanelView: View {
                     .textFieldStyle(.plain)
                     .font(Stanford.ui(17))
                     .lineLimit(3...12)
+                    .focused($isComposerFocused)
                     .padding(.horizontal, 18)
                     .padding(.top, attachedFiles.isEmpty ? 18 : 10)
                     .padding(.bottom, 14)
@@ -953,6 +956,12 @@ struct ChatPanelView: View {
     }
 
     // MARK: - Actions
+
+    private func focusComposerInput() {
+        DispatchQueue.main.async {
+            isComposerFocused = true
+        }
+    }
 
     private func submitComposer() {
         if showSlashMenu && !slashOptions.isEmpty {

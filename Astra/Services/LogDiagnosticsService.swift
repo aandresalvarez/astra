@@ -1,0 +1,660 @@
+import Foundation
+
+struct LogDiagnosticsIssue: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let severity: LogLevel
+    let signal: String
+    let count: Int
+    let affectedTasks: [String]
+    let evidence: [String]
+    let analysis: String
+}
+
+struct LogDiagnosticsReport: Equatable {
+    let generatedAt: Date
+    let entryCount: Int
+    let errorCount: Int
+    let warningCount: Int
+    let issueCount: Int
+    let issues: [LogDiagnosticsIssue]
+    let markdown: String
+}
+
+enum LogDiagnosticsService {
+    static let maxIssueGroups = 12
+    static let maxEvidenceLinesPerIssue = 14
+    static let maxMainLogLines = 5_000
+    static let maxTaskLogLines = 300
+    static let maxTaskLogFiles = 30
+
+    static func collectCurrentEntries(
+        inMemoryEntries: [LogEntry] = AppLogger.entries,
+        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent()
+    ) -> [LogEntry] {
+        var collected = inMemoryEntries
+        var seen = Set(inMemoryEntries.map(entrySignature))
+
+        for file in diagnosticLogFiles(in: logDirectory) {
+            let isAppLog = isAppLogFile(file)
+            if isAppLog, !inMemoryEntries.isEmpty {
+                continue
+            }
+            let maxLines = file.lastPathComponent.hasPrefix("task-") ? maxTaskLogLines : maxMainLogLines
+            for line in tailLines(from: file, maxLines: maxLines) {
+                guard let entry = parseLogLine(line, dateAnchor: modificationDate(file)) else { continue }
+                let signature = entrySignature(entry)
+                guard !seen.contains(signature) else { continue }
+                seen.insert(signature)
+                collected.append(entry)
+            }
+        }
+        return collected
+    }
+
+    static func makeReport(entries: [LogEntry], generatedAt: Date = Date()) -> LogDiagnosticsReport {
+        let orderedEntries = entries.sorted { $0.timestamp < $1.timestamp }
+        let issueGroups = buildIssueGroups(from: orderedEntries)
+        let visibleIssues = Array(issueGroups.prefix(maxIssueGroups))
+        let markdown = renderMarkdown(
+            entries: orderedEntries,
+            generatedAt: generatedAt,
+            issues: visibleIssues,
+            omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
+        )
+
+        return LogDiagnosticsReport(
+            generatedAt: generatedAt,
+            entryCount: orderedEntries.count,
+            errorCount: orderedEntries.filter { $0.logLevel == .error }.count,
+            warningCount: orderedEntries.filter { $0.logLevel == .warning }.count,
+            issueCount: issueGroups.count,
+            issues: visibleIssues,
+            markdown: markdown
+        )
+    }
+
+    static func writeReport(
+        _ report: LogDiagnosticsReport,
+        directory: URL = defaultDiagnosticsDirectory()
+    ) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [
+            .posixPermissions: 0o700
+        ])
+        let url = directory.appendingPathComponent("ASTRA-Diagnostics-\(fileTimestamp(report.generatedAt)).md")
+        try report.markdown.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return url
+    }
+
+    static func defaultDiagnosticsDirectory() -> URL {
+        AppLogger.mainLogFile
+            .deletingLastPathComponent()
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+    }
+
+    private struct IssueBucket {
+        let key: String
+        var title: String
+        var severity: LogLevel
+        var signal: String
+        var indexes: [Int]
+        var affectedTasks: Set<String>
+        var analysis: String
+    }
+
+    private static func buildIssueGroups(from entries: [LogEntry]) -> [LogDiagnosticsIssue] {
+        var buckets: [String: IssueBucket] = [:]
+
+        for (index, entry) in entries.enumerated() {
+            guard let classification = classify(entry) else { continue }
+            let task = taskIdentifier(for: entry)
+            var bucket = buckets[classification.key] ?? IssueBucket(
+                key: classification.key,
+                title: classification.title,
+                severity: classification.severity,
+                signal: classification.signal,
+                indexes: [],
+                affectedTasks: [],
+                analysis: classification.analysis
+            )
+            bucket.severity = maxSeverity(bucket.severity, classification.severity)
+            bucket.indexes.append(index)
+            if let task { bucket.affectedTasks.insert(task) }
+            buckets[classification.key] = bucket
+        }
+
+        return buckets.values
+            .sorted { lhs, rhs in
+                if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
+                if lhs.indexes.count != rhs.indexes.count { return lhs.indexes.count > rhs.indexes.count }
+                return lhs.title < rhs.title
+            }
+            .map { bucket in
+                LogDiagnosticsIssue(
+                    id: bucket.key,
+                    title: bucket.title,
+                    severity: bucket.severity,
+                    signal: bucket.signal,
+                    count: bucket.indexes.count,
+                    affectedTasks: bucket.affectedTasks.sorted(),
+                    evidence: evidenceLines(for: bucket.indexes, entries: entries),
+                    analysis: bucket.analysis
+                )
+            }
+    }
+
+    private static func classify(_ entry: LogEntry) -> (
+        key: String,
+        title: String,
+        severity: LogLevel,
+        signal: String,
+        analysis: String
+    )? {
+        let message = entry.message
+        let lower = message.lowercased()
+
+        if lower.contains(AuditEvent.runtimeFailureDiagnostic.rawValue) {
+            let category = field("failure_category", in: message) ?? "unknown"
+            return (
+                key: "runtime.failure_diagnostic.\(category)",
+                title: runtimeFailureTitle(category),
+                severity: .error,
+                signal: "runtime.failure_diagnostic failure_category=\(category)",
+                analysis: runtimeFailureAnalysis(category)
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeEmptyOutput.rawValue) {
+            return (
+                key: "runtime.empty_output",
+                title: "Runtime returned no visible response",
+                severity: .warning,
+                signal: AuditEvent.runtimeEmptyOutput.rawValue,
+                analysis: "The runtime exited successfully or produced stream events, but ASTRA did not receive visible assistant text. Check provider event parsing, output format flags, and the raw stream counters nearby."
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeUnknownEvent.rawValue) {
+            let eventType = field("event_type", in: message) ?? "unknown"
+            return (
+                key: "runtime.unknown_event.\(eventType)",
+                title: "Unparsed provider stream event",
+                severity: .warning,
+                signal: "runtime.unknown_event event_type=\(eventType)",
+                analysis: "The provider emitted a stream event shape ASTRA did not fully understand. Update the runtime parser if this event carries visible output, tool activity, usage, or failure details."
+            )
+        }
+
+        if lower.contains(AuditEvent.diagnosticsGenerated.rawValue) {
+            return nil
+        }
+
+        if lower.contains(AuditEvent.diagnosticsGenerationFailed.rawValue) {
+            return (
+                key: "diagnostics.generation_failed",
+                title: "Diagnostics report generation failed",
+                severity: .error,
+                signal: AuditEvent.diagnosticsGenerationFailed.rawValue,
+                analysis: "The diagnostics report could not be written or revealed. Check the sanitized error field and the app log directory permissions."
+            )
+        }
+
+        if lower.contains(AuditEvent.workspaceExported.rawValue),
+           lower.contains("auto_export_failed") {
+            let reason = field("reason", in: message)
+            return (
+                key: "workspace.export.auto_export_failed.\(reason ?? "write_failed")",
+                title: "Workspace auto-export failed",
+                severity: .error,
+                signal: "workspace.exported result=auto_export_failed",
+                analysis: "ASTRA saved workspace state in SwiftData but could not write the recovery config file into the workspace folder. Check the parent path, write permissions, and the error_domain/error_code fields in the extract."
+            )
+        }
+
+        if lower.contains(AuditEvent.connectorTested.rawValue) {
+            if lower.contains("missing_count=") {
+                return (
+                    key: "connector.tested.missing_credentials",
+                    title: "Connector configuration is incomplete",
+                    severity: .warning,
+                    signal: "connector.tested missing_count",
+                    analysis: "A configured connector was tested before all required credential fields were available. The user needs to complete the connector configuration before this capability can be used."
+                )
+            }
+            if lower.contains("http_status=401") || lower.contains("unauthorized") {
+                return (
+                    key: "connector.tested.unauthorized",
+                    title: "Connector credentials were rejected",
+                    severity: .warning,
+                    signal: "connector.tested http_status=401",
+                    analysis: "A connector reached its service, but the service rejected the credentials. Re-enter or refresh the token for the affected connector."
+                )
+            }
+        }
+
+        if lower.contains(AuditEvent.workspaceStoreBackedUp.rawValue) {
+            if lower.contains("result=failed") {
+                return (
+                    key: "workspace.store_backup.failed",
+                    title: "Workspace store backup failed",
+                    severity: .error,
+                    signal: AuditEvent.workspaceStoreBackedUp.rawValue,
+                    analysis: "ASTRA attempted to back up the SwiftData store during recovery but could not move one or more store files. Check the error fields and application support directory permissions."
+                )
+            }
+            return nil
+        }
+
+        if lower.contains(AuditEvent.workspaceRecovered.rawValue) {
+            return nil
+        }
+
+        if lower.contains(AuditEvent.workspaceRecoveryFailed.rawValue) {
+            return (
+                key: "workspace.recovery.failed",
+                title: "Workspace recovery failed",
+                severity: .error,
+                signal: AuditEvent.workspaceRecoveryFailed.rawValue,
+                analysis: "ASTRA found a workspace recovery config but could not import or save it. Check the config filename and error fields in the nearby log extract."
+            )
+        }
+
+        if lower.contains(AuditEvent.dataStoreRecovered.rawValue) {
+            if lower.contains("stage=") {
+                return (
+                    key: "data_store.recovered",
+                    title: "SwiftData store was recovered",
+                    severity: entry.logLevel,
+                    signal: AuditEvent.dataStoreRecovered.rawValue,
+                    analysis: "The initial SwiftData container open failed, so ASTRA backed up the old store and recreated the model container. Confirm the recovered workspaces and inspect the captured error fields."
+                )
+            }
+            return nil
+        }
+
+        if lower.contains(AuditEvent.specExtractionFailed.rawValue),
+           lower.contains("operation=title_generation") {
+            return (
+                key: "spec.title_generation.failed",
+                title: "Thread title generation failed",
+                severity: entry.logLevel,
+                signal: "spec.extraction_failed operation=title_generation",
+                analysis: "The optional title-generation helper failed after trying its model candidates. The task can still run, but check the model and error_summary fields if title backfill keeps failing."
+            )
+        }
+
+        if lower.contains(AuditEvent.workerTimeout.rawValue) || lower.contains("timeout") {
+            return (
+                key: "worker.timeout",
+                title: "Runtime timeout",
+                severity: entry.logLevel == .error ? .error : .warning,
+                signal: "timeout",
+                analysis: "The task stopped after a timeout or network wait. Check whether the provider produced output before the idle timeout and whether the workspace command hung."
+            )
+        }
+
+        if lower.contains(AuditEvent.workerBudgetExceeded.rawValue) || lower.contains("budget.exceeded") {
+            return (
+                key: "worker.budget_exceeded",
+                title: "Task budget exceeded",
+                severity: .warning,
+                signal: "budget_exceeded",
+                analysis: "The task exceeded a configured token, turn, or repetition budget. This is usually a guardrail trigger rather than a crash."
+            )
+        }
+
+        if lower.contains(AuditEvent.isolationFailed.rawValue) {
+            return (
+                key: "isolation.failed",
+                title: "Workspace isolation failed",
+                severity: .error,
+                signal: AuditEvent.isolationFailed.rawValue,
+                analysis: "ASTRA could not prepare the requested execution workspace. Check source paths, permissions, and isolation strategy."
+            )
+        }
+
+        if lower.contains("keychain.") && lower.contains("failed") {
+            return (
+                key: "keychain.failed",
+                title: "Keychain operation failed",
+                severity: .error,
+                signal: "keychain.failed",
+                analysis: "A credential save/delete/read path failed. Check macOS Keychain access, app channel identity, and whether the credential item is locked or malformed."
+            )
+        }
+
+        if lower.contains(AuditEvent.appUpdateBlocked.rawValue) {
+            return (
+                key: "app_update.blocked",
+                title: "App update was blocked",
+                severity: .warning,
+                signal: AuditEvent.appUpdateBlocked.rawValue,
+                analysis: "The updater refused to install because safety checks were not satisfied. Check the blocked reason and update channel/build metadata."
+            )
+        }
+
+        if lower.contains(AuditEvent.taskFailed.rawValue) {
+            return (
+                key: "task.failed",
+                title: "Task failed",
+                severity: maxSeverity(entry.logLevel, .warning),
+                signal: AuditEvent.taskFailed.rawValue,
+                analysis: "A task entered a failed state. Check the same task ID for runtime, workspace, capability, and persistence events immediately before this line."
+            )
+        }
+
+        if entry.logLevel == .error {
+            return (
+                key: "error.\(messagePrefix(message))",
+                title: "Application error",
+                severity: .error,
+                signal: messagePrefix(message),
+                analysis: "A generic error-level log was emitted. Review the surrounding context for the failing subsystem and task ID."
+            )
+        }
+
+        if entry.logLevel == .warning {
+            return (
+                key: "warning.\(messagePrefix(message))",
+                title: "Application warning",
+                severity: .warning,
+                signal: messagePrefix(message),
+                analysis: "A warning-level log was emitted. Review whether it corresponds to a recoverable condition or a user-visible behavior."
+            )
+        }
+
+        return nil
+    }
+
+    private static func evidenceLines(for indexes: [Int], entries: [LogEntry]) -> [String] {
+        var selected = Set<Int>()
+        for index in indexes.prefix(5) {
+            for offset in -2...2 {
+                let candidate = index + offset
+                if entries.indices.contains(candidate) {
+                    selected.insert(candidate)
+                }
+            }
+        }
+        return selected
+            .sorted()
+            .prefix(maxEvidenceLinesPerIssue)
+            .map { sanitizedLine(entries[$0]) }
+    }
+
+    private static func renderMarkdown(
+        entries: [LogEntry],
+        generatedAt: Date,
+        issues: [LogDiagnosticsIssue],
+        omittedIssueCount: Int
+    ) -> String {
+        let errors = entries.filter { $0.logLevel == .error }.count
+        let warnings = entries.filter { $0.logLevel == .warning }.count
+        let taskIDs = Set(entries.compactMap { $0.taskID.map { String($0.uuidString.prefix(8)) } }).sorted()
+        let categories = Dictionary(grouping: entries, by: \.category)
+            .mapValues(\.count)
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return lhs.key < rhs.key
+            }
+            .prefix(10)
+            .map { "- \($0.key): \($0.value)" }
+            .joined(separator: "\n")
+
+        var lines: [String] = [
+            "# ASTRA Diagnostics Report",
+            "",
+            "Generated: \(displayTimestamp(generatedAt))",
+            "App channel: \(AppChannel.current.displayName)",
+            "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
+            "",
+            "## Summary",
+            "",
+            "- Entries analyzed: \(entries.count)",
+            "- Errors: \(errors)",
+            "- Warnings: \(warnings)",
+            "- Issue groups: \(issues.count + omittedIssueCount)",
+            "- Affected tasks: \(taskIDs.isEmpty ? "none" : taskIDs.joined(separator: ", "))",
+            "",
+            "## Category Counts",
+            "",
+            categories.isEmpty ? "- none" : categories,
+            "",
+            "## Issues"
+        ]
+
+        if issues.isEmpty {
+            lines += [
+                "",
+                "No error or warning signals were found in the analyzed log buffer.",
+                "",
+                "## Developer Notes",
+                "",
+                "The generated report is still useful as a point-in-time summary, but it did not detect actionable issue signals."
+            ]
+            return lines.joined(separator: "\n") + "\n"
+        }
+
+        for (index, issue) in issues.enumerated() {
+            lines += [
+                "",
+                "### \(index + 1). \(issue.title)",
+                "",
+                "- Severity: \(issue.severity.rawValue)",
+                "- Signal: `\(issue.signal)`",
+                "- Count: \(issue.count)",
+                "- Affected tasks: \(issue.affectedTasks.isEmpty ? "none" : issue.affectedTasks.joined(separator: ", "))",
+                "",
+                "Analysis: \(issue.analysis)",
+                "",
+                "Relevant log extract:",
+                "",
+                "```text"
+            ]
+            lines += issue.evidence
+            lines += ["```"]
+        }
+
+        if omittedIssueCount > 0 {
+            lines += [
+                "",
+                "Additional issue groups omitted from this report: \(omittedIssueCount). Narrow logs by task ID or time window if more detail is needed."
+            ]
+        }
+
+        lines += [
+            "",
+            "## Developer Checklist",
+            "",
+            "- Start with `runtime.failure_diagnostic` entries when present; they include classified provider failures and redacted stderr summaries.",
+            "- Use the affected task IDs to open the matching `task-*.log` file for complete task-local context.",
+            "- If `runtime.unknown_event` appears, compare the sample shape against the runtime parser before assuming the provider returned no output.",
+            "- If the report shows no provider error summary, verify pipe-drain behavior and whether the CLI wrote errors outside stderr/stdout."
+        ]
+
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func runtimeFailureTitle(_ category: String) -> String {
+        switch category {
+        case "authentication_failed": "Runtime authentication failed"
+        case "model_unavailable": "Selected model unavailable"
+        case "quota_exceeded": "Provider quota exceeded"
+        case "rate_limited": "Provider rate limited the request"
+        case "provider_configuration_invalid": "Provider configuration invalid"
+        case "permission_denied": "Provider or organization denied access"
+        case "unsupported_output_format": "Runtime output format unsupported"
+        case "network_failed": "Provider network failure"
+        case "runtime_timed_out": "Runtime timed out"
+        case "budget_exceeded": "Runtime budget exceeded"
+        case "no_visible_output": "Runtime returned no visible output"
+        default: "Runtime provider failed"
+        }
+    }
+
+    private static func runtimeFailureAnalysis(_ category: String) -> String {
+        switch category {
+        case "model_unavailable":
+            "The runtime launched, but the selected model was rejected or unavailable for the user's account, organization policy, CLI version, quota tier, or provider configuration. This is not evidence that the model is globally invalid."
+        case "authentication_failed":
+            "The runtime could not authenticate with the provider. Re-run the provider login flow or verify configured tokens for this app channel."
+        case "provider_configuration_invalid":
+            "The provider path is configured but incomplete or invalid. Check BYOK/base URL/deployment/API key settings without exposing secret values."
+        case "quota_exceeded", "rate_limited":
+            "The provider accepted the runtime request path but refused service due to account limits. Retrying with the same model may continue to fail until the limit resets or billing/config changes."
+        case "unsupported_output_format":
+            "The CLI did not accept the flags ASTRA uses to stream structured output. Check CLI version and capability detection."
+        case "no_visible_output":
+            "The provider process produced no visible assistant response. Check stderr summary, raw stream counters, and unknown event samples."
+        default:
+            "The provider process failed. Use the redacted error summary and surrounding stream counters to identify whether this is auth, model, quota, parser, or process-level failure."
+        }
+    }
+
+    private static func field(_ name: String, in message: String) -> String? {
+        let prefix = "\(name)="
+        guard let range = message.range(of: prefix) else { return nil }
+        let remainder = message[range.upperBound...]
+        let value = remainder.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
+        return value.map(String.init)
+    }
+
+    private static func taskIdentifier(for entry: LogEntry) -> String? {
+        if let taskID = entry.taskID {
+            return String(taskID.uuidString.prefix(8))
+        }
+        return field("task_short", in: entry.message)
+    }
+
+    private static func messagePrefix(_ message: String) -> String {
+        let first = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
+        return first.map(String.init) ?? "unknown"
+    }
+
+    static func parseLogLine(_ line: String, dateAnchor: Date = Date()) -> LogEntry? {
+        let pattern = #"^\[([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?)\]\s+\[([A-Z]+)\]\s+\[([^\]]+)\]\s+(.*)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsRange = NSRange(line.startIndex..<line.endIndex, in: line)
+        guard let match = regex.firstMatch(in: line, range: nsRange),
+              match.numberOfRanges == 5,
+              let timestampRange = Range(match.range(at: 1), in: line),
+              let levelRange = Range(match.range(at: 2), in: line),
+              let categoryRange = Range(match.range(at: 3), in: line),
+              let messageRange = Range(match.range(at: 4), in: line) else {
+            return nil
+        }
+
+        let timestamp = logTimestamp(String(line[timestampRange]), anchoredTo: dateAnchor)
+        let levelText = String(line[levelRange]).lowercased()
+        let level = LogLevel(rawValue: levelText) ?? .info
+        let categoryParts = String(line[categoryRange]).split(separator: " ")
+        let category = categoryParts.first.map(String.init) ?? "General"
+        let taskShort = categoryParts
+            .first { $0.hasPrefix("task:") }
+            .map { String($0.dropFirst("task:".count)) }
+        let message = String(line[messageRange])
+        let messageWithTask = taskShort.map { "task_short=\($0) \(message)" } ?? message
+        return LogEntry(
+            level: level,
+            category: category,
+            message: messageWithTask,
+            timestamp: timestamp
+        )
+    }
+
+    private static func diagnosticLogFiles(in directory: URL) -> [URL] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+        ) else { return [] }
+
+        let mainLogs = files
+            .filter { file in
+                let name = file.lastPathComponent
+                return name == "astra.log" || (name.hasPrefix("astra.") && name.hasSuffix(".log"))
+            }
+            .sorted { modificationDate($0) > modificationDate($1) }
+
+        let taskLogs = files
+            .filter { $0.lastPathComponent.hasPrefix("task-") && $0.pathExtension == "log" }
+            .sorted { modificationDate($0) > modificationDate($1) }
+            .prefix(maxTaskLogFiles)
+
+        return mainLogs + Array(taskLogs)
+    }
+
+    private static func isAppLogFile(_ file: URL) -> Bool {
+        let name = file.lastPathComponent
+        return name == "astra.log" || (name.hasPrefix("astra.") && name.hasSuffix(".log"))
+    }
+
+    private static func tailLines(from url: URL, maxLines: Int) -> [String] {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count > maxLines else { return lines }
+        return Array(lines.suffix(maxLines))
+    }
+
+    private static func entrySignature(_ entry: LogEntry) -> String {
+        "\(entry.level)|\(entry.category)|\(entry.taskID?.uuidString ?? "none")|\(entry.message)"
+    }
+
+    private static func modificationDate(_ url: URL) -> Date {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        return values?.contentModificationDate ?? .distantPast
+    }
+
+    private static func logTimestamp(_ timeText: String, anchoredTo date: Date) -> Date {
+        let pieces = timeText.split(separator: ":")
+        guard pieces.count == 3,
+              let hour = Int(pieces[0]),
+              let minute = Int(pieces[1]) else {
+            return date
+        }
+
+        let secondPieces = pieces[2].split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let second = Int(secondPieces[0]) else { return date }
+        let milliseconds = secondPieces.count > 1 ? Int(secondPieces[1].prefix(3)) ?? 0 : 0
+
+        var components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        components.nanosecond = milliseconds * 1_000_000
+        return Calendar.current.date(from: components) ?? date
+    }
+
+    private static func sanitizedLine(_ entry: LogEntry) -> String {
+        let task = entry.taskID.map { " task:\(String($0.uuidString.prefix(8)))" } ?? ""
+        let line = "[\(displayTimestamp(entry.timestamp))] [\(entry.level.uppercased())] [\(entry.category)\(task)] \(entry.message)"
+        return LogSanitizer.sanitize(line, maxLength: 1_000)
+    }
+
+    private static func maxSeverity(_ lhs: LogLevel, _ rhs: LogLevel) -> LogLevel {
+        lhs > rhs ? lhs : rhs
+    }
+
+    private static func displayTimestamp(_ date: Date) -> String {
+        displayFormatter.string(from: date)
+    }
+
+    private static func fileTimestamp(_ date: Date) -> String {
+        fileFormatter.string(from: date)
+    }
+
+    private static let displayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss ZZZZZ"
+        return formatter
+    }()
+
+    private static let fileFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+}

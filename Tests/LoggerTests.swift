@@ -35,6 +35,18 @@ struct AppLoggerTests {
         #expect(sanitized.contains("[redacted-path]"))
     }
 
+    @Test("Sanitizer preserves diagnostic placeholders and safe status values")
+    func sanitizerPreservesDiagnosticPlaceholders() {
+        let raw = "result=invalid_credentials placeholder=[redacted-secret-key] event=update_safety_signature OPENAI_API_KEY=sk-test-secret"
+        let sanitized = LogSanitizer.sanitize(raw)
+
+        #expect(sanitized.contains("result=invalid_credentials"))
+        #expect(sanitized.contains("placeholder=[redacted-secret-key]"))
+        #expect(sanitized.contains("event=update_safety_signature"))
+        #expect(!sanitized.contains("OPENAI_API_KEY"))
+        #expect(!sanitized.contains("sk-test-secret"))
+    }
+
     @Test("Legacy logging stores sanitized message")
     func legacyLoggingStoresSanitizedMessage() async {
         AppLogger.resetForTesting()

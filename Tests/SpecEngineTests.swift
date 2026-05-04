@@ -123,6 +123,36 @@ struct SpecEngineTests {
         #expect(prompt.contains("no markdown fences"))
     }
 
+    @Test("Title generation falls back to second model candidate")
+    func titleGenerationFallsBackToSecondModel() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-title-generation-\(UUID().uuidString)", isDirectory: true)
+        let fakeClaude = root.appendingPathComponent("claude")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        model="${4:-}"
+        if [ "$model" = "bad-title-model" ]; then
+          printf 'model unavailable\\n' >&2
+          exit 1
+        fi
+        printf 'Review query results\\n'
+        """
+        try script.write(to: fakeClaude, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeClaude.path)
+
+        let title = await SpecEngine.generateTitle(
+            goal: "Review the query results and summarize the data quality issues.",
+            workspacePath: root.path,
+            claudePath: fakeClaude.path,
+            model: "bad-title-model"
+        )
+
+        #expect(title == "Review query results")
+    }
+
     @Test("JSON extraction handles nested fences")
     func nestedFences() {
         let wrapped = "```\n{\"title\": \"test\"}\n```"

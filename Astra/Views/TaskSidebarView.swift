@@ -95,37 +95,93 @@ struct TaskSidebarView: View {
     @State private var renamingTask: AgentTask?
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
+    @State private var isShowingNewTaskNudge = false
+    @State private var isNewTaskNudgePulsing = false
+    @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     private var allSchedules: [TaskSchedule] {
         workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
+    }
+
+    private var selectedWorkspaceHasNoTasks: Bool {
+        guard let selectedWorkspace else { return false }
+        return !tasks.contains { $0.workspace?.id == selectedWorkspace.id }
+    }
+
+    private var shouldShowNewTaskNudge: Bool {
+        selectedWorkspace != nil && selectedWorkspaceHasNoTasks && !hasSeenNewTaskNudge
+    }
+
+    private var newTaskNudgePresentation: Binding<Bool> {
+        Binding(
+            get: { isShowingNewTaskNudge },
+            set: { isPresented in
+                if isPresented {
+                    isShowingNewTaskNudge = true
+                } else {
+                    dismissNewTaskNudge()
+                }
+            }
+        )
     }
 
     var body: some View {
         let taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
 
         VStack(spacing: 0) {
-            // Top new task button — lightweight inline style
+            // Top new task button
             if selectedWorkspace != nil {
-                Button(action: onNewTask) {
+                Button(action: handleNewTaskButton) {
                     HStack(spacing: 6) {
-                        Image(systemName: "plus")
+                        Image(systemName: "square.and.pencil")
                             .font(Stanford.ui(15, weight: .medium))
                         Text("New task")
                             .font(Stanford.ui(16, weight: .medium))
                         Spacer()
                     }
                     .foregroundStyle(Stanford.lagunita)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Stanford.lagunita.opacity(0.10))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Stanford.lagunita.opacity(0.20), lineWidth: 1)
+                    )
+                    .overlay {
+                        if isShowingNewTaskNudge {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Stanford.lagunita.opacity(0.36), lineWidth: 2)
+                                .scaleEffect(isNewTaskNudgePulsing ? 1.05 : 1.0)
+                                .opacity(isNewTaskNudgePulsing ? 0.15 : 0.70)
+                                .animation(
+                                    reduceMotion ? nil : .easeInOut(duration: 0.95).repeatForever(autoreverses: true),
+                                    value: isNewTaskNudgePulsing
+                                )
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("n", modifiers: .command)
-                .padding(.top, 6)
+                .padding(.horizontal, 12)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
+                .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
+                    NewTaskNudgePopover(onDismiss: dismissNewTaskNudge)
+                }
             }
 
             pinnedDock(using: taskIndex)
             unreadDock(using: taskIndex)
+
+            Divider()
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
 
             List {
                 workspaceSection(using: taskIndex)
@@ -133,6 +189,9 @@ struct TaskSidebarView: View {
             }
             .listStyle(.sidebar)
         }
+        .onAppear(perform: updateNewTaskNudge)
+        .onChange(of: selectedWorkspace?.id) { updateNewTaskNudge() }
+        .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .toolbar {
             if selectedWorkspace == nil {
@@ -193,13 +252,17 @@ struct TaskSidebarView: View {
     // MARK: - Pinned Section
 
     private func pinnedDock(using taskIndex: SidebarTaskIndex) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            pinnedHeader
+        let hasPinnedTasks = !taskIndex.pinnedTasks.isEmpty
 
-            if isPinnedExpanded {
+        return VStack(alignment: .leading, spacing: 0) {
+            if hasPinnedTasks {
+                pinnedHeader
+            }
+
+            if isPinnedExpanded || !hasPinnedTasks {
                 ScrollView(.vertical, showsIndicators: taskIndex.pinnedTasks.count > 4) {
                     VStack(alignment: .leading, spacing: 2) {
-                        if taskIndex.pinnedTasks.isEmpty {
+                        if !hasPinnedTasks {
                             pinnedEmptyDropTarget
                         } else {
                             ForEach(taskIndex.pinnedTasks) { task in
@@ -216,6 +279,7 @@ struct TaskSidebarView: View {
                     .padding(.bottom, 2)
                 }
                 .frame(height: pinnedContentHeight(using: taskIndex))
+                .padding(.top, hasPinnedTasks ? 0 : 8)
             }
         }
         .padding(.bottom, 8)
@@ -1116,6 +1180,68 @@ struct TaskSidebarView: View {
         guard task.isPinned != isPinned else { return }
         task.isPinned = isPinned
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func handleNewTaskButton() {
+        if isShowingNewTaskNudge {
+            dismissNewTaskNudge()
+        }
+        onNewTask()
+    }
+
+    private func updateNewTaskNudge() {
+        guard shouldShowNewTaskNudge else {
+            isShowingNewTaskNudge = false
+            isNewTaskNudgePulsing = false
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard shouldShowNewTaskNudge else { return }
+            isShowingNewTaskNudge = true
+            if !reduceMotion {
+                isNewTaskNudgePulsing = true
+            }
+        }
+    }
+
+    private func dismissNewTaskNudge() {
+        guard isShowingNewTaskNudge || !hasSeenNewTaskNudge else { return }
+        isShowingNewTaskNudge = false
+        isNewTaskNudgePulsing = false
+        hasSeenNewTaskNudge = true
+    }
+}
+
+private struct NewTaskNudgePopover: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+
+                Text("Start here")
+                    .font(Stanford.body(14).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+            }
+
+            Text("Create your first task in this workspace from the New task button.")
+                .font(Stanford.body(13))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Got it", action: onDismiss)
+                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
+        .background(Stanford.cardBackground)
     }
 }
 

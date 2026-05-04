@@ -100,6 +100,27 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if let chunk = String(
+                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !chunk.isEmpty {
+                    for line in lineBuffer.appendAndDrainLines(chunk) {
+                        if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                            onLine(line)
+                            for parsed in StreamEventParser.parseAll(line: line) {
+                                for filtered in eventPipeline.process(parsed) {
+                                    _ = monitor.processEvent(filtered, process: process)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let string = String(
+                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !string.isEmpty {
+                    errorOutput.append(string)
+                }
                 let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)
@@ -266,6 +287,29 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if let chunk = String(
+                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !chunk.isEmpty {
+                    for line in lineBuffer.appendAndDrainLines(chunk) {
+                        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                        onLine(line, plan.parsesJSONLines)
+                        let parsedEvents = plan.parsesJSONLines
+                            ? CopilotStreamEventParser.parseAll(line: line)
+                            : [ParsedEvent.text(text: line)]
+                        for parsed in parsedEvents {
+                            for filtered in eventPipeline.process(parsed) {
+                                _ = monitor.processEvent(filtered, process: process)
+                            }
+                        }
+                    }
+                }
+                if let string = String(
+                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !string.isEmpty {
+                    errorOutput.append(string)
+                }
                 let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onLine(remaining, plan.parsesJSONLines)
@@ -399,6 +443,27 @@ final class AgentRuntimeProcessRunner {
             process.terminationHandler = { proc in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if let chunk = String(
+                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !chunk.isEmpty {
+                    for line in lineBuffer.appendAndDrainLines(chunk) {
+                        if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                            onLine(line)
+                            for parsed in StreamEventParser.parseAll(line: line) {
+                                for filtered in eventPipeline.process(parsed) {
+                                    _ = monitor.processEvent(filtered, process: process)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let string = String(
+                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ), !string.isEmpty {
+                    errorOutput.append(string)
+                }
                 let remaining = lineBuffer.drainRemaining()
                 if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
                     onLine(remaining)

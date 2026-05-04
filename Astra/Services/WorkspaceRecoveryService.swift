@@ -48,7 +48,7 @@ enum WorkspaceRecoveryService {
         }
         AppLogger.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
             "result": "completed"
-        ], level: .warning)
+        ])
     }
 
     @discardableResult
@@ -134,7 +134,7 @@ enum WorkspaceRecoveryService {
             UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
             AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
                 "imported_count": String(imported)
-            ], level: .warning)
+            ])
         }
         return imported
     }

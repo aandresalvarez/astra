@@ -74,6 +74,7 @@ struct OnboardingWizardTests {
         #expect(AppStorageKeys.onboardingEnabledCapabilityIDs == "astra.onboardingEnabledCapabilityIDs")
         #expect(AppStorageKeys.skipPermissions == "skipPermissions")
         #expect(AppStorageKeys.securityGateDefaultedToReview == "astra.securityGateDefaultedToReview.v1")
+        #expect(AppStorageKeys.hasSeenNewTaskNudge == "astra.hasSeenNewTaskNudge.v1")
     }
 
     @Test("Capability setup exposes the requested first-workspace choices")

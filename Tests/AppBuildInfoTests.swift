@@ -44,4 +44,14 @@ struct AppBuildInfoTests {
         #expect(info.channelDisplayName == "ASTRA Dev")
         #expect(info.installedBuildSummary == "ASTRA Dev 0.1.1 (13)")
     }
+
+    @Test("about text includes README product positioning")
+    func aboutTextIncludesProductPositioning() {
+        let text = AstraAboutInfo.creditsPlainText
+
+        #expect(text.contains("Agent Scheduler for Tasks, Runs, and Automation"))
+        #expect(text.contains("supervising delegated AI work"))
+        #expect(text.contains("durable workspaces"))
+        #expect(text.contains("https://github.com/susom/astra"))
+    }
 }

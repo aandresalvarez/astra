@@ -8,11 +8,14 @@ struct LogViewerView: View {
     @State private var selectedCategory: String? = nil
     @State private var autoScroll = true
     @State private var filterTaskID: UUID? = nil
+    @State private var isGeneratingDiagnostics = false
+    @State private var diagnosticsMessage: String? = nil
+    @State private var diagnosticsReportURL: URL? = nil
 
     private let categories = [
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-        "Keychain", "Updater", "Performance", "General"
+        "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics", "General"
     ]
 
     private func filtered(_ sourceEntries: [LogEntry]) -> [LogEntry] {
@@ -105,6 +108,19 @@ struct LogViewerView: View {
                     Image(systemName: "folder")
                 }
                 .help("Open log folder in Finder")
+
+                Button {
+                    generateDiagnosticsReport()
+                } label: {
+                    if isGeneratingDiagnostics {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
+                }
+                .help("Generate a sanitized developer diagnostics report")
+                .disabled(isGeneratingDiagnostics)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
@@ -114,6 +130,32 @@ struct LogViewerView: View {
                     Image(systemName: "lock.shield")
                     Text("Sensitive Mode is on. Logs show sanitized audit metadata only; task history is governed separately.")
                     Spacer()
+                }
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
+
+            if let diagnosticsMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.badge.gearshape")
+                    Text(diagnosticsMessage)
+                        .lineLimit(2)
+                    Spacer()
+                    if let diagnosticsReportURL {
+                        Button("Reveal") {
+                            NSWorkspace.shared.activateFileViewerSelecting([diagnosticsReportURL])
+                        }
+                    }
+                    Button {
+                        self.diagnosticsMessage = nil
+                        self.diagnosticsReportURL = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss")
                 }
                 .font(Stanford.caption(12))
                 .foregroundStyle(.secondary)
@@ -169,6 +211,39 @@ struct LogViewerView: View {
                 recomputeFilteredEntries()
             }
         }
+    }
+
+    private func generateDiagnosticsReport() {
+        isGeneratingDiagnostics = true
+        let latestEntries = AppLogger.entries
+        entries = latestEntries
+        recomputeFilteredEntries(from: latestEntries)
+
+        do {
+            let reportEntries = LogDiagnosticsService.collectCurrentEntries(inMemoryEntries: latestEntries)
+            let report = LogDiagnosticsService.makeReport(entries: reportEntries)
+            let url = try LogDiagnosticsService.writeReport(report)
+            diagnosticsReportURL = url
+            diagnosticsMessage = report.issueCount == 0
+                ? "Diagnostics report saved. No issue signals were detected in the current log buffer."
+                : "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s")."
+            AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                "entries": String(report.entryCount),
+                "issues": String(report.issueCount),
+                "errors": String(report.errorCount),
+                "warnings": String(report.warningCount),
+                "report": url.path
+            ], level: .info)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            diagnosticsReportURL = nil
+            diagnosticsMessage = "Diagnostics report failed: \(LogSanitizer.sanitize(error.localizedDescription))"
+            AppLogger.audit(.diagnosticsGenerationFailed, category: "Diagnostics", fields: [
+                "error": error.localizedDescription
+            ], level: .error)
+        }
+
+        isGeneratingDiagnostics = false
     }
 }
 

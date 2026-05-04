@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 import AppKit
 
+private let aboutAstraWindowID = "about-astra"
+
 // MARK: - Window-scoped actions exposed to app menu commands
 //
 // @FocusedValue is SwiftUI's way for a view inside the focused window to
@@ -62,6 +64,144 @@ private struct CheckForUpdatesMenuItem: View {
             appUpdateController.checkForUpdates()
         }
         .disabled(!appUpdateController.canCheckForUpdates)
+    }
+}
+
+private struct AboutAstraMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("About \(AppChannel.current.displayName)") {
+            openWindow(id: aboutAstraWindowID)
+        }
+    }
+}
+
+private struct AboutAstraView: View {
+    private let appInfo = AppBuildInfo.current
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.bottom, 24)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 22) {
+                Text(AstraAboutInfo.tagline)
+                    .font(Stanford.body(18).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(AstraAboutInfo.summary)
+                    .font(Stanford.body(15))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("What ASTRA helps with")
+                        .font(Stanford.caption(12).weight(.bold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .textCase(.uppercase)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(AstraAboutInfo.highlights, id: \.self) { highlight in
+                            Label(highlight, systemImage: "checkmark.circle.fill")
+                                .font(Stanford.body(14))
+                                .foregroundStyle(Stanford.coolGrey)
+                                .labelStyle(AboutHighlightLabelStyle())
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Stanford.lagunita.opacity(0.055))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                Text(AstraAboutInfo.supervisionPrinciple)
+                    .font(Stanford.body(15).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Stanford.paloAltoGreen.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Link(destination: URL(string: AstraAboutInfo.repositoryURLString)!) {
+                    Text(AstraAboutInfo.repositoryURLString)
+                        .font(Stanford.body(13).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+            }
+            .padding(.vertical, 24)
+
+            HStack {
+                Text("Version \(appInfo.version) (\(appInfo.build))")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.coolGrey)
+
+                Spacer()
+
+                Button("Done") {
+                    NSApplication.shared.keyWindow?.close()
+                }
+                    .buttonStyle(StanfordButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(32)
+        .frame(width: 620)
+        .background(Stanford.panelBackground)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 16) {
+            appIcon
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(appInfo.displayName)
+                    .font(Stanford.heading(30))
+                    .foregroundStyle(Stanford.black)
+
+                Text(AstraAboutInfo.fullName)
+                    .font(Stanford.body(14).weight(.medium))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var appIcon: some View {
+        Group {
+            if let icon = NSApplication.shared.applicationIconImage {
+                Image(nsImage: icon)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: "app.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(Stanford.cardinalRed)
+            }
+        }
+        .frame(width: 76, height: 76)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Stanford.black.opacity(0.12), radius: 10, x: 0, y: 6)
+    }
+}
+
+private struct AboutHighlightLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            configuration.icon
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 14)
+
+            configuration.title
+        }
     }
 }
 
@@ -260,6 +400,10 @@ public struct ASTRAApp: App {
                 }
             }
 
+            CommandGroup(replacing: .appInfo) {
+                AboutAstraMenuItem()
+            }
+
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(appUpdateController: appUpdateController)
             }
@@ -281,6 +425,14 @@ public struct ASTRAApp: App {
                 .keyboardShortcut("0", modifiers: .command)
             }
         }
+
+        Window("About \(AppChannel.current.displayName)", id: aboutAstraWindowID) {
+            AboutAstraView()
+                .tint(Stanford.cardinalRed)
+                .preferredColorScheme(resolvedAppearance.colorScheme)
+        }
+        .defaultSize(width: 620, height: 560)
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView(appUpdateController: appUpdateController)
