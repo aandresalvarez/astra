@@ -22,6 +22,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV3.models.count == 10)
     }
 
+    @Test("SchemaV4 declares all 10 model types")
+    func v4ModelCount() {
+        #expect(ASTRASchemaV4.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -37,14 +42,19 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1, SchemaV2, and SchemaV3")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 3)
+    @Test("SchemaV4 version identifier is 4.0.0")
+    func v4VersionIdentifier() {
+        #expect(ASTRASchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V2 and V2 to V3 stages")
+    @Test("Migration plan lists SchemaV1 through SchemaV4")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 4)
+    }
+
+    @Test("Migration plan has V1 to V4 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 2)
+        #expect(ASTRAMigrationPlan.stages.count == 3)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -73,6 +83,7 @@ struct SchemaVersionTests {
         context.insert(workspace)
         #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
+        #expect(workspace.isStarred == false)
 
         let skill = Skill(name: "Reader", allowedTools: ["Read"])
         skill.workspace = workspace
@@ -225,5 +236,39 @@ struct SchemaVersionTests {
         let migratedTask = try #require(tasks.first)
         #expect(migratedTask.resolvedRuntimeID == .claudeCode)
         #expect(migratedTask.unreadAt == nil)
+    }
+
+    @MainActor
+    @Test("SchemaV3 store migrates to SchemaV4 starred workspace field")
+    func v3StoreMigratesToStarredWorkspaceField() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v3-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV3.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV3.Workspace()
+        oldWorkspace.name = "Legacy V3"
+        oldWorkspace.primaryPath = "/tmp/legacy-v3"
+        oldContext.insert(oldWorkspace)
+
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let workspaces = try context.fetch(FetchDescriptor<Workspace>())
+        let migratedWorkspace = try #require(workspaces.first)
+        #expect(migratedWorkspace.isStarred == false)
     }
 }

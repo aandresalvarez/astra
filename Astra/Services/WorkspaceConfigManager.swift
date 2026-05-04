@@ -8,12 +8,12 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v6 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v7 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v7)
+    // MARK: - Config Schema (v8)
 
-    static let currentVersion = 7
+    static let currentVersion = 8
 
     struct WorkspaceConfig: Codable {
         var version: Int = WorkspaceConfigManager.currentVersion
@@ -23,6 +23,7 @@ enum WorkspaceConfigManager {
         var additionalPaths: [String]
         var icon: String
         var instructions: String
+        var isStarred: Bool? = nil
         var lastUsedSkillNames: [String]?
         var enabledGlobalSkillIDs: [String]?
         var enabledGlobalConnectorIDs: [String]?
@@ -281,6 +282,7 @@ enum WorkspaceConfigManager {
             additionalPaths: workspace.additionalPaths,
             icon: workspace.icon,
             instructions: workspace.instructions,
+            isStarred: workspace.isStarred ? true : nil,
             lastUsedSkillNames: workspace.lastUsedSkillNames,
             enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
@@ -417,6 +419,7 @@ enum WorkspaceConfigManager {
         workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
         workspace.memories = config.memories ?? []
+        workspace.isStarred = config.isStarred ?? false
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)

@@ -17,6 +17,7 @@ final class Workspace: Identifiable {
     var memories: [String] = []
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []
+    var isStarred: Bool = false
     var createdAt: Date
     var updatedAt: Date
 
@@ -52,6 +53,7 @@ final class Workspace: Identifiable {
         self.icon = icon
         self.instructions = instructions
         self.lastUsedSkillNames = []
+        self.isStarred = false
         self.createdAt = Date()
         self.updatedAt = Date()
     }

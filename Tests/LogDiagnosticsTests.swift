@@ -134,4 +134,84 @@ struct LogDiagnosticsTests {
         #expect(!report.issues.contains { $0.signal == AuditEvent.workspaceStoreBackedUp.rawValue })
         #expect(!report.markdown.contains("[redacted-[redacted-secret-key]-key]"))
     }
+
+    @Test("Report scopes entries and labels issue freshness")
+    func reportScopeAndFreshness() {
+        let previous = Date(timeIntervalSince1970: 1_200)
+        let oldEntry = LogEntry(
+            level: .error,
+            category: "Persistence",
+            message: "workspace.exported result=auto_export_failed workspace_id=OLD",
+            timestamp: Date(timeIntervalSince1970: 1_000)
+        )
+        let recurringBefore = LogEntry(
+            level: .warning,
+            category: "Worker",
+            message: "runtime.empty_output runtime=copilot_cli raw_lines=1",
+            timestamp: Date(timeIntervalSince1970: 1_100)
+        )
+        let recurringAfter = LogEntry(
+            level: .warning,
+            category: "Worker",
+            message: "runtime.empty_output runtime=copilot_cli raw_lines=1",
+            timestamp: Date(timeIntervalSince1970: 1_300)
+        )
+        let newEntry = LogEntry(
+            level: .warning,
+            category: "Keychain",
+            message: "connector.tested connector_id=JIRA http_status=401 result=invalid_credentials service_type=jira",
+            timestamp: Date(timeIntervalSince1970: 1_350)
+        )
+
+        let retained = LogDiagnosticsService.makeReport(
+            entries: [oldEntry, recurringBefore, recurringAfter, newEntry],
+            generatedAt: Date(timeIntervalSince1970: 1_400),
+            scope: .allRetained,
+            history: LogDiagnosticsHistory(
+                lastGeneratedAt: previous,
+                knownIssueFingerprints: ["runtime.empty_output"]
+            )
+        )
+
+        #expect(retained.entryCount == 4)
+        #expect(retained.issues.first { $0.id == "workspace.export.auto_export_failed.write_failed" }?.freshness == .old)
+        #expect(retained.issues.first { $0.id == "runtime.empty_output" }?.freshness == .recurring)
+        #expect(retained.issues.first { $0.id == "connector.tested.unauthorized" }?.freshness == .new)
+        #expect(retained.markdown.contains("Scope: All retained logs"))
+        #expect(retained.markdown.contains("Analyzed window:"))
+        #expect(retained.markdown.contains("- Freshness: recurring"))
+
+        let sinceLast = LogDiagnosticsService.makeReport(
+            entries: [oldEntry, recurringBefore, recurringAfter, newEntry],
+            generatedAt: Date(timeIntervalSince1970: 1_400),
+            scope: .sinceLastReport,
+            history: LogDiagnosticsHistory(
+                lastGeneratedAt: previous,
+                knownIssueFingerprints: ["runtime.empty_output"]
+            )
+        )
+
+        #expect(sinceLast.entryCount == 2)
+        #expect(!sinceLast.issues.contains { $0.id == "workspace.export.auto_export_failed.write_failed" })
+        #expect(sinceLast.issues.first { $0.id == "runtime.empty_output" }?.freshness == .recurring)
+    }
+
+    @Test("Diagnostics history persists last run and issue fingerprints")
+    func diagnosticsHistoryPersistence() throws {
+        let suiteName = "astra-diagnostics-history-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(level: .warning, category: "Worker", message: "runtime.empty_output runtime=copilot_cli raw_lines=1")
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_700)
+        )
+        LogDiagnosticsService.saveHistory(from: report, defaults: defaults)
+        let history = LogDiagnosticsService.loadHistory(defaults: defaults)
+
+        #expect(history.lastGeneratedAt == Date(timeIntervalSince1970: 1_700))
+        #expect(history.knownIssueFingerprints.contains("runtime.empty_output"))
+    }
 }

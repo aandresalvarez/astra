@@ -11,6 +11,7 @@ struct LogViewerView: View {
     @State private var isGeneratingDiagnostics = false
     @State private var diagnosticsMessage: String? = nil
     @State private var diagnosticsReportURL: URL? = nil
+    @AppStorage(AppStorageKeys.diagnosticsScope) private var diagnosticsScopeRawValue = LogDiagnosticsScope.sinceLastReport.rawValue
 
     private let categories = [
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
@@ -50,80 +51,7 @@ struct LogViewerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Toolbar
-            HStack(spacing: 12) {
-                // Level filter
-                Picker("Level", selection: $selectedLevel) {
-                    Text("All Levels").tag(Optional<LogLevel>.none)
-                    ForEach(LogLevel.allCases, id: \.self) { level in
-                        Text(level.rawValue.capitalized).tag(Optional(level))
-                    }
-                }
-                .frame(width: 130)
-
-                // Category filter
-                Picker("Category", selection: $selectedCategory) {
-                    Text("All Categories").tag(Optional<String>.none)
-                    ForEach(categories, id: \.self) { cat in
-                        Text(cat).tag(Optional(cat))
-                    }
-                }
-                .frame(width: 150)
-
-                // Search
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search logs...", text: $searchText)
-                        .textFieldStyle(.plain)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.quaternary)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                Spacer()
-
-                // Entry count
-                Text("\(filteredEntries.count) entries")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-
-                Toggle("Auto-scroll", isOn: $autoScroll)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                Button {
-                    let latestEntries = AppLogger.entries
-                    entries = latestEntries
-                    recomputeFilteredEntries(from: latestEntries)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh")
-
-                Button {
-                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppLogger.mainLogFile.deletingLastPathComponent().path)
-                } label: {
-                    Image(systemName: "folder")
-                }
-                .help("Open log folder in Finder")
-
-                Button {
-                    generateDiagnosticsReport()
-                } label: {
-                    if isGeneratingDiagnostics {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("Diagnostics", systemImage: "stethoscope")
-                    }
-                }
-                .help("Generate a sanitized developer diagnostics report")
-                .disabled(isGeneratingDiagnostics)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            toolbar
 
             if AppLogger.isSensitiveMode {
                 HStack(spacing: 8) {
@@ -213,25 +141,139 @@ struct LogViewerView: View {
         }
     }
 
+    private var toolbar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Picker("Level", selection: $selectedLevel) {
+                    Text("All Levels").tag(Optional<LogLevel>.none)
+                    ForEach(LogLevel.allCases, id: \.self) { level in
+                        Text(level.rawValue.capitalized).tag(Optional(level))
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 120)
+                .help("Filter by minimum log level")
+
+                Picker("Category", selection: $selectedCategory) {
+                    Text("All Categories").tag(Optional<String>.none)
+                    ForEach(categories, id: \.self) { cat in
+                        Text(cat).tag(Optional(cat))
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 138)
+                .help("Filter by log category")
+
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search logs...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(Stanford.ui(12))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .frame(minWidth: 140, maxWidth: .infinity)
+                .background(.quaternary)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                Text("\(filteredEntries.count) entries")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 68, alignment: .trailing)
+
+                Button {
+                    let latestEntries = AppLogger.entries
+                    entries = latestEntries
+                    recomputeFilteredEntries(from: latestEntries)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh")
+
+                Button {
+                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppLogger.mainLogFile.deletingLastPathComponent().path)
+                } label: {
+                    Image(systemName: "folder")
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .help("Open log folder in Finder")
+            }
+
+            HStack(spacing: 10) {
+                Toggle("Auto-scroll", isOn: $autoScroll)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .fixedSize()
+
+                Text("Diagnostics")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Diagnostics scope", selection: $diagnosticsScopeRawValue) {
+                    ForEach(LogDiagnosticsScope.allCases) { scope in
+                        Text(scope.label).tag(scope.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 175)
+                .help("Choose how far back diagnostics should analyze")
+
+                Button {
+                    generateDiagnosticsReport()
+                } label: {
+                    if isGeneratingDiagnostics {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .help("Generate a sanitized developer diagnostics report")
+                .disabled(isGeneratingDiagnostics)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
     private func generateDiagnosticsReport() {
         isGeneratingDiagnostics = true
+        let generatedAt = Date()
+        let scope = LogDiagnosticsScope(rawValue: diagnosticsScopeRawValue) ?? .sinceLastReport
         let latestEntries = AppLogger.entries
         entries = latestEntries
         recomputeFilteredEntries(from: latestEntries)
 
         do {
             let reportEntries = LogDiagnosticsService.collectCurrentEntries(inMemoryEntries: latestEntries)
-            let report = LogDiagnosticsService.makeReport(entries: reportEntries)
+            let history = LogDiagnosticsService.loadHistory()
+            let report = LogDiagnosticsService.makeReport(
+                entries: reportEntries,
+                generatedAt: generatedAt,
+                scope: scope,
+                history: history
+            )
             let url = try LogDiagnosticsService.writeReport(report)
+            LogDiagnosticsService.saveHistory(from: report)
             diagnosticsReportURL = url
             diagnosticsMessage = report.issueCount == 0
-                ? "Diagnostics report saved. No issue signals were detected in the current log buffer."
-                : "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s")."
+                ? "Diagnostics report saved. No issue signals were detected for \(scope.label.lowercased())."
+                : "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
             AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
                 "entries": String(report.entryCount),
                 "issues": String(report.issueCount),
                 "errors": String(report.errorCount),
                 "warnings": String(report.warningCount),
+                "scope": scope.rawValue,
+                "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
                 "report": url.path
             ], level: .info)
             NSWorkspace.shared.activateFileViewerSelecting([url])

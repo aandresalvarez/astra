@@ -390,8 +390,8 @@ struct ContentView: View {
         // Publish window-scoped actions so File menu commands (New /
         // Import Workspace) can invoke them. See ASTRAApp.swift
         // for the matching FocusedValueKey definitions.
-        .focusedValue(\.newWorkspaceAction, { createWorkspace() })
-        .focusedValue(\.importWorkspaceAction, { importWorkspace() })
+        .focusedSceneValue(\.newWorkspaceAction, { createWorkspace() })
+        .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
         .sheet(isPresented: Binding(
             get: { !hasCompletedOnboarding && !isUITestingSeededLaunch },
             set: { isPresented in

@@ -23,6 +23,14 @@ private struct ScheduleSourceContext {
     let conversationContext: String
 }
 
+private struct ChatBottomPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -54,6 +62,9 @@ struct TaskMainView: View {
     @State private var pasteMonitor: Any?
     @State private var threadViewModel = TaskThreadViewModel()
     @State private var sshConnections: [SSHConnection] = []
+    @State private var isChatAtBottom = true
+    @State private var hasUnseenChatActivity = false
+    @State private var shouldScrollAfterUserMessage = false
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -77,6 +88,13 @@ struct TaskMainView: View {
 
     private var generatedFilesTrigger: TaskGeneratedFilesTrigger {
         TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
+    }
+
+    private var threadScrollSignature: String {
+        let itemIDs = currentThreadSnapshot.conversationItems.map(\.id).joined(separator: "|")
+        let latestOutputCount = currentThreadSnapshot.latestRun?.output.count ?? 0
+        let latestStatus = currentThreadSnapshot.latestRun?.status.rawValue ?? "none"
+        return "\(itemIDs)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
     var body: some View {
@@ -130,6 +148,9 @@ struct TaskMainView: View {
         }
         .onChange(of: task.id) {
             selectedTab = .summary
+            isChatAtBottom = true
+            hasUnseenChatActivity = false
+            shouldScrollAfterUserMessage = true
             threadViewModel.reset(for: task)
             loadSSHConnections()
         }
@@ -435,193 +456,288 @@ struct TaskMainView: View {
 
     private var summaryContent: some View {
         ScrollViewReader { proxy in
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                if task.isForked {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.branch")
-                            .font(Stanford.ui(11))
-                        Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                            .font(Stanford.caption(12))
+            GeometryReader { viewport in
+                ScrollView {
+                    VStack(spacing: 10) {
+                        chatThreadContent
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chatBottom")
+                            .background(chatBottomPositionReader())
                     }
-                    .foregroundStyle(Stanford.plum)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Stanford.plum.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .padding(.horizontal, 14)
+                    .frame(maxWidth: 780)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
                 }
-
-                if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
-                    agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
-                        .padding(.horizontal, 14)
+                .coordinateSpace(name: "task-chat-scroll")
+                .overlay(alignment: .bottom) {
+                    newActivityPill(proxy: proxy)
                 }
-
-                ForEach(currentThreadSnapshot.conversationItems) { item in
-                    switch item {
-                    case .userMessage(let text, let timestamp):
-                        chatUserBubble(text: text, timestamp: timestamp)
-                    case .agentResponse(let run):
-                        chatAgentBubble(run: run)
-                    case .scheduleResult(let text, let timestamp):
-                        scheduleResultBubble(text: text, timestamp: timestamp)
-                    case .systemInfo(let text, let timestamp):
-                        systemInfoBubble(text: text, timestamp: timestamp)
-                    case .recapResult(let text, let timestamp):
-                        recapBubble(text: text, timestamp: timestamp)
-                    }
+                .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
+                    updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                 }
-
-                if task.status == .running {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Agent is working…")
-                            .font(Stanford.body(14))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                .onAppear {
+                    scrollChatToBottom(proxy, animated: false)
                 }
-
-                if task.status == .pendingUser {
-                    if latestRun?.output.isEmpty ?? true {
-                        HStack(spacing: 10) {
-                            Image(systemName: "person.crop.circle.badge.questionmark")
-                                .font(Stanford.ui(16))
-                                .foregroundStyle(Stanford.poppy)
-                            Text("Waiting for your approval")
-                                .font(Stanford.body(13))
-                                .foregroundStyle(Stanford.poppy)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Stanford.poppy.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+                .onChange(of: threadScrollSignature) { oldValue, newValue in
+                    handleThreadScrollChange(
+                        oldSignature: oldValue,
+                        newSignature: newValue,
+                        proxy: proxy
+                    )
                 }
-
-                // Schedule creation: thinking indicator
-                if isCreatingScheduleForCurrentTask {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Creating schedule...")
-                            .font(Stanford.body(13))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Stanford.fog)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-
-                // Recap generation: thinking indicator
-                if isGeneratingRecap {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Generating recap...")
-                            .font(Stanford.body(13))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Stanford.fog)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-
-                // Recap error/empty status
-                if let msg = recapStatusMessage {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(Stanford.poppy)
-                        Text(msg)
-                            .font(Stanford.body(13))
-                            .foregroundStyle(Stanford.black)
-                        Spacer()
-                        Button {
-                            recapStatusMessage = nil
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(Stanford.ui(10, weight: .bold))
-                                .foregroundStyle(Stanford.coolGrey)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Stanford.fog)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-
-                // Terminal status inline indicator (only for non-success outcomes)
-                if task.isTerminal && task.status != .completed {
-                    HStack(spacing: 8) {
-                        Image(systemName: terminalStatusIcon)
-                            .font(Stanford.ui(13))
-                            .foregroundStyle(terminalStatusColor)
-                        Text(terminalStatusLabel)
-                            .font(Stanford.caption(13).weight(.medium))
-                            .foregroundStyle(terminalStatusColor)
-                        Spacer()
-                        if let completedAt = task.completedAt {
-                            Text(completedAt, style: .relative)
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(Stanford.coolGrey)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(terminalStatusColor.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                // Schedule creation: result message
-                if let statusMsg = currentScheduleStatusMessage {
-                    HStack(spacing: 10) {
-                        Image(systemName: isScheduleStatusError
-                              ? "exclamationmark.triangle" : "clock.badge.checkmark")
-                            .foregroundStyle(isScheduleStatusError
-                                             ? Stanford.poppy : Stanford.paloAltoGreen)
-                        Text(MarkdownTextView.markdownAttributed(statusMsg))
-                            .font(Stanford.body(13))
-                            .foregroundStyle(Stanford.black)
-                        Spacer()
-                        Button {
-                            clearScheduleStatusMessage()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(Stanford.ui(10, weight: .bold))
-                                .foregroundStyle(Stanford.coolGrey)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Stanford.fog)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                Color.clear.frame(height: 1).id("chatBottom")
             }
-            .frame(maxWidth: 780)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity)
         }
-        .onAppear { proxy.scrollTo("chatBottom", anchor: .bottom) }
-        .onChange(of: currentThreadSnapshot.conversationItems.count) { _, _ in
-            proxy.scrollTo("chatBottom", anchor: .bottom)
+    }
+
+    @ViewBuilder
+    private var chatThreadContent: some View {
+        if task.isForked {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.branch")
+                    .font(Stanford.ui(11))
+                Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
+                    .font(Stanford.caption(12))
+            }
+            .foregroundStyle(Stanford.plum)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Stanford.plum.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 14)
         }
-        .onChange(of: task.status) { _, _ in
-            proxy.scrollTo("chatBottom", anchor: .bottom)
+
+        if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
+            agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
+                .padding(.horizontal, 14)
         }
+
+        ForEach(currentThreadSnapshot.conversationItems) { item in
+            conversationItemView(item)
+                .id(item.id)
+        }
+
+        if task.status == .running {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Agent is working…")
+                    .font(Stanford.body(14))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+
+        if task.status == .pendingUser {
+            if latestRun?.output.isEmpty ?? true {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.questionmark")
+                        .font(Stanford.ui(16))
+                        .foregroundStyle(Stanford.poppy)
+                    Text("Waiting for your approval")
+                        .font(Stanford.body(13))
+                        .foregroundStyle(Stanford.poppy)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Stanford.poppy.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
+
+        if isCreatingScheduleForCurrentTask {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Creating schedule...")
+                    .font(Stanford.body(13))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Stanford.fog)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+
+        if isGeneratingRecap {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Generating recap...")
+                    .font(Stanford.body(13))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Stanford.fog)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+
+        if let msg = recapStatusMessage {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(Stanford.poppy)
+                Text(msg)
+                    .font(Stanford.body(13))
+                    .foregroundStyle(Stanford.black)
+                Spacer()
+                Button {
+                    recapStatusMessage = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(Stanford.ui(10, weight: .bold))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Stanford.fog)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+
+        if task.isTerminal && task.status != .completed {
+            HStack(spacing: 8) {
+                Image(systemName: terminalStatusIcon)
+                    .font(Stanford.ui(13))
+                    .foregroundStyle(terminalStatusColor)
+                Text(terminalStatusLabel)
+                    .font(Stanford.caption(13).weight(.medium))
+                    .foregroundStyle(terminalStatusColor)
+                Spacer()
+                if let completedAt = task.completedAt {
+                    Text(completedAt, style: .relative)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(terminalStatusColor.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+
+        if let statusMsg = currentScheduleStatusMessage {
+            HStack(spacing: 10) {
+                Image(systemName: isScheduleStatusError
+                      ? "exclamationmark.triangle" : "clock.badge.checkmark")
+                    .foregroundStyle(isScheduleStatusError
+                                     ? Stanford.poppy : Stanford.paloAltoGreen)
+                Text(MarkdownTextView.markdownAttributed(statusMsg))
+                    .font(Stanford.body(13))
+                    .foregroundStyle(Stanford.black)
+                Spacer()
+                Button {
+                    clearScheduleStatusMessage()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(Stanford.ui(10, weight: .bold))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Stanford.fog)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+    }
+
+    @ViewBuilder
+    private func conversationItemView(_ item: TaskConversationItem) -> some View {
+        switch item {
+        case .userMessage(let text, let timestamp):
+            chatUserBubble(text: text, timestamp: timestamp)
+        case .agentResponse(let run):
+            chatAgentBubble(run: run)
+        case .scheduleResult(let text, let timestamp):
+            scheduleResultBubble(text: text, timestamp: timestamp)
+        case .systemInfo(let text, let timestamp):
+            systemInfoBubble(text: text, timestamp: timestamp)
+        case .recapResult(let text, let timestamp):
+            recapBubble(text: text, timestamp: timestamp)
+        }
+    }
+
+    private func chatBottomPositionReader() -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: ChatBottomPositionPreferenceKey.self,
+                value: proxy.frame(in: .named("task-chat-scroll")).minY
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func newActivityPill(proxy: ScrollViewProxy) -> some View {
+        if hasUnseenChatActivity && !isChatAtBottom {
+            Button {
+                scrollChatToBottom(proxy)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down")
+                        .font(Stanford.ui(11, weight: .bold))
+                    Text("New activity")
+                        .font(Stanford.caption(12).weight(.semibold))
+                }
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.ultraThickMaterial)
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Stanford.lagunita.opacity(0.25), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 10)
+        }
+    }
+
+    private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
+        let wasAtBottom = isChatAtBottom
+        isChatAtBottom = bottomMinY <= viewportHeight + 80
+        if isChatAtBottom && !wasAtBottom {
+            hasUnseenChatActivity = false
+        }
+    }
+
+    private func handleThreadScrollChange(
+        oldSignature: String,
+        newSignature: String,
+        proxy: ScrollViewProxy
+    ) {
+        guard oldSignature != newSignature else { return }
+
+        if shouldScrollAfterUserMessage || isChatAtBottom {
+            scrollChatToBottom(proxy)
+            shouldScrollAfterUserMessage = false
+            return
+        }
+
+        hasUnseenChatActivity = true
+    }
+
+    private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        hasUnseenChatActivity = false
+        shouldScrollAfterUserMessage = false
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("chatBottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("chatBottom", anchor: .bottom)
+            }
         }
     }
 
@@ -1848,6 +1964,8 @@ struct TaskMainView: View {
     private func sendMessage() {
         guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedFiles.isEmpty else { return }
 
+        shouldScrollAfterUserMessage = true
+
         // Intercept /remember command — direct action, no Claude call needed
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
@@ -2015,6 +2133,11 @@ struct MarkdownTextView: View {
     let text: String
     @State private var blocks: [MarkdownBlock] = []
 
+    init(text: String) {
+        self.text = text
+        _blocks = State(initialValue: Self.cachedParse(text))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(blocks) { block in
@@ -2103,8 +2226,31 @@ struct MarkdownTextView: View {
         }
         .textSelection(.enabled)
         .frame(maxWidth: 760, alignment: .leading)
-        .onAppear { blocks = Self.parse(text) }
-        .onChange(of: text) { _, newText in blocks = Self.parse(newText) }
+        .onChange(of: text) { _, newText in blocks = Self.cachedParse(newText) }
+    }
+
+    private final class MarkdownBlockCacheEntry {
+        let blocks: [MarkdownBlock]
+
+        init(blocks: [MarkdownBlock]) {
+            self.blocks = blocks
+        }
+    }
+
+    private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
+        let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    private static func cachedParse(_ text: String) -> [MarkdownBlock] {
+        let key = NSString(string: text)
+        if let cached = parseCache.object(forKey: key) {
+            return cached.blocks
+        }
+        let blocks = parse(text)
+        parseCache.setObject(MarkdownBlockCacheEntry(blocks: blocks), forKey: key)
+        return blocks
     }
 
     // MARK: - Code Block

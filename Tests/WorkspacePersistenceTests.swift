@@ -14,6 +14,7 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
     workspace.enabledCapabilityIDs = ["stanford.builder"]
+    workspace.isStarred = true
     workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
     context.insert(workspace)
 
@@ -103,11 +104,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v7")
+@Suite("Workspace Persistence v8")
 struct WorkspacePersistenceTests {
-    @Test("v7 export and import preserve IDs, history, artifacts, and redacted credentials")
+    @Test("v8 export and import preserve IDs, stars, history, artifacts, and redacted credentials")
     @MainActor
-    func v7RoundTripPreservesDurableIDs() throws {
+    func v8RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
@@ -117,8 +118,9 @@ struct WorkspacePersistenceTests {
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
-        #expect(config.version == 7)
+        #expect(config.version == WorkspaceConfigManager.currentVersion)
         #expect(config.id == workspace.id.uuidString)
+        #expect(config.isStarred == true)
         #expect(config.skills.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.connectors?.first?.id == workspace.connectors.first?.id.uuidString)
         #expect(config.localTools?.first?.id == workspace.localTools.first?.id.uuidString)
@@ -147,6 +149,7 @@ struct WorkspacePersistenceTests {
         try importedContext.save()
 
         #expect(imported.id == workspace.id)
+        #expect(imported.isStarred == true)
         #expect(imported.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.connectors.first?.id == workspace.connectors.first?.id)
         #expect(imported.connectors.first?.credentialKeys == ["API_TOKEN"])

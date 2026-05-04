@@ -1036,6 +1036,27 @@ struct SidebarGroupingTests {
             workspaceMatchesSearch: false
         ).map(\.id) == [taskMatchedTask.id])
     }
+
+    @Test("Workspace sidebar filter applies starred-only before search")
+    func workspaceSidebarFilterAppliesStarredOnlyBeforeSearch() {
+        let starredMatch = makeWorkspace(name: "GitHub PRs")
+        starredMatch.isStarred = true
+        let unstarredMatch = makeWorkspace(name: "GitHub Archive")
+        let starredNonmatch = makeWorkspace(name: "REDCap")
+        starredNonmatch.isStarred = true
+
+        let visible = WorkspaceSidebarFilter.visibleWorkspaces(
+            [unstarredMatch, starredNonmatch, starredMatch],
+            showStarredOnly: true,
+            searchText: "github"
+        ) { workspace in
+            workspace.name.localizedCaseInsensitiveContains("github")
+        } hasMatchingTasks: { _ in
+            false
+        }
+
+        #expect(visible.map(\.id) == [starredMatch.id])
+    }
 }
 
 // MARK: - DiffsTabView logic

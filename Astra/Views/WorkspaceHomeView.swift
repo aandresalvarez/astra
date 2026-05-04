@@ -61,12 +61,10 @@ struct WorkspaceHomeContainerView: View {
         WorkspaceHomeView(
             workspace: workspace,
             tasks: tasks,
-            taskQueue: taskQueue,
             onCreateTask: onCreateTask,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
-            onRunQueue: onRunQueue,
             onConfigure: onConfigure,
             onShowDashboard: onShowDashboard,
             onShowLogs: onShowLogs,
@@ -80,12 +78,10 @@ struct WorkspaceHomeContainerView: View {
 struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]
-    let taskQueue: TaskQueue
     let onCreateTask: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     var onSetDoneState: ((AgentTask, Bool) -> Void)?
-    let onRunQueue: () -> Void
     let onConfigure: () -> Void
     let onShowDashboard: () -> Void
     let onShowLogs: () -> Void
@@ -106,11 +102,6 @@ struct WorkspaceHomeView: View {
 
     private var allTemplates: [TaskTemplate] {
         workspace.templates
-    }
-
-    private var queuedTasks: [AgentTask] {
-        tasks.filter { $0.status == .queued }
-            .sorted { $0.queuePosition < $1.queuePosition }
     }
 
     var body: some View {
@@ -181,15 +172,6 @@ struct WorkspaceHomeView: View {
                 .font(Stanford.heading(22))
 
             Spacer()
-
-            if !queuedTasks.isEmpty || taskQueue.isProcessing {
-                Button(action: onRunQueue) {
-                    Label(taskQueue.isProcessing ? "Stop" : "Run Queue", systemImage: taskQueue.isProcessing ? "stop.circle" : "play.fill")
-                        .font(Stanford.caption(13))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Stanford.lagunita)
-            }
         }
     }
 

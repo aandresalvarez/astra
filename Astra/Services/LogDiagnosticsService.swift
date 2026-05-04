@@ -9,16 +9,59 @@ struct LogDiagnosticsIssue: Equatable, Identifiable {
     let affectedTasks: [String]
     let evidence: [String]
     let analysis: String
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+    let freshness: LogDiagnosticsFreshness
 }
 
 struct LogDiagnosticsReport: Equatable {
     let generatedAt: Date
+    let scope: LogDiagnosticsScope
+    let analysisStart: Date?
+    let analysisEnd: Date?
+    let previousGeneratedAt: Date?
     let entryCount: Int
     let errorCount: Int
     let warningCount: Int
     let issueCount: Int
+    let issueFingerprints: [String]
     let issues: [LogDiagnosticsIssue]
     let markdown: String
+}
+
+enum LogDiagnosticsFreshness: String, Codable, Equatable {
+    case new
+    case recurring
+    case old
+
+    var label: String { rawValue }
+}
+
+enum LogDiagnosticsScope: String, Codable, CaseIterable, Identifiable {
+    case sinceLastReport
+    case last15Minutes
+    case lastHour
+    case today
+    case allRetained
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sinceLastReport: "Since last report"
+        case .last15Minutes: "Last 15 minutes"
+        case .lastHour: "Last hour"
+        case .today: "Today"
+        case .allRetained: "All retained logs"
+        }
+    }
+}
+
+struct LogDiagnosticsHistory: Equatable {
+    var lastGeneratedAt: Date?
+    var knownIssueFingerprints: Set<String>
+
+    static let empty = LogDiagnosticsHistory(lastGeneratedAt: nil, knownIssueFingerprints: [])
 }
 
 enum LogDiagnosticsService {
@@ -27,6 +70,8 @@ enum LogDiagnosticsService {
     static let maxMainLogLines = 5_000
     static let maxTaskLogLines = 300
     static let maxTaskLogFiles = 30
+    private static let historyLastGeneratedAtKey = "astra.diagnostics.history.lastGeneratedAt.v1"
+    private static let historyKnownFingerprintsKey = "astra.diagnostics.history.knownFingerprints.v1"
 
     static func collectCurrentEntries(
         inMemoryEntries: [LogEntry] = AppLogger.entries,
@@ -52,26 +97,72 @@ enum LogDiagnosticsService {
         return collected
     }
 
-    static func makeReport(entries: [LogEntry], generatedAt: Date = Date()) -> LogDiagnosticsReport {
-        let orderedEntries = entries.sorted { $0.timestamp < $1.timestamp }
-        let issueGroups = buildIssueGroups(from: orderedEntries)
+    static func makeReport(
+        entries: [LogEntry],
+        generatedAt: Date = Date(),
+        scope: LogDiagnosticsScope = .allRetained,
+        history: LogDiagnosticsHistory = .empty
+    ) -> LogDiagnosticsReport {
+        let orderedEntries = filteredEntries(
+            entries,
+            scope: scope,
+            generatedAt: generatedAt,
+            previousGeneratedAt: history.lastGeneratedAt
+        ).sorted { $0.timestamp < $1.timestamp }
+        let issueGroups = buildIssueGroups(
+            from: orderedEntries,
+            previousGeneratedAt: history.lastGeneratedAt,
+            knownIssueFingerprints: history.knownIssueFingerprints
+        )
         let visibleIssues = Array(issueGroups.prefix(maxIssueGroups))
         let markdown = renderMarkdown(
             entries: orderedEntries,
             generatedAt: generatedAt,
+            scope: scope,
+            previousGeneratedAt: history.lastGeneratedAt,
             issues: visibleIssues,
             omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
         )
 
         return LogDiagnosticsReport(
             generatedAt: generatedAt,
+            scope: scope,
+            analysisStart: orderedEntries.first?.timestamp,
+            analysisEnd: orderedEntries.last?.timestamp,
+            previousGeneratedAt: history.lastGeneratedAt,
             entryCount: orderedEntries.count,
             errorCount: orderedEntries.filter { $0.logLevel == .error }.count,
             warningCount: orderedEntries.filter { $0.logLevel == .warning }.count,
             issueCount: issueGroups.count,
+            issueFingerprints: issueGroups.map(\.id).sorted(),
             issues: visibleIssues,
             markdown: markdown
         )
+    }
+
+    static func filteredEntries(
+        _ entries: [LogEntry],
+        scope: LogDiagnosticsScope,
+        generatedAt: Date = Date(),
+        previousGeneratedAt: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [LogEntry] {
+        let start: Date?
+        switch scope {
+        case .sinceLastReport:
+            start = previousGeneratedAt
+        case .last15Minutes:
+            start = generatedAt.addingTimeInterval(-15 * 60)
+        case .lastHour:
+            start = generatedAt.addingTimeInterval(-60 * 60)
+        case .today:
+            start = calendar.startOfDay(for: generatedAt)
+        case .allRetained:
+            start = nil
+        }
+
+        guard let start else { return entries }
+        return entries.filter { $0.timestamp >= start && $0.timestamp <= generatedAt }
     }
 
     static func writeReport(
@@ -85,6 +176,22 @@ enum LogDiagnosticsService {
         try report.markdown.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
+    }
+
+    static func loadHistory(defaults: UserDefaults = .standard) -> LogDiagnosticsHistory {
+        let timestamp = defaults.object(forKey: historyLastGeneratedAtKey) as? Double
+        let known = defaults.stringArray(forKey: historyKnownFingerprintsKey) ?? []
+        return LogDiagnosticsHistory(
+            lastGeneratedAt: timestamp.map(Date.init(timeIntervalSince1970:)),
+            knownIssueFingerprints: Set(known)
+        )
+    }
+
+    static func saveHistory(from report: LogDiagnosticsReport, defaults: UserDefaults = .standard) {
+        let known = Set(defaults.stringArray(forKey: historyKnownFingerprintsKey) ?? [])
+            .union(report.issueFingerprints)
+        defaults.set(report.generatedAt.timeIntervalSince1970, forKey: historyLastGeneratedAtKey)
+        defaults.set(Array(known).sorted(), forKey: historyKnownFingerprintsKey)
     }
 
     static func defaultDiagnosticsDirectory() -> URL {
@@ -103,7 +210,11 @@ enum LogDiagnosticsService {
         var analysis: String
     }
 
-    private static func buildIssueGroups(from entries: [LogEntry]) -> [LogDiagnosticsIssue] {
+    private static func buildIssueGroups(
+        from entries: [LogEntry],
+        previousGeneratedAt: Date?,
+        knownIssueFingerprints: Set<String>
+    ) -> [LogDiagnosticsIssue] {
         var buckets: [String: IssueBucket] = [:]
 
         for (index, entry) in entries.enumerated() {
@@ -131,7 +242,9 @@ enum LogDiagnosticsService {
                 return lhs.title < rhs.title
             }
             .map { bucket in
-                LogDiagnosticsIssue(
+                let firstSeenAt = bucket.indexes.compactMap { entries.indices.contains($0) ? entries[$0].timestamp : nil }.min() ?? Date(timeIntervalSince1970: 0)
+                let lastSeenAt = bucket.indexes.compactMap { entries.indices.contains($0) ? entries[$0].timestamp : nil }.max() ?? firstSeenAt
+                return LogDiagnosticsIssue(
                     id: bucket.key,
                     title: bucket.title,
                     severity: bucket.severity,
@@ -139,9 +252,33 @@ enum LogDiagnosticsService {
                     count: bucket.indexes.count,
                     affectedTasks: bucket.affectedTasks.sorted(),
                     evidence: evidenceLines(for: bucket.indexes, entries: entries),
-                    analysis: bucket.analysis
+                    analysis: bucket.analysis,
+                    firstSeenAt: firstSeenAt,
+                    lastSeenAt: lastSeenAt,
+                    freshness: freshness(
+                        key: bucket.key,
+                        firstSeenAt: firstSeenAt,
+                        lastSeenAt: lastSeenAt,
+                        previousGeneratedAt: previousGeneratedAt,
+                        knownIssueFingerprints: knownIssueFingerprints
+                    )
                 )
             }
+    }
+
+    private static func freshness(
+        key: String,
+        firstSeenAt: Date,
+        lastSeenAt: Date,
+        previousGeneratedAt: Date?,
+        knownIssueFingerprints: Set<String>
+    ) -> LogDiagnosticsFreshness {
+        guard let previousGeneratedAt else { return .new }
+        if lastSeenAt <= previousGeneratedAt { return .old }
+        if firstSeenAt <= previousGeneratedAt || knownIssueFingerprints.contains(key) {
+            return .recurring
+        }
+        return .new
     }
 
     private static func classify(_ entry: LogEntry) -> (
@@ -386,6 +523,8 @@ enum LogDiagnosticsService {
     private static func renderMarkdown(
         entries: [LogEntry],
         generatedAt: Date,
+        scope: LogDiagnosticsScope,
+        previousGeneratedAt: Date?,
         issues: [LogDiagnosticsIssue],
         omittedIssueCount: Int
     ) -> String {
@@ -408,6 +547,9 @@ enum LogDiagnosticsService {
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
+            "Scope: \(scope.label)",
+            "Previous diagnostics: \(previousGeneratedAt.map(displayTimestamp) ?? "none")",
+            "Analyzed window: \(analysisWindow(entries: entries))",
             "",
             "## Summary",
             "",
@@ -443,7 +585,10 @@ enum LogDiagnosticsService {
                 "",
                 "- Severity: \(issue.severity.rawValue)",
                 "- Signal: `\(issue.signal)`",
+                "- Freshness: \(issue.freshness.label)",
                 "- Count: \(issue.count)",
+                "- First seen in window: \(displayTimestamp(issue.firstSeenAt))",
+                "- Last seen in window: \(displayTimestamp(issue.lastSeenAt))",
                 "- Affected tasks: \(issue.affectedTasks.isEmpty ? "none" : issue.affectedTasks.joined(separator: ", "))",
                 "",
                 "Analysis: \(issue.analysis)",
@@ -474,6 +619,13 @@ enum LogDiagnosticsService {
         ]
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func analysisWindow(entries: [LogEntry]) -> String {
+        guard let first = entries.first?.timestamp, let last = entries.last?.timestamp else {
+            return "no matching log entries"
+        }
+        return "\(displayTimestamp(first)) to \(displayTimestamp(last))"
     }
 
     private static func runtimeFailureTitle(_ category: String) -> String {

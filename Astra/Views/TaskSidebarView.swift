@@ -56,6 +56,26 @@ struct TaskSidebarContainerView: View {
     }
 }
 
+enum WorkspaceSidebarFilter {
+    static func visibleWorkspaces(
+        _ workspaces: [Workspace],
+        showStarredOnly: Bool,
+        searchText: String,
+        workspaceMatchesSearch: (Workspace) -> Bool,
+        hasMatchingTasks: (Workspace) -> Bool
+    ) -> [Workspace] {
+        let sorted = workspaces.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        let filteredByStar = showStarredOnly ? sorted.filter(\.isStarred) : sorted
+        guard !searchText.isEmpty else { return filteredByStar }
+
+        return filteredByStar.filter { workspace in
+            workspaceMatchesSearch(workspace) || hasMatchingTasks(workspace)
+        }
+    }
+}
+
 struct TaskSidebarView: View {
     let tasks: [AgentTask]
     @Binding var selectedTask: AgentTask?
@@ -91,12 +111,14 @@ struct TaskSidebarView: View {
     @State private var isPinnedDropTargeted = false
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesAddHovered = false
+    @State private var isWorkspacesFilterHovered = false
     @State private var isSchedulesAddHovered = false
     @State private var renamingTask: AgentTask?
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
     @State private var isShowingNewTaskNudge = false
     @State private var isNewTaskNudgePulsing = false
+    @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     private var allSchedules: [TaskSchedule] {
@@ -220,12 +242,6 @@ struct TaskSidebarView: View {
                     }
                     .help("Search (⌘F)")
                     .keyboardShortcut("f", modifiers: .command)
-
-                    if taskQueue.isProcessing || tasks.contains(where: { $0.status == .queued }) {
-                        Button(action: onRunQueue) {
-                            Label(taskQueue.isProcessing ? "Stop Queue" : "Run Queue", systemImage: taskQueue.isProcessing ? "stop.circle" : "play.fill")
-                        }
-                    }
                 }
             }
         }
@@ -475,7 +491,7 @@ struct TaskSidebarView: View {
     private func unreadTaskRow(for task: AgentTask) -> some View {
         let isHovered = hoveredTaskID == task.id
 
-        return HStack(spacing: 0) {
+        return ZStack(alignment: .trailing) {
             Button {
                 selectedTask = task
             } label: {
@@ -489,7 +505,9 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
 
             taskOptionsMenu(for: task, isHovered: isHovered)
+                .padding(.trailing, 6)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .contextMenu {
             taskContextMenu(for: task)
@@ -662,16 +680,17 @@ struct TaskSidebarView: View {
     // MARK: - Workspace Section
 
     private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
-        let sorted = workspaces.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        guard !searchText.isEmpty else { return sorted }
-
-        return sorted.filter { workspace in
-            workspaceMatchesSearch(workspace) ||
-                taskIndex.reviewTasks(
-                    for: workspace,
-                    matchingSearch: true,
-                    workspaceMatchesSearch: false
-                ).isEmpty == false
+        WorkspaceSidebarFilter.visibleWorkspaces(
+            workspaces,
+            showStarredOnly: showStarredWorkspacesOnly,
+            searchText: searchText,
+            workspaceMatchesSearch: workspaceMatchesSearch
+        ) { workspace in
+            taskIndex.reviewTasks(
+                for: workspace,
+                matchingSearch: true,
+                workspaceMatchesSearch: false
+            ).isEmpty == false
         }
     }
 
@@ -681,9 +700,9 @@ struct TaskSidebarView: View {
         return Section {
             if isWorkspacesExpanded && visibleWorkspaces.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("No workspaces yet")
+                    Text(workspaceEmptyTitle)
                         .font(Stanford.body(14))
-                    Text("Create or import a workspace to start.")
+                    Text(workspaceEmptySubtitle)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
                 }
@@ -717,6 +736,26 @@ struct TaskSidebarView: View {
 
                 Spacer()
 
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                        showStarredWorkspacesOnly.toggle()
+                    }
+                } label: {
+                    Image(systemName: showStarredWorkspacesOnly ? "star.fill" : "star")
+                        .font(Stanford.ui(13, weight: .medium))
+                        .foregroundStyle(showStarredWorkspacesOnly ? Stanford.lagunita : .secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Stanford.lagunita.opacity(isWorkspacesFilterHovered || showStarredWorkspacesOnly ? 0.10 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { isWorkspacesFilterHovered = $0 }
+                .help(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
+                .accessibilityLabel(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
+
                 // Direct-action Button — identical wrapper and visual
                 // chrome to the Schedules header's + button. Previously a
                 // Menu with New / Import choices, but Menu's button style
@@ -746,6 +785,20 @@ struct TaskSidebarView: View {
 
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
+
+    private var workspaceEmptyTitle: String {
+        if showStarredWorkspacesOnly {
+            return searchText.isEmpty ? "No starred workspaces" : "No starred matches"
+        }
+        return searchText.isEmpty ? "No workspaces yet" : "No workspace matches"
+    }
+
+    private var workspaceEmptySubtitle: String {
+        if showStarredWorkspacesOnly {
+            return "Star a workspace or turn off the filter."
+        }
+        return searchText.isEmpty ? "Create or import a workspace to start." : "Try a different search."
+    }
 
     private func workspaceRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
@@ -790,6 +843,13 @@ struct TaskSidebarView: View {
                         .font(Stanford.body(15))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                    if workspace.isStarred {
+                        Image(systemName: "star.fill")
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, 6)
+                            .accessibilityLabel("Starred")
+                    }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -816,6 +876,12 @@ struct TaskSidebarView: View {
                 startNewTask(in: workspace)
             } label: {
                 Label("New Task", systemImage: "square.and.pencil")
+            }
+
+            Button {
+                toggleStarred(for: workspace)
+            } label: {
+                Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
             }
 
             Divider()
@@ -847,6 +913,14 @@ struct TaskSidebarView: View {
         HStack(spacing: 2) {
             Menu {
                 Button {
+                    toggleStarred(for: workspace)
+                } label: {
+                    Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
+                }
+
+                Divider()
+
+                Button {
                     selectedWorkspace = workspace
                     onEditWorkspace?(workspace)
                 } label: {
@@ -869,16 +943,17 @@ struct TaskSidebarView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(Stanford.ui(18, weight: .bold))
-                    .foregroundStyle(Stanford.cardinalRed)
+                    .foregroundStyle(Stanford.lagunita)
                     .frame(width: 28, height: 24)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Stanford.cardinalRed.opacity(isHovered ? 0.12 : 0.07))
+                            .fill(Stanford.lagunita.opacity(isHovered ? 0.12 : 0.07))
                     )
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .tint(Stanford.lagunita)
             .fixedSize()
             .help("Workspace options")
             .accessibilityLabel("Options for \(workspace.name)")
@@ -888,7 +963,7 @@ struct TaskSidebarView: View {
             } label: {
                 Image(systemName: "square.and.pencil")
                     .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.cardinalRed)
+                    .foregroundStyle(Stanford.lagunita)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
@@ -969,7 +1044,7 @@ struct TaskSidebarView: View {
     private func compactTaskRow(for task: AgentTask) -> some View {
         let isHovered = hoveredTaskID == task.id
 
-        return HStack(spacing: 0) {
+        return ZStack(alignment: .trailing) {
             Button {
                 selectedTask = task
             } label: {
@@ -982,7 +1057,9 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
 
             taskOptionsMenu(for: task, includePinToggle: true, isHovered: isHovered)
+                .padding(.trailing, 6)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .onDrag {
             NSItemProvider(object: task.id.uuidString as NSString)
@@ -1180,6 +1257,12 @@ struct TaskSidebarView: View {
         guard task.isPinned != isPinned else { return }
         task.isPinned = isPinned
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func toggleStarred(for workspace: Workspace) {
+        workspace.isStarred.toggle()
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
     private func handleNewTaskButton() {
@@ -1463,6 +1546,7 @@ struct SearchPanelOverlay: View {
     @Binding var selectedTask: AgentTask?
     @Binding var selectedWorkspace: Workspace?
     @Binding var isActive: Bool
+    @Environment(\.modelContext) private var modelContext
     @State private var searchText = ""
     @FocusState private var isFocused: Bool
     @State private var selectedIndex = 0
@@ -1496,6 +1580,18 @@ struct SearchPanelOverlay: View {
             $0.primaryPath.localizedCaseInsensitiveContains(searchText)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func toggleStarred(for workspace: Workspace) {
+        workspace.isStarred.toggle()
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    private func togglePinned(for task: AgentTask) {
+        task.isPinned.toggle()
+        task.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     var body: some View {
@@ -1539,27 +1635,43 @@ struct SearchPanelOverlay: View {
                                 .padding(.bottom, 4)
 
                             ForEach(filteredWorkspaces) { ws in
-                                Button {
-                                    selectedWorkspace = ws
-                                    selectedTask = nil
-                                    dismiss()
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "folder.fill")
-                                            .font(Stanford.ui(13))
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 18)
-                                        Text(ws.name)
-                                            .font(Stanford.ui(14))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Spacer()
+                                HStack(spacing: 6) {
+                                    Button {
+                                        selectedWorkspace = ws
+                                        selectedTask = nil
+                                        dismiss()
+                                    } label: {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: "folder.fill")
+                                                .font(Stanford.ui(13))
+                                                .foregroundStyle(.secondary)
+                                                .frame(width: 18)
+                                            Text(ws.name)
+                                                .font(Stanford.ui(14))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Spacer()
+                                        }
+                                        .contentShape(Rectangle())
                                     }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 7)
-                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
+
+                                    Button {
+                                        toggleStarred(for: ws)
+                                    } label: {
+                                        Image(systemName: ws.isStarred ? "star.fill" : "star")
+                                            .font(Stanford.ui(13, weight: .semibold))
+                                            .foregroundStyle(ws.isStarred ? Stanford.lagunita : .secondary)
+                                            .frame(width: 26, height: 24)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(ws.isStarred ? "Unstar workspace" : "Star workspace")
+                                    .accessibilityLabel(ws.isStarred ? "Unstar \(ws.name)" : "Star \(ws.name)")
                                 }
-                                .buttonStyle(.plain)
+                                .padding(.leading, 16)
+                                .padding(.trailing, 12)
+                                .padding(.vertical, 7)
                             }
                         }
 
@@ -1571,32 +1683,48 @@ struct SearchPanelOverlay: View {
                             .padding(.bottom, 4)
 
                         ForEach(Array(filteredTasks.enumerated()), id: \.element.id) { idx, task in
-                            Button {
-                                selectedTask = task
-                                dismiss()
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "bubble.left")
-                                        .font(Stanford.ui(13))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 18)
-                                    Text(task.title)
-                                        .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    if let ws = task.workspace {
-                                        Text(ws.name)
-                                            .font(Stanford.caption(11))
+                            HStack(spacing: 6) {
+                                Button {
+                                    selectedTask = task
+                                    dismiss()
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "bubble.left")
+                                            .font(Stanford.ui(13))
                                             .foregroundStyle(.secondary)
+                                            .frame(width: 18)
+                                        Text(task.title)
+                                            .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        if let ws = task.workspace {
+                                            Text(ws.name)
+                                                .font(Stanford.caption(11))
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
+                                    .contentShape(Rectangle())
                                 }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 7)
-                                .background(idx == selectedIndex ? Color.primary.opacity(0.06) : .clear)
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    togglePinned(for: task)
+                                } label: {
+                                    Image(systemName: task.isPinned ? "pin.fill" : "pin")
+                                        .font(Stanford.ui(13, weight: .semibold))
+                                        .foregroundStyle(task.isPinned ? Stanford.lagunita : .secondary)
+                                        .frame(width: 26, height: 24)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(task.isPinned ? "Unpin task" : "Pin task")
+                                .accessibilityLabel(task.isPinned ? "Unpin \(task.title)" : "Pin \(task.title)")
                             }
-                            .buttonStyle(.plain)
+                            .padding(.leading, 16)
+                            .padding(.trailing, 12)
+                            .padding(.vertical, 7)
+                            .background(idx == selectedIndex ? Color.primary.opacity(0.06) : .clear)
                         }
 
                         if filteredTasks.isEmpty && filteredWorkspaces.isEmpty {
