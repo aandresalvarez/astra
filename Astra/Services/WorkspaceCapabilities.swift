@@ -58,7 +58,13 @@ struct WorkspaceCapabilities {
     }
 
     var activeConnectors: [Connector] {
-        let attached = activeSkills.flatMap(\.connectors)
+        let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs)
+        let attached = activeSkills.flatMap(\.connectors).filter { connector in
+            if connector.isGlobal {
+                return enabledGlobalIDs.contains(connector.id.uuidString)
+            }
+            return connector.workspace?.id == workspace.id
+        }
         return uniqueConnectors(workspaceConnectors + attached + enabledGlobalConnectors)
     }
 

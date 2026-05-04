@@ -76,7 +76,9 @@ public struct ASTRAApp: App {
         AppLogger.audit(.appStarted, category: "App")
         // Bring app to foreground when launched from terminal via `swift run`
         NSApplication.shared.setActivationPolicy(.regular)
-        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        let resourceBundle = AstraResourceBundle.current
+        if let iconURL = resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApplication.shared.applicationIconImage = icon
         }

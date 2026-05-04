@@ -67,6 +67,39 @@ public enum CopilotStreamEventParser {
         let type = firstString(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"]) ?? "unknown"
         let normalized = type.lowercased()
 
+        if normalized.hasPrefix("session.") {
+            return sessionEvent(from: object, type: type, raw: raw)
+        }
+
+        if normalized == "user.message" || normalized == "assistant.turn_start" || normalized == "assistant.turn_end" {
+            return []
+        }
+
+        if normalized == "assistant.message_start" {
+            return []
+        }
+
+        if normalized == "assistant.reasoning" || normalized == "assistant.reasoning_delta" {
+            if let text = textValue(in: object), !text.isEmpty {
+                return [.thinking(text: text)]
+            }
+            return []
+        }
+
+        if normalized == "assistant.message_delta" {
+            if let text = textValue(in: object), !text.isEmpty {
+                return [.text(text: text)]
+            }
+            return [.unknown(provider: "copilot", type: type, raw: raw)]
+        }
+
+        if normalized == "assistant.message" {
+            if let text = textValue(in: object), !text.isEmpty {
+                return [.completed(summary: text)]
+            }
+            return [.completed(summary: nil)]
+        }
+
         if normalized == "agent_message_chunk",
            let text = nestedString(object, path: ["content", "text"]) {
             return [.text(text: text)]
@@ -201,6 +234,68 @@ public enum CopilotStreamEventParser {
         }
         if let text = nestedString(object, path: ["delta", "text"]) {
             return text
+        }
+        if let text = nestedString(object, path: ["delta", "content"]) {
+            return text
+        }
+        if let text = nestedContentText(object["content"]) {
+            return text
+        }
+        if let message = object["message"] as? [String: Any],
+           let text = nestedContentText(message["content"]) {
+            return text
+        }
+        if let delta = object["delta"] as? [String: Any],
+           let text = nestedContentText(delta["content"]) ?? nestedContentText(delta["message"]) {
+            return text
+        }
+        return nil
+    }
+
+    private static func sessionEvent(from object: [String: Any], type: String, raw: String) -> [AgentEvent] {
+        let sessionID = firstString(in: object, keys: ["session_id", "sessionId", "id"])
+            ?? nestedString(object, path: ["session", "id"])
+            ?? nestedString(object, path: ["session", "sessionId"])
+        let model = firstString(in: object, keys: ["model"])
+            ?? nestedString(object, path: ["session", "model"])
+        if sessionID != nil || model != nil {
+            return [.started(sessionID: sessionID, model: model)]
+        }
+        return []
+    }
+
+    private static func nestedContentText(_ value: Any?) -> String? {
+        if let text = value as? String, !text.isEmpty {
+            return text
+        }
+        if let dictionary = value as? [String: Any] {
+            if let text = firstString(in: dictionary, keys: ["text", "content", "delta", "message", "summary"]) {
+                return text
+            }
+            if let text = nestedContentText(dictionary["content"]) {
+                return text
+            }
+            if let text = nestedContentText(dictionary["delta"]) {
+                return text
+            }
+            if let text = nestedContentText(dictionary["message"]) {
+                return text
+            }
+            return nil
+        }
+        if let array = value as? [Any] {
+            let parts = array.compactMap { item -> String? in
+                guard let dictionary = item as? [String: Any] else {
+                    return item as? String
+                }
+                let blockType = firstString(in: dictionary, keys: ["type"])?.lowercased()
+                if blockType == nil || blockType == "text" || blockType == "text_delta" || blockType == "output_text" {
+                    return nestedContentText(dictionary)
+                }
+                return nil
+            }
+            let text = parts.joined()
+            return text.isEmpty ? nil : text
         }
         return nil
     }

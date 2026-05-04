@@ -2,6 +2,81 @@ import AppKit
 import SwiftData
 import SwiftUI
 
+struct WorkspaceHomeContainerView: View {
+    let workspace: Workspace
+    let taskQueue: TaskQueue
+    let onCreateTask: () -> Void
+    let onOpenTask: (AgentTask) -> Void
+    let onDeleteTask: (AgentTask) -> Void
+    var onSetDoneState: ((AgentTask, Bool) -> Void)?
+    let onRunQueue: () -> Void
+    let onConfigure: () -> Void
+    let onShowDashboard: () -> Void
+    let onShowLogs: () -> Void
+    var onNewSchedule: (() -> Void)?
+    var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onManageCapabilities: (() -> Void)?
+
+    @Query private var tasks: [AgentTask]
+
+    init(
+        workspace: Workspace,
+        taskQueue: TaskQueue,
+        onCreateTask: @escaping () -> Void,
+        onOpenTask: @escaping (AgentTask) -> Void,
+        onDeleteTask: @escaping (AgentTask) -> Void,
+        onSetDoneState: ((AgentTask, Bool) -> Void)? = nil,
+        onRunQueue: @escaping () -> Void,
+        onConfigure: @escaping () -> Void,
+        onShowDashboard: @escaping () -> Void,
+        onShowLogs: @escaping () -> Void,
+        onNewSchedule: (() -> Void)? = nil,
+        onEditSchedule: ((TaskSchedule) -> Void)? = nil,
+        onManageCapabilities: (() -> Void)? = nil
+    ) {
+        self.workspace = workspace
+        self.taskQueue = taskQueue
+        self.onCreateTask = onCreateTask
+        self.onOpenTask = onOpenTask
+        self.onDeleteTask = onDeleteTask
+        self.onSetDoneState = onSetDoneState
+        self.onRunQueue = onRunQueue
+        self.onConfigure = onConfigure
+        self.onShowDashboard = onShowDashboard
+        self.onShowLogs = onShowLogs
+        self.onNewSchedule = onNewSchedule
+        self.onEditSchedule = onEditSchedule
+        self.onManageCapabilities = onManageCapabilities
+
+        let workspaceID = workspace.id
+        _tasks = Query(
+            filter: #Predicate<AgentTask> { task in
+                task.workspace?.id == workspaceID
+            },
+            sort: \AgentTask.queuePosition
+        )
+    }
+
+    var body: some View {
+        WorkspaceHomeView(
+            workspace: workspace,
+            tasks: tasks,
+            taskQueue: taskQueue,
+            onCreateTask: onCreateTask,
+            onOpenTask: onOpenTask,
+            onDeleteTask: onDeleteTask,
+            onSetDoneState: onSetDoneState,
+            onRunQueue: onRunQueue,
+            onConfigure: onConfigure,
+            onShowDashboard: onShowDashboard,
+            onShowLogs: onShowLogs,
+            onNewSchedule: onNewSchedule,
+            onEditSchedule: onEditSchedule,
+            onManageCapabilities: onManageCapabilities
+        )
+    }
+}
+
 struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]

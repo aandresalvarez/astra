@@ -21,7 +21,7 @@ struct TaskCapabilityResolver {
 
         var liveEnvVars: [String: String] = [:]
         for skill in task.skills {
-            for (key, value) in skill.resolvedAllEnvironmentVariables {
+            for (key, value) in skill.environmentVariables {
                 liveEnvVars[key] = value
             }
         }
@@ -44,7 +44,14 @@ struct TaskCapabilityResolver {
     }
 
     var allConnectors: [Connector] {
-        let fromSkills = task.skills.flatMap(\.connectors)
+        let enabledGlobalIDs = Set(task.workspace?.enabledGlobalConnectorIDs ?? [])
+        let workspaceID = task.workspace?.id
+        let fromSkills = task.skills.flatMap(\.connectors).filter { connector in
+            if connector.isGlobal {
+                return enabledGlobalIDs.contains(connector.id.uuidString)
+            }
+            return connector.workspace?.id == workspaceID
+        }
         let standalone = task.workspace?.connectors.filter { $0.skill == nil } ?? []
         var all = fromSkills + standalone
 

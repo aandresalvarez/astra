@@ -55,6 +55,7 @@ struct ConfigureView: View {
     private var globalTools: [LocalTool]
     @State private var selectedTab: ConfigureTab = .capabilities
     @State private var selectedFocusItemID: UUID?
+    @State private var libraryCapabilityPackages: [PluginPackage] = []
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -75,7 +76,7 @@ struct ConfigureView: View {
 
     private var configureCapabilityPackages: [PluginPackage] {
         CapabilityCatalogInventory.packages(
-            catalogPackages: CapabilityLibrary().installedPackages() + PluginCatalog.builtInPackages,
+            catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages,
             capabilities: capabilities
         )
     }
@@ -139,10 +140,14 @@ struct ConfigureView: View {
                 ZStack(alignment: .topLeading) {
                     switch selectedTab {
                     case .capabilities:
-                        CapabilitiesTabContent(workspace: workspace) { tab, itemID in
-                            selectedFocusItemID = itemID
-                            selectedTab = tab
-                        }
+                        CapabilitiesTabContent(
+                            workspace: workspace,
+                            onCatalogChanged: { reloadCapabilityPackages() },
+                            onEditElement: { tab, itemID in
+                                selectedFocusItemID = itemID
+                                selectedTab = tab
+                            }
+                        )
                     case .connectors:
                         ConnectorsTabContent(
                             workspace: workspace,
@@ -174,7 +179,21 @@ struct ConfigureView: View {
         .onAppear {
             selectedTab = initialTab
             selectedFocusItemID = focusItemID
+            reloadCapabilityPackages()
         }
+    }
+
+    private func reloadCapabilityPackages() {
+        libraryCapabilityPackages = PerformanceTelemetry.measure(
+            "configure_capability_load",
+            thresholdMilliseconds: 0
+        ) {
+            CapabilityLibrary().installedPackages()
+        }
+        PerformanceTelemetry.log(
+            "configure_capability_count",
+            fields: ["package_count": String(libraryCapabilityPackages.count)]
+        )
     }
 }
 
@@ -318,6 +337,7 @@ private struct ConfigureCardChip: View {
 
 struct CapabilitiesTabContent: View {
     var workspace: Workspace
+    var onCatalogChanged: () -> Void = {}
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
     @State private var catalog = PluginCatalog()
 
@@ -327,6 +347,7 @@ struct CapabilitiesTabContent: View {
             catalog: catalog,
             focus: .all,
             presentation: .embedded,
+            onCatalogChanged: onCatalogChanged,
             onEditElement: onEditElement
         )
     }

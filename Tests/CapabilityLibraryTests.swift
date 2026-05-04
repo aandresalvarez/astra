@@ -196,6 +196,13 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
     }
 
+    @Test("resource bundle resolver exposes app icon")
+    func resourceBundleResolverExposesAppIcon() throws {
+        let bundle = AstraResourceBundle.current
+        let iconURL = try #require(bundle.url(forResource: "AppIcon", withExtension: "icns"))
+        #expect(FileManager.default.fileExists(atPath: iconURL.path))
+    }
+
     @Test("local catalog source reads installed capability packages")
     @MainActor
     func localCatalogSourceReadsInstalledPackages() throws {

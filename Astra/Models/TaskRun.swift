@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-enum RunStatus: String, Codable {
+enum RunStatus: String, Codable, Sendable {
     case running
     case completed
     case failed
@@ -67,7 +67,7 @@ final class TaskRun {
 }
 
 /// Codable file change for JSON storage in TaskRun
-struct StoredFileChange: Codable, Identifiable, Hashable {
+struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let path: String
     let changeType: String  // "Write" or "Edit"

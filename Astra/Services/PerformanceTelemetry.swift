@@ -1,0 +1,52 @@
+import Foundation
+
+enum PerformanceTelemetry {
+    @discardableResult
+    static func measure<T>(
+        _ event: String,
+        thresholdMilliseconds: Double = 0,
+        level: LogLevel = .debug,
+        fields: [String: String] = [:],
+        _ work: () -> T
+    ) -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = work()
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        guard elapsed >= thresholdMilliseconds else { return result }
+
+        log(
+            event,
+            durationMilliseconds: elapsed,
+            level: level,
+            fields: fields
+        )
+        return result
+    }
+
+    static func log(
+        _ event: String,
+        durationMilliseconds: Double? = nil,
+        level: LogLevel = .debug,
+        fields: [String: String] = [:]
+    ) {
+        var parts = ["event=\(event)"]
+        if let durationMilliseconds {
+            parts.append(String(format: "duration_ms=%.2f", durationMilliseconds))
+        }
+        parts += fields
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+        let message = parts.joined(separator: " ")
+
+        switch level {
+        case .debug:
+            AppLogger.debug(message, category: "Performance")
+        case .info:
+            AppLogger.info(message, category: "Performance")
+        case .warning:
+            AppLogger.warning(message, category: "Performance")
+        case .error:
+            AppLogger.error(message, category: "Performance")
+        }
+    }
+}

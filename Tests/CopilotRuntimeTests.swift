@@ -27,6 +27,54 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Assistant message delta maps to text")
+    func assistantMessageDelta() {
+        let line = #"{"type":"assistant.message_delta","delta":{"content":[{"type":"text_delta","text":"hello"}]}}"#
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .text(let text) = parsed {
+            #expect(text == "hello")
+        } else {
+            Issue.record("Expected text event")
+        }
+    }
+
+    @Test("Assistant final message maps to completion summary")
+    func assistantFinalMessage() {
+        let line = #"{"type":"assistant.message","message":{"content":[{"type":"text","text":"final answer"}]}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .completed(let summary) = parsed.first {
+            #expect(summary == "final answer")
+        } else {
+            Issue.record("Expected completed event")
+        }
+    }
+
+    @Test("Session event with metadata maps to started")
+    func sessionMetadata() {
+        let line = #"{"type":"session.mcp_servers_loaded","session":{"id":"sess-1","model":"gpt-5"}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+        if case .started(let sessionID, let model) = parsed.first {
+            #expect(sessionID == "sess-1")
+            #expect(model == "gpt-5")
+        } else {
+            Issue.record("Expected started event")
+        }
+    }
+
+    @Test("Known control events without content are ignored")
+    func knownControlEventsWithoutContent() {
+        let lines = [
+            #"{"type":"session.mcp_servers_loaded"}"#,
+            #"{"type":"user.message"}"#,
+            #"{"type":"assistant.turn_start"}"#,
+            #"{"type":"assistant.turn_end"}"#,
+            #"{"type":"assistant.reasoning_delta"}"#
+        ]
+        for line in lines {
+            #expect(CopilotStreamEventParser.parseAgentEvents(line: line).isEmpty)
+        }
+    }
+
     @Test("Tool call maps to tool use")
     func toolCall() {
         let line = #"{"type":"tool_call","tool":"shell","id":"call-1","command":"git status"}"#
@@ -95,6 +143,54 @@ struct CopilotStreamEventParserTests {
         } else {
             Issue.record("Expected one merged result event")
         }
+    }
+}
+
+@Suite("Agent Runtime Stream Telemetry")
+struct AgentRuntimeStreamTelemetryTests {
+    @Test("Telemetry counts parsed, emitted, and unknown Copilot events")
+    func countsStreamEvents() {
+        let telemetry = AgentRuntimeStreamTelemetry(maxUnknownSamples: 2)
+
+        telemetry.recordRawLine(parsesJSONLines: true)
+        telemetry.recordParsed([
+            .text(text: "hello"),
+            .thinking(text: "thinking"),
+            .toolUse(name: "shell", id: "tool-1", inputSummary: nil),
+            .toolResult(id: "tool-1", content: "ok"),
+            .stats(inputTokens: 10, outputTokens: 5, costUSD: 0.01, durationMs: 100, turns: 1),
+            .completed(summary: "done"),
+            .failed(message: "failed"),
+            .unknown(provider: "copilot", type: "assistant.new_event", raw: #"{"type":"assistant.new_event","payload":"one"}"#),
+            .unknown(provider: "copilot", type: "assistant.new_event", raw: #"{"type":"assistant.new_event","payload":"two"}"#),
+            .unknown(provider: "copilot", type: "tool.new_event", raw: #"{"type":"tool.new_event"}"#),
+            .unknown(provider: "copilot", type: "third.new_event", raw: #"{"type":"third.new_event"}"#)
+        ])
+        telemetry.recordRawLine(parsesJSONLines: false)
+        telemetry.recordParsed([.text(text: "plain")])
+        telemetry.recordEmitted([
+            .text(text: "hello"),
+            .completed(summary: "done")
+        ])
+
+        let snapshot = telemetry.snapshot()
+        #expect(snapshot.rawLineCount == 2)
+        #expect(snapshot.jsonLineCount == 1)
+        #expect(snapshot.plainTextLineCount == 1)
+        #expect(snapshot.parsedEventCount == 12)
+        #expect(snapshot.emittedEventCount == 2)
+        #expect(snapshot.textEventCount == 2)
+        #expect(snapshot.thinkingEventCount == 1)
+        #expect(snapshot.toolUseEventCount == 1)
+        #expect(snapshot.toolResultEventCount == 1)
+        #expect(snapshot.statsEventCount == 1)
+        #expect(snapshot.completedEventCount == 1)
+        #expect(snapshot.failedEventCount == 1)
+        #expect(snapshot.unknownEventCount == 4)
+        #expect(snapshot.unknownTypeCounts["assistant.new_event"] == 2)
+        #expect(snapshot.unknownTypeCounts["tool.new_event"] == 1)
+        #expect(snapshot.unknownSamples.map { $0.type } == ["assistant.new_event", "tool.new_event"])
+        #expect(snapshot.fields["unknown_types"]?.contains("assistant.new_event:2") == true)
     }
 }
 

@@ -79,8 +79,15 @@ struct CapabilityInstaller {
         var templateIDs: [UUID] = []
         var skillsByName: [String: Skill] = [:]
 
+        let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
+        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+
         for pluginSkill in package.skills {
-            let skill = upsertGlobalSkill(pluginSkill, modelContext: modelContext)
+            let skill = upsertGlobalSkill(
+                pluginSkill,
+                modelContext: modelContext,
+                configInputs: skillConfigInputs
+            )
             skillsByName[pluginSkill.name] = skill
             appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
             appendUnique(skill.id, to: &skillIDs)
@@ -89,17 +96,46 @@ struct CapabilityInstaller {
         let primarySkill = package.skills.first.flatMap { skillsByName[$0.name] }
 
         for pluginConnector in package.connectors {
-            let connector = upsertGlobalConnector(
+            let configKeys = connectorConfigKeys(
+                hints: pluginConnector.configHints,
+                extraConfigKeys: packageEnvironmentKeys,
+                configInputs: configInputs
+            )
+            let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
+            let connector: Connector
+            if connectorHasScopedInputs(
                 pluginConnector,
-                modelContext: modelContext,
+                configKeys: configKeys,
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
-                baseURL: baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
-            )
-            if let primarySkill, connector.skill == nil {
-                connector.skill = primarySkill
-            }
-            if primarySkill == nil {
+                baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
+            ) {
+                connector = upsertWorkspaceConnector(
+                    pluginConnector,
+                    workspace: workspace,
+                    modelContext: modelContext,
+                    credentialInputs: credentialInputs,
+                    configInputs: configInputs,
+                    extraConfigKeys: packageEnvironmentKeys,
+                    baseURL: baseURL
+                )
+                removeMatchingGlobalConnectorActivation(
+                    pluginConnector,
+                    from: workspace,
+                    modelContext: modelContext
+                )
+            } else {
+                connector = upsertGlobalConnector(
+                    pluginConnector,
+                    modelContext: modelContext,
+                    credentialInputs: credentialInputs,
+                    configInputs: configInputs,
+                    extraConfigKeys: packageEnvironmentKeys,
+                    baseURL: baseURL
+                )
+                if let primarySkill, connector.skill == nil {
+                    connector.skill = primarySkill
+                }
                 appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
             }
             appendUnique(connector.id, to: &connectorIDs)
@@ -142,7 +178,11 @@ struct CapabilityInstaller {
         )
     }
 
-    private func upsertGlobalSkill(_ pluginSkill: PluginSkill, modelContext: ModelContext) -> Skill {
+    private func upsertGlobalSkill(
+        _ pluginSkill: PluginSkill,
+        modelContext: ModelContext,
+        configInputs: [String: String]
+    ) -> Skill {
         let skill = existingGlobalSkill(named: pluginSkill.name, modelContext: modelContext) ?? Skill(
             name: pluginSkill.name,
             icon: pluginSkill.icon,
@@ -163,7 +203,7 @@ struct CapabilityInstaller {
         skill.customTools = pluginSkill.customTools
         skill.behaviorInstructions = pluginSkill.behaviorInstructions
         skill.environmentKeys = pluginSkill.environmentKeys
-        skill.environmentValues = pluginSkill.environmentValues
+        skill.environmentValues = environmentValues(for: pluginSkill, configInputs: configInputs)
         skill.isGlobal = true
         skill.workspace = nil
         skill.updatedAt = Date()
@@ -171,11 +211,25 @@ struct CapabilityInstaller {
         return skill
     }
 
+    private func environmentValues(
+        for pluginSkill: PluginSkill,
+        configInputs: [String: String]
+    ) -> [String] {
+        pluginSkill.environmentKeys.enumerated().map { index, key in
+            if let configured = configInputs[key] {
+                return configured
+            }
+            guard index < pluginSkill.environmentValues.count else { return "" }
+            return pluginSkill.environmentValues[index]
+        }
+    }
+
     private func upsertGlobalConnector(
         _ pluginConnector: PluginConnector,
         modelContext: ModelContext,
         credentialInputs: [String: String],
         configInputs: [String: String],
+        extraConfigKeys: [String],
         baseURL: String
     ) -> Connector {
         let connector = existingGlobalConnector(
@@ -203,8 +257,12 @@ struct CapabilityInstaller {
         connector.notes = pluginConnector.notes
         connector.credentialKeys = pluginConnector.credentialHints.map(\.key)
         connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
-        connector.configKeys = pluginConnector.configHints.map(\.key)
-        connector.configValues = pluginConnector.configHints.map { configInputs[$0.key] ?? "" }
+        connector.configKeys = connectorConfigKeys(
+            hints: pluginConnector.configHints,
+            extraConfigKeys: extraConfigKeys,
+            configInputs: configInputs
+        )
+        connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
         connector.isGlobal = true
         connector.workspace = nil
         connector.updatedAt = Date()
@@ -214,6 +272,109 @@ struct CapabilityInstaller {
             }
         }
         return connector
+    }
+
+    private func upsertWorkspaceConnector(
+        _ pluginConnector: PluginConnector,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        credentialInputs: [String: String],
+        configInputs: [String: String],
+        extraConfigKeys: [String],
+        baseURL: String
+    ) -> Connector {
+        let connector = existingWorkspaceConnector(
+            name: pluginConnector.name,
+            serviceType: pluginConnector.serviceType,
+            workspace: workspace
+        ) ?? Connector(
+            name: pluginConnector.name,
+            serviceType: pluginConnector.serviceType,
+            icon: pluginConnector.icon,
+            connectorDescription: pluginConnector.description,
+            baseURL: baseURL,
+            authMethod: pluginConnector.authMethod
+        )
+        if connector.modelContext == nil {
+            modelContext.insert(connector)
+        }
+        connector.name = pluginConnector.name
+        connector.serviceType = pluginConnector.serviceType
+        connector.icon = pluginConnector.icon
+        connector.connectorDescription = pluginConnector.description
+        connector.baseURL = baseURL
+        connector.authMethod = pluginConnector.authMethod
+        connector.notes = pluginConnector.notes
+        connector.credentialKeys = pluginConnector.credentialHints.map(\.key)
+        connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
+        connector.configKeys = connectorConfigKeys(
+            hints: pluginConnector.configHints,
+            extraConfigKeys: extraConfigKeys,
+            configInputs: configInputs
+        )
+        connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
+        connector.isGlobal = false
+        connector.workspace = workspace
+        connector.skill = nil
+        connector.updatedAt = Date()
+        for hint in pluginConnector.credentialHints {
+            if let value = credentialInputs[hint.key], !value.isEmpty {
+                connector.saveCredential(key: hint.key, value: value)
+            }
+        }
+        return connector
+    }
+
+    private func connectorConfigKeys(
+        hints: [PluginConnector.ConfigHint],
+        extraConfigKeys: [String],
+        configInputs: [String: String]
+    ) -> [String] {
+        var keys = hints.map(\.key)
+        for key in extraConfigKeys where configInputs[key] != nil && !keys.contains(key) {
+            keys.append(key)
+        }
+        return keys
+    }
+
+    private func connectorHasScopedInputs(
+        _ pluginConnector: PluginConnector,
+        configKeys: [String],
+        credentialInputs: [String: String],
+        configInputs: [String: String],
+        baseURLOverridden: Bool
+    ) -> Bool {
+        if baseURLOverridden {
+            return true
+        }
+        if pluginConnector.credentialHints.contains(where: { hint in
+            !(credentialInputs[hint.key] ?? "").isEmpty
+        }) {
+            return true
+        }
+        return configKeys.contains { key in
+            !(configInputs[key] ?? "").isEmpty
+        }
+    }
+
+    private func removeMatchingGlobalConnectorActivation(
+        _ pluginConnector: PluginConnector,
+        from workspace: Workspace,
+        modelContext: ModelContext
+    ) {
+        guard !workspace.enabledGlobalConnectorIDs.isEmpty else { return }
+        let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
+        guard let globalConnectors = try? modelContext.fetch(descriptor) else { return }
+        let matchingIDs = Set(
+            globalConnectors
+                .filter {
+                    $0.name == pluginConnector.name &&
+                    $0.serviceType == pluginConnector.serviceType
+                }
+                .map { $0.id.uuidString }
+        )
+        guard !matchingIDs.isEmpty else { return }
+        workspace.enabledGlobalConnectorIDs.removeAll { matchingIDs.contains($0) }
     }
 
     private func upsertGlobalTool(_ pluginTool: PluginLocalTool, modelContext: ModelContext) -> LocalTool {
@@ -300,6 +461,16 @@ struct CapabilityInstaller {
             }
         )
         return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    private func existingWorkspaceConnector(
+        name: String,
+        serviceType: String,
+        workspace: Workspace
+    ) -> Connector? {
+        workspace.connectors.first {
+            $0.name == name && $0.serviceType == serviceType
+        }
     }
 
     private func existingGlobalTool(

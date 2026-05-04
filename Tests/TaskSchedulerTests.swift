@@ -192,6 +192,54 @@ struct SchedulerLifecycleTests {
     }
 }
 
+@Suite("TaskLifecycleCoordinator Schedule Visibility")
+@MainActor
+struct TaskLifecycleCoordinatorScheduleVisibilityTests {
+
+    @Test("Same-thread schedules only show on their source task")
+    func sameThreadSchedulesOnlyShowOnTheirSourceTask() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let workspace = Workspace(name: "Schedule Scope", primaryPath: "/tmp/schedule-scope")
+        let sourceTask = AgentTask(title: "Source", goal: "Original task", workspace: workspace)
+        let otherTask = AgentTask(title: "Other", goal: "Different task", workspace: workspace)
+
+        ctx.insert(workspace)
+        ctx.insert(sourceTask)
+        ctx.insert(otherTask)
+
+        let sourceSchedule = TaskSchedule(name: "A Source Schedule", goal: "Run source", workspace: workspace)
+        sourceSchedule.resultMode = .sameThread
+        sourceSchedule.sourceTaskID = sourceTask.id
+
+        let otherSchedule = TaskSchedule(name: "B Other Schedule", goal: "Run other", workspace: workspace)
+        otherSchedule.resultMode = .sameThread
+        otherSchedule.sourceTaskID = otherTask.id
+
+        let scheduleLogOnly = TaskSchedule(name: "C Schedule Log", goal: "Log only", workspace: workspace)
+        scheduleLogOnly.resultMode = .scheduleLog
+        scheduleLogOnly.sourceTaskID = sourceTask.id
+
+        let disabledSourceSchedule = TaskSchedule(name: "D Disabled", goal: "Disabled", workspace: workspace)
+        disabledSourceSchedule.resultMode = .sameThread
+        disabledSourceSchedule.sourceTaskID = sourceTask.id
+        disabledSourceSchedule.isEnabled = false
+
+        let unscopedSchedule = TaskSchedule(name: "E Unscoped", goal: "No source", workspace: workspace)
+        unscopedSchedule.resultMode = .sameThread
+
+        for schedule in [sourceSchedule, otherSchedule, scheduleLogOnly, disabledSourceSchedule, unscopedSchedule] {
+            ctx.insert(schedule)
+        }
+        try ctx.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: ctx, taskQueue: TaskQueue())
+
+        #expect(coordinator.activeSameThreadSchedules(for: sourceTask).map(\.id) == [sourceSchedule.id])
+        #expect(coordinator.activeSameThreadSchedules(for: otherTask).map(\.id) == [otherSchedule.id])
+    }
+}
+
 // MARK: - Schedule Firing Logic (model-level)
 
 @Suite("Schedule Fire Logic")

@@ -48,6 +48,7 @@ struct WorkspaceRightRailView: View {
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
+    var sshReloadTrigger: Int = 0
 
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
@@ -301,6 +302,12 @@ struct WorkspaceRightRailView: View {
             applyConfigureDefaults()
         }
         .onChange(of: workspace.primaryPath) { loadSSHConnections() }
+        .onChange(of: sshReloadTrigger) {
+            loadSSHConnections()
+            if !sshConnections.isEmpty {
+                isAccessCollapsed = false
+            }
+        }
         .alert("Capability could not be updated", isPresented: Binding(
             get: { capabilityError != nil },
             set: { if !$0 { capabilityError = nil } }
@@ -410,9 +417,10 @@ struct WorkspaceRightRailView: View {
     }
 
     private var railCapabilityItems: [RailCapabilityItem] {
-        CapabilityCatalogInventory.packages(
+        CapabilityCatalogInventory.configuredPackages(
             catalogPackages: approvedCapabilityPackages,
-            capabilities: capabilities
+            capabilities: capabilities,
+            workspace: workspace
         ).map(makePackageCapabilityItem).sorted {
             let lhsPriority = railCapabilityPriority($0)
             let rhsPriority = railCapabilityPriority($1)
@@ -433,9 +441,12 @@ struct WorkspaceRightRailView: View {
             .lowercased()
             .replacingOccurrences(of: " ", with: "-")
 
-        if normalizedName.contains("bigquery") { return 0 }
-        if normalizedID == "jira-workflow" || normalizedName.contains("jira") { return 1 }
-        if normalizedID == "redcap-workflow" || normalizedName.contains("redcap") { return 2 }
+        if normalizedID == "jira-workflow" || normalizedName.contains("jira") { return 0 }
+        if normalizedID == "github-workflow" || normalizedName.contains("github") { return 1 }
+        if normalizedID == "gcloud-workflow" || normalizedName.contains("google-cloud") || normalizedName.contains("gcloud") { return 2 }
+        if normalizedName.contains("claude") { return 3 }
+        if normalizedID == "redcap-workflow" || normalizedName.contains("redcap") { return 4 }
+        if normalizedName.contains("bigquery") { return 5 }
         return 100
     }
 
@@ -590,6 +601,10 @@ struct WorkspaceRightRailView: View {
         workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
         workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
         workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
+        for connector in state.linkedConnectors where !connector.isGlobal {
+            connector.cleanupKeychain()
+            modelContext.delete(connector)
+        }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }

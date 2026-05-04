@@ -70,12 +70,21 @@ enum CapabilityManagementPresentation {
     case embedded
 }
 
+private struct PluginCatalogPresentationState {
+    let focusedPackages: [PluginPackage]
+    let filteredPackages: [PluginPackage]
+    let enabledCount: Int
+    let categoryCounts: [String: Int]
+    let visibleCategories: [String]
+}
+
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
     var focus: CatalogFocus = .all
     var presentation: CapabilityManagementPresentation = .modal
     var onInstall: ((PluginPackage) -> Void)?
+    var onCatalogChanged: (() -> Void)?
     var onEditElement: ((ConfigureTab, UUID) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
@@ -108,56 +117,74 @@ struct PluginCatalogView: View {
         )
     }
 
-    private var inventoryPackages: [PluginPackage] {
-        CapabilityCatalogInventory.packages(
-            catalogPackages: catalog.packages,
-            capabilities: capabilities
-        )
-    }
-
-    private var focusedPackages: [PluginPackage] {
-        inventoryPackages.filter { focus.matches($0) }
-    }
-
-    private var filteredPackages: [PluginPackage] {
-        var result = focusedPackages
-        if let cat = selectedCategory {
-            result = result.filter { $0.category == cat }
-        }
-        if !searchText.isEmpty {
-            let query = searchText.lowercased()
-            result = result.filter {
-                $0.name.lowercased().contains(query) ||
-                $0.description.lowercased().contains(query) ||
-                $0.tags.contains { $0.lowercased().contains(query) }
-            }
-        }
-        return result
-    }
-
-    private var enabledCount: Int {
-        focusedPackages.filter { packageState($0).isEnabled }.count
-    }
-
-    private var visibleCategories: [String] {
-        let cats = focusedPackages.map(\.category)
-        return Array(NSOrderedSet(array: cats)) as? [String] ?? Array(Set(cats)).sorted()
-    }
-
     private var isEmbedded: Bool {
         if case .embedded = presentation { return true }
         return false
     }
 
+    private var presentationState: PluginCatalogPresentationState {
+        PerformanceTelemetry.measure(
+            "catalog_state_build",
+            thresholdMilliseconds: 15,
+            fields: [
+                "catalog_count": String(catalog.packages.count),
+                "focus": focus.rawValue,
+                "has_query": String(!searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                "category_filter": selectedCategory ?? "none"
+            ]
+        ) {
+            let inventory = CapabilityCatalogInventory.packages(
+                catalogPackages: catalog.packages,
+                capabilities: capabilities
+            )
+            let focused = inventory.filter { focus.matches($0) }
+            var categoryCounts: [String: Int] = [:]
+            var visibleCategories: [String] = []
+            for package in focused {
+                categoryCounts[package.category, default: 0] += 1
+                if categoryCounts[package.category] == 1 {
+                    visibleCategories.append(package.category)
+                }
+            }
+
+            var filtered = focused
+            if let selectedCategory {
+                filtered = filtered.filter { $0.category == selectedCategory }
+            }
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !query.isEmpty {
+                filtered = filtered.filter {
+                    $0.name.lowercased().contains(query) ||
+                    $0.description.lowercased().contains(query) ||
+                    $0.tags.contains { $0.lowercased().contains(query) }
+                }
+            }
+
+            let enabledCount = focused.reduce(0) { count, package in
+                count + (packageState(package).isEnabled ? 1 : 0)
+            }
+
+            return PluginCatalogPresentationState(
+                focusedPackages: focused,
+                filteredPackages: filtered,
+                enabledCount: enabledCount,
+                categoryCounts: categoryCounts,
+                visibleCategories: visibleCategories
+            )
+        }
+    }
+
     var body: some View {
+        let state = presentationState
+
         VStack(spacing: 0) {
-            header
+            header(state)
             searchBar
-            categoryStrip
+            categoryStrip(state)
 
             Divider()
 
-            if filteredPackages.isEmpty {
+            if state.filteredPackages.isEmpty {
                 Spacer()
                     VStack(spacing: 10) {
                         Image(systemName: "puzzlepiece.extension")
@@ -176,7 +203,7 @@ struct PluginCatalogView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        ForEach(filteredPackages) { package in
+                        ForEach(state.filteredPackages) { package in
                             packageCard(package)
                         }
                     }
@@ -194,6 +221,7 @@ struct PluginCatalogView: View {
         .onAppear {
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
+                onCatalogChanged?()
             }
         }
         .sheet(isPresented: $showCreateWizard) {
@@ -210,6 +238,7 @@ struct PluginCatalogView: View {
                     installingPackage = nil
                     onInstall?(pkg)
                     catalog.loadApprovedCapabilities()
+                    onCatalogChanged?()
                 }
             )
         }
@@ -225,7 +254,7 @@ struct PluginCatalogView: View {
 
     // MARK: - Header
 
-    private var header: some View {
+    private func header(_ state: PluginCatalogPresentationState) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "square.grid.2x2.fill")
                 .font(Stanford.ui(20, weight: .semibold))
@@ -238,7 +267,7 @@ struct PluginCatalogView: View {
                 Text(focus.title)
                     .font(Stanford.heading(20))
                     .foregroundStyle(Stanford.black)
-                Text("\(focusedPackages.count) available \u{00B7} \(enabledCount) enabled \u{00B7} \(focus.subtitle)")
+                Text("\(state.focusedPackages.count) available \u{00B7} \(state.enabledCount) enabled \u{00B7} \(focus.subtitle)")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -298,13 +327,12 @@ struct PluginCatalogView: View {
 
     // MARK: - Category Strip
 
-    private var categoryStrip: some View {
+    private func categoryStrip(_ state: PluginCatalogPresentationState) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                categoryChip(nil, label: "All", count: focusedPackages.count)
-                ForEach(visibleCategories, id: \.self) { cat in
-                    let count = focusedPackages.filter { $0.category == cat }.count
-                    categoryChip(cat, label: cat, count: count)
+                categoryChip(nil, label: "All", count: state.focusedPackages.count)
+                ForEach(state.visibleCategories, id: \.self) { cat in
+                    categoryChip(cat, label: cat, count: state.categoryCounts[cat] ?? 0)
                 }
             }
             .padding(.horizontal, 18)
@@ -474,9 +502,14 @@ struct PluginCatalogView: View {
         workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
         workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
         workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
+        for connector in state.linkedConnectors where !connector.isGlobal {
+            connector.cleanupKeychain()
+            modelContext.delete(connector)
+        }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         catalog.loadApprovedCapabilities()
+        onCatalogChanged?()
     }
 
     private func installButton(for package: PluginPackage) -> some View {
@@ -529,6 +562,7 @@ struct PluginCatalogView: View {
             )
             onInstall?(package)
             catalog.loadApprovedCapabilities()
+            onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
         }
@@ -547,6 +581,7 @@ struct PluginCatalogView: View {
                 try CapabilityLibrary().install(package)
             }
             catalog.loadApprovedCapabilities()
+            onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
         }

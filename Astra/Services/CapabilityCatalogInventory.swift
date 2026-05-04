@@ -21,6 +21,21 @@ struct CapabilityCatalogInventory {
             }
     }
 
+    static func configuredPackages(
+        catalogPackages: [PluginPackage],
+        capabilities: WorkspaceCapabilities,
+        workspace: Workspace
+    ) -> [PluginPackage] {
+        packages(catalogPackages: catalogPackages, capabilities: capabilities)
+            .filter { package in
+                CapabilityPackageState(
+                    package: package,
+                    workspace: workspace,
+                    capabilities: capabilities
+                ).isEnabled
+            }
+    }
+
     private static func makePackage(for skill: Skill) -> PluginPackage {
         let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Untitled Capability"

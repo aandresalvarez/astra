@@ -1,9 +1,9 @@
 import Foundation
 import ASTRACore
 
-enum TaskConversationItem: Identifiable {
+enum TaskConversationItem: Identifiable, Sendable {
     case userMessage(text: String, timestamp: Date)
-    case agentResponse(run: TaskRun)
+    case agentResponse(run: TaskRunSnapshot)
     case scheduleResult(text: String, timestamp: Date)
     case systemInfo(text: String, timestamp: Date)
     case recapResult(text: String, timestamp: Date)
@@ -19,22 +19,162 @@ enum TaskConversationItem: Identifiable {
     }
 }
 
-struct TaskToolSummary: Identifiable, Hashable {
+struct TaskEventSnapshot: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let runID: UUID?
+    let type: String
+    let payload: String
+    let timestamp: Date
+
+    init(event: TaskEvent) {
+        id = event.id
+        runID = event.run?.id
+        type = event.type
+        payload = event.payload
+        timestamp = event.timestamp
+    }
+}
+
+struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let status: RunStatus
+    let startedAt: Date
+    let completedAt: Date?
+    let tokensUsed: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let runtimeID: String?
+    let providerSessionId: String?
+    let providerVersion: String?
+    let exitCode: Int?
+    let output: String
+    let costUSD: Double
+    let fileChangesJSONLength: Int
+    let fileChanges: [StoredFileChange]
+    let stopReason: String
+
+    init(input: TaskRunSnapshotInput) {
+        id = input.id
+        status = input.status
+        startedAt = input.startedAt
+        completedAt = input.completedAt
+        tokensUsed = input.tokensUsed
+        inputTokens = input.inputTokens
+        outputTokens = input.outputTokens
+        runtimeID = input.runtimeID
+        providerSessionId = input.providerSessionId
+        providerVersion = input.providerVersion
+        exitCode = input.exitCode
+        output = input.output
+        costUSD = input.costUSD
+        fileChangesJSONLength = input.fileChangesJSON.count
+        fileChanges = Self.decodeFileChanges(input.fileChangesJSON)
+        stopReason = input.stopReason
+    }
+
+    private static func decodeFileChanges(_ json: String) -> [StoredFileChange] {
+        guard let data = json.data(using: .utf8),
+              let changes = try? JSONDecoder().decode([StoredFileChange].self, from: data) else {
+            return []
+        }
+        return changes
+    }
+}
+
+struct TaskRunSnapshotInput: Identifiable, Sendable {
+    let id: UUID
+    let status: RunStatus
+    let startedAt: Date
+    let completedAt: Date?
+    let tokensUsed: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let runtimeID: String?
+    let providerSessionId: String?
+    let providerVersion: String?
+    let exitCode: Int?
+    let output: String
+    let costUSD: Double
+    let fileChangesJSON: String
+    let stopReason: String
+
+    init(run: TaskRun) {
+        id = run.id
+        status = run.status
+        startedAt = run.startedAt
+        completedAt = run.completedAt
+        tokensUsed = run.tokensUsed
+        inputTokens = run.inputTokens
+        outputTokens = run.outputTokens
+        runtimeID = run.runtimeID
+        providerSessionId = run.providerSessionId
+        providerVersion = run.providerVersion
+        exitCode = run.exitCode
+        output = run.output
+        costUSD = run.costUSD
+        fileChangesJSON = run.fileChangesJSON
+        stopReason = run.stopReason
+    }
+}
+
+struct TaskThreadSnapshotInput: Sendable {
+    let goal: String
+    let createdAt: Date
+    let events: [TaskEventSnapshot]
+    let runs: [TaskRunSnapshotInput]
+
+    init(task: AgentTask) {
+        self.init(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: task.events.map(TaskEventSnapshot.init),
+            runs: task.runs.map(TaskRunSnapshotInput.init)
+        )
+    }
+
+    init(goal: String, createdAt: Date, events: [TaskEvent], runs: [TaskRun]) {
+        self.init(
+            goal: goal,
+            createdAt: createdAt,
+            events: events.map(TaskEventSnapshot.init),
+            runs: runs.map(TaskRunSnapshotInput.init)
+        )
+    }
+
+    private init(
+        goal: String,
+        createdAt: Date,
+        events: [TaskEventSnapshot],
+        runs: [TaskRunSnapshotInput]
+    ) {
+        self.goal = goal
+        self.createdAt = createdAt
+        self.events = events
+        self.runs = runs
+    }
+}
+
+struct TaskToolSummary: Identifiable, Hashable, Sendable {
     let name: String
     let count: Int
 
     var id: String { name }
 }
 
-struct TaskRunActivity {
+struct TaskToolResult: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let payload: String
+}
+
+struct TaskRunActivity: Sendable {
     let tools: [TaskToolSummary]
-    let toolResults: [TaskEvent]
+    let toolResults: [TaskToolResult]
     let fileChanges: [StoredFileChange]
 
     static let empty = TaskRunActivity(tools: [], toolResults: [], fileChanges: [])
 }
 
-struct TaskProtocolTodoItem: Identifiable, Hashable {
+struct TaskProtocolTodoItem: Identifiable, Hashable, Sendable {
     let id: String
     let text: String
     let status: AstraRunProtocolEvent.TodoStatus
@@ -42,7 +182,7 @@ struct TaskProtocolTodoItem: Identifiable, Hashable {
     var isDone: Bool { status == .done }
 }
 
-struct TaskRunProtocolState: Equatable {
+struct TaskRunProtocolState: Equatable, Sendable {
     var todoItems: [TaskProtocolTodoItem] = []
     var completionSummary: String?
     var verifiedBy: String?
@@ -55,10 +195,10 @@ struct TaskRunProtocolState: Equatable {
     }
 }
 
-struct TaskThreadSnapshot {
-    let sortedEvents: [TaskEvent]
-    let sortedRuns: [TaskRun]
-    let latestRun: TaskRun?
+struct TaskThreadSnapshot: Sendable {
+    let sortedEvents: [TaskEventSnapshot]
+    let sortedRuns: [TaskRunSnapshot]
+    let latestRun: TaskRunSnapshot?
     let conversationItems: [TaskConversationItem]
     let latestAgentPlanItems: [TaskProtocolTodoItem]
 
@@ -68,42 +208,82 @@ struct TaskThreadSnapshot {
     static let empty = TaskThreadSnapshot(
         goal: "",
         createdAt: Date(timeIntervalSince1970: 0),
-        events: [],
-        runs: []
+        events: [TaskEventSnapshot](),
+        runs: [TaskRunSnapshot]()
     )
 
+    static func placeholder(goal: String, createdAt: Date) -> TaskThreadSnapshot {
+        TaskThreadSnapshot(
+            goal: goal,
+            createdAt: createdAt,
+            events: [TaskEventSnapshot](),
+            runs: [TaskRunSnapshot]()
+        )
+    }
+
+    static func buildAsync(
+        input: TaskThreadSnapshotInput,
+        fields: [String: String]
+    ) async -> TaskThreadSnapshot {
+        await Task.detached(priority: .userInitiated) {
+            PerformanceTelemetry.measure(
+                "thread_snapshot_build",
+                thresholdMilliseconds: 0,
+                fields: fields
+            ) {
+                TaskThreadSnapshot(input: input)
+            }
+        }.value
+    }
+
     init(task: AgentTask) {
+        self.init(input: TaskThreadSnapshotInput(task: task))
+    }
+
+    init(input: TaskThreadSnapshotInput) {
         self.init(
-            goal: task.goal,
-            createdAt: task.createdAt,
-            events: task.events,
-            runs: task.runs
+            goal: input.goal,
+            createdAt: input.createdAt,
+            events: input.events,
+            runs: input.runs.map(TaskRunSnapshot.init)
         )
     }
 
     init(goal: String, createdAt: Date, events: [TaskEvent], runs: [TaskRun]) {
+        self.init(input: TaskThreadSnapshotInput(
+            goal: goal,
+            createdAt: createdAt,
+            events: events,
+            runs: runs
+        ))
+    }
+
+    init(goal: String, createdAt: Date, events: [TaskEventSnapshot], runs: [TaskRunSnapshot]) {
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
-        latestRun = sortedRuns.max { $0.startedAt < $1.startedAt }
+        latestRun = sortedRuns.last
 
-        var toolsByRunID: [UUID: [TaskEvent]] = [:]
-        var resultsByRunID: [UUID: [TaskEvent]] = [:]
+        var toolsByRunID: [UUID: [TaskEventSnapshot]] = [:]
+        var resultsByRunID: [UUID: [TaskToolResult]] = [:]
         var protocolStatesByRunID: [UUID: TaskRunProtocolState] = [:]
         var latestPlanItems: [TaskProtocolTodoItem] = []
 
         for event in sortedEvents {
-            if let runID = event.run?.id {
+            if let runID = event.runID {
                 switch event.type {
                 case "tool.use":
                     toolsByRunID[runID, default: []].append(event)
                 case "tool.result" where !event.payload.isEmpty:
-                    resultsByRunID[runID, default: []].append(event)
+                    resultsByRunID[runID, default: []].append(TaskToolResult(
+                        id: event.id,
+                        payload: event.payload
+                    ))
                 default:
                     break
                 }
             }
 
-            if let runID = event.run?.id {
+            if let runID = event.runID {
                 var state = protocolStatesByRunID[runID] ?? .empty
                 switch event.type {
                 case "astra.todo.replace":
@@ -147,15 +327,23 @@ struct TaskThreadSnapshot {
         )
     }
 
+    func activity(for run: TaskRunSnapshot) -> TaskRunActivity {
+        activityByRunID[run.id] ?? .empty
+    }
+
     func activity(for run: TaskRun) -> TaskRunActivity {
         activityByRunID[run.id] ?? .empty
+    }
+
+    func protocolState(for run: TaskRunSnapshot) -> TaskRunProtocolState {
+        protocolByRunID[run.id] ?? .empty
     }
 
     func protocolState(for run: TaskRun) -> TaskRunProtocolState {
         protocolByRunID[run.id] ?? .empty
     }
 
-    private static func summarizeToolEvents(_ events: [TaskEvent]) -> [TaskToolSummary] {
+    private static func summarizeToolEvents(_ events: [TaskEventSnapshot]) -> [TaskToolSummary] {
         var seen: [String: Int] = [:]
         var order: [String] = []
 
@@ -175,8 +363,8 @@ struct TaskThreadSnapshot {
     private static func makeConversationItems(
         goal: String,
         createdAt: Date,
-        events: [TaskEvent],
-        runs: [TaskRun],
+        events: [TaskEventSnapshot],
+        runs: [TaskRunSnapshot],
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> [TaskConversationItem] {
         var items: [TaskConversationItem] = [
@@ -189,17 +377,22 @@ struct TaskThreadSnapshot {
             $0.type == "system.info" ||
             $0.type == "recap.result"
         }
-        var addedRunIDs = Set<UUID>()
+        let visibleRuns = runs.filter { shouldShowAgentResponse(for: $0, protocolByRunID: protocolByRunID) }
+        var nextRunIndex = 0
+
+        func appendCompletedRuns(upTo timestamp: Date) {
+            while nextRunIndex < visibleRuns.count {
+                guard let completed = visibleRuns[nextRunIndex].completedAt,
+                      completed <= timestamp else {
+                    break
+                }
+                items.append(.agentResponse(run: visibleRuns[nextRunIndex]))
+                nextRunIndex += 1
+            }
+        }
 
         for event in conversationEvents {
-            for run in runs where !addedRunIDs.contains(run.id) {
-                if let completed = run.completedAt,
-                   completed <= event.timestamp,
-                   shouldShowAgentResponse(for: run, protocolByRunID: protocolByRunID) {
-                    items.append(.agentResponse(run: run))
-                    addedRunIDs.insert(run.id)
-                }
-            }
+            appendCompletedRuns(upTo: event.timestamp)
 
             switch event.type {
             case "user.message":
@@ -215,15 +408,16 @@ struct TaskThreadSnapshot {
             }
         }
 
-        for run in runs where !addedRunIDs.contains(run.id) && shouldShowAgentResponse(for: run, protocolByRunID: protocolByRunID) {
-            items.append(.agentResponse(run: run))
+        while nextRunIndex < visibleRuns.count {
+            items.append(.agentResponse(run: visibleRuns[nextRunIndex]))
+            nextRunIndex += 1
         }
 
         return items
     }
 
     private static func shouldShowAgentResponse(
-        for run: TaskRun,
+        for run: TaskRunSnapshot,
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> Bool {
         !run.output.isEmpty || protocolByRunID[run.id]?.hasCompletion == true
@@ -291,11 +485,11 @@ struct TaskGeneratedFilesTrigger: Equatable {
     let latestRunFileChangesLength: Int
     let status: TaskStatus
 
-    init(task: AgentTask, latestRun: TaskRun?) {
+    init(task: AgentTask, latestRun: TaskRunSnapshot?) {
         taskID = task.id
         taskFolder = task.taskFolder
         latestRunID = latestRun?.id
-        latestRunFileChangesLength = latestRun?.fileChangesJSON.count ?? 0
+        latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
         status = task.status
     }
 }

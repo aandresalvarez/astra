@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LogViewerView: View {
     @State private var entries: [LogEntry] = AppLogger.entries
+    @State private var filteredEntries: [LogEntry] = []
     @State private var searchText = ""
     @State private var selectedLevel: LogLevel? = nil
     @State private var selectedCategory: String? = nil
@@ -11,20 +12,36 @@ struct LogViewerView: View {
     private let categories = [
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-        "Keychain", "Updater", "General"
+        "Keychain", "Updater", "Performance", "General"
     ]
 
-    var filteredEntries: [LogEntry] {
-        entries.filter { entry in
+    private func filtered(_ sourceEntries: [LogEntry]) -> [LogEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return sourceEntries.filter { entry in
             if let level = selectedLevel, entry.logLevel < level { return false }
             if let cat = selectedCategory, entry.category != cat { return false }
             if let tid = filterTaskID, entry.taskID != tid { return false }
-            if !searchText.isEmpty {
-                let query = searchText.lowercased()
+            if !query.isEmpty {
                 return entry.message.lowercased().contains(query)
                     || entry.category.lowercased().contains(query)
             }
             return true
+        }
+    }
+
+    private func recomputeFilteredEntries(from sourceEntries: [LogEntry]? = nil) {
+        let sourceEntries = sourceEntries ?? entries
+        filteredEntries = PerformanceTelemetry.measure(
+            "log_filter",
+            thresholdMilliseconds: 10,
+            fields: [
+                "entry_count": String(sourceEntries.count),
+                "has_query": String(!searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                "level_filter": selectedLevel?.rawValue ?? "none",
+                "category_filter": selectedCategory ?? "none"
+            ]
+        ) {
+            filtered(sourceEntries)
         }
     }
 
@@ -74,7 +91,9 @@ struct LogViewerView: View {
                     .controlSize(.small)
 
                 Button {
-                    entries = AppLogger.entries
+                    let latestEntries = AppLogger.entries
+                    entries = latestEntries
+                    recomputeFilteredEntries(from: latestEntries)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -132,8 +151,14 @@ struct LogViewerView: View {
         }
         .frame(minWidth: 600, minHeight: 300)
         .onAppear {
-            entries = AppLogger.entries
+            let latestEntries = AppLogger.entries
+            entries = latestEntries
+            recomputeFilteredEntries(from: latestEntries)
         }
+        .onChange(of: searchText) { recomputeFilteredEntries() }
+        .onChange(of: selectedLevel) { recomputeFilteredEntries() }
+        .onChange(of: selectedCategory) { recomputeFilteredEntries() }
+        .onChange(of: filterTaskID) { recomputeFilteredEntries() }
         .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
             guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
             DispatchQueue.main.async {
@@ -141,6 +166,7 @@ struct LogViewerView: View {
                 if entries.count > 2000 {
                     entries.removeFirst(entries.count - 2000)
                 }
+                recomputeFilteredEntries()
             }
         }
     }

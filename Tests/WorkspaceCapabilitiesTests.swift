@@ -42,7 +42,7 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.availableGlobalSkills.map(\.name) == ["Disabled Shared", "Shared Analyst"])
     }
 
-    @Test("active connectors include local, enabled shared, and enabled skill attachments")
+    @Test("active connectors include local, enabled shared, and explicitly enabled skill attachments")
     @MainActor
     func activeConnectorsMergeAllSources() {
         let workspace = Workspace(name: "Connectors", primaryPath: "/tmp/connectors")
@@ -52,10 +52,13 @@ struct WorkspaceCapabilitiesTests {
 
         let sharedConnector = Connector(name: "Shared GCP", serviceType: "custom")
         sharedConnector.isGlobal = true
-        workspace.enabledGlobalConnectorIDs = [sharedConnector.id.uuidString]
 
         let attachedConnector = Connector(name: "Attached API", serviceType: "rest_api")
         attachedConnector.isGlobal = true
+        workspace.enabledGlobalConnectorIDs = [
+            sharedConnector.id.uuidString,
+            attachedConnector.id.uuidString
+        ]
 
         let sharedSkill = Skill(name: "Shared Skill", allowedTools: ["Read"])
         sharedSkill.isGlobal = true
@@ -69,8 +72,30 @@ struct WorkspaceCapabilitiesTests {
         )
 
         #expect(capabilities.workspaceConnectors.map(\.name) == ["Local Jira"])
-        #expect(capabilities.enabledGlobalConnectors.map(\.name) == ["Shared GCP"])
+        #expect(capabilities.enabledGlobalConnectors.map(\.name) == ["Attached API", "Shared GCP"])
         #expect(capabilities.activeConnectors.map(\.name) == ["Attached API", "Local Jira", "Shared GCP"])
+    }
+
+    @Test("active connectors ignore unenabled global skill attachments")
+    @MainActor
+    func activeConnectorsIgnoreUnenabledGlobalSkillAttachments() {
+        let workspace = Workspace(name: "Scoped Connectors", primaryPath: "/tmp/scoped-connectors")
+
+        let attachedConnector = Connector(name: "Other Workspace Jira", serviceType: "jira")
+        attachedConnector.isGlobal = true
+
+        let sharedSkill = Skill(name: "Shared Skill", allowedTools: ["Read"])
+        sharedSkill.isGlobal = true
+        sharedSkill.connectors = [attachedConnector]
+        workspace.enabledGlobalSkillIDs = [sharedSkill.id.uuidString]
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [sharedSkill],
+            globalConnectors: [attachedConnector]
+        )
+
+        #expect(capabilities.activeConnectors.isEmpty)
     }
 
     @Test("active tools include local, enabled shared, and enabled skill attachments")
@@ -118,6 +143,7 @@ struct WorkspaceCapabilitiesTests {
         skill.isGlobal = true
         skill.connectors = [connector]
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+        workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
 
         let package = PluginPackage(
             id: "jira-workflow",
@@ -206,6 +232,52 @@ struct WorkspaceCapabilitiesTests {
         #expect(package.connectors.map(\.name) == ["Google Cloud"])
         #expect(package.localTools.map(\.name) == ["bq — BigQuery CLI"])
         #expect(state.isEnabled)
+    }
+
+    @Test("configured catalog inventory only returns enabled packages")
+    @MainActor
+    func configuredCatalogInventoryOnlyReturnsEnabledPackages() throws {
+        let workspace = Workspace(name: "Configured Catalog", primaryPath: "/tmp/configured-catalog")
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let github = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+
+        #expect(CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [jira, github],
+            capabilities: capabilities,
+            workspace: workspace
+        ).isEmpty)
+
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        #expect(CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [jira, github],
+            capabilities: capabilities,
+            workspace: workspace
+        ).map(\.id) == ["jira-workflow"])
+    }
+
+    @Test("configured catalog inventory keeps enabled standalone capabilities")
+    @MainActor
+    func configuredCatalogInventoryKeepsEnabledStandaloneCapabilities() {
+        let workspace = Workspace(name: "Configured Standalone", primaryPath: "/tmp/configured-standalone")
+        let enabledShared = Skill(name: "Enabled Shared", allowedTools: ["Read"])
+        enabledShared.isGlobal = true
+        let disabledShared = Skill(name: "Disabled Shared", allowedTools: ["Read"])
+        disabledShared.isGlobal = true
+        workspace.enabledGlobalSkillIDs = [enabledShared.id.uuidString]
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [enabledShared, disabledShared]
+        )
+
+        let packages = CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [],
+            capabilities: capabilities,
+            workspace: workspace
+        )
+
+        #expect(packages.map(\.name) == ["Enabled Shared"])
     }
 
     @Test("catalog inventory does not duplicate capabilities represented by approved packages")

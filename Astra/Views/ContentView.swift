@@ -1,11 +1,15 @@
 import SwiftUI
 import SwiftData
 
+enum ContentSelectionResolver {
+    static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
+        selectedTask?.workspace ?? selectedWorkspace
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \AgentTask.queuePosition) private var allTasks: [AgentTask]
-    @Query(sort: \Skill.name) private var allSkills: [Skill]
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
@@ -21,6 +25,8 @@ struct ContentView: View {
     @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceName = ""
+    @State private var shouldApplyOnboardingCapabilitiesToNextWorkspace = false
+    @State private var onboardingCapabilityConfiguration = OnboardingCapabilityConfiguration()
     @State private var runtime = AppRuntimeController()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
@@ -28,6 +34,7 @@ struct ContentView: View {
     @State private var renamingWorkspace: Workspace?
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
+    @State private var runningTaskCount = 0
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
@@ -37,6 +44,7 @@ struct ContentView: View {
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
+    @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -58,9 +66,11 @@ struct ContentView: View {
         self.appUpdateController = appUpdateController
     }
 
-    private var filteredTasks: [AgentTask] {
-        guard let ws = selectedWorkspace else { return [] }
-        return allTasks.filter { $0.workspace?.id == ws.id }
+    private var effectiveWorkspace: Workspace? {
+        ContentSelectionResolver.effectiveWorkspace(
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace
+        )
     }
 
     private var workspaceSelectionSignature: String {
@@ -96,7 +106,7 @@ struct ContentView: View {
     private var rightRailInspectorBinding: Binding<Bool> {
         Binding(
             get: {
-                selectedWorkspace != nil && isWorkspaceRightRailVisible
+                effectiveWorkspace != nil && isWorkspaceRightRailVisible
             },
             set: { newValue in
                 isWorkspaceRightRailVisible = newValue
@@ -106,43 +116,69 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            TaskSidebarView(
-                tasks: allTasks,
+            TaskSidebarContainerView(
                 selectedTask: selectedTaskBinding,
                 taskQueue: runtime.taskQueue,
                 workspaces: workspaces,
                 selectedWorkspace: $selectedWorkspace,
-                onNewTask: {
-                    setSelectedTask(nil)
-                    isComposingTask = true
-                },
-                onRunQueue: { runQueue() },
-                onRunTask: { task in runSingleTask(task) },
-                onToggleDone: { task in toggleDone(task) },
-                onCancelTask: { task in cancelTask(task) },
-                onRetryTask: { task in retryTask(task) },
-                onDeleteTask: { task in requestDeleteTask(task) },
-                onNewWorkspace: { createWorkspace() },
-                onEditWorkspace: { ws in
-                    selectedWorkspace = ws
-                    showingWorkspaceEditor = true
-                },
-                onImportWorkspace: { importWorkspace() },
-                onShowConfigure: { openCapabilitiesManager() },
-                onShowLogs: { showingLogs = true },
-                onShowDashboard: { showingDashboard = true },
-                onDeleteWorkspace: { ws in deleteWorkspace(ws) },
-                onRenameWorkspace: { ws in
-                    renameText = ws.name
-                    renamingWorkspace = ws
-                },
-                onNewSchedule: { showingNewSchedule = true },
-                onEditSchedule: { schedule in editingSchedule = schedule },
+                onNewTask: startComposingTask,
+                onRunQueue: runQueue,
+                onRunTask: runSingleTask,
+                onToggleDone: toggleDone,
+                onCancelTask: cancelTask,
+                onRetryTask: retryTask,
+                onDeleteTask: requestDeleteTask,
+                onNewWorkspace: createWorkspace,
+                onEditWorkspace: beginEditingWorkspace,
+                onImportWorkspace: importWorkspace,
+                onShowConfigure: openCapabilitiesManager,
+                onShowLogs: showLogs,
+                onShowDashboard: showDashboard,
+                onDeleteWorkspace: deleteWorkspace,
+                onRenameWorkspace: beginRenamingWorkspace,
+                onNewSchedule: showNewSchedule,
+                onEditSchedule: beginEditingSchedule,
                 isSearchActive: $isSearchActive
             )
             .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
-            detailWithRightRail
+            ContentDetailAreaView(
+                selectedTask: selectedTask,
+                effectiveWorkspace: effectiveWorkspace,
+                isComposingTask: isComposingTask,
+                taskQueue: runtime.taskQueue,
+                sshReloadTrigger: sshReloadTrigger,
+                isRightRailPresented: rightRailInspectorBinding,
+                onQuickRun: handleQuickRunTask,
+                onTaskCreated: handleTaskCreated,
+                onAddSSHConnection: { showingSSHEditor = true },
+                onManageSkills: openSkillsManager,
+                onRunTask: runSingleTask,
+                onCancelTask: cancelTask,
+                onRetryTask: retryTask,
+                onResumeTask: resumeTask,
+                onApproveTask: approveTask,
+                onToggleDone: toggleDone,
+                onMoveToDraft: moveTaskToDraft,
+                onForkTask: setSelectedTask,
+                onCreateTask: startComposingTask,
+                onOpenTask: openExistingTask,
+                onDeleteTask: requestDeleteTask,
+                onSetDoneState: setDoneState,
+                onRunQueue: runQueue,
+                onConfigure: openCapabilitiesManager,
+                onShowDashboard: showDashboard,
+                onShowLogs: showLogs,
+                onNewSchedule: showNewSchedule,
+                onEditSchedule: beginEditingSchedule,
+                onManageCapabilities: openCapabilitiesManager,
+                onEditWorkspace: showWorkspaceEditor,
+                onOpenConfigureTab: openConfigureTab,
+                onNewSSHConnection: showSSHConnectionEditor,
+                onEditSSHConnection: beginEditingSSHConnection,
+                onCreateWorkspace: createWorkspace,
+                onImportWorkspace: importWorkspace
+            )
         }
         .navigationSplitViewStyle(.balanced)
         .accessibilityIdentifier("MainContentView")
@@ -152,36 +188,17 @@ struct ContentView: View {
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
-            if appUpdateController.shouldShowUpdateButton {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        appUpdateController.checkForUpdatesFromButton()
-                    } label: {
-                        Label(appUpdateController.buttonTitle, systemImage: "arrow.down.circle")
-                    }
-                    .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
-                    .accessibilityIdentifier("AppUpdateButton")
-                }
-            }
-
-            if selectedWorkspace != nil {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        isWorkspaceRightRailVisible.toggle()
-                    } label: {
-                        Label(
-                            isWorkspaceRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                            systemImage: "sidebar.right"
-                        )
-                    }
-                    .help(isWorkspaceRightRailVisible ? "Hide control panel" : "Show control panel")
-                }
-            }
+            ContentToolbar(
+                appUpdateController: appUpdateController,
+                hasWorkspace: effectiveWorkspace != nil,
+                isRightRailVisible: isWorkspaceRightRailVisible,
+                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
+                onToggleRightRail: toggleRightRail
+            )
         }
         .overlay {
             if isSearchActive {
-                SearchPanelOverlay(
-                    tasks: allTasks,
+                SearchPanelOverlayContainer(
                     workspaces: workspaces,
                     selectedTask: selectedTaskBinding,
                     selectedWorkspace: $selectedWorkspace,
@@ -190,7 +207,12 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            topNoticeBanners
+            TopNoticeBannersView(
+                recoveryNotice: recoveryNotice,
+                updateBlockNotice: updateBlockNotice,
+                onDismissRecoveryNotice: { recoveryNotice = "" },
+                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
+            )
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -201,12 +223,12 @@ struct ContentView: View {
                 .frame(width: 600, height: 500)
         }
         .sheet(isPresented: $showingConfigure) {
-            if let ws = selectedWorkspace {
+            if let ws = effectiveWorkspace {
                 ConfigureView(workspace: ws, initialTab: configureInitialTab, focusItemID: configureFocusItemID)
             }
         }
         .sheet(isPresented: $showingWorkspaceEditor) {
-            if let ws = selectedWorkspace {
+            if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
                     deleteWorkspace(ws)
                 })
@@ -234,7 +256,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingSSHEditor) {
-            if let ws = selectedWorkspace {
+            if let ws = effectiveWorkspace {
                 SSHConnectionEditorView(
                     connection: SSHConnection(),
                     onSave: { conn in
@@ -249,7 +271,7 @@ struct ContentView: View {
             }
         }
         .sheet(item: $editingSSHConnection) { conn in
-            if let ws = selectedWorkspace {
+            if let ws = effectiveWorkspace {
                 SSHConnectionEditorView(
                     connection: conn,
                     onSave: { updated in
@@ -266,16 +288,22 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingNewSchedule) {
-            if let ws = selectedWorkspace {
+            if let ws = effectiveWorkspace {
                 ScheduleEditorView(workspace: ws)
             }
         }
         .sheet(item: $editingSchedule) { schedule in
-            ScheduleEditorView(workspace: schedule.workspace ?? selectedWorkspace!, schedule: schedule)
+            if let ws = schedule.workspace ?? effectiveWorkspace {
+                ScheduleEditorView(workspace: ws, schedule: schedule)
+            }
         }
         .alert("New Workspace", isPresented: $showingNewWorkspace) {
             TextField("Workspace name", text: $newWorkspaceName)
-            Button("Cancel", role: .cancel) { newWorkspaceName = "" }
+            Button("Cancel", role: .cancel) {
+                newWorkspaceName = ""
+                shouldApplyOnboardingCapabilitiesToNextWorkspace = false
+                onboardingCapabilityConfiguration.clearSecrets()
+            }
             Button("Create") { finalizeNewWorkspace() }
         } message: {
             Text("A folder will be created automatically in your workspaces root directory.")
@@ -295,7 +323,10 @@ struct ContentView: View {
             handleAppear()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
-        .onChange(of: updateSafetySignature) { refreshUpdateSafetyHooks() }
+        .onChange(of: updateSafetySignature) {
+            refreshRunningTaskCount()
+            refreshUpdateSafetyHooks()
+        }
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
         }
@@ -322,8 +353,15 @@ struct ContentView: View {
             OnboardingWizardView(
                 hasCompletedOnboarding: $hasCompletedOnboarding,
                 allowsDismiss: isReplayingOnboarding,
-                onDismiss: { hasCompletedOnboarding = true },
-                onCreateWorkspace: { createWorkspace() }
+                onDismiss: {
+                    hasCompletedOnboarding = true
+                    onboardingCapabilityConfiguration.clearSecrets()
+                },
+                capabilityConfiguration: $onboardingCapabilityConfiguration,
+                onCreateWorkspace: {
+                    shouldApplyOnboardingCapabilitiesToNextWorkspace = true
+                    createWorkspace()
+                }
             )
             .environment(\.preflightCache, runtime.preflightCache)
             .interactiveDismissDisabled(!isReplayingOnboarding)
@@ -334,44 +372,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Onboarding
-
-    @ViewBuilder
-    private var topNoticeBanners: some View {
-        if !recoveryNotice.isEmpty || updateBlockNotice != nil {
-            VStack(spacing: 0) {
-                if !recoveryNotice.isEmpty {
-                    recoveryNoticeBanner
-                }
-                if let updateBlockNotice {
-                    updateNoticeBanner(updateBlockNotice)
-                }
-            }
-        }
-    }
-
-    private var recoveryNoticeBanner: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "externaldrive.badge.checkmark")
-                .foregroundStyle(Stanford.paloAltoGreen)
-            Text(recoveryNotice)
-                .font(Stanford.body(13))
-                .foregroundStyle(Stanford.black)
-            Spacer()
-            Button("Dismiss") {
-                recoveryNotice = ""
-            }
-            .font(Stanford.body(12))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Stanford.fog)
-        .overlay(alignment: .bottom) {
-            SoftHorizontalTransition(height: 12)
-                .rotationEffect(.degrees(180))
-                .offset(y: 8)
-        }
-    }
+    // MARK: - View State
 
     private var updateBlockNotice: String? {
         if case .blocked(let message) = appUpdateController.status {
@@ -380,166 +381,7 @@ struct ContentView: View {
         return nil
     }
 
-    private func updateNoticeBanner(_ message: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.down.circle")
-                .foregroundStyle(Stanford.cardinalRed)
-            Text(message)
-                .font(Stanford.body(13))
-                .foregroundStyle(Stanford.black)
-            Spacer()
-            Button("Check Again") {
-                appUpdateController.checkForUpdatesFromButton()
-            }
-            .font(Stanford.body(12))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Stanford.fog)
-        .overlay(alignment: .bottom) {
-            SoftHorizontalTransition(height: 12)
-                .rotationEffect(.degrees(180))
-                .offset(y: 8)
-        }
-    }
-
-    private var detailWithRightRail: some View {
-        detailContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .inspector(isPresented: rightRailInspectorBinding) {
-                if let workspace = selectedWorkspace {
-                    WorkspaceRightRailView(
-                        workspace: workspace,
-                        selectedTask: selectedTask,
-                        onConfigure: { openCapabilitiesManager() },
-                        onEditWorkspace: { showingWorkspaceEditor = true },
-                        onShowDashboard: { showingDashboard = true },
-                        onShowLogs: { showingLogs = true },
-                        onNewSchedule: { showingNewSchedule = true },
-                        onEditSchedule: { schedule in editingSchedule = schedule },
-                        onManageCapabilities: { openCapabilitiesManager() },
-                        onOpenConfigureTab: { tab, itemID in
-                            configureInitialTab = tab
-                            configureFocusItemID = itemID
-                            showingConfigure = true
-                        },
-                        onNewSSHConnection: { showingSSHEditor = true },
-                        onEditSSHConnection: { conn in editingSSHConnection = conn }
-                    )
-                    .id(workspace.id)
-                    .inspectorColumnWidth(min: 300, ideal: 340, max: 380)
-                }
-            }
-    }
-
-    @ViewBuilder
-    private var detailContent: some View {
-        if let task = selectedTask, task.status == .draft {
-            // Draft task — show chat with conversation restored
-            ChatPanelView(
-                taskQueue: runtime.taskQueue,
-                workspace: selectedWorkspace,
-                sshReloadTrigger: sshReloadTrigger,
-                draftToLoad: task,
-                onQuickRun: { task in
-                    setSelectedTask(task)
-                    isComposingTask = false
-                    runSingleTask(task)
-                },
-                onTaskCreated: { task in
-                    setSelectedTask(task)
-                    isComposingTask = false
-                },
-                onAddSSHConnection: {
-                    showingSSHEditor = true
-                },
-                onManageSkills: {
-                    configureInitialTab = .skills
-                    configureFocusItemID = nil
-                    showingConfigure = true
-                }
-            )
-        } else if let task = selectedTask {
-            TaskMainView(
-                task: task,
-                taskQueue: runtime.taskQueue,
-                onRunTask: { t in runSingleTask(t) },
-                onCancelTask: { t in cancelTask(t) },
-                onRetryTask: { t in retryTask(t) },
-                onResumeTask: { t in resumeTask(t) },
-                onApproveTask: { t in approveTask(t) },
-                onToggleDone: { t in toggleDone(t) },
-                onMoveToDraft: { task in
-                    isComposingTask = false
-                    setSelectedTask(nil)
-                    DispatchQueue.main.async {
-                        setSelectedTask(task)
-                    }
-                },
-                onManageSkills: {
-                    configureInitialTab = .skills
-                    configureFocusItemID = nil
-                    showingConfigure = true
-                },
-                onForkTask: { forkedTask in
-                    setSelectedTask(forkedTask)
-                }
-            )
-        } else if isComposingTask, selectedWorkspace != nil {
-            ChatPanelView(
-                taskQueue: runtime.taskQueue,
-                workspace: selectedWorkspace,
-                sshReloadTrigger: sshReloadTrigger,
-                onQuickRun: { task in
-                    setSelectedTask(task)
-                    isComposingTask = false
-                    runSingleTask(task)
-                },
-                onTaskCreated: { task in
-                    setSelectedTask(task)
-                    isComposingTask = false
-                },
-                onAddSSHConnection: {
-                    showingSSHEditor = true
-                },
-                onManageSkills: {
-                    configureInitialTab = .skills
-                    configureFocusItemID = nil
-                    showingConfigure = true
-                }
-            )
-        } else if let workspace = selectedWorkspace {
-            WorkspaceHomeView(
-                workspace: workspace,
-                tasks: filteredTasks,
-                taskQueue: runtime.taskQueue,
-                onCreateTask: {
-                    setSelectedTask(nil)
-                    isComposingTask = true
-                },
-                onOpenTask: { task in
-                    setSelectedTask(task)
-                    isComposingTask = false
-                },
-                onDeleteTask: { task in
-                    requestDeleteTask(task)
-                },
-                onSetDoneState: { task, isDone in
-                    setDoneState(task, to: isDone)
-                },
-                onRunQueue: { runQueue() },
-                onConfigure: { openCapabilitiesManager() },
-                onShowDashboard: { showingDashboard = true },
-                onShowLogs: { showingLogs = true },
-                onNewSchedule: { showingNewSchedule = true },
-                onEditSchedule: { schedule in editingSchedule = schedule },
-                onManageCapabilities: { openCapabilitiesManager() }
-            )
-        } else {
-            // Onboarding — no workspace
-            onboardingView
-        }
-    }
+    // MARK: - UI Actions
 
     private func openCapabilitiesManager() {
         configureInitialTab = .capabilities
@@ -547,53 +389,87 @@ struct ContentView: View {
         showingConfigure = true
     }
 
-    /// Empty-state shown when the user has completed onboarding but no
-    /// workspace is selected (all deleted, or post-upgrade where the
-    /// stored selection is stale). Environment checks live in the
-    /// onboarding wizard now; this view is purely "pick a workspace".
-    private var onboardingView: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "folder.badge.plus")
-                .font(Stanford.ui(48))
-                .foregroundStyle(Stanford.cardinalRed)
+    private func openSkillsManager() {
+        configureInitialTab = .skills
+        configureFocusItemID = nil
+        showingConfigure = true
+    }
 
-            VStack(spacing: 8) {
-                Text("Pick a Workspace")
-                    .font(Stanford.heading(24))
-                    .foregroundStyle(Stanford.black)
+    private func openConfigureTab(_ tab: ConfigureTab, itemID: UUID?) {
+        configureInitialTab = tab
+        configureFocusItemID = itemID
+        showingConfigure = true
+    }
 
-                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
-                    .font(Stanford.body(15))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-            }
+    private func showLogs() {
+        showingLogs = true
+    }
 
-            HStack(spacing: 12) {
-                Button {
-                    createWorkspace()
-                } label: {
-                    Label("New Workspace", systemImage: "plus")
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .accessibilityIdentifier("OnboardingNewWorkspaceButton")
+    private func showDashboard() {
+        showingDashboard = true
+    }
 
-                Button {
-                    importWorkspace()
-                } label: {
-                    Label("Import Workspace", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+    private func showWorkspaceEditor() {
+        showingWorkspaceEditor = true
+    }
 
-                SettingsLink {
-                    Label("Settings", systemImage: "gear")
-                }
-                .buttonStyle(.plain)
-            }
+    private func beginEditingWorkspace(_ workspace: Workspace) {
+        selectedWorkspace = workspace
+        showingWorkspaceEditor = true
+    }
+
+    private func beginRenamingWorkspace(_ workspace: Workspace) {
+        renameText = workspace.name
+        renamingWorkspace = workspace
+    }
+
+    private func showNewSchedule() {
+        showingNewSchedule = true
+    }
+
+    private func beginEditingSchedule(_ schedule: TaskSchedule) {
+        editingSchedule = schedule
+    }
+
+    private func showSSHConnectionEditor() {
+        showingSSHEditor = true
+    }
+
+    private func beginEditingSSHConnection(_ connection: SSHConnection) {
+        editingSSHConnection = connection
+    }
+
+    private func toggleRightRail() {
+        isWorkspaceRightRailVisible.toggle()
+    }
+
+    private func startComposingTask() {
+        setSelectedTask(nil)
+        isComposingTask = true
+    }
+
+    private func handleQuickRunTask(_ task: AgentTask) {
+        setSelectedTask(task)
+        isComposingTask = false
+        runSingleTask(task)
+    }
+
+    private func handleTaskCreated(_ task: AgentTask) {
+        setSelectedTask(task)
+        isComposingTask = false
+    }
+
+    private func openExistingTask(_ task: AgentTask) {
+        setSelectedTask(task)
+        isComposingTask = false
+    }
+
+    private func moveTaskToDraft(_ task: AgentTask) {
+        isComposingTask = false
+        setSelectedTask(nil)
+        DispatchQueue.main.async {
+            setSelectedTask(task)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-        .background(Stanford.panelBackground)
     }
 
     // MARK: - Coordinator
@@ -603,14 +479,11 @@ struct ContentView: View {
     }
 
     private var updateSafetySignature: String {
-        let taskSignature = allTasks
-            .map { "\($0.id.uuidString):\($0.status.rawValue)" }
-            .joined(separator: ",")
         return [
             String(runtime.taskQueue.isProcessing),
             String(runtime.taskQueue.activeCount),
             String(runtime.taskQueue.activeTasks.count),
-            taskSignature
+            String(runningTaskCount)
         ].joined(separator: "|")
     }
 
@@ -619,18 +492,45 @@ struct ContentView: View {
             queueIsProcessing: runtime.taskQueue.isProcessing,
             activeWorkerCount: runtime.taskQueue.activeCount,
             activeTaskCount: runtime.taskQueue.activeTasks.count,
-            runningTaskCount: allTasks.filter { $0.status == .running }.count
+            runningTaskCount: runningTaskCount
         )
+    }
+
+    private func isUpdateBlockedNow() -> Bool {
+        AppUpdateSafety.isInstallBlocked(
+            queueIsProcessing: runtime.taskQueue.isProcessing,
+            activeWorkerCount: runtime.taskQueue.activeCount,
+            activeTaskCount: runtime.taskQueue.activeTasks.count,
+            runningTaskCount: fetchRunningTaskCount()
+        )
+    }
+
+    private func fetchRunningTaskCount() -> Int {
+        PerformanceTelemetry.measure(
+            "update_safety_count",
+            thresholdMilliseconds: 0
+        ) {
+            let descriptor = FetchDescriptor<AgentTask>()
+            let tasks = (try? modelContext.fetch(descriptor)) ?? []
+            return tasks.reduce(0) { count, task in
+                count + (task.status == .running ? 1 : 0)
+            }
+        }
+    }
+
+    private func refreshRunningTaskCount() {
+        runningTaskCount = fetchRunningTaskCount()
     }
 
     private func refreshUpdateSafetyHooks() {
         appUpdateController.configureSafety(
-            isWorkActive: { hasUpdateBlockingWork },
+            isWorkActive: { isUpdateBlockedNow() },
             prepareForInstall: { prepareForAppUpdateInstall() }
         )
     }
 
     private func prepareForAppUpdateInstall() -> Bool {
+        refreshRunningTaskCount()
         guard !hasUpdateBlockingWork else {
             AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
                 "reason": "active_work_preinstall"
@@ -716,8 +616,42 @@ struct ContentView: View {
     private func finalizeNewWorkspace() {
         let name = newWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        selectedWorkspace = coordinator.createWorkspace(name: name, rootPath: resolvedRoot)
+        let workspace = coordinator.createWorkspace(name: name, rootPath: resolvedRoot)
+        if shouldApplyOnboardingCapabilitiesToNextWorkspace {
+            applyOnboardingCapabilities(to: workspace)
+            shouldApplyOnboardingCapabilitiesToNextWorkspace = false
+            onboardingCapabilityConfiguration.clearSecrets()
+        }
+        selectedWorkspace = workspace
         newWorkspaceName = ""
+    }
+
+    private func applyOnboardingCapabilities(to workspace: Workspace) {
+        let packages = OnboardingCapabilitySetup.selectedPackages(
+            from: PluginCatalog.builtInPackages,
+            rawValue: onboardingEnabledCapabilityIDsRaw
+        )
+        guard !packages.isEmpty else { return }
+
+        let installer = CapabilityInstaller()
+        for package in packages {
+            let inputs = onboardingCapabilityConfiguration.installationInputs(for: package.id)
+            do {
+                try installer.install(
+                    package,
+                    into: workspace,
+                    modelContext: modelContext,
+                    credentialInputs: inputs.credentialInputs,
+                    configInputs: inputs.configInputs,
+                    baseURLOverrides: inputs.baseURLOverrides
+                )
+            } catch {
+                AppLogger.warning(
+                    "Failed to enable onboarding capability \(package.id): \(error.localizedDescription)",
+                    category: "Onboarding"
+                )
+            }
+        }
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
@@ -808,7 +742,14 @@ struct ContentView: View {
     // MARK: - Task Actions
 
     private func setSelectedTask(_ task: AgentTask?) {
+        if let taskWorkspace = task?.workspace,
+           selectedWorkspace?.id != taskWorkspace.id {
+            selectedWorkspace = taskWorkspace
+        }
         selectedTask = task
+        if task != nil {
+            isComposingTask = false
+        }
         markTaskRead(task)
     }
 
@@ -833,23 +774,40 @@ struct ContentView: View {
     private func runQueue() {
         applySettings()
         coordinator.runQueue()
+        refreshRunningTaskCount()
     }
 
     private func runSingleTask(_ task: AgentTask) {
         applySettings()
         coordinator.runSingleTask(task)
+        refreshRunningTaskCount()
     }
-    private func cancelTask(_ task: AgentTask) { coordinator.cancelTask(task) }
+    private func cancelTask(_ task: AgentTask) {
+        coordinator.cancelTask(task)
+        refreshRunningTaskCount()
+    }
 
-    private func retryTask(_ task: AgentTask) { coordinator.retryTask(task) }
-    private func resumeTask(_ task: AgentTask) { coordinator.resumeTask(task) }
-    private func approveTask(_ task: AgentTask) { coordinator.approveTask(task) }
+    private func retryTask(_ task: AgentTask) {
+        coordinator.retryTask(task)
+        refreshRunningTaskCount()
+    }
+
+    private func resumeTask(_ task: AgentTask) {
+        coordinator.resumeTask(task)
+        refreshRunningTaskCount()
+    }
+
+    private func approveTask(_ task: AgentTask) {
+        coordinator.approveTask(task)
+        refreshRunningTaskCount()
+    }
 
     private func deleteTask(_ task: AgentTask) {
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
+        refreshRunningTaskCount()
     }
 
     private func requestDeleteTask(_ task: AgentTask) {
@@ -870,12 +828,14 @@ struct ContentView: View {
 
         if !isDone {
             coordinator.setDoneState(task, to: false)
+            refreshRunningTaskCount()
             return
         }
 
         let linkedSchedules = coordinator.activeSameThreadSchedules(for: task)
         guard !linkedSchedules.isEmpty else {
             coordinator.setDoneState(task, to: true)
+            refreshRunningTaskCount()
             return
         }
 
@@ -888,6 +848,7 @@ struct ContentView: View {
         switch warning.action {
         case .markDone:
             coordinator.setDoneState(warning.task, to: true)
+            refreshRunningTaskCount()
         case .delete:
             deleteTask(warning.task)
         }
@@ -900,7 +861,9 @@ struct ContentView: View {
     }
 
     private func migrateSkillSecrets() {
-        coordinator.migrateSkillSecrets(skills: allSkills)
+        let descriptor = FetchDescriptor<Skill>(sortBy: [SortDescriptor(\.name)])
+        let skills = (try? modelContext.fetch(descriptor)) ?? []
+        coordinator.migrateSkillSecrets(skills: skills)
     }
 
     private func backfillThreadTitlesIfNeeded() {
@@ -946,6 +909,7 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
+        refreshRunningTaskCount()
         refreshUpdateSafetyHooks()
         appUpdateController.probeForUpdatesOnce()
     }
@@ -1035,6 +999,366 @@ struct ContentView: View {
             validationModel: validationModel,
             skipPermissions: skipPermissions
         )
+    }
+}
+
+private struct ContentToolbar: ToolbarContent {
+    @ObservedObject var appUpdateController: AppUpdateController
+
+    let hasWorkspace: Bool
+    let isRightRailVisible: Bool
+    let onCheckForUpdates: () -> Void
+    let onToggleRightRail: () -> Void
+
+    var body: some ToolbarContent {
+        if appUpdateController.shouldShowUpdateButton {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: onCheckForUpdates) {
+                    Label(appUpdateController.buttonTitle, systemImage: "arrow.down.circle")
+                }
+                .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
+                .accessibilityIdentifier("AppUpdateButton")
+            }
+        }
+
+        if hasWorkspace {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: onToggleRightRail) {
+                    Label(
+                        isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .help(isRightRailVisible ? "Hide control panel" : "Show control panel")
+            }
+        }
+    }
+}
+
+private struct ContentDetailAreaView: View {
+    let selectedTask: AgentTask?
+    let effectiveWorkspace: Workspace?
+    let isComposingTask: Bool
+    let taskQueue: TaskQueue
+    let sshReloadTrigger: Int
+    @Binding var isRightRailPresented: Bool
+
+    let onQuickRun: (AgentTask) -> Void
+    let onTaskCreated: (AgentTask) -> Void
+    let onAddSSHConnection: () -> Void
+    let onManageSkills: () -> Void
+    let onRunTask: (AgentTask) -> Void
+    let onCancelTask: (AgentTask) -> Void
+    let onRetryTask: (AgentTask) -> Void
+    let onResumeTask: (AgentTask) -> Void
+    let onApproveTask: (AgentTask) -> Void
+    let onToggleDone: (AgentTask) -> Void
+    let onMoveToDraft: (AgentTask) -> Void
+    let onForkTask: (AgentTask) -> Void
+    let onCreateTask: () -> Void
+    let onOpenTask: (AgentTask) -> Void
+    let onDeleteTask: (AgentTask) -> Void
+    let onSetDoneState: (AgentTask, Bool) -> Void
+    let onRunQueue: () -> Void
+    let onConfigure: () -> Void
+    let onShowDashboard: () -> Void
+    let onShowLogs: () -> Void
+    let onNewSchedule: () -> Void
+    let onEditSchedule: (TaskSchedule) -> Void
+    let onManageCapabilities: () -> Void
+    let onEditWorkspace: () -> Void
+    let onOpenConfigureTab: (ConfigureTab, UUID?) -> Void
+    let onNewSSHConnection: () -> Void
+    let onEditSSHConnection: (SSHConnection) -> Void
+    let onCreateWorkspace: () -> Void
+    let onImportWorkspace: () -> Void
+
+    var body: some View {
+        ContentDetailContentView(
+            selectedTask: selectedTask,
+            effectiveWorkspace: effectiveWorkspace,
+            isComposingTask: isComposingTask,
+            taskQueue: taskQueue,
+            sshReloadTrigger: sshReloadTrigger,
+            onQuickRun: onQuickRun,
+            onTaskCreated: onTaskCreated,
+            onAddSSHConnection: onAddSSHConnection,
+            onManageSkills: onManageSkills,
+            onRunTask: onRunTask,
+            onCancelTask: onCancelTask,
+            onRetryTask: onRetryTask,
+            onResumeTask: onResumeTask,
+            onApproveTask: onApproveTask,
+            onToggleDone: onToggleDone,
+            onMoveToDraft: onMoveToDraft,
+            onForkTask: onForkTask,
+            onCreateTask: onCreateTask,
+            onOpenTask: onOpenTask,
+            onDeleteTask: onDeleteTask,
+            onSetDoneState: onSetDoneState,
+            onRunQueue: onRunQueue,
+            onConfigure: onConfigure,
+            onShowDashboard: onShowDashboard,
+            onShowLogs: onShowLogs,
+            onNewSchedule: onNewSchedule,
+            onEditSchedule: onEditSchedule,
+            onManageCapabilities: onManageCapabilities,
+            onCreateWorkspace: onCreateWorkspace,
+            onImportWorkspace: onImportWorkspace
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .inspector(isPresented: $isRightRailPresented) {
+            if let workspace = effectiveWorkspace {
+                WorkspaceRightRailView(
+                    workspace: workspace,
+                    selectedTask: selectedTask,
+                    onConfigure: onConfigure,
+                    onEditWorkspace: onEditWorkspace,
+                    onShowDashboard: onShowDashboard,
+                    onShowLogs: onShowLogs,
+                    onNewSchedule: onNewSchedule,
+                    onEditSchedule: onEditSchedule,
+                    onManageCapabilities: onManageCapabilities,
+                    onOpenConfigureTab: onOpenConfigureTab,
+                    onNewSSHConnection: onNewSSHConnection,
+                    onEditSSHConnection: onEditSSHConnection,
+                    sshReloadTrigger: sshReloadTrigger
+                )
+                .id(workspace.id)
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 380)
+            }
+        }
+    }
+}
+
+private struct ContentDetailContentView: View {
+    let selectedTask: AgentTask?
+    let effectiveWorkspace: Workspace?
+    let isComposingTask: Bool
+    let taskQueue: TaskQueue
+    let sshReloadTrigger: Int
+    let onQuickRun: (AgentTask) -> Void
+    let onTaskCreated: (AgentTask) -> Void
+    let onAddSSHConnection: () -> Void
+    let onManageSkills: () -> Void
+    let onRunTask: (AgentTask) -> Void
+    let onCancelTask: (AgentTask) -> Void
+    let onRetryTask: (AgentTask) -> Void
+    let onResumeTask: (AgentTask) -> Void
+    let onApproveTask: (AgentTask) -> Void
+    let onToggleDone: (AgentTask) -> Void
+    let onMoveToDraft: (AgentTask) -> Void
+    let onForkTask: (AgentTask) -> Void
+    let onCreateTask: () -> Void
+    let onOpenTask: (AgentTask) -> Void
+    let onDeleteTask: (AgentTask) -> Void
+    let onSetDoneState: (AgentTask, Bool) -> Void
+    let onRunQueue: () -> Void
+    let onConfigure: () -> Void
+    let onShowDashboard: () -> Void
+    let onShowLogs: () -> Void
+    let onNewSchedule: () -> Void
+    let onEditSchedule: (TaskSchedule) -> Void
+    let onManageCapabilities: () -> Void
+    let onCreateWorkspace: () -> Void
+    let onImportWorkspace: () -> Void
+
+    var body: some View {
+        if let task = selectedTask, task.status == .draft {
+            ChatPanelView(
+                taskQueue: taskQueue,
+                workspace: task.workspace ?? effectiveWorkspace,
+                sshReloadTrigger: sshReloadTrigger,
+                draftToLoad: task,
+                onQuickRun: onQuickRun,
+                onTaskCreated: onTaskCreated,
+                onAddSSHConnection: onAddSSHConnection,
+                onManageSkills: onManageSkills
+            )
+            .id(task.id)
+        } else if let task = selectedTask {
+            TaskMainView(
+                task: task,
+                taskQueue: taskQueue,
+                onRunTask: onRunTask,
+                onCancelTask: onCancelTask,
+                onRetryTask: onRetryTask,
+                onResumeTask: onResumeTask,
+                onApproveTask: onApproveTask,
+                onToggleDone: onToggleDone,
+                sshReloadTrigger: sshReloadTrigger,
+                onMoveToDraft: onMoveToDraft,
+                onManageSkills: onManageSkills,
+                onForkTask: onForkTask
+            )
+            .id(task.id)
+        } else if isComposingTask, effectiveWorkspace != nil {
+            ChatPanelView(
+                taskQueue: taskQueue,
+                workspace: effectiveWorkspace,
+                sshReloadTrigger: sshReloadTrigger,
+                onQuickRun: onQuickRun,
+                onTaskCreated: onTaskCreated,
+                onAddSSHConnection: onAddSSHConnection,
+                onManageSkills: onManageSkills
+            )
+        } else if let workspace = effectiveWorkspace {
+            WorkspaceHomeContainerView(
+                workspace: workspace,
+                taskQueue: taskQueue,
+                onCreateTask: onCreateTask,
+                onOpenTask: onOpenTask,
+                onDeleteTask: onDeleteTask,
+                onSetDoneState: onSetDoneState,
+                onRunQueue: onRunQueue,
+                onConfigure: onConfigure,
+                onShowDashboard: onShowDashboard,
+                onShowLogs: onShowLogs,
+                onNewSchedule: onNewSchedule,
+                onEditSchedule: onEditSchedule,
+                onManageCapabilities: onManageCapabilities
+            )
+        } else {
+            WorkspaceEmptyStateView(
+                onCreateWorkspace: onCreateWorkspace,
+                onImportWorkspace: onImportWorkspace
+            )
+        }
+    }
+}
+
+private struct TopNoticeBannersView: View {
+    let recoveryNotice: String
+    let updateBlockNotice: String?
+    let onDismissRecoveryNotice: () -> Void
+    let onCheckForUpdates: () -> Void
+
+    var body: some View {
+        if !recoveryNotice.isEmpty || updateBlockNotice != nil {
+            VStack(spacing: 0) {
+                if !recoveryNotice.isEmpty {
+                    RecoveryNoticeBanner(
+                        message: recoveryNotice,
+                        onDismiss: onDismissRecoveryNotice
+                    )
+                }
+                if let updateBlockNotice {
+                    UpdateNoticeBanner(
+                        message: updateBlockNotice,
+                        onCheckForUpdates: onCheckForUpdates
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct RecoveryNoticeBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NoticeBanner(
+            systemImage: "externaldrive.badge.checkmark",
+            imageColor: Stanford.paloAltoGreen,
+            message: message,
+            buttonTitle: "Dismiss",
+            buttonAction: onDismiss
+        )
+    }
+}
+
+private struct UpdateNoticeBanner: View {
+    let message: String
+    let onCheckForUpdates: () -> Void
+
+    var body: some View {
+        NoticeBanner(
+            systemImage: "arrow.down.circle",
+            imageColor: Stanford.cardinalRed,
+            message: message,
+            buttonTitle: "Check Again",
+            buttonAction: onCheckForUpdates
+        )
+    }
+}
+
+private struct NoticeBanner: View {
+    let systemImage: String
+    let imageColor: Color
+    let message: String
+    let buttonTitle: String
+    let buttonAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .foregroundStyle(imageColor)
+            Text(message)
+                .font(Stanford.body(13))
+                .foregroundStyle(Stanford.black)
+            Spacer()
+            Button(buttonTitle, action: buttonAction)
+                .font(Stanford.body(12))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Stanford.fog)
+        .overlay(alignment: .bottom) {
+            SoftHorizontalTransition(height: 12)
+                .rotationEffect(.degrees(180))
+                .offset(y: 8)
+        }
+    }
+}
+
+private struct WorkspaceEmptyStateView: View {
+    let onCreateWorkspace: () -> Void
+    let onImportWorkspace: () -> Void
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "folder.badge.plus")
+                .font(Stanford.ui(48))
+                .foregroundStyle(Stanford.cardinalRed)
+
+            VStack(spacing: 8) {
+                Text("Pick a Workspace")
+                    .font(Stanford.heading(24))
+                    .foregroundStyle(Stanford.black)
+
+                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
+                    .font(Stanford.body(15))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    onCreateWorkspace()
+                } label: {
+                    Label("New Workspace", systemImage: "plus")
+                }
+                .buttonStyle(StanfordButtonStyle())
+                .accessibilityIdentifier("OnboardingNewWorkspaceButton")
+
+                Button {
+                    onImportWorkspace()
+                } label: {
+                    Label("Import Workspace", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+
+                SettingsLink {
+                    Label("Settings", systemImage: "gear")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .background(Stanford.panelBackground)
     }
 }
 

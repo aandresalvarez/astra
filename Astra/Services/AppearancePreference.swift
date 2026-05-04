@@ -3,6 +3,7 @@ import SwiftUI
 enum AppStorageKeys {
     static let hasCompletedOnboarding = "astra.hasCompletedOnboarding"
     static let hasPresentedOnboarding = "astra.hasPresentedOnboarding"
+    static let onboardingEnabledCapabilityIDs = "astra.onboardingEnabledCapabilityIDs"
     static let skipPermissions = "skipPermissions"
     static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
 }

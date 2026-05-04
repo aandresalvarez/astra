@@ -38,6 +38,38 @@ private func makeEvent(
     return event
 }
 
+// MARK: - Content Selection
+
+@Suite("Content selection")
+struct ContentSelectionResolverTests {
+
+    @Test("Effective workspace follows the selected task over stale workspace state")
+    func effectiveWorkspaceFollowsSelectedTask() {
+        let staleWorkspace = makeWorkspace(name: "JSL")
+        let taskWorkspace = makeWorkspace(name: "REDCap")
+        let task = makeTask(title: "Get current process ID", workspace: taskWorkspace)
+
+        let resolved = ContentSelectionResolver.effectiveWorkspace(
+            selectedTask: task,
+            selectedWorkspace: staleWorkspace
+        )
+
+        #expect(resolved?.id == taskWorkspace.id)
+    }
+
+    @Test("Effective workspace falls back to selected workspace when no task is selected")
+    func effectiveWorkspaceFallsBackToSelectedWorkspace() {
+        let workspace = makeWorkspace(name: "JSL")
+
+        let resolved = ContentSelectionResolver.effectiveWorkspace(
+            selectedTask: nil,
+            selectedWorkspace: workspace
+        )
+
+        #expect(resolved?.id == workspace.id)
+    }
+}
+
 // MARK: - MarkdownTextView
 
 @Suite("MarkdownTextView")
@@ -117,7 +149,7 @@ struct TaskThreadSnapshotTests {
         }
 
         if case .agentResponse(let run) = snapshot.conversationItems[1] {
-            #expect(run === firstRun)
+            #expect(run.id == firstRun.id)
         } else {
             Issue.record("Expected completed first run before the follow-up")
         }
@@ -129,7 +161,7 @@ struct TaskThreadSnapshotTests {
         }
 
         if case .agentResponse(let run) = snapshot.conversationItems[3] {
-            #expect(run === secondRun)
+            #expect(run.id == secondRun.id)
         } else {
             Issue.record("Expected remaining run output at the end")
         }
@@ -224,7 +256,7 @@ struct TaskThreadSnapshotTests {
             Issue.record("Expected agent response for protocol-only completion")
             return
         }
-        #expect(responseRun === run)
+        #expect(responseRun.id == run.id)
         #expect(snapshot.protocolState(for: run).completionSummary == "Implementation complete.")
         #expect(snapshot.protocolState(for: run).verifiedBy == "swift test")
     }
@@ -296,6 +328,53 @@ struct TaskThreadSnapshotTests {
             #expect(activity.toolResults.count == 1)
             #expect(activity.toolResults.first?.payload == "result \(index)")
         }
+    }
+
+    @Test("Async snapshot builder preserves conversation and activity")
+    func asyncSnapshotBuilder() async {
+        let task = makeTask(goal: "Original goal")
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 10)
+        run.completedAt = Date(timeIntervalSince1970: 20)
+        run.output = "Done"
+
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read",
+                timestamp: Date(timeIntervalSince1970: 11),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "read result",
+                timestamp: Date(timeIntervalSince1970: 12),
+                run: run
+            )
+        ]
+
+        let snapshot = await TaskThreadSnapshot.buildAsync(
+            input: TaskThreadSnapshotInput(
+                goal: task.goal,
+                createdAt: task.createdAt,
+                events: events,
+                runs: [run]
+            ),
+            fields: [:]
+        )
+
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected async snapshot to include the run response")
+            return
+        }
+        #expect(responseRun.id == run.id)
+        #expect(snapshot.activity(for: responseRun).tools == [
+            TaskToolSummary(name: "Read", count: 1)
+        ])
+        #expect(snapshot.activity(for: responseRun).toolResults.first?.payload == "read result")
     }
 
     @Test("Generated file scan excludes internal task files")

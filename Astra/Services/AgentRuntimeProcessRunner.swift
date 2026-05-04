@@ -183,6 +183,23 @@ final class AgentRuntimeProcessRunner {
                 copilotHome: copilotHome
             )
 
+            AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "phase": "run",
+                "model": model,
+                "parses_json_lines": String(plan.parsesJSONLines),
+                "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
+                "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
+                "supports_no_ask_user": String(capabilities.supportsNoAskUser),
+                "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
+                "supports_silent": String(capabilities.supportsSilent),
+                "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
+                "permission_policy": permissionPolicy.rawValue,
+                "allowed_tools_count": String(allowed.count),
+                "additional_paths_count": String(task.workspace?.additionalPaths.count ?? 0),
+                "task_env_count": String(taskEnv.count)
+            ], level: .debug)
+
             try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
 
             let process = Process()

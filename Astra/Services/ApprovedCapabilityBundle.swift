@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 
 enum ApprovedCapabilityBundle {
-    static func packages(bundle: Bundle = .module) -> [PluginPackage] {
+    static func packages(bundle: Bundle = AstraResourceBundle.current) -> [PluginPackage] {
         guard let urls = bundle.urls(forResourcesWithExtension: "json", subdirectory: "Capabilities") else {
             return []
         }
@@ -26,7 +26,7 @@ enum ApprovedCapabilityBundle {
             }
     }
 
-    static func bundledDirectory(bundle: Bundle = .module) -> URL? {
+    static func bundledDirectory(bundle: Bundle = AstraResourceBundle.current) -> URL? {
         bundle.url(forResource: "Capabilities", withExtension: nil)
     }
 }

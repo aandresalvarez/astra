@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-enum TaskStatus: String, Codable, CaseIterable {
+enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case draft
     case queued
     case running

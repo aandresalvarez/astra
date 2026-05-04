@@ -1,11 +1,202 @@
 import SwiftUI
 import ASTRACore
 
+struct OnboardingCapabilityOption: Identifiable, Equatable {
+    let id: String
+    let packageID: String?
+    let title: String
+    let subtitle: String
+    let icon: String
+}
+
+struct OnboardingCapabilityInstallationInputs: Equatable {
+    var credentialInputs: [String: String] = [:]
+    var configInputs: [String: String] = [:]
+    var baseURLOverrides: [String: String] = [:]
+}
+
+struct OnboardingCapabilityConfiguration: Equatable {
+    static let defaultRedcapAPIURL = "https://redcap.stanford.edu/api/"
+
+    var jiraBaseURL = ""
+    var jiraEmail = ""
+    var jiraAPIToken = ""
+    var jiraProjects = ""
+    var gcpProject = ""
+    var gcpRegion = ""
+    var redcapAPIURL = defaultRedcapAPIURL
+    var redcapAPIToken = ""
+
+    func missingRequirements(for packageID: String, githubCLIReady: Bool = true) -> [String] {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            return [
+                trimmed(jiraBaseURL).isEmpty ? "Jira base URL" : nil,
+                trimmed(jiraEmail).isEmpty ? "Jira email" : nil,
+                trimmed(jiraAPIToken).isEmpty ? "Jira API token" : nil
+            ].compactMap { $0 }
+        case OnboardingCapabilitySetup.githubPackageID:
+            return githubCLIReady ? [] : ["Authenticated gh CLI"]
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            return trimmed(gcpProject).isEmpty ? ["GCP project"] : []
+        case OnboardingCapabilitySetup.redcapPackageID:
+            return [
+                trimmed(redcapAPIURL).isEmpty ? "REDCap API URL" : nil,
+                trimmed(redcapAPIToken).isEmpty ? "REDCap API token" : nil
+            ].compactMap { $0 }
+        default:
+            return []
+        }
+    }
+
+    func installationInputs(for packageID: String) -> OnboardingCapabilityInstallationInputs {
+        var inputs = OnboardingCapabilityInstallationInputs()
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            let baseURL = trimmed(jiraBaseURL)
+            inputs.credentialInputs = nonEmptyValues([
+                "JIRA_EMAIL": jiraEmail,
+                "JIRA_API_TOKEN": jiraAPIToken
+            ])
+            inputs.configInputs = nonEmptyValues([
+                "JIRA_BASE_URL": baseURL,
+                "JIRA_PROJECTS": jiraProjects
+            ])
+            if !baseURL.isEmpty {
+                inputs.baseURLOverrides["Jira"] = baseURL
+            }
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            inputs.configInputs = nonEmptyValues([
+                "GCP_PROJECT": gcpProject,
+                "GCP_REGION": gcpRegion
+            ])
+        case OnboardingCapabilitySetup.redcapPackageID:
+            let apiURL = trimmed(redcapAPIURL)
+            inputs.credentialInputs = nonEmptyValues([
+                "REDCAP_API_TOKEN": redcapAPIToken
+            ])
+            inputs.configInputs = nonEmptyValues([
+                "REDCAP_API_URL": apiURL
+            ])
+            if !apiURL.isEmpty {
+                inputs.baseURLOverrides["REDCap"] = apiURL
+            }
+        default:
+            break
+        }
+        return inputs
+    }
+
+    mutating func clearSecrets() {
+        jiraAPIToken = ""
+        redcapAPIToken = ""
+    }
+
+    private func nonEmptyValues(_ values: [String: String]) -> [String: String] {
+        values.reduce(into: [:]) { result, entry in
+            let value = trimmed(entry.value)
+            if !value.isEmpty {
+                result[entry.key] = value
+            }
+        }
+    }
+
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum OnboardingCapabilitySetup {
+    static let claudeRuntimeID = "claude-cli"
+    static let jiraPackageID = "jira-workflow"
+    static let githubPackageID = "github-workflow"
+    static let gcloudPackageID = "gcloud-workflow"
+    static let redcapPackageID = "redcap-workflow"
+
+    static let requiredRuntime = OnboardingCapabilityOption(
+        id: claudeRuntimeID,
+        packageID: nil,
+        title: "Claude CLI",
+        subtitle: "Required agent runtime",
+        icon: "sparkles"
+    )
+
+    static let configurableOptions: [OnboardingCapabilityOption] = [
+        OnboardingCapabilityOption(
+            id: jiraPackageID,
+            packageID: jiraPackageID,
+            title: "Jira Workflow",
+            subtitle: "Query, create, and update Jira tickets",
+            icon: "list.bullet.clipboard"
+        ),
+        OnboardingCapabilityOption(
+            id: githubPackageID,
+            packageID: githubPackageID,
+            title: "GitHub Workflow",
+            subtitle: "Manage issues, PRs, and CI with gh",
+            icon: "chevron.left.forwardslash.chevron.right"
+        ),
+        OnboardingCapabilityOption(
+            id: gcloudPackageID,
+            packageID: gcloudPackageID,
+            title: "Google Cloud",
+            subtitle: "Manage GCP resources, BigQuery, and deploys",
+            icon: "cloud.fill"
+        ),
+        OnboardingCapabilityOption(
+            id: redcapPackageID,
+            packageID: redcapPackageID,
+            title: "REDCap Workflow",
+            subtitle: "Query and manage Stanford REDCap projects",
+            icon: "tablecells"
+        )
+    ]
+
+    static var installablePackageIDs: Set<String> {
+        Set(configurableOptions.compactMap(\.packageID))
+    }
+
+    static func selectedPackageIDs(from rawValue: String) -> Set<String> {
+        Set(rawValue.split(separator: ",").map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+        })
+            .intersection(installablePackageIDs)
+    }
+
+    static func encode(_ packageIDs: Set<String>) -> String {
+        orderedPackageIDs(packageIDs).joined(separator: ",")
+    }
+
+    static func selectedPackages(
+        from catalogPackages: [PluginPackage],
+        rawValue: String
+    ) -> [PluginPackage] {
+        var packagesByID: [String: PluginPackage] = [:]
+        for package in catalogPackages {
+            packagesByID[package.id] = package
+        }
+        return orderedPackageIDs(selectedPackageIDs(from: rawValue)).compactMap { packagesByID[$0] }
+    }
+
+    static func selectedDisplayNames(from packageIDs: Set<String>) -> [String] {
+        orderedPackageIDs(packageIDs).compactMap { packageID in
+            configurableOptions.first { $0.packageID == packageID }?.title
+        }
+    }
+
+    private static func orderedPackageIDs(_ packageIDs: Set<String>) -> [String] {
+        configurableOptions.compactMap { option in
+            guard let packageID = option.packageID, packageIDs.contains(packageID) else { return nil }
+            return packageID
+        }
+    }
+}
+
 /// Multi-step first-run wizard. Owns its own step state and the
 /// completion flag in `@AppStorage`. Drives required CLI probes up
 /// front so the user knows whether their machine can run core agent and
-/// GitHub workflows, then walks them through workspace setup and a
-/// preview of which catalog items are plug-and-play vs. CLI-dependent.
+/// GitHub workflows, then walks them through workspace setup and first
+/// workspace capability choices.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
 /// the wizard matches the rest of the app — cardinal red for primary
@@ -17,7 +208,7 @@ import ASTRACore
 ///   0. Welcome — what ASTRA is + what it needs
 ///   1. Required CLIs — Claude + GitHub CLI probes and install help
 ///   2. Workspace root — pick where projects live
-///   3. Catalog preview — optional extras the user can install later
+///   3. Capability setup — optional integrations to enable on first workspace
 ///   4. Ready — "start your first workspace"
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
@@ -29,6 +220,7 @@ struct OnboardingWizardView: View {
     var onCreateWorkspace: () -> Void
     var allowsDismiss: Bool
     var onDismiss: () -> Void
+    @Binding var capabilityConfiguration: OnboardingCapabilityConfiguration
 
     static let requiredCLIPrerequisites: [CLIPrerequisite] = [
         CommonCLIPrerequisites.claude,
@@ -42,10 +234,12 @@ struct OnboardingWizardView: View {
         initialStep: Step = .welcome,
         allowsDismiss: Bool = false,
         onDismiss: @escaping () -> Void = {},
+        capabilityConfiguration: Binding<OnboardingCapabilityConfiguration> = .constant(OnboardingCapabilityConfiguration()),
         onCreateWorkspace: @escaping () -> Void
     ) {
         self._hasCompletedOnboarding = hasCompletedOnboarding
         self._currentStep = State(initialValue: initialStep)
+        self._capabilityConfiguration = capabilityConfiguration
         self.allowsDismiss = allowsDismiss
         self.onDismiss = onDismiss
         self.onCreateWorkspace = onCreateWorkspace
@@ -55,7 +249,7 @@ struct OnboardingWizardView: View {
         case welcome = 0
         case requiredCLIs
         case workspaceRoot
-        case catalogPreview
+        case capabilitySetup
         case ready
         var id: Int { rawValue }
 
@@ -64,7 +258,7 @@ struct OnboardingWizardView: View {
             case .welcome:        "Welcome to ASTRA"
             case .requiredCLIs:   "Required CLIs"
             case .workspaceRoot:  "Workspace Root"
-            case .catalogPreview: "Catalog Preview"
+            case .capabilitySetup: "Configure Capabilities"
             case .ready:          "You're Ready"
             }
         }
@@ -77,7 +271,7 @@ struct OnboardingWizardView: View {
             case .welcome:        "Welcome"
             case .requiredCLIs:   "CLIs"
             case .workspaceRoot:  "Setup"
-            case .catalogPreview: "Catalog"
+            case .capabilitySetup: "Config"
             case .ready:          "Done"
             }
         }
@@ -87,6 +281,7 @@ struct OnboardingWizardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
     @State private var currentStep: Step
     @State private var claudeStatus: HealthStatus?
     @State private var isProbingClaude = false
@@ -187,7 +382,7 @@ struct OnboardingWizardView: View {
         case .welcome:        welcomeStep
         case .requiredCLIs:   cliStep
         case .workspaceRoot:  workspaceStep
-        case .catalogPreview: catalogStep
+        case .capabilitySetup: capabilitySetupStep
         case .ready:          readyStep
         }
     }
@@ -212,7 +407,7 @@ struct OnboardingWizardView: View {
             calloutBox(
                 icon: "info.circle.fill",
                 title: "What we'll check",
-                body: "This wizard probes Claude CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces and previews optional CLIs you might want later. It takes less than a minute.",
+                body: "This wizard probes Claude CLI, GitHub CLI, and GitHub login, picks a home folder for your workspaces, then lets you choose the first capabilities to enable.",
                 tint: Stanford.sky
             )
         }
@@ -282,44 +477,46 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private var catalogStep: some View {
+    private var capabilitySetupStep: some View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
-                icon: "square.grid.2x2.fill",
-                title: "Catalog Preview",
-                subtitle: "What every workspace gets automatically, plus opt-in extras you can install later.",
+                icon: "slider.horizontal.3",
+                title: "Configure Capabilities",
+                subtitle: "Choose the integrations ASTRA should enable when it creates your first workspace.",
                 tint: Stanford.lagunita
             )
 
-            // Silent scaffolding — ships with every workspace, no install
-            // step. Listed so the user knows tests and safe modes are
-            // already there; they won't appear as "installable" in the
-            // catalog because they're not optional.
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Built in to every workspace", color: Stanford.paloAltoGreen)
-                catalogRow("eye", "Read-Only", "explore without touching files")
-                catalogRow("shield", "Safe Bash", "shell access with destructive commands blocked")
-                catalogRow("checkmark.seal", "Test Runner", "detects your test framework and runs it")
+                sectionLabel("Required runtime", color: Stanford.paloAltoGreen)
+                requiredCapabilityRow(
+                    OnboardingCapabilitySetup.requiredRuntime,
+                    status: claudeStatusSummary,
+                    ready: isClaudeHealthy
+                )
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Catalog: zero-config add-ons", color: Stanford.lagunita)
-                catalogRow("lock.shield.fill", "Security Auditor", "OWASP-style vuln-spotting pass")
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Catalog: needs credentials or a CLI", color: Stanford.poppy)
-                catalogRow("list.bullet.clipboard", "Jira", "API token")
-                catalogRow("chevron.left.forwardslash.chevron.right", "GitHub Workflow", "gh CLI")
-                catalogRow("cloud.fill", "Google Cloud", "gcloud CLI")
+                sectionLabel("Enable for the first workspace", color: Stanford.lagunita)
+                ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
+                    configurableCapabilityRow(option)
+                }
             }
 
             calloutBox(
-                icon: "hand.point.up.left.fill",
-                title: "No commitment",
-                body: "You don't install anything now. Each catalog package shows a preflight badge so you can see exactly what's missing and fix it before — or after — you install.",
+                icon: "slider.horizontal.below.rectangle",
+                title: "Workspace-specific",
+                body: "Selected capabilities must include the setup values they need. Secrets are passed directly into Keychain when the first workspace is created.",
                 tint: Stanford.sky
             )
+
+            if !selectedCapabilitySetupIssues.isEmpty {
+                calloutBox(
+                    icon: "exclamationmark.triangle.fill",
+                    title: "Setup required",
+                    body: selectedCapabilitySetupIssues.joined(separator: "\n"),
+                    tint: Stanford.poppy
+                )
+            }
         }
     }
 
@@ -347,6 +544,11 @@ struct OnboardingWizardView: View {
                     title: "Workspace root",
                     status: resolvedWorkspaceRoot,
                     ready: !resolvedWorkspaceRoot.isEmpty
+                )
+                readinessRow(
+                    title: "Capabilities",
+                    status: selectedOnboardingCapabilitySummary,
+                    ready: true
                 )
             }
             .padding(14)
@@ -694,24 +896,137 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private func catalogRow(_ icon: String, _ name: String, _ caption: String) -> some View {
+    private func requiredCapabilityRow(
+        _ option: OnboardingCapabilityOption,
+        status: String,
+        ready: Bool
+    ) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.coolGrey)
-                .frame(width: 18)
-            Text(name)
-                .font(Stanford.body(13).weight(.medium))
-                .foregroundStyle(Stanford.black)
-            Text(caption)
-                .font(Stanford.caption(11))
-                .foregroundStyle(Stanford.coolGrey)
+            Image(systemName: option.icon)
+                .font(Stanford.ui(15, weight: .semibold))
+                .foregroundStyle(ready ? Stanford.paloAltoGreen : Stanford.poppy)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.title)
+                    .font(Stanford.body(13).weight(.medium))
+                    .foregroundStyle(Stanford.black)
+                Text(status)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(ready ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer()
+            Text("Required")
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.paloAltoGreen)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Stanford.paloAltoGreen.opacity(0.1))
+                .clipShape(Capsule())
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
         .background(Stanford.fog.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func configurableCapabilityRow(_ option: OnboardingCapabilityOption) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: option.icon)
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.title)
+                        .font(Stanford.body(13).weight(.medium))
+                        .foregroundStyle(Stanford.black)
+                    Text(option.subtitle)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let packageID = option.packageID {
+                    Toggle("", isOn: onboardingCapabilityBinding(for: packageID))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .accessibilityLabel(option.title)
+                }
+            }
+
+            if let packageID = option.packageID,
+               selectedOnboardingCapabilityIDs.contains(packageID) {
+                capabilitySetupFields(for: packageID)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Stanford.fog.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func capabilitySetupFields(for packageID: String) -> some View {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                onboardingTextField("Base URL", prompt: "https://company.atlassian.net", text: $capabilityConfiguration.jiraBaseURL)
+                onboardingTextField("Email", prompt: "you@example.com", text: $capabilityConfiguration.jiraEmail)
+                onboardingSecureField("API token", prompt: "Stored in Keychain", text: $capabilityConfiguration.jiraAPIToken)
+                onboardingTextField("Project keys", prompt: "ENG, OPS", text: $capabilityConfiguration.jiraProjects)
+            }
+        case OnboardingCapabilitySetup.githubPackageID:
+            HStack(spacing: 8) {
+                Image(systemName: isGitHubHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.poppy)
+                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the CLI step." : "Run gh auth login, then re-check the CLI step.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                onboardingTextField("GCP project", prompt: "my-gcp-project", text: $capabilityConfiguration.gcpProject)
+                onboardingTextField("Region", prompt: "us-central1", text: $capabilityConfiguration.gcpRegion)
+                Text("Uses your local gcloud login. Run gcloud auth login outside ASTRA if it is not already authenticated.")
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+            }
+        case OnboardingCapabilitySetup.redcapPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                onboardingTextField("API URL", prompt: OnboardingCapabilityConfiguration.defaultRedcapAPIURL, text: $capabilityConfiguration.redcapAPIURL)
+                onboardingSecureField("API token", prompt: "Stored in Keychain", text: $capabilityConfiguration.redcapAPIToken)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func onboardingTextField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
+    }
+
+    private func onboardingSecureField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            SecureField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
     }
 
     private func readinessRow(title: String, status: String, ready: Bool) -> some View {
@@ -767,6 +1082,7 @@ struct OnboardingWizardView: View {
                 }
                 .buttonStyle(StanfordButtonStyle())
                 .keyboardShortcut(.defaultAction)
+                .disabled(!canContinueFromCurrentStep)
             }
         }
         .padding(.horizontal, 20)
@@ -821,6 +1137,48 @@ struct OnboardingWizardView: View {
     private var resolvedWorkspaceRoot: String {
         if !workspacesRoot.isEmpty { return workspacesRoot }
         return AppChannel.current.defaultWorkspacesRoot
+    }
+
+    private var selectedOnboardingCapabilityIDs: Set<String> {
+        OnboardingCapabilitySetup.selectedPackageIDs(from: onboardingEnabledCapabilityIDsRaw)
+    }
+
+    private var selectedOnboardingCapabilitySummary: String {
+        let names = OnboardingCapabilitySetup.selectedDisplayNames(from: selectedOnboardingCapabilityIDs)
+        return names.isEmpty ? "No optional capabilities selected" : names.joined(separator: ", ")
+    }
+
+    private var selectedCapabilitySetupIssues: [String] {
+        OnboardingCapabilitySetup.configurableOptions.flatMap { option -> [String] in
+            guard let packageID = option.packageID,
+                  selectedOnboardingCapabilityIDs.contains(packageID) else {
+                return []
+            }
+            return capabilityConfiguration
+                .missingRequirements(for: packageID, githubCLIReady: isGitHubHealthy)
+                .map { "\(option.title): \($0)" }
+        }
+    }
+
+    private var canContinueFromCurrentStep: Bool {
+        currentStep != .capabilitySetup || selectedCapabilitySetupIssues.isEmpty
+    }
+
+    private func onboardingCapabilityBinding(for packageID: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedOnboardingCapabilityIDs.contains(packageID) },
+            set: { setOnboardingCapability(packageID, enabled: $0) }
+        )
+    }
+
+    private func setOnboardingCapability(_ packageID: String, enabled: Bool) {
+        var ids = selectedOnboardingCapabilityIDs
+        if enabled {
+            ids.insert(packageID)
+        } else {
+            ids.remove(packageID)
+        }
+        onboardingEnabledCapabilityIDsRaw = OnboardingCapabilitySetup.encode(ids)
     }
 
     private func pickWorkspaceRoot() {

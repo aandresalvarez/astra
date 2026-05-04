@@ -1,6 +1,61 @@
 import SwiftUI
 import SwiftData
 
+struct TaskSidebarContainerView: View {
+    @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+
+    @Binding var selectedTask: AgentTask?
+    let taskQueue: TaskQueue
+    let workspaces: [Workspace]
+    @Binding var selectedWorkspace: Workspace?
+    let onNewTask: () -> Void
+    let onRunQueue: () -> Void
+    let onRunTask: (AgentTask) -> Void
+    var onToggleDone: ((AgentTask) -> Void)?
+    var onCancelTask: ((AgentTask) -> Void)?
+    var onRetryTask: ((AgentTask) -> Void)?
+    var onDeleteTask: ((AgentTask) -> Void)?
+    var onNewWorkspace: (() -> Void)?
+    var onEditWorkspace: ((Workspace) -> Void)?
+    var onImportWorkspace: (() -> Void)?
+    var onShowConfigure: (() -> Void)?
+    var onShowLogs: (() -> Void)?
+    var onShowDashboard: (() -> Void)?
+    var onDeleteWorkspace: ((Workspace) -> Void)?
+    var onRenameWorkspace: ((Workspace) -> Void)?
+    var onNewSchedule: (() -> Void)?
+    var onEditSchedule: ((TaskSchedule) -> Void)?
+    @Binding var isSearchActive: Bool
+
+    var body: some View {
+        TaskSidebarView(
+            tasks: tasks,
+            selectedTask: $selectedTask,
+            taskQueue: taskQueue,
+            workspaces: workspaces,
+            selectedWorkspace: $selectedWorkspace,
+            onNewTask: onNewTask,
+            onRunQueue: onRunQueue,
+            onRunTask: onRunTask,
+            onToggleDone: onToggleDone,
+            onCancelTask: onCancelTask,
+            onRetryTask: onRetryTask,
+            onDeleteTask: onDeleteTask,
+            onNewWorkspace: onNewWorkspace,
+            onEditWorkspace: onEditWorkspace,
+            onImportWorkspace: onImportWorkspace,
+            onShowConfigure: onShowConfigure,
+            onShowLogs: onShowLogs,
+            onShowDashboard: onShowDashboard,
+            onDeleteWorkspace: onDeleteWorkspace,
+            onRenameWorkspace: onRenameWorkspace,
+            onNewSchedule: onNewSchedule,
+            onEditSchedule: onEditSchedule,
+            isSearchActive: $isSearchActive
+        )
+    }
+}
+
 struct TaskSidebarView: View {
     let tasks: [AgentTask]
     @Binding var selectedTask: AgentTask?
@@ -1256,6 +1311,25 @@ private struct SidebarThreadRow: View {
 }
 
 // MARK: - Search Panel Overlay
+
+struct SearchPanelOverlayContainer: View {
+    @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+
+    let workspaces: [Workspace]
+    @Binding var selectedTask: AgentTask?
+    @Binding var selectedWorkspace: Workspace?
+    @Binding var isActive: Bool
+
+    var body: some View {
+        SearchPanelOverlay(
+            tasks: tasks,
+            workspaces: workspaces,
+            selectedTask: $selectedTask,
+            selectedWorkspace: $selectedWorkspace,
+            isActive: $isActive
+        )
+    }
+}
 
 struct SearchPanelOverlay: View {
     let tasks: [AgentTask]

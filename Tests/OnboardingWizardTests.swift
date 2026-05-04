@@ -17,7 +17,7 @@ struct OnboardingWizardTests {
             .welcome,
             .requiredCLIs,
             .workspaceRoot,
-            .catalogPreview,
+            .capabilitySetup,
             .ready
         ])
     }
@@ -30,7 +30,7 @@ struct OnboardingWizardTests {
         #expect(OnboardingWizardView.Step.welcome.rawValue == 0)
         #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 1)
         #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 2)
-        #expect(OnboardingWizardView.Step.catalogPreview.rawValue == 3)
+        #expect(OnboardingWizardView.Step.capabilitySetup.rawValue == 3)
         #expect(OnboardingWizardView.Step.ready.rawValue == 4)
     }
 
@@ -71,7 +71,111 @@ struct OnboardingWizardTests {
     func completionStorageKeyIsNamespaced() {
         #expect(AppStorageKeys.hasCompletedOnboarding == "astra.hasCompletedOnboarding")
         #expect(AppStorageKeys.hasPresentedOnboarding == "astra.hasPresentedOnboarding")
+        #expect(AppStorageKeys.onboardingEnabledCapabilityIDs == "astra.onboardingEnabledCapabilityIDs")
         #expect(AppStorageKeys.skipPermissions == "skipPermissions")
         #expect(AppStorageKeys.securityGateDefaultedToReview == "astra.securityGateDefaultedToReview.v1")
+    }
+
+    @Test("Capability setup exposes the requested first-workspace choices")
+    @MainActor
+    func capabilitySetupIncludesRequestedChoices() {
+        #expect(OnboardingCapabilitySetup.requiredRuntime.id == "claude-cli")
+        #expect(OnboardingCapabilitySetup.requiredRuntime.packageID == nil)
+
+        #expect(OnboardingCapabilitySetup.configurableOptions.compactMap(\.packageID) == [
+            "jira-workflow",
+            "github-workflow",
+            "gcloud-workflow",
+            "redcap-workflow"
+        ])
+
+        let builtInIDs = Set(PluginCatalog.builtInPackages.map(\.id))
+        #expect(OnboardingCapabilitySetup.installablePackageIDs.isSubset(of: builtInIDs))
+    }
+
+    @Test("Capability setup persists only known package IDs in display order")
+    func capabilitySetupStorageRoundTripsKnownPackages() {
+        let rawValue = "redcap-workflow,unknown,gcloud-workflow,jira-workflow"
+        let selected = OnboardingCapabilitySetup.selectedPackageIDs(from: rawValue)
+
+        #expect(selected == ["jira-workflow", "gcloud-workflow", "redcap-workflow"])
+        #expect(OnboardingCapabilitySetup.encode(selected) == "jira-workflow,gcloud-workflow,redcap-workflow")
+        #expect(OnboardingCapabilitySetup.selectedDisplayNames(from: selected) == [
+            "Jira Workflow",
+            "Google Cloud",
+            "REDCap Workflow"
+        ])
+    }
+
+    @Test("Capability setup resolves selected built-in packages")
+    @MainActor
+    func capabilitySetupResolvesSelectedPackages() {
+        let packages = OnboardingCapabilitySetup.selectedPackages(
+            from: PluginCatalog.builtInPackages,
+            rawValue: "github-workflow,redcap-workflow"
+        )
+
+        #expect(packages.map(\.id) == ["github-workflow", "redcap-workflow"])
+    }
+
+    @Test("Capability setup validates required configuration values")
+    func capabilitySetupValidatesRequiredConfigurationValues() {
+        var configuration = OnboardingCapabilityConfiguration()
+
+        #expect(configuration.missingRequirements(for: "jira-workflow") == [
+            "Jira base URL",
+            "Jira email",
+            "Jira API token"
+        ])
+        #expect(configuration.missingRequirements(for: "gcloud-workflow") == ["GCP project"])
+        #expect(configuration.missingRequirements(for: "redcap-workflow") == ["REDCap API token"])
+        #expect(configuration.missingRequirements(for: "github-workflow", githubCLIReady: false) == ["Authenticated gh CLI"])
+
+        configuration.jiraBaseURL = "https://example.atlassian.net"
+        configuration.jiraEmail = "user@example.com"
+        configuration.jiraAPIToken = "token"
+        configuration.gcpProject = "gcp-project"
+        configuration.redcapAPIToken = "redcap-token"
+
+        #expect(configuration.missingRequirements(for: "jira-workflow").isEmpty)
+        #expect(configuration.missingRequirements(for: "gcloud-workflow").isEmpty)
+        #expect(configuration.missingRequirements(for: "redcap-workflow").isEmpty)
+        #expect(configuration.missingRequirements(for: "github-workflow", githubCLIReady: true).isEmpty)
+    }
+
+    @Test("Capability setup maps configuration to installer inputs")
+    func capabilitySetupMapsConfigurationToInstallerInputs() {
+        let configuration = OnboardingCapabilityConfiguration(
+            jiraBaseURL: " https://example.atlassian.net ",
+            jiraEmail: " user@example.com ",
+            jiraAPIToken: " jira-token ",
+            jiraProjects: " ENG, OPS ",
+            gcpProject: " gcp-project ",
+            gcpRegion: " us-central1 ",
+            redcapAPIURL: " https://redcap.example.edu/api/ ",
+            redcapAPIToken: " redcap-token "
+        )
+
+        let jira = configuration.installationInputs(for: "jira-workflow")
+        #expect(jira.credentialInputs == [
+            "JIRA_EMAIL": "user@example.com",
+            "JIRA_API_TOKEN": "jira-token"
+        ])
+        #expect(jira.configInputs == [
+            "JIRA_BASE_URL": "https://example.atlassian.net",
+            "JIRA_PROJECTS": "ENG, OPS"
+        ])
+        #expect(jira.baseURLOverrides == ["Jira": "https://example.atlassian.net"])
+
+        let gcp = configuration.installationInputs(for: "gcloud-workflow")
+        #expect(gcp.configInputs == [
+            "GCP_PROJECT": "gcp-project",
+            "GCP_REGION": "us-central1"
+        ])
+
+        let redcap = configuration.installationInputs(for: "redcap-workflow")
+        #expect(redcap.credentialInputs == ["REDCAP_API_TOKEN": "redcap-token"])
+        #expect(redcap.configInputs == ["REDCAP_API_URL": "https://redcap.example.edu/api/"])
+        #expect(redcap.baseURLOverrides == ["REDCap": "https://redcap.example.edu/api/"])
     }
 }

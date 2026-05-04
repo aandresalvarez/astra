@@ -740,6 +740,7 @@ final class AgentRuntimeWorker {
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
         )
+        let streamTelemetry = AgentRuntimeStreamTelemetry()
         let result = await processRunner.runCopilotProcess(
             prompt: prompt,
             task: task,
@@ -749,11 +750,15 @@ final class AgentRuntimeWorker {
             permissionPolicy: permissionPolicy,
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
+                streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
                 let events: [AgentEvent] = parsesJSONLines
                     ? CopilotStreamEventParser.parseAgentEvents(line: line)
                     : [.text(text: line + "\n")]
+                streamTelemetry.recordParsed(events)
                 for event in events {
-                    for filtered in eventPipeline.process(event) {
+                    let filteredEvents = eventPipeline.process(event)
+                    streamTelemetry.recordEmitted(filteredEvents)
+                    for filtered in filteredEvents {
                         let t = Task { @MainActor [weak self] in
                             guard self != nil else { return }
                             AgentEventRecorder.recordCopilotEvent(filtered, to: task, run: run, modelContext: modelContext)
@@ -766,7 +771,9 @@ final class AgentRuntimeWorker {
                 }
             }
         )
-        for event in eventPipeline.flushAgentEvents() {
+        let flushedEvents = eventPipeline.flushAgentEvents()
+        streamTelemetry.recordEmitted(flushedEvents)
+        for event in flushedEvents {
             let t = Task { @MainActor [weak self] in
                 guard self != nil else { return }
                 AgentEventRecorder.recordCopilotEvent(event, to: task, run: run, modelContext: modelContext)
@@ -777,6 +784,7 @@ final class AgentRuntimeWorker {
             pendingEvents.add(t)
         }
         await pendingEvents.drainAll()
+        let streamSnapshot = streamTelemetry.snapshot()
 
         AgentFileChangeDetector.appendInferredFileChanges(
             to: run,
@@ -790,6 +798,13 @@ final class AgentRuntimeWorker {
 
         run.completedAt = Date()
         run.exitCode = result.exitCode
+        Self.logCopilotStreamTelemetry(
+            snapshot: streamSnapshot,
+            task: task,
+            run: run,
+            phase: auditPhase,
+            exitCode: result.exitCode
+        )
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "runtime": AgentRuntimeID.copilotCLI.rawValue,
@@ -920,6 +935,55 @@ final class AgentRuntimeWorker {
 
     static let compactionThreshold = AgentEventCompactor.threshold
     static let compactionKeepCount = AgentEventCompactor.keepCount
+
+    @MainActor
+    private static func logCopilotStreamTelemetry(
+        snapshot: AgentRuntimeStreamTelemetrySnapshot,
+        task: AgentTask,
+        run: TaskRun,
+        phase: String,
+        exitCode: Int
+    ) {
+        var fields = snapshot.fields
+        fields["runtime"] = AgentRuntimeID.copilotCLI.rawValue
+        fields["phase"] = phase
+        fields["exit_code"] = String(exitCode)
+        fields["run_output_chars"] = String(run.output.count)
+        fields["file_changes"] = String(run.fileChanges.count)
+
+        let completedWithoutOutput = exitCode == 0
+            && run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let parsedNoVisibleAnswer = snapshot.rawLineCount > 0
+            && snapshot.textEventCount == 0
+            && snapshot.completedEventCount == 0
+        let streamLevel: LogLevel = (completedWithoutOutput || parsedNoVisibleAnswer || snapshot.unknownEventCount > 0)
+            ? .warning
+            : .info
+
+        AppLogger.audit(.runtimeStreamSummary, category: "Worker", taskID: task.id, fields: fields, level: streamLevel)
+
+        for sample in snapshot.unknownSamples {
+            AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "phase": phase,
+                "event_type": sample.type,
+                "sample": sample.sample
+            ], level: .warning)
+        }
+
+        if completedWithoutOutput {
+            AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "phase": phase,
+                "exit_code": String(exitCode),
+                "raw_lines": String(snapshot.rawLineCount),
+                "parsed_events": String(snapshot.parsedEventCount),
+                "text_events": String(snapshot.textEventCount),
+                "completed_events": String(snapshot.completedEventCount),
+                "unknown_events": String(snapshot.unknownEventCount)
+            ], level: .warning)
+        }
+    }
 
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {

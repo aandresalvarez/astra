@@ -15,38 +15,71 @@ enum TimeFilter: String, CaseIterable {
     }
 }
 
+private struct UsageDashboardSummary {
+    let tasks: [AgentTask]
+    let totalTokens: Int
+    let totalCost: Double
+    let completedCount: Int
+    let failedCount: Int
+    let totalRuns: Int
+}
+
 struct UsageDashboardView: View {
     @Query private var tasks: [AgentTask]
     @Query private var runs: [TaskRun]
     @State private var timeFilter: TimeFilter = .allTime
 
-    private var filteredTasks: [AgentTask] {
-        guard let cutoff = timeFilter.cutoff else { return tasks }
-        return tasks.filter { $0.createdAt >= cutoff }
-    }
+    private var usageSummary: UsageDashboardSummary {
+        PerformanceTelemetry.measure(
+            "usage_summary_build",
+            thresholdMilliseconds: 15,
+            fields: [
+                "task_count": String(tasks.count),
+                "run_count": String(runs.count),
+                "filter": timeFilter.rawValue.replacingOccurrences(of: " ", with: "_")
+            ]
+        ) {
+            let cutoff = timeFilter.cutoff
+            var filteredTasks: [AgentTask] = []
+            var totalTokens = 0
+            var totalCost = 0.0
+            var completedCount = 0
+            var failedCount = 0
 
-    var totalTokens: Int {
-        filteredTasks.reduce(0) { $0 + $1.tokensUsed }
-    }
+            for task in tasks where cutoff.map({ task.createdAt >= $0 }) ?? true {
+                filteredTasks.append(task)
+                totalTokens += task.tokensUsed
+                totalCost += task.costUSD
+                if task.status == .completed {
+                    completedCount += 1
+                } else if task.status == .failed || task.status == .budgetExceeded {
+                    failedCount += 1
+                }
+            }
 
-    var totalCost: Double {
-        filteredTasks.reduce(0) { $0 + $1.costUSD }
-    }
+            let totalRuns: Int
+            if let cutoff {
+                totalRuns = runs.reduce(0) { count, run in
+                    count + (run.startedAt >= cutoff ? 1 : 0)
+                }
+            } else {
+                totalRuns = runs.count
+            }
 
-    var completedCount: Int {
-        filteredTasks.filter { $0.status == .completed }.count
-    }
-
-    var failedCount: Int {
-        filteredTasks.filter { $0.status == .failed || $0.status == .budgetExceeded }.count
-    }
-
-    var totalRuns: Int {
-        guard let cutoff = timeFilter.cutoff else { return runs.count }
-        return runs.filter { $0.startedAt >= cutoff }.count
+            return UsageDashboardSummary(
+                tasks: filteredTasks.sorted { $0.createdAt > $1.createdAt },
+                totalTokens: totalTokens,
+                totalCost: totalCost,
+                completedCount: completedCount,
+                failedCount: failedCount,
+                totalRuns: totalRuns
+            )
+        }
     }
 
     var body: some View {
+        let summary = usageSummary
+
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
@@ -70,28 +103,28 @@ struct UsageDashboardView: View {
                     GridItem(.flexible()),
                     GridItem(.flexible())
                 ], spacing: 12) {
-                    StatCard(title: "Total Tasks", value: "\(filteredTasks.count)", icon: "list.bullet", color: Stanford.lagunita)
-                    StatCard(title: "Completed", value: "\(completedCount)", icon: "checkmark.circle", color: Stanford.paloAltoGreen)
-                    StatCard(title: "Failed", value: "\(failedCount)", icon: "xmark.circle", color: Stanford.cardinalRed)
-                    StatCard(title: "Total Runs", value: "\(totalRuns)", icon: "arrow.triangle.2.circlepath", color: Stanford.driftwood)
+                    StatCard(title: "Total Tasks", value: "\(summary.tasks.count)", icon: "list.bullet", color: Stanford.lagunita)
+                    StatCard(title: "Completed", value: "\(summary.completedCount)", icon: "checkmark.circle", color: Stanford.paloAltoGreen)
+                    StatCard(title: "Failed", value: "\(summary.failedCount)", icon: "xmark.circle", color: Stanford.cardinalRed)
+                    StatCard(title: "Total Runs", value: "\(summary.totalRuns)", icon: "arrow.triangle.2.circlepath", color: Stanford.driftwood)
                 }
 
                 LazyVGrid(columns: [
                     GridItem(.flexible()),
                     GridItem(.flexible())
                 ], spacing: 12) {
-                    StatCard(title: "Total Tokens", value: Formatters.formatTokens(totalTokens), icon: "number", color: Stanford.poppy)
-                    StatCard(title: "Total Cost", value: String(format: "$%.2f", totalCost), icon: "dollarsign.circle", color: Stanford.sky)
+                    StatCard(title: "Total Tokens", value: Formatters.formatTokens(summary.totalTokens), icon: "number", color: Stanford.poppy)
+                    StatCard(title: "Total Cost", value: String(format: "$%.2f", summary.totalCost), icon: "dollarsign.circle", color: Stanford.sky)
                 }
 
                 // Per-task breakdown
-                if !filteredTasks.isEmpty {
+                if !summary.tasks.isEmpty {
                     Text("Per-Task Breakdown")
                         .font(Stanford.heading(16))
                         .foregroundStyle(Stanford.black)
                         .padding(.top, 8)
 
-                    ForEach(filteredTasks.sorted(by: { $0.createdAt > $1.createdAt })) { task in
+                    ForEach(summary.tasks) { task in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(task.title)

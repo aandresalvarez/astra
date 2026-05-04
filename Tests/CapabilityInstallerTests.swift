@@ -35,8 +35,8 @@ private func makeAnalystCapabilityPackage() -> PluginPackage {
                 disallowedTools: [],
                 customTools: [],
                 behaviorInstructions: "Use BigQuery carefully.",
-                environmentKeys: [],
-                environmentValues: []
+                environmentKeys: ["GCP_PROJECT"],
+                environmentValues: [""]
             )
         ],
         connectors: [
@@ -93,12 +93,12 @@ struct CapabilityInstallerTests {
         )
 
         let skills = try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
-        let connectors = try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
+        let globalConnectors = try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
         let tools = try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true }))
 
         #expect(library.installedPackages().map(\.id) == [package.id])
         #expect(workspace.skills.isEmpty)
-        #expect(workspace.connectors.isEmpty)
+        #expect(workspace.connectors.map(\.name) == ["Google Cloud"])
         #expect(workspace.localTools.isEmpty)
         #expect(workspace.enabledGlobalSkillIDs == result.skillIDs.map(\.uuidString))
         #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
@@ -107,11 +107,13 @@ struct CapabilityInstallerTests {
         #expect(workspace.installedVersion(of: package.id) == package.version)
 
         let skill = try #require(skills.first)
-        let connector = try #require(connectors.first)
+        #expect(globalConnectors.isEmpty)
+        let connector = try #require(workspace.connectors.first)
         let tool = try #require(tools.first)
         #expect(skill.name == "BigQuery Analyst")
-        #expect(connector.skill?.id == skill.id)
-        #expect(connector.configValues == ["astra-dev"])
+        #expect(skill.environmentVariables["GCP_PROJECT"] == "")
+        #expect(connector.skill == nil)
+        #expect(connector.config == ["GCP_PROJECT": "astra-dev"])
         #expect(tool.skill?.id == skill.id)
         #expect(result.connectorIDs == [connector.id])
         #expect(result.localToolIDs == [tool.id])
@@ -119,12 +121,121 @@ struct CapabilityInstallerTests {
         let capabilities = WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: skills,
-            globalConnectors: connectors,
+            globalConnectors: globalConnectors,
             globalTools: tools
         )
         #expect(capabilities.activeSkills.map(\.name) == ["BigQuery Analyst"])
         #expect(capabilities.activeConnectors.map(\.name) == ["Google Cloud"])
         #expect(capabilities.activeTools.map(\.name) == ["bq"])
+
+        let task = AgentTask(title: "Use GCP", goal: "List projects", workspace: workspace)
+        task.skills = [skill]
+        let resolver = TaskCapabilityResolver(task: task).resolver
+        #expect(resolver.resolvedEnvironmentVariables["GCP_PROJECT"] == "astra-dev")
+    }
+
+    @Test("install stores configured source env values on the connector")
+    func installStoresConfiguredSourceEnvValuesOnConnector() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira Config", primaryPath: "/tmp/jira-config")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let baseURL = "https://example.atlassian.net"
+        try CapabilityInstaller(library: library).install(
+            package,
+            into: workspace,
+            modelContext: context,
+            configInputs: [
+                "JIRA_BASE_URL": baseURL,
+                "JIRA_PROJECTS": "ENG, OPS"
+            ],
+            baseURLOverrides: ["Jira": baseURL]
+        )
+
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Jira Agent" }
+        )).first)
+        let connector = try #require(workspace.connectors.first { $0.name == "Jira" })
+
+        #expect(skill.environmentVariables["JIRA_BASE_URL"] == "")
+        #expect(connector.baseURL == baseURL)
+        #expect(connector.config == [
+            "JIRA_PROJECTS": "ENG, OPS",
+            "JIRA_BASE_URL": baseURL
+        ])
+
+        let task = AgentTask(title: "Use Jira", goal: "List tickets", workspace: workspace)
+        task.skills = [skill]
+        let resolver = TaskCapabilityResolver(task: task).resolver
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == baseURL)
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == "ENG, OPS")
+    }
+
+    @Test("configured source values stay scoped to their workspace")
+    func configuredSourceValuesStayScopedToWorkspace() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let firstWorkspace = Workspace(name: "First Jira", primaryPath: "/tmp/first-jira")
+        let secondWorkspace = Workspace(name: "Second Jira", primaryPath: "/tmp/second-jira")
+        context.insert(firstWorkspace)
+        context.insert(secondWorkspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(
+            package,
+            into: firstWorkspace,
+            modelContext: context,
+            configInputs: [
+                "JIRA_BASE_URL": "https://first.atlassian.net",
+                "JIRA_PROJECTS": "ONE"
+            ],
+            baseURLOverrides: ["Jira": "https://first.atlassian.net"]
+        )
+        try installer.install(
+            package,
+            into: secondWorkspace,
+            modelContext: context,
+            configInputs: [
+                "JIRA_BASE_URL": "https://second.atlassian.net",
+                "JIRA_PROJECTS": "TWO"
+            ],
+            baseURLOverrides: ["Jira": "https://second.atlassian.net"]
+        )
+
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Jira Agent" }
+        )).first)
+        let firstConnector = try #require(firstWorkspace.connectors.first { $0.name == "Jira" })
+        let secondConnector = try #require(secondWorkspace.connectors.first { $0.name == "Jira" })
+        let globalConnectors = try context.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Jira" }
+        ))
+
+        #expect(globalConnectors.isEmpty)
+        #expect(firstConnector.id != secondConnector.id)
+        #expect(firstConnector.config["JIRA_BASE_URL"] == "https://first.atlassian.net")
+        #expect(secondConnector.config["JIRA_BASE_URL"] == "https://second.atlassian.net")
+
+        let firstTask = AgentTask(title: "First", goal: "List tickets", workspace: firstWorkspace)
+        firstTask.skills = [skill]
+        let secondTask = AgentTask(title: "Second", goal: "List tickets", workspace: secondWorkspace)
+        secondTask.skills = [skill]
+
+        let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
+        let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
+        #expect(firstEnv["JIRA_BASE_URL"] == "https://first.atlassian.net")
+        #expect(firstEnv["JIRA_PROJECTS"] == "ONE")
+        #expect(secondEnv["JIRA_BASE_URL"] == "https://second.atlassian.net")
+        #expect(secondEnv["JIRA_PROJECTS"] == "TWO")
     }
 
     @Test("install once can enable the same shared capability in multiple workspaces")

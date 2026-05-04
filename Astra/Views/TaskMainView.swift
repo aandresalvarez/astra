@@ -8,6 +8,21 @@ enum TaskMainTab: String, CaseIterable {
     case files = "Files"
 }
 
+private struct TaskScopedStatusMessage: Equatable {
+    let taskID: UUID
+    let text: String
+}
+
+private struct ScheduleSourceContext {
+    let taskID: UUID
+    let title: String
+    let goal: String
+    let runtimeID: String
+    let model: String
+    let tokenBudget: Int
+    let conversationContext: String
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -18,6 +33,7 @@ struct TaskMainView: View {
     var onResumeTask: ((AgentTask) -> Void)?
     var onApproveTask: ((AgentTask) -> Void)?
     var onToggleDone: ((AgentTask) -> Void)?
+    var sshReloadTrigger: Int = 0
 
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
@@ -30,13 +46,14 @@ struct TaskMainView: View {
     @State private var selectedTab: TaskMainTab = .summary
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var showScheduleEditor = false
-    @State private var isCreatingSchedule = false
-    @State private var scheduleStatusMessage: String?
+    @State private var scheduleCreationTaskID: UUID?
+    @State private var scheduleStatusMessage: TaskScopedStatusMessage?
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
     @State private var pasteMonitor: Any?
     @State private var threadViewModel = TaskThreadViewModel()
+    @State private var sshConnections: [SSHConnection] = []
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -48,7 +65,10 @@ struct TaskMainView: View {
     }
 
     private var currentThreadSnapshot: TaskThreadSnapshot {
-        threadViewModel.snapshot ?? TaskThreadSnapshot(task: task)
+        threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(
+            goal: task.goal,
+            createdAt: task.createdAt
+        )
     }
 
     private var threadSnapshotTrigger: TaskThreadSnapshotTrigger {
@@ -111,9 +131,11 @@ struct TaskMainView: View {
         .onChange(of: task.id) {
             selectedTab = .summary
             threadViewModel.reset(for: task)
+            loadSSHConnections()
         }
         .onAppear {
             threadViewModel.reset(for: task)
+            loadSSHConnections()
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.modifierFlags.contains(.command),
                    event.charactersIgnoringModifiers == "v" {
@@ -129,6 +151,7 @@ struct TaskMainView: View {
                 pasteMonitor = nil
             }
         }
+        .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
         }
@@ -341,6 +364,26 @@ struct TaskMainView: View {
         return lines.joined(separator: "\n\n")
     }
 
+    private var isCreatingScheduleForCurrentTask: Bool {
+        scheduleCreationTaskID == task.id
+    }
+
+    private var currentScheduleStatusMessage: String? {
+        guard scheduleStatusMessage?.taskID == task.id else { return nil }
+        return scheduleStatusMessage?.text
+    }
+
+    private func setScheduleStatusMessage(_ message: String, for taskID: UUID? = nil) {
+        scheduleStatusMessage = TaskScopedStatusMessage(taskID: taskID ?? task.id, text: message)
+    }
+
+    private func clearScheduleStatusMessage(for taskID: UUID? = nil) {
+        let scopedTaskID = taskID ?? task.id
+        if scheduleStatusMessage?.taskID == scopedTaskID {
+            scheduleStatusMessage = nil
+        }
+    }
+
     private var moreMenu: some View {
         Menu {
             Section {
@@ -393,7 +436,7 @@ struct TaskMainView: View {
     private var summaryContent: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            VStack(spacing: 10) {
+            LazyVStack(spacing: 10) {
                 if task.isForked {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.branch")
@@ -461,7 +504,7 @@ struct TaskMainView: View {
                 }
 
                 // Schedule creation: thinking indicator
-                if isCreatingSchedule {
+                if isCreatingScheduleForCurrentTask {
                     HStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.small)
@@ -540,7 +583,7 @@ struct TaskMainView: View {
                 }
 
                 // Schedule creation: result message
-                if let statusMsg = scheduleStatusMessage {
+                if let statusMsg = currentScheduleStatusMessage {
                     HStack(spacing: 10) {
                         Image(systemName: isScheduleStatusError
                               ? "exclamationmark.triangle" : "clock.badge.checkmark")
@@ -551,7 +594,7 @@ struct TaskMainView: View {
                             .foregroundStyle(Stanford.black)
                         Spacer()
                         Button {
-                            scheduleStatusMessage = nil
+                            clearScheduleStatusMessage()
                         } label: {
                             Image(systemName: "xmark")
                                 .font(Stanford.ui(10, weight: .bold))
@@ -574,20 +617,16 @@ struct TaskMainView: View {
         }
         .onAppear { proxy.scrollTo("chatBottom", anchor: .bottom) }
         .onChange(of: currentThreadSnapshot.conversationItems.count) { _, _ in
-            withAnimation(.easeOut(duration: 0.3)) {
-                proxy.scrollTo("chatBottom", anchor: .bottom)
-            }
+            proxy.scrollTo("chatBottom", anchor: .bottom)
         }
         .onChange(of: task.status) { _, _ in
-            withAnimation(.easeOut(duration: 0.3)) {
-                proxy.scrollTo("chatBottom", anchor: .bottom)
-            }
+            proxy.scrollTo("chatBottom", anchor: .bottom)
         }
         }
     }
 
     private var isScheduleStatusError: Bool {
-        guard let msg = scheduleStatusMessage else { return false }
+        guard let msg = currentScheduleStatusMessage else { return false }
         return msg.hasPrefix("Failed") || msg.hasPrefix("Could not") || msg.hasPrefix("Invalid")
     }
 
@@ -726,7 +765,7 @@ struct TaskMainView: View {
         .accessibilityLabel("Task recap")
     }
 
-    private func chatAgentBubble(run: TaskRun) -> some View {
+    private func chatAgentBubble(run: TaskRunSnapshot) -> some View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
         let toolEvents = activity.tools
@@ -845,9 +884,7 @@ struct TaskMainView: View {
                 }
 
                 Button {
-                    let forked = AgentTask.fork(from: task, upToRun: run, in: modelContext)
-                    try? modelContext.save()
-                    onForkTask?(forked)
+                    forkTask(from: run)
                 } label: {
                     Image(systemName: "arrow.branch")
                         .font(Stanford.ui(12))
@@ -876,6 +913,13 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func forkTask(from run: TaskRunSnapshot) {
+        guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
+        let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
+        try? modelContext.save()
+        onForkTask?(forked)
     }
 
     private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
@@ -951,7 +995,7 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private func toolActivityList(_ tools: [TaskToolSummary], results: [TaskEvent]) -> some View {
+    private func toolActivityList(_ tools: [TaskToolSummary], results: [TaskToolResult]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(tools) { item in
                 HStack(spacing: 6) {
@@ -1005,7 +1049,7 @@ struct TaskMainView: View {
         }
     }
 
-    private func runStatusIcon(_ run: TaskRun) -> String {
+    private func runStatusIcon(_ run: TaskRunSnapshot) -> String {
         switch run.status {
         case .completed: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.circle.fill"
@@ -1016,7 +1060,7 @@ struct TaskMainView: View {
         }
     }
 
-    private func runStatusColor(_ run: TaskRun) -> Color {
+    private func runStatusColor(_ run: TaskRunSnapshot) -> Color {
         switch run.status {
         case .completed: return Stanford.paloAltoGreen
         case .failed, .budgetExceeded, .timeout: return Stanford.cardinalRed
@@ -1025,7 +1069,7 @@ struct TaskMainView: View {
         }
     }
 
-    private func runStatusLabel(_ run: TaskRun) -> String {
+    private func runStatusLabel(_ run: TaskRunSnapshot) -> String {
         switch run.status {
         case .completed: return "Completed"
         case .failed: return "Failed"
@@ -1038,11 +1082,11 @@ struct TaskMainView: View {
 
     // MARK: - Chat Thread
 
-    private var sortedEvents: [TaskEvent] {
+    private var sortedEvents: [TaskEventSnapshot] {
         currentThreadSnapshot.sortedEvents
     }
 
-    private var latestRun: TaskRun? {
+    private var latestRun: TaskRunSnapshot? {
         currentThreadSnapshot.latestRun
     }
 
@@ -1266,6 +1310,14 @@ struct TaskMainView: View {
         }
     }
 
+    private func loadSSHConnections() {
+        guard let workspace = task.workspace, !workspace.primaryPath.isEmpty else {
+            sshConnections = []
+            return
+        }
+        sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+    }
+
     private static func isNoArgSlashCommand(_ id: String) -> Bool {
         id == "recap"
     }
@@ -1377,7 +1429,8 @@ struct TaskMainView: View {
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
                     isPlanMode: .constant(false),
-                    showSecurityGate: true
+                    showSecurityGate: true,
+                    sshConnections: sshConnections
                 )
             }
             .background(Stanford.cardBackground)
@@ -1616,14 +1669,24 @@ struct TaskMainView: View {
 
     private func createScheduleAgentically(instruction: String) {
         guard let ws = task.workspace else {
-            scheduleStatusMessage = "No workspace found for this task."
+            setScheduleStatusMessage("No workspace found for this task.")
             return
         }
 
-        isCreatingSchedule = true
-        scheduleStatusMessage = nil
-
         let conversationSnapshot = scheduleConversationContext
+        let source = ScheduleSourceContext(
+            taskID: task.id,
+            title: task.title,
+            goal: task.goal,
+            runtimeID: task.resolvedRuntimeID.rawValue,
+            model: task.model,
+            tokenBudget: task.tokenBudget,
+            conversationContext: conversationSnapshot
+        )
+
+        scheduleCreationTaskID = source.taskID
+        clearScheduleStatusMessage(for: source.taskID)
+
         let existingSchedules = ws.schedules.map { "\($0.name) (\($0.frequencySummary))" }.joined(separator: ", ")
         let skillList = availableSkills.map { $0.name }.joined(separator: ", ")
         let workspacePath = ws.primaryPath
@@ -1646,12 +1709,12 @@ struct TaskMainView: View {
         Existing schedules: \(existingSchedules.isEmpty ? "none" : existingSchedules)
         Available skills to attach: \(skillList.isEmpty ? "none" : skillList)
 
-        Current task title: \(task.title)
-        Current task goal: \(task.goal)
+        Current task title: \(source.title)
+        Current task goal: \(source.goal)
 
         Output ONLY a JSON block — no other text:
         ```json
-        {"name": "...", "goal": "detailed goal text", "scheduleType": "daily|weekly|interval|once", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "skills": ["skill name", ...], "model": "\(task.model)"}
+        {"name": "...", "goal": "detailed goal text", "scheduleType": "daily|weekly|interval|once", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "skills": ["skill name", ...], "model": "\(source.model)"}
         ```
         Only include fields relevant to the chosen scheduleType. skills is optional — only include if the instruction or context references specific skills.
         """
@@ -1673,51 +1736,56 @@ struct TaskMainView: View {
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                model: task.model
+                model: source.model
             )
 
             await MainActor.run {
-                isCreatingSchedule = false
+                if scheduleCreationTaskID == source.taskID {
+                    scheduleCreationTaskID = nil
+                }
 
                 switch result {
                 case .success(let response):
-                    parseAndCreateSchedule(from: response, workspace: ws)
+                    parseAndCreateSchedule(from: response, workspace: ws, source: source)
                 case .failure(let error):
-                    scheduleStatusMessage = "Failed to create schedule: \(error.localizedDescription)"
+                    setScheduleStatusMessage("Failed to create schedule: \(error.localizedDescription)", for: source.taskID)
                 }
             }
         }
     }
 
     /// Parse Claude's JSON response and create the TaskSchedule.
-    private func parseAndCreateSchedule(from response: String, workspace: Workspace) {
+    private func parseAndCreateSchedule(from response: String, workspace: Workspace, source: ScheduleSourceContext) {
         guard let regex = Self.jsonBlockRegex,
               let match = regex.firstMatch(in: response, range: NSRange(response.startIndex..., in: response)),
               let jsonRange = Range(match.range(at: 1), in: response) else {
             // Try parsing the whole response as JSON (Claude sometimes skips the fences)
             if let data = response.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                createScheduleFromJSON(json, workspace: workspace)
+                createScheduleFromJSON(json, workspace: workspace, source: source)
                 return
             }
-            scheduleStatusMessage = "Could not parse schedule configuration. Try again with clearer instructions."
+            setScheduleStatusMessage(
+                "Could not parse schedule configuration. Try again with clearer instructions.",
+                for: source.taskID
+            )
             return
         }
 
         let jsonStr = String(response[jsonRange])
         guard let data = jsonStr.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            scheduleStatusMessage = "Invalid schedule configuration. Try again."
+            setScheduleStatusMessage("Invalid schedule configuration. Try again.", for: source.taskID)
             return
         }
 
-        createScheduleFromJSON(json, workspace: workspace)
+        createScheduleFromJSON(json, workspace: workspace, source: source)
     }
 
     /// Create a TaskSchedule from parsed JSON fields.
-    private func createScheduleFromJSON(_ json: [String: Any], workspace: Workspace) {
-        let name = json["name"] as? String ?? task.title
-        let goal = json["goal"] as? String ?? task.goal
+    private func createScheduleFromJSON(_ json: [String: Any], workspace: Workspace, source: ScheduleSourceContext) {
+        let name = json["name"] as? String ?? source.title
+        let goal = json["goal"] as? String ?? source.goal
         let scheduleTypeRaw = json["scheduleType"] as? String ?? "daily"
         let scheduleType = ScheduleType(rawValue: scheduleTypeRaw) ?? .daily
 
@@ -1727,12 +1795,12 @@ struct TaskMainView: View {
         if let hour = json["dailyHour"] as? Int { schedule.dailyHour = hour }
         if let minute = json["dailyMinute"] as? Int { schedule.dailyMinute = minute }
         if let dow = json["weeklyDayOfWeek"] as? Int { schedule.weeklyDayOfWeek = dow }
-        schedule.runtimeID = task.resolvedRuntimeID.rawValue
-        if let m = json["model"] as? String { schedule.model = m } else { schedule.model = task.model }
+        schedule.runtimeID = source.runtimeID
+        if let m = json["model"] as? String { schedule.model = m } else { schedule.model = source.model }
 
-        schedule.tokenBudget = task.tokenBudget
-        schedule.conversationContext = scheduleConversationContext
-        schedule.sourceTaskID = task.id
+        schedule.tokenBudget = source.tokenBudget
+        schedule.conversationContext = source.conversationContext
+        schedule.sourceTaskID = source.taskID
 
         // Compute initial nextFireDate
         let now = Date()
@@ -1764,11 +1832,12 @@ struct TaskMainView: View {
         modelContext.insert(schedule)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
 
-        scheduleStatusMessage = "Schedule **\(name)** created — \(schedule.frequencySummary)"
+        setScheduleStatusMessage("Schedule **\(name)** created — \(schedule.frequencySummary)", for: source.taskID)
 
         AppLogger.audit(.taskStats, category: "UI", fields: [
             "event": "schedule_created",
             "source": "agentic_slash_command",
+            "source_task_id": source.taskID.uuidString,
             "workspace_id": workspace.id.uuidString,
             "schedule_type": scheduleTypeRaw
         ])
