@@ -258,10 +258,37 @@ enum AppLogger {
         return dict
     }()
 
+    static var isRunningTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        if env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil {
+            return true
+        }
+        let processName = ProcessInfo.processInfo.processName.lowercased()
+        if processName.contains("xctest") || processName.contains("packagetests") {
+            return true
+        }
+        if Bundle.main.bundlePath.hasSuffix(".xctest") {
+            return true
+        }
+        if Bundle.allBundles.contains(where: { $0.bundlePath.hasSuffix(".xctest") }) {
+            return true
+        }
+        return ProcessInfo.processInfo.arguments.contains {
+            $0.hasSuffix(".xctest") || $0.contains("/xctest") || $0.contains("PackageTests")
+        }
+    }
+
     private static let logDir: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs")
-            .appendingPathComponent(AppChannel.current.logsDirectoryName)
+        let dir: URL
+        if isRunningTests {
+            dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("AstraTests", isDirectory: true)
+                .appendingPathComponent("Logs-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        } else {
+            dir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs")
+                .appendingPathComponent(AppChannel.current.logsDirectoryName)
+        }
         ensureDirectory(at: dir)
         return dir
     }()

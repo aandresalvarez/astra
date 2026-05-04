@@ -95,6 +95,13 @@ struct AppLoggerTests {
         #expect(filePerms & 0o777 == 0o600)
     }
 
+    @Test("Test logs are isolated from production logs")
+    func testLogsAreIsolatedFromProductionLogs() {
+        #expect(AppLogger.isRunningTests)
+        #expect(!AppLogger.mainLogFile.path.contains("/Library/Logs/Astra/astra.log"))
+        #expect(AppLogger.mainLogFile.path.contains("AstraTests"))
+    }
+
     @Test("onNewEntry callback fires on main thread")
     @MainActor
     func onNewEntryMainThread() async {

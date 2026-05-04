@@ -114,4 +114,31 @@ struct CompactionTests {
         #expect(protocolEvents.count == 2)
         #expect(task.events.contains { $0.type == "activity.compacted" })
     }
+
+    @Test("Compaction preserves user-visible conversation anchors")
+    func preservesUserVisibleConversationAnchors() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        let preservedTypes = ["user.message", "schedule.result", "system.info", "recap.result"]
+        for index in 0..<230 {
+            let type = preservedTypes.indices.contains(index) ? preservedTypes[index] : "agent.response"
+            let event = TaskEvent(task: task, type: type, payload: "event \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+
+        for type in preservedTypes {
+            #expect(remainingEvents.contains { $0.type == type })
+        }
+        #expect(!remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
+        #expect(remainingEvents.contains { $0.type == "activity.compacted" })
+    }
 }

@@ -13,7 +13,7 @@ enum AgentEventCompactor {
         let cutoff = events.count - keepCount
         let toCompact = events
             .prefix(cutoff)
-            .filter { !$0.type.hasPrefix("astra.") }
+            .filter { !shouldPreserveDuringCompaction($0) }
         guard !toCompact.isEmpty else { return }
 
         var typeCounts: [String: Int] = [:]
@@ -45,5 +45,18 @@ enum AgentEventCompactor {
             "compacted_count": String(toCompact.count),
             "kept_count": String(keepCount)
         ])
+    }
+
+    private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
+        if event.type.hasPrefix("astra.") {
+            return true
+        }
+
+        switch event.type {
+        case "user.message", "schedule.result", "system.info", "recap.result":
+            return true
+        default:
+            return false
+        }
     }
 }
