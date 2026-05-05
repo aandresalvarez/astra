@@ -17,12 +17,21 @@ private struct ResultEvent: Decodable {
 }
 
 private func findClaude() -> String? {
-    let candidates = [
+    let pathCandidates = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        .split(separator: ":")
+        .map { "\($0)/claude" }
+    let candidates = pathCandidates + [
         "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude",
+        "\(NSHomeDirectory())/.local/bin/claude",
         "\(NSHomeDirectory())/.npm-global/bin/claude"
     ]
-    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    var seen: Set<String> = []
+    return candidates.first { path in
+        guard !seen.contains(path) else { return false }
+        seen.insert(path)
+        return FileManager.default.isExecutableFile(atPath: path)
+    }
 }
 
 private func runClaude(prompt: String) throws -> (lines: [String], exitCode: Int) {

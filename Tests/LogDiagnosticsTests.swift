@@ -15,7 +15,7 @@ struct LogDiagnosticsTests {
         #expect(report.errorCount == 0)
         #expect(report.warningCount == 0)
         #expect(report.issueCount == 0)
-        #expect(report.markdown.contains("No error or warning signals were found"))
+        #expect(report.markdown.contains("No actionable issue signals were found"))
     }
 
     @Test("Report groups runtime failure diagnostics and redacts evidence")
@@ -133,6 +133,46 @@ struct LogDiagnosticsTests {
         #expect(report.issues.contains { $0.title == "Connector credentials were rejected" })
         #expect(!report.issues.contains { $0.signal == AuditEvent.workspaceStoreBackedUp.rawValue })
         #expect(!report.markdown.contains("[redacted-[redacted-secret-key]-key]"))
+    }
+
+    @Test("Startup recovery interruption is reported as non-actionable")
+    func startupRecoveryInterruptionIsNonActionable() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "App",
+                message: "task.interrupted events_inserted=2 runs_updated=2 source=startup_recovery tasks_updated=0",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.warningCount == 1)
+        #expect(report.issueCount == 0)
+        #expect(report.notices.count == 1)
+        #expect(report.notices.first?.title == "Startup recovered stale running runs")
+        #expect(report.markdown.contains("No actionable issue signals were found"))
+        #expect(report.markdown.contains("## Resolved / Non-Actionable Events"))
+        #expect(report.markdown.contains("task.interrupted source=startup_recovery"))
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Superseded run interruption is reported as non-actionable")
+    func supersededRunInterruptionIsNonActionable() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "UI",
+                message: "task.interrupted next_action=continue_session running_runs_cancelled=1 source=superseded_by_new_run",
+                taskID: taskID,
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.first?.title == "Previous run was superseded")
+        #expect(report.markdown.contains("task.interrupted source=superseded_by_new_run"))
+        #expect(!report.markdown.contains("Application warning"))
     }
 
     @Test("Report scopes entries and labels issue freshness")

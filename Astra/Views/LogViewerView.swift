@@ -264,12 +264,17 @@ struct LogViewerView: View {
             let url = try LogDiagnosticsService.writeReport(report)
             LogDiagnosticsService.saveHistory(from: report)
             diagnosticsReportURL = url
-            diagnosticsMessage = report.issueCount == 0
-                ? "Diagnostics report saved. No issue signals were detected for \(scope.label.lowercased())."
-                : "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
+            if report.issueCount == 0 {
+                diagnosticsMessage = report.notices.isEmpty
+                    ? "Diagnostics report saved. No issue signals were detected for \(scope.label.lowercased())."
+                    : "Diagnostics report saved. No actionable issues were detected for \(scope.label.lowercased()); \(report.notices.count) recovery event\(report.notices.count == 1 ? "" : "s") noted."
+            } else {
+                diagnosticsMessage = "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
+            }
             AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
                 "entries": String(report.entryCount),
                 "issues": String(report.issueCount),
+                "notices": String(report.notices.count),
                 "errors": String(report.errorCount),
                 "warnings": String(report.warningCount),
                 "scope": scope.rawValue,

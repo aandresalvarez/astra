@@ -14,6 +14,17 @@ struct LogDiagnosticsIssue: Equatable, Identifiable {
     let freshness: LogDiagnosticsFreshness
 }
 
+struct LogDiagnosticsNotice: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let signal: String
+    let count: Int
+    let evidence: [String]
+    let analysis: String
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+}
+
 struct LogDiagnosticsReport: Equatable {
     let generatedAt: Date
     let scope: LogDiagnosticsScope
@@ -26,6 +37,7 @@ struct LogDiagnosticsReport: Equatable {
     let issueCount: Int
     let issueFingerprints: [String]
     let issues: [LogDiagnosticsIssue]
+    let notices: [LogDiagnosticsNotice]
     let markdown: String
 }
 
@@ -117,12 +129,14 @@ enum LogDiagnosticsService {
             knownIssueFingerprints: history.knownIssueFingerprints
         )
         let visibleIssues = Array(issueGroups.prefix(maxIssueGroups))
+        let notices = buildNotices(from: orderedEntries)
         let markdown = renderMarkdown(
             entries: orderedEntries,
             generatedAt: generatedAt,
             scope: scope,
             previousGeneratedAt: history.lastGeneratedAt,
             issues: visibleIssues,
+            notices: notices,
             omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
         )
 
@@ -138,6 +152,7 @@ enum LogDiagnosticsService {
             issueCount: issueGroups.count,
             issueFingerprints: issueGroups.map(\.id).sorted(),
             issues: visibleIssues,
+            notices: notices,
             markdown: markdown
         )
     }
@@ -212,6 +227,14 @@ enum LogDiagnosticsService {
         var analysis: String
     }
 
+    private struct NoticeBucket {
+        let key: String
+        var title: String
+        var signal: String
+        var indexes: [Int]
+        var analysis: String
+    }
+
     private static func buildIssueGroups(
         from entries: [LogEntry],
         generatedAt: Date,
@@ -222,6 +245,9 @@ enum LogDiagnosticsService {
 
         for (index, entry) in entries.enumerated() {
             if isRecoveredOrPendingPermissionWarning(entry, entries: entries, generatedAt: generatedAt) {
+                continue
+            }
+            if classifyNotice(entry) != nil {
                 continue
             }
             guard let classification = classify(entry) else { continue }
@@ -268,6 +294,45 @@ enum LogDiagnosticsService {
                         previousGeneratedAt: previousGeneratedAt,
                         knownIssueFingerprints: knownIssueFingerprints
                     )
+                )
+            }
+    }
+
+    private static func buildNotices(from entries: [LogEntry]) -> [LogDiagnosticsNotice] {
+        var buckets: [String: NoticeBucket] = [:]
+
+        for (index, entry) in entries.enumerated() {
+            guard let classification = classifyNotice(entry) else { continue }
+            var bucket = buckets[classification.key] ?? NoticeBucket(
+                key: classification.key,
+                title: classification.title,
+                signal: classification.signal,
+                indexes: [],
+                analysis: classification.analysis
+            )
+            bucket.indexes.append(index)
+            buckets[classification.key] = bucket
+        }
+
+        return buckets.values
+            .sorted { lhs, rhs in
+                guard lhs.indexes.count == rhs.indexes.count else {
+                    return lhs.indexes.count > rhs.indexes.count
+                }
+                return lhs.title < rhs.title
+            }
+            .map { bucket in
+                let firstSeenAt = bucket.indexes.compactMap { entries.indices.contains($0) ? entries[$0].timestamp : nil }.min() ?? Date(timeIntervalSince1970: 0)
+                let lastSeenAt = bucket.indexes.compactMap { entries.indices.contains($0) ? entries[$0].timestamp : nil }.max() ?? firstSeenAt
+                return LogDiagnosticsNotice(
+                    id: bucket.key,
+                    title: bucket.title,
+                    signal: bucket.signal,
+                    count: bucket.indexes.count,
+                    evidence: evidenceLines(for: bucket.indexes, entries: entries),
+                    analysis: bucket.analysis,
+                    firstSeenAt: firstSeenAt,
+                    lastSeenAt: lastSeenAt
                 )
             }
     }
@@ -353,6 +418,40 @@ enum LogDiagnosticsService {
             return true
         }
         return false
+    }
+
+    private static func classifyNotice(_ entry: LogEntry) -> (
+        key: String,
+        title: String,
+        signal: String,
+        analysis: String
+    )? {
+        let message = entry.message
+        let lower = message.lowercased()
+
+        guard lower.contains(AuditEvent.taskInterrupted.rawValue),
+              let source = field("source", in: message) else {
+            return nil
+        }
+
+        switch source {
+        case TaskRunInterruptionSource.appRestart.auditSource:
+            return (
+                key: "task.interrupted.startup_recovery",
+                title: "Startup recovered stale running runs",
+                signal: "task.interrupted source=startup_recovery",
+                analysis: "ASTRA found run records left marked as running from a previous app session and marked those runs interrupted during startup recovery. This is expected after app restarts or local app updates and is not actionable unless paired with new task failures."
+            )
+        case TaskRunInterruptionSource.supersededByNewRun.auditSource:
+            return (
+                key: "task.interrupted.superseded_by_new_run",
+                title: "Previous run was superseded",
+                signal: "task.interrupted source=superseded_by_new_run",
+                analysis: "ASTRA interrupted an older run because the user retried or continued the task. This is an expected lifecycle transition and does not indicate a runtime failure by itself."
+            )
+        default:
+            return nil
+        }
     }
 
     private static func classify(_ entry: LogEntry) -> (
@@ -622,6 +721,7 @@ enum LogDiagnosticsService {
         scope: LogDiagnosticsScope,
         previousGeneratedAt: Date?,
         issues: [LogDiagnosticsIssue],
+        notices: [LogDiagnosticsNotice],
         omittedIssueCount: Int
     ) -> String {
         let errors = entries.filter { $0.logLevel == .error }.count
@@ -653,6 +753,7 @@ enum LogDiagnosticsService {
             "- Errors: \(errors)",
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
+            "- Resolved / non-actionable events: \(notices.count)",
             "- Affected tasks: \(taskIDs.isEmpty ? "none" : taskIDs.joined(separator: ", "))",
             "",
             "## Category Counts",
@@ -665,11 +766,16 @@ enum LogDiagnosticsService {
         if issues.isEmpty {
             lines += [
                 "",
-                "No error or warning signals were found in the analyzed log buffer.",
+                "No actionable issue signals were found in the analyzed log buffer."
+            ]
+            appendNotices(notices, to: &lines)
+            lines += [
                 "",
                 "## Developer Notes",
                 "",
-                "The generated report is still useful as a point-in-time summary, but it did not detect actionable issue signals."
+                warnings > 0 || errors > 0
+                    ? "The report contains warning/error log lines, but diagnostics classified them as resolved or non-actionable for this scope."
+                    : "The generated report is still useful as a point-in-time summary, but it did not detect actionable issue signals."
             ]
             return lines.joined(separator: "\n") + "\n"
         }
@@ -704,6 +810,8 @@ enum LogDiagnosticsService {
             ]
         }
 
+        appendNotices(notices, to: &lines)
+
         lines += [
             "",
             "## Developer Checklist",
@@ -715,6 +823,33 @@ enum LogDiagnosticsService {
         ]
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendNotices(_ notices: [LogDiagnosticsNotice], to lines: inout [String]) {
+        guard !notices.isEmpty else { return }
+        lines += [
+            "",
+            "## Resolved / Non-Actionable Events"
+        ]
+        for notice in notices {
+            lines += [
+                "",
+                "### \(notice.title)",
+                "",
+                "- Signal: `\(notice.signal)`",
+                "- Count: \(notice.count)",
+                "- First seen in window: \(displayTimestamp(notice.firstSeenAt))",
+                "- Last seen in window: \(displayTimestamp(notice.lastSeenAt))",
+                "",
+                "Analysis: \(notice.analysis)",
+                "",
+                "Relevant log extract:",
+                "",
+                "```text"
+            ]
+            lines += notice.evidence
+            lines += ["```"]
+        }
     }
 
     private static func analysisWindow(entries: [LogEntry]) -> String {
