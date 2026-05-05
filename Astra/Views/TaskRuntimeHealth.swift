@@ -15,6 +15,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
     let message: String
     let detail: String?
     let lastActivityAt: Date?
+    let lastRuntimeProgressAt: Date?
+    let lastConversationAt: Date?
     let lastWarningAt: Date?
     let lastWarningTool: String?
     let latestToolName: String?
@@ -27,6 +29,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             state.rawValue,
             latestRunID?.uuidString ?? "none",
             lastActivityAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+            lastRuntimeProgressAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+            lastConversationAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
             lastWarningAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
             latestToolName ?? "none",
             String(eventCount),
@@ -50,6 +54,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
                 message: "",
                 detail: nil,
                 lastActivityAt: nil,
+                lastRuntimeProgressAt: nil,
+                lastConversationAt: nil,
                 lastWarningAt: nil,
                 lastWarningTool: nil,
                 latestToolName: nil,
@@ -66,6 +72,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let progressEvents = runEvents.filter(Self.isProgressEvent)
         let latestProgressEvent = progressEvents.last
         let latestProgressAt = latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp)
+        let latestConversationAt = runEvents.last(where: Self.isConversationActivityEvent)?.timestamp
         let latestWarning = runEvents.last { $0.type == "permission.denied" }
         let laterProgressAfterWarningAt = latestWarning.flatMap { warning -> Date? in
             let laterEventAt = progressEvents.last { $0.timestamp > warning.timestamp }?.timestamp
@@ -73,7 +80,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             return latestDate(laterEventAt, laterFileAt)
         }
 
-        let lastActivityAt = latestProgressAt ?? latestWarning?.timestamp ?? run.startedAt
+        let lastActivityAt = latestDate(latestProgressAt, latestDate(latestConversationAt, latestWarning?.timestamp)) ?? run.startedAt
         let secondsSinceProgress = latestProgressAt.map { now.timeIntervalSince($0) } ?? now.timeIntervalSince(run.startedAt)
         let secondsSinceWarning = latestWarning.map { now.timeIntervalSince($0.timestamp) }
         let latestTool = latestToolName(from: runEvents)
@@ -100,12 +107,18 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             fileActivity: fileActivity,
             now: now,
             lastActivityAt: lastActivityAt,
+            latestRuntimeProgressAt: latestProgressAt,
+            latestConversationAt: latestConversationAt,
+            quietThreshold: quietThreshold,
             warningTool: warningTool
         )
         let detail = detail(
             state: state,
             now: now,
             lastActivityAt: lastActivityAt,
+            latestRuntimeProgressAt: latestProgressAt,
+            latestConversationAt: latestConversationAt,
+            quietThreshold: quietThreshold,
             latestWarning: latestWarning
         )
 
@@ -114,6 +127,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             message: message,
             detail: detail,
             lastActivityAt: lastActivityAt,
+            lastRuntimeProgressAt: latestProgressAt,
+            lastConversationAt: latestConversationAt,
             lastWarningAt: latestWarning?.timestamp,
             lastWarningTool: warningTool,
             latestToolName: latestTool,
@@ -132,6 +147,12 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             "run_id": latestRunID?.uuidString.prefix(8).description ?? "none",
             "last_activity_age_seconds": lastActivityAt.map { String(max(0, Int(Date().timeIntervalSince($0)))) } ?? "unknown"
         ]
+        if let lastRuntimeProgressAt {
+            fields["last_runtime_progress_age_seconds"] = String(max(0, Int(Date().timeIntervalSince(lastRuntimeProgressAt))))
+        }
+        if let lastConversationAt {
+            fields["last_conversation_age_seconds"] = String(max(0, Int(Date().timeIntervalSince(lastConversationAt))))
+        }
         if let latestToolName {
             fields["latest_tool"] = latestToolName
         }
@@ -148,6 +169,15 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         switch event.type {
         case "task.started", "agent.response", "agent.thinking", "tool.use", "tool.result",
              "task.stats", "task.completed", "astra.todo.replace", "astra.complete":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isConversationActivityEvent(_ event: TaskEventSnapshot) -> Bool {
+        switch event.type {
+        case "user.message", "task.resumed":
             return true
         default:
             return false
@@ -193,8 +223,15 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         fileActivity: StoredFileChange?,
         now: Date,
         lastActivityAt: Date,
+        latestRuntimeProgressAt: Date?,
+        latestConversationAt: Date?,
+        quietThreshold: TimeInterval,
         warningTool: String?
     ) -> String {
+        let waitingForResponse = isWaitingForAgentResponse(
+            latestRuntimeProgressAt: latestRuntimeProgressAt,
+            latestConversationAt: latestConversationAt
+        )
         switch state {
         case .notRunning:
             return ""
@@ -204,13 +241,26 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             }
             return "Possibly waiting after a permission warning"
         case .quiet:
-            return "Still running; last activity \(relativeAge(from: lastActivityAt, to: now)) ago"
+            if waitingForResponse {
+                if let latestConversationAt,
+                   now.timeIntervalSince(latestConversationAt) < quietThreshold {
+                    return "Waiting for agent response..."
+                }
+                return "Still waiting for agent output"
+            }
+            if latestRuntimeProgressAt != nil {
+                return "Still running; no new agent output recently"
+            }
+            return "Still running; waiting for first agent output"
         case .recoveredWarning:
             if let warningTool {
                 return "Permission warning recovered for \(warningTool)"
             }
             return "Permission warning recovered"
         case .active:
+            if waitingForResponse {
+                return "Waiting for agent response..."
+            }
             if let fileActivity,
                fileActivity.timestamp >= (latestProgressEvent?.timestamp ?? .distantPast) {
                 return "Updating files..."
@@ -241,20 +291,52 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         state: TaskRuntimeHealthState,
         now: Date,
         lastActivityAt: Date,
+        latestRuntimeProgressAt: Date?,
+        latestConversationAt: Date?,
+        quietThreshold: TimeInterval,
         latestWarning: TaskEventSnapshot?
     ) -> String? {
+        let waitingForResponse = isWaitingForAgentResponse(
+            latestRuntimeProgressAt: latestRuntimeProgressAt,
+            latestConversationAt: latestConversationAt
+        )
         switch state {
         case .notRunning:
-            nil
+            return nil
         case .possiblyStalled:
-            "No progress signal for \(relativeAge(from: latestWarning?.timestamp ?? lastActivityAt, to: now)) after the warning."
+            return "No new agent output, tool results, or file changes for \(relativeAge(from: latestWarning?.timestamp ?? lastActivityAt, to: now)) after the warning."
         case .quiet:
-            "The runtime can still finish; ASTRA has not seen new output, tool results, or file changes recently."
+            if waitingForResponse, let latestConversationAt {
+                if now.timeIntervalSince(latestConversationAt) < quietThreshold {
+                    return "Your last message was \(relativeAge(from: latestConversationAt, to: now)) ago. ASTRA has not seen agent output for this follow-up yet."
+                }
+                return "Your last message was \(relativeAge(from: latestConversationAt, to: now)) ago. ASTRA has not seen agent output, tool results, or file changes for this follow-up."
+            }
+            if let latestRuntimeProgressAt {
+                return "Last agent progress was \(relativeAge(from: latestRuntimeProgressAt, to: now)) ago. ASTRA has not seen new output, tool results, or file changes recently."
+            }
+            return "ASTRA has not seen agent output, tool results, or file changes for this run yet."
         case .recoveredWarning:
-            "The task produced progress after the warning."
+            return "The task produced progress after the warning."
         case .active:
-            nil
+            if waitingForResponse, let latestConversationAt {
+                return "Your last message was \(relativeAge(from: latestConversationAt, to: now)) ago. ASTRA is waiting for the first agent output."
+            }
+            return nil
         }
+    }
+
+    private static func isWaitingForAgentResponse(
+        latestRuntimeProgressAt: Date?,
+        latestConversationAt: Date?
+    ) -> Bool {
+        guard let latestConversationAt else {
+            return false
+        }
+        guard let latestRuntimeProgressAt else {
+            return true
+        }
+        return latestConversationAt > latestRuntimeProgressAt
     }
 
     private static func relativeAge(from date: Date, to now: Date) -> String {

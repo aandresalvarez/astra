@@ -33,7 +33,28 @@ struct TaskRuntimeHealthTests {
         )
 
         #expect(health.state == .quiet)
-        #expect(health.message.contains("last activity 7m ago"))
+        #expect(health.message == "Still running; no new agent output recently")
+        #expect(health.detail?.contains("Last agent progress was 7m ago") == true)
+    }
+
+    @Test("Recent user follow-up does not show stale runtime activity age")
+    func recentUserFollowUpShowsWaitingForAgentResponse() {
+        let now = Date(timeIntervalSince1970: 400_000)
+        let fixture = SnapshotFixture(now: now)
+        fixture.run.startedAt = now.addingTimeInterval(-327_660)
+        fixture.addEvent(type: "tool.result", payload: "done", secondsAgo: 327_600)
+        fixture.addEvent(type: "user.message", payload: "Can you continue?", secondsAgo: 24)
+
+        let health = TaskRuntimeHealth.evaluate(
+            taskStatus: .running,
+            snapshot: fixture.snapshot(),
+            now: now
+        )
+
+        #expect(health.state == .quiet)
+        #expect(health.message == "Waiting for agent response...")
+        #expect(health.detail?.contains("Your last message was 24s ago") == true)
+        #expect(health.detail?.contains("91h") == false)
     }
 
     @Test("Permission denied followed by later activity is recovered")
