@@ -254,6 +254,7 @@ public struct ASTRAApp: App {
                 try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                 Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                 Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
+                TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)
             }
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
@@ -275,6 +276,7 @@ public struct ASTRAApp: App {
                     try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
                     Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                     Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
+                    TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)
                 }
             } catch {
                 AppLogger.audit(.dataStoreRecovered, category: "App", fields: [

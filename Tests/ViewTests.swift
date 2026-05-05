@@ -268,6 +268,41 @@ struct TaskThreadSnapshotTests {
         #expect(activity.toolResults.first?.payload == "result")
     }
 
+    @Test("Conversation includes running run with tool activity before output")
+    func toolActivityCreatesLiveConversationItemBeforeOutput() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal", status: .running)
+        task.createdAt = createdAt
+
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 110)
+        run.status = .running
+        run.output = ""
+
+        let toolUse = makeEvent(
+            task: task,
+            type: "tool.use",
+            payload: "Using tool: Bash",
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [toolUse],
+            runs: [run]
+        )
+
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected live agent response for tool-only running run")
+            return
+        }
+        #expect(responseRun.id == run.id)
+        #expect(snapshot.activity(for: responseRun).tools == [TaskToolSummary(name: "Bash", count: 1)])
+    }
+
     @Test("Latest agent plan derives from newest ARP todo.replace event")
     func latestAgentPlanDerivesFromProtocolEvents() {
         let task = makeTask()

@@ -981,7 +981,6 @@ final class AgentRuntimeWorker {
     func cancel() {
         cancellationRequested = true
         processRunner.cancel()
-        isRunning = false
     }
 
     // MARK: - Private

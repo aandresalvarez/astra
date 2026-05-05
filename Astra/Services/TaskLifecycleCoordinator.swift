@@ -17,6 +17,12 @@ final class TaskLifecycleCoordinator {
     func runQueue() {
         if taskQueue.isProcessing {
             taskQueue.cancelAll()
+            let summary = TaskRunLifecycleService.cancelAllRunningTasks(modelContext: modelContext)
+            AppLogger.audit(.taskCancelled, category: "UI", fields: [
+                "source": "queue_toggle",
+                "running_runs_cancelled": String(summary.runsUpdated),
+                "tasks_cancelled": String(summary.tasksUpdated)
+            ])
             return
         }
         Task {
@@ -44,21 +50,27 @@ final class TaskLifecycleCoordinator {
     }
 
     func cancelTask(_ task: AgentTask) {
-        AppLogger.audit(.taskCancelled, category: "UI", taskID: task.id, fields: [
-            "source": "user_action"
-        ])
         taskQueue.cancel(task: task)
-        task.status = .cancelled
-        task.updatedAt = Date()
-        task.completedAt = Date()
-        task.markRead()
-        let event = TaskEvent(task: task, type: "task.cancelled", payload: "Task cancelled by user.")
-        modelContext.insert(event)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        let summary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .userAction
+        )
+        AppLogger.audit(.taskCancelled, category: "UI", taskID: task.id, fields: [
+            "source": "user_action",
+            "running_runs_cancelled": String(summary.runsUpdated),
+            "events_inserted": String(summary.eventsInserted)
+        ])
+        TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
     }
 
     func retryTask(_ task: AgentTask) {
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id)
+        let interruptionSummary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .supersededByNewRun
+        )
         task.status = .queued
         task.tokensUsed = 0
         task.costUSD = 0
@@ -67,6 +79,13 @@ final class TaskLifecycleCoordinator {
         task.markRead()
         let event = TaskEvent(task: task, type: "task.retried", payload: "Task re-queued for retry.")
         modelContext.insert(event)
+        if interruptionSummary.runsUpdated > 0 {
+            AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
+                "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
+                "running_runs_cancelled": String(interruptionSummary.runsUpdated),
+                "next_status": task.status.rawValue
+            ], level: .warning)
+        }
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         runSingleTask(task)
     }

@@ -53,6 +53,7 @@ enum AuditEvent: String, CaseIterable {
     case taskDequeued = "task.dequeued"
     case taskResumed = "task.resumed"
     case taskCancelled = "task.cancelled"
+    case taskInterrupted = "task.interrupted"
     case taskApproved = "task.approved"
     case taskRetried = "task.retried"
     case taskDeleted = "task.deleted"

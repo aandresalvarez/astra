@@ -172,6 +172,10 @@ struct TaskRunActivity: Sendable {
     let fileChanges: [StoredFileChange]
 
     static let empty = TaskRunActivity(tools: [], toolResults: [], fileChanges: [])
+
+    var hasVisibleActivity: Bool {
+        !tools.isEmpty || !toolResults.isEmpty || !fileChanges.isEmpty
+    }
 }
 
 struct TaskProtocolTodoItem: Identifiable, Hashable, Sendable {
@@ -323,6 +327,7 @@ struct TaskThreadSnapshot: Sendable {
             createdAt: createdAt,
             events: sortedEvents,
             runs: sortedRuns,
+            activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
     }
@@ -365,6 +370,7 @@ struct TaskThreadSnapshot: Sendable {
         createdAt: Date,
         events: [TaskEventSnapshot],
         runs: [TaskRunSnapshot],
+        activityByRunID: [UUID: TaskRunActivity],
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> [TaskConversationItem] {
         var items: [TaskConversationItem] = [
@@ -377,7 +383,13 @@ struct TaskThreadSnapshot: Sendable {
             $0.type == "system.info" ||
             $0.type == "recap.result"
         }
-        let visibleRuns = runs.filter { shouldShowAgentResponse(for: $0, protocolByRunID: protocolByRunID) }
+        let visibleRuns = runs.filter {
+            shouldShowAgentResponse(
+                for: $0,
+                activity: activityByRunID[$0.id] ?? .empty,
+                protocolByRunID: protocolByRunID
+            )
+        }
         var nextRunIndex = 0
 
         func appendCompletedRuns(upTo timestamp: Date) {
@@ -418,9 +430,12 @@ struct TaskThreadSnapshot: Sendable {
 
     private static func shouldShowAgentResponse(
         for run: TaskRunSnapshot,
+        activity: TaskRunActivity,
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> Bool {
-        !run.output.isEmpty || protocolByRunID[run.id]?.hasCompletion == true
+        !run.output.isEmpty
+            || activity.hasVisibleActivity
+            || protocolByRunID[run.id]?.hasCompletion == true
     }
 
     private static func protocolTodoItems(

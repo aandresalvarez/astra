@@ -956,6 +956,9 @@ struct TaskMainView: View {
         let protocolState = currentThreadSnapshot.protocolState(for: run)
         let toolEvents = activity.tools
         let isExpanded = expandedRunActivity.contains(run.id)
+        let showsLiveActivity = run.status == .running
+        let showsActivityDetails = isExpanded || showsLiveActivity
+        let visibleToolResults = isExpanded ? activity.toolResults : []
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -977,13 +980,22 @@ struct TaskMainView: View {
                             .font(Stanford.ui(11))
                         Text("\(toolEvents.count) tool \(toolEvents.count == 1 ? "call" : "calls")")
                             .font(Stanford.caption(12).weight(.medium))
+                        if showsLiveActivity {
+                            Text("live")
+                                .font(Stanford.caption(10).weight(.semibold))
+                                .foregroundStyle(Stanford.lagunita)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Stanford.lagunita.opacity(0.1))
+                                .clipShape(Capsule())
+                        }
                     }
                     .foregroundStyle(Stanford.coolGrey)
                 }
                 .buttonStyle(.plain)
 
-                if isExpanded {
-                    toolActivityList(toolEvents, results: activity.toolResults)
+                if showsActivityDetails {
+                    toolActivityList(toolEvents, results: visibleToolResults)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(Stanford.fog.opacity(0.4))
@@ -1012,6 +1024,10 @@ struct TaskMainView: View {
                 .background(Stanford.poppy.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.poppy.opacity(0.3), lineWidth: 1))
+            }
+
+            if run.status == .cancelled {
+                runCancellationNotice(run)
             }
 
             if protocolState.hasCompletion {
@@ -1178,6 +1194,29 @@ struct TaskMainView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Stanford.paloAltoGreen.opacity(0.24), lineWidth: 1)
         )
+    }
+
+    private func runCancellationNotice(_ run: TaskRunSnapshot) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "xmark.circle.fill")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(Stanford.coolGrey)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(run.stopReason == "app_restarted" ? "Run interrupted" : "Run cancelled")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(run.stopReason == "app_restarted"
+                     ? "ASTRA restarted before this run could finish. The preserved tool output below is from before the interruption."
+                     : "This run stopped before completion. Any preserved tool output below is partial.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Stanford.fog.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     @ViewBuilder
@@ -2093,6 +2132,18 @@ struct TaskMainView: View {
             onMoveToDraft?(task)
         } else if [.pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
             // Note: don't insert user.message here — continueSession() does it with the TaskRun link
+            let interruptionSummary = TaskRunLifecycleService.cancelTask(
+                task,
+                modelContext: modelContext,
+                source: .supersededByNewRun
+            )
+            if interruptionSummary.runsUpdated > 0 {
+                AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
+                    "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
+                    "running_runs_cancelled": String(interruptionSummary.runsUpdated),
+                    "next_action": "continue_session"
+                ], level: .warning)
+            }
             task.status = .running
             task.updatedAt = Date()
             task.completedAt = nil

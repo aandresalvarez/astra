@@ -7,7 +7,7 @@ struct EventCategoryTests {
 
     @Test("Lifecycle events categorized correctly")
     func lifecycleCategory() {
-        let types = ["task.started", "task.completed", "task.cancelled",
+        let types = ["task.started", "task.completed", "task.cancelled", "task.interrupted",
                      "task.retried", "task.resumed", "task.approved", "activity.compacted"]
         for type in types {
             #expect(TaskEvent.categoryFor(type: type) == "lifecycle", "Expected 'lifecycle' for \(type)")
