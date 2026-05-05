@@ -70,6 +70,7 @@ enum LogDiagnosticsService {
     static let maxMainLogLines = 5_000
     static let maxTaskLogLines = 300
     static let maxTaskLogFiles = 30
+    private static let permissionWarningQuietThreshold: TimeInterval = 5 * 60
     private static let historyLastGeneratedAtKey = "astra.diagnostics.history.lastGeneratedAt.v1"
     private static let historyKnownFingerprintsKey = "astra.diagnostics.history.knownFingerprints.v1"
 
@@ -111,6 +112,7 @@ enum LogDiagnosticsService {
         ).sorted { $0.timestamp < $1.timestamp }
         let issueGroups = buildIssueGroups(
             from: orderedEntries,
+            generatedAt: generatedAt,
             previousGeneratedAt: history.lastGeneratedAt,
             knownIssueFingerprints: history.knownIssueFingerprints
         )
@@ -212,12 +214,16 @@ enum LogDiagnosticsService {
 
     private static func buildIssueGroups(
         from entries: [LogEntry],
+        generatedAt: Date,
         previousGeneratedAt: Date?,
         knownIssueFingerprints: Set<String>
     ) -> [LogDiagnosticsIssue] {
         var buckets: [String: IssueBucket] = [:]
 
         for (index, entry) in entries.enumerated() {
+            if isRecoveredOrPendingPermissionWarning(entry, entries: entries, generatedAt: generatedAt) {
+                continue
+            }
             guard let classification = classify(entry) else { continue }
             let task = taskIdentifier(for: entry)
             var bucket = buckets[classification.key] ?? IssueBucket(
@@ -281,6 +287,74 @@ enum LogDiagnosticsService {
         return .new
     }
 
+    private static func isRecoveredOrPendingPermissionWarning(
+        _ entry: LogEntry,
+        entries: [LogEntry],
+        generatedAt: Date
+    ) -> Bool {
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.workerPermissionDenied.rawValue) else {
+            return false
+        }
+
+        guard generatedAt.timeIntervalSince(entry.timestamp) >= permissionWarningQuietThreshold else {
+            return true
+        }
+
+        guard let task = taskIdentifier(for: entry) else {
+            return false
+        }
+
+        if entries.contains(where: { candidate in
+            candidate.timestamp > entry.timestamp
+                && taskIdentifier(for: candidate) == task
+                && candidate.message.lowercased().contains(AuditEvent.runtimeProgressState.rawValue)
+                && candidate.message.lowercased().contains("state=possibly_stalled")
+        }) {
+            return true
+        }
+
+        return entries.contains { candidate in
+            candidate.timestamp > entry.timestamp
+                && taskIdentifier(for: candidate) == task
+                && isTaskProgressOrCompletionEntry(candidate)
+        }
+    }
+
+    private static func isTaskProgressOrCompletionEntry(_ entry: LogEntry) -> Bool {
+        let lower = entry.message.lowercased()
+        if lower.contains(AuditEvent.taskCompleted.rawValue) {
+            return true
+        }
+        if lower.contains(AuditEvent.workerExited.rawValue),
+           lower.contains("exit_code=0") {
+            return true
+        }
+        if lower.contains(AuditEvent.runtimePersistenceSummary.rawValue),
+           (lower.contains("run_status=completed") || lower.contains("task_status=completed")) {
+            return true
+        }
+        if lower.contains(AuditEvent.runtimeStreamSummary.rawValue) {
+            if let outputChars = Int(field("run_output_chars", in: entry.message) ?? "0"), outputChars > 0 {
+                return true
+            }
+            if let textEvents = Int(field("text_events", in: entry.message) ?? "0"), textEvents > 0 {
+                return true
+            }
+            if let toolResults = Int(field("tool_result_events", in: entry.message) ?? "0"), toolResults > 0 {
+                return true
+            }
+        }
+        if lower.contains(AuditEvent.taskStats.rawValue) {
+            return true
+        }
+        if lower.contains(AuditEvent.runtimeProgressState.rawValue),
+           (lower.contains("state=active") || lower.contains("state=recovered_warning")) {
+            return true
+        }
+        return false
+    }
+
     private static func classify(_ entry: LogEntry) -> (
         key: String,
         title: String,
@@ -299,6 +373,28 @@ enum LogDiagnosticsService {
                 severity: .error,
                 signal: "runtime.failure_diagnostic failure_category=\(category)",
                 analysis: runtimeFailureAnalysis(category)
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeProgressState.rawValue),
+           lower.contains("state=possibly_stalled") {
+            return (
+                key: "runtime.progress_state.possibly_stalled",
+                title: "Running task may be stalled",
+                severity: .warning,
+                signal: "runtime.progress_state state=possibly_stalled",
+                analysis: "ASTRA still sees the task as running, but no output, tool result, or file-change progress arrived after a permission warning for at least five minutes. Check whether the provider is waiting for input or a tool permission change."
+            )
+        }
+
+        if lower.contains(AuditEvent.workerPermissionDenied.rawValue) {
+            let tool = field("tool", in: message) ?? "unknown"
+            return (
+                key: "worker.permission_denied.\(tool)",
+                title: "Runtime permission warning needs follow-up",
+                severity: .warning,
+                signal: "worker.permission_denied tool=\(tool)",
+                analysis: "A tool permission warning was emitted and no later progress or completion signal was found in the analyzed window after the five-minute quiet threshold. Review the task log to see whether the agent is waiting for approval or should be retried with different tools."
             )
         }
 

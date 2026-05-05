@@ -336,14 +336,36 @@ public enum StreamEventParser {
     }
 
     private static func extractDeniedTool(from line: String) -> String? {
-        if let range = line.range(of: #""name"\s*:\s*"([^"]+)""#, options: .regularExpression) {
-            let match = line[range]
-            if let valueStart = match.range(of: ":") {
-                let value = match[valueStart.upperBound...].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                if !value.isEmpty { return value }
+        for key in ["name", "tool", "toolName", "tool_use_id", "toolUseId"] {
+            let pattern = "\"\(key)\"\\s*:\\s*\"([^\"]+)\""
+            if let value = firstRegexCapture(pattern: pattern, in: line), !value.isEmpty {
+                return value
             }
         }
+
+        let textPatterns = [
+            #"(?i)permission denied:\s*tool\s+([A-Za-z0-9_()./\-]+)"#,
+            #"(?i)tool\s+([A-Za-z0-9_()./\-]+)\s+is\s+not\s+allowed"#,
+            #"(?i)user denied\s+(?:the\s+)?([A-Za-z0-9_()./\-]+)\s+tool"#
+        ]
+        for pattern in textPatterns {
+            if let value = firstRegexCapture(pattern: pattern, in: line), !value.isEmpty {
+                return value
+            }
+        }
+
         return nil
+    }
+
+    private static func firstRegexCapture(pattern: String, in line: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsRange = NSRange(line.startIndex..<line.endIndex, in: line)
+        guard let match = regex.firstMatch(in: line, range: nsRange),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: line) else {
+            return nil
+        }
+        return String(line[range]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func extractDenialReason(from line: String) -> String {
@@ -351,7 +373,7 @@ public enum StreamEventParser {
             let match = line[range]
             if let valueStart = match.range(of: ":") {
                 let value = match[valueStart.upperBound...].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                return String(value.prefix(300))
+                if !value.isEmpty { return value }
             }
         }
         return "Permission denied"

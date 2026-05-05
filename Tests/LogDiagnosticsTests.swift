@@ -214,4 +214,97 @@ struct LogDiagnosticsTests {
         #expect(history.lastGeneratedAt == Date(timeIntervalSince1970: 1_700))
         #expect(history.knownIssueFingerprints.contains("runtime.empty_output"))
     }
+
+    @Test("Recovered permission warning is not reported as unresolved")
+    func recoveredPermissionWarningIsSuppressed() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "worker.permission_denied reason_summary=approval-needed source=copilot_stream tool=Bash",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .debug,
+                    category: "Worker",
+                    message: "runtime.progress_state event_count=4 output_chars=120 reason=health run_id=20DBCF1C state=active",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_060)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_400)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("worker.permission_denied") })
+        #expect(!report.markdown.contains("Runtime permission warning needs follow-up"))
+    }
+
+    @Test("Stale permission warning is reported after quiet threshold")
+    func stalePermissionWarningIsReported() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "worker.permission_denied reason_summary=approval-needed source=copilot_stream tool=Bash",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_301)
+        )
+
+        #expect(report.issues.contains { $0.id == "worker.permission_denied.Bash" })
+        #expect(report.markdown.contains("Runtime permission warning needs follow-up"))
+    }
+
+    @Test("Completed task suppresses earlier permission warning")
+    func completedTaskSuppressesPermissionWarning() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "worker.permission_denied reason_summary=approval-needed source=copilot_stream tool=Bash",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .info,
+                    category: "Worker",
+                    message: "worker.exited exit_code=0 phase=resume runtime=copilot_cli",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_380)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_500)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("worker.permission_denied") })
+    }
+
+    @Test("Possibly stalled runtime progress state is reported")
+    func possiblyStalledProgressStateIsReported() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "runtime.progress_state event_count=12 output_chars=121 reason=timer run_id=20DBCF1C state=possibly_stalled warning_tool=Bash",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_500)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_500)
+        )
+
+        #expect(report.issues.contains { $0.id == "runtime.progress_state.possibly_stalled" })
+        #expect(report.markdown.contains("Running task may be stalled"))
+    }
 }

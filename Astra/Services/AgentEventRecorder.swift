@@ -137,7 +137,9 @@ enum AgentEventRecorder {
         case .permissionDenied(let tool, let reason):
             modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
-                "tool": tool
+                "tool": normalizedPermissionTool(tool),
+                "reason_summary": permissionReasonSummary(reason),
+                "source": "claude_stream"
             ], level: .warning)
 
         case .astraProtocol(let event):
@@ -188,7 +190,9 @@ enum AgentEventRecorder {
         case .permissionDenied(let tool, let reason):
             modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
-                "tool": tool
+                "tool": normalizedPermissionTool(tool),
+                "reason_summary": permissionReasonSummary(reason),
+                "source": "claude_follow_up"
             ], level: .warning)
         case .astraProtocol(let event):
             recordAstraProtocol(event, to: task, run: run, modelContext: modelContext)
@@ -234,6 +238,11 @@ enum AgentEventRecorder {
 
         case .permissionRequested(let tool, let reason):
             modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
+                "tool": normalizedPermissionTool(tool),
+                "reason_summary": permissionReasonSummary(reason),
+                "source": "copilot_stream"
+            ], level: .warning)
 
         case .stats(let input, let output, let cost, let duration, let turns):
             let total = input + output
@@ -304,6 +313,20 @@ enum AgentEventRecorder {
         case .fileChange, .unknown:
             return nil
         }
+    }
+
+    private static func normalizedPermissionTool(_ tool: String) -> String {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "unknown" : trimmed
+    }
+
+    private static func permissionReasonSummary(_ reason: String) -> String {
+        let words = reason
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: " ")
+            .prefix(18)
+            .joined(separator: " ")
+        return words.isEmpty ? "none" : words
     }
 
     @MainActor

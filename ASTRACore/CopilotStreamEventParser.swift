@@ -67,6 +67,12 @@ public enum CopilotStreamEventParser {
         let type = firstStringIncludingPayload(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"]) ?? "unknown"
         let normalized = type.lowercased()
 
+        if ["event", "message", "data", "payload"].contains(normalized),
+           let payload = payloadObject(in: object),
+           firstString(in: payload, keys: ["type", "event", "kind", "sessionUpdate", "name"]) != nil {
+            return events(from: payload, raw: raw)
+        }
+
         if normalized.hasPrefix("session.") {
             return sessionEvent(from: object, type: type, raw: raw)
         }
@@ -318,10 +324,37 @@ public enum CopilotStreamEventParser {
     }
 
     private static func toolName(in object: [String: Any]) -> String {
-        firstStringIncludingPayload(in: object, keys: ["tool", "toolName", "name", "command"])
+        firstStringIncludingPayload(in: object, keys: ["tool", "toolName", "name"])
             ?? nestedString(object, path: ["tool", "name"])
             ?? nestedString(object, path: ["data", "tool", "name"])
-            ?? "tool"
+            ?? nestedStringIncludingPayload(object, path: ["tool", "name"])
+            ?? textValue(in: object).flatMap(inferredToolName)
+            ?? firstStringIncludingPayload(in: object, keys: ["toolUseId", "tool_call_id", "callId", "id"])
+            ?? firstStringIncludingPayload(in: object, keys: ["command", "cmd"])
+            ?? "unknown"
+    }
+
+    private static func inferredToolName(from text: String) -> String? {
+        let patterns = [
+            #"(?i)permission denied:\s*tool\s+([A-Za-z0-9_()./\-]+)"#,
+            #"(?i)tool\s+([A-Za-z0-9_()./\-]+)\s+is\s+not\s+allowed"#,
+            #"(?i)user denied\s+(?:the\s+)?([A-Za-z0-9_()./\-]+)\s+tool"#,
+            #"(?i)approval (?:needed|required).*?\bfor\s+([A-Za-z0-9_()./\-]+)"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = regex.firstMatch(in: text, range: range),
+                  match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: text) else {
+                continue
+            }
+            let value = String(text[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func toolID(in object: [String: Any]) -> String {

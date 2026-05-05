@@ -169,6 +169,29 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Nested permission request extracts tool name from data payload")
+    func nestedPermissionRequestToolName() {
+        let line = #"{"type":"event","data":{"type":"permission_request","toolName":"Bash","message":"approval needed"}}"#
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .permissionDenied(let tool, let reason) = parsed {
+            #expect(tool == "Bash")
+            #expect(reason == "approval needed")
+        } else {
+            Issue.record("Expected permission event")
+        }
+    }
+
+    @Test("Permission request infers tool name from text")
+    func permissionRequestInfersToolNameFromText() {
+        let line = #"{"type":"permission_request","message":"Permission denied: tool Bash is not allowed"}"#
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .permissionDenied(let tool, _) = parsed {
+            #expect(tool == "Bash")
+        } else {
+            Issue.record("Expected permission event")
+        }
+    }
+
     @Test("Usage event maps to result stats")
     func usageStats() {
         let line = #"{"type":"usage","usage":{"input_tokens":120,"output_tokens":30,"cost_usd":0.01},"duration_ms":500,"turns":2}"#
@@ -566,6 +589,7 @@ struct CopilotWorkerExecutionTests {
         try Self.run(["git", "init"], in: workspaceURL)
         try Self.run(["git", "config", "user.email", "astra@example.invalid"], in: workspaceURL)
         try Self.run(["git", "config", "user.name", "ASTRA Tests"], in: workspaceURL)
+        try Self.run(["git", "config", "commit.gpgsign", "false"], in: workspaceURL)
         try "clean\n".write(to: workspaceURL.appendingPathComponent("dirty.txt"), atomically: true, encoding: .utf8)
         try Self.run(["git", "add", "dirty.txt"], in: workspaceURL)
         try Self.run(["git", "commit", "-m", "initial"], in: workspaceURL)

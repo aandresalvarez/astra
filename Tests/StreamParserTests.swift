@@ -375,6 +375,32 @@ struct StreamParserTests {
         #expect(tool == "unknown")
     }
 
+    @Test("Permission denied infers tool from denial text when name is missing")
+    func permissionDeniedInfersToolFromText() throws {
+        let json = """
+        {"type":"user","message":{"content":[{"type":"tool_result","text":"Permission denied: tool Bash is not allowed"}]}}
+        """
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .permissionDenied(let tool, _) = parsed else {
+            Issue.record("Expected .permissionDenied, got \(String(describing: parsed))")
+            return
+        }
+        #expect(tool == "Bash")
+    }
+
+    @Test("Permission denied falls back to tool use id")
+    func permissionDeniedFallsBackToToolUseID() throws {
+        let json = """
+        {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_123","text":"User rejected this action"}]}}
+        """
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .permissionDenied(let tool, _) = parsed else {
+            Issue.record("Expected .permissionDenied, got \(String(describing: parsed))")
+            return
+        }
+        #expect(tool == "toolu_123")
+    }
+
     @Test("Edit tool_use input extraction")
     func editToolInput() throws {
         let json = """

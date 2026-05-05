@@ -77,6 +77,7 @@ enum AuditEvent: String, CaseIterable {
     case runtimeEmptyOutput = "runtime.empty_output"
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
+    case runtimeProgressState = "runtime.progress_state"
 
     case specExtractionStarted = "spec.extraction_started"
     case specExtractionCompleted = "spec.extraction_completed"

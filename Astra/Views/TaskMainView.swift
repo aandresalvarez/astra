@@ -65,6 +65,8 @@ struct TaskMainView: View {
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
+    @State private var runtimeHealthNow = Date()
+    @State private var lastLoggedRuntimeHealthSignature: String?
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -88,6 +90,14 @@ struct TaskMainView: View {
 
     private var generatedFilesTrigger: TaskGeneratedFilesTrigger {
         TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
+    }
+
+    private var runtimeHealth: TaskRuntimeHealth {
+        TaskRuntimeHealth.evaluate(
+            taskStatus: task.status,
+            snapshot: currentThreadSnapshot,
+            now: runtimeHealthNow
+        )
     }
 
     private var threadScrollSignature: String {
@@ -151,12 +161,16 @@ struct TaskMainView: View {
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
+            runtimeHealthNow = Date()
+            lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
             loadSSHConnections()
         }
         .onAppear {
+            runtimeHealthNow = Date()
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            logRuntimeHealthIfNeeded(reason: "appear")
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.modifierFlags.contains(.command),
                    event.charactersIgnoringModifiers == "v" {
@@ -175,10 +189,75 @@ struct TaskMainView: View {
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
+            runtimeHealthNow = Date()
+            logRuntimeHealthIfNeeded(reason: "snapshot")
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: task.taskFolder)
         }
+        .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
+            logRuntimeHealthIfNeeded(reason: "health")
+        }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now in
+            guard task.status == .running else {
+                lastLoggedRuntimeHealthSignature = nil
+                return
+            }
+            runtimeHealthNow = now
+            logRuntimeHealthIfNeeded(reason: "timer")
+        }
+    }
+
+    private func runningProgressRow(_ health: TaskRuntimeHealth) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            if health.isAttentionState {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(Stanford.poppy)
+                    .frame(width: 16, height: 16)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(health.message)
+                    .font(Stanford.body(14))
+                    .foregroundStyle(health.isAttentionState ? Stanford.poppy : .secondary)
+                if let detail = health.detail {
+                    Text(detail)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(health.isAttentionState ? Stanford.poppy.opacity(0.08) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func logRuntimeHealthIfNeeded(reason: String) {
+        guard task.status == .running else {
+            lastLoggedRuntimeHealthSignature = nil
+            return
+        }
+
+        let health = runtimeHealth
+        guard health.state != .notRunning else { return }
+        let signature = health.telemetrySignature
+        guard lastLoggedRuntimeHealthSignature != signature else { return }
+        lastLoggedRuntimeHealthSignature = signature
+
+        AppLogger.audit(
+            .runtimeProgressState,
+            category: "Worker",
+            taskID: task.id,
+            fields: health.telemetryFields(reason: reason),
+            level: health.isAttentionState ? .warning : .debug
+        )
     }
 
     // MARK: - Toolbar Stats
@@ -519,16 +598,7 @@ struct TaskMainView: View {
         }
 
         if task.status == .running {
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Agent is working…")
-                    .font(Stanford.body(14))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            runningProgressRow(runtimeHealth)
         }
 
         if task.status == .pendingUser {
