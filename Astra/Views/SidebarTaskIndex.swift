@@ -36,6 +36,13 @@ struct SidebarTaskIndex {
             }
         }
 
+        for workspaceID in reviewGroups.keys {
+            reviewGroups[workspaceID]?.sort { $0.updatedAt > $1.updatedAt }
+        }
+        for workspaceID in matchingGroups.keys {
+            matchingGroups[workspaceID]?.sort { $0.updatedAt > $1.updatedAt }
+        }
+
         reviewTasksByWorkspaceID = reviewGroups
         matchingReviewTasksByWorkspaceID = matchingGroups
         anyTaskWorkspaceIDs = workspaceIDs

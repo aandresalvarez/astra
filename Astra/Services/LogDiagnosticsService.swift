@@ -242,6 +242,7 @@ enum LogDiagnosticsService {
         knownIssueFingerprints: Set<String>
     ) -> [LogDiagnosticsIssue] {
         var buckets: [String: IssueBucket] = [:]
+        var seenIssueEvents: Set<String> = []
 
         for (index, entry) in entries.enumerated() {
             if isRecoveredOrPendingPermissionWarning(entry, entries: entries, generatedAt: generatedAt) {
@@ -251,6 +252,8 @@ enum LogDiagnosticsService {
                 continue
             }
             guard let classification = classify(entry) else { continue }
+            let signature = diagnosticEventSignature(for: entry, classificationKey: classification.key)
+            guard seenIssueEvents.insert(signature).inserted else { continue }
             let task = taskIdentifier(for: entry)
             var bucket = buckets[classification.key] ?? IssueBucket(
                 key: classification.key,
@@ -284,7 +287,7 @@ enum LogDiagnosticsService {
                     count: bucket.indexes.count,
                     affectedTasks: bucket.affectedTasks.sorted(),
                     evidence: evidenceLines(for: bucket.indexes, entries: entries),
-                    analysis: bucket.analysis,
+                    analysis: issueAnalysis(for: bucket, entries: entries),
                     firstSeenAt: firstSeenAt,
                     lastSeenAt: lastSeenAt,
                     freshness: freshness(
@@ -300,9 +303,12 @@ enum LogDiagnosticsService {
 
     private static func buildNotices(from entries: [LogEntry]) -> [LogDiagnosticsNotice] {
         var buckets: [String: NoticeBucket] = [:]
+        var seenNoticeEvents: Set<String> = []
 
         for (index, entry) in entries.enumerated() {
             guard let classification = classifyNotice(entry) else { continue }
+            let signature = diagnosticEventSignature(for: entry, classificationKey: classification.key)
+            guard seenNoticeEvents.insert(signature).inserted else { continue }
             var bucket = buckets[classification.key] ?? NoticeBucket(
                 key: classification.key,
                 title: classification.title,
@@ -350,6 +356,55 @@ enum LogDiagnosticsService {
             return .recurring
         }
         return .new
+    }
+
+    private static func issueAnalysis(for bucket: IssueBucket, entries: [LogEntry]) -> String {
+        guard bucket.key == "worker.budget_exceeded" else {
+            return bucket.analysis
+        }
+
+        let relatedEntries = entriesForTasks(bucket.affectedTasks, in: entries)
+        let persistenceEntries = uniqueEntries(relatedEntries.filter { entry in
+            let lower = entry.message.lowercased()
+            return lower.contains(AuditEvent.runtimePersistenceSummary.rawValue)
+                && field("run_status", in: entry.message) == "budget_exceeded"
+        })
+
+        let outputChars = sumIntField("run_output_chars", in: persistenceEntries)
+        let fileChanges = sumIntField("file_changes", in: persistenceEntries)
+        let savedState = persistenceEntries.contains {
+            $0.message.lowercased().contains("result=swiftdata_save_succeeded")
+        }
+
+        guard outputChars > 0 || fileChanges > 0 || savedState else {
+            return bucket.analysis
+        }
+
+        let outputText = outputChars > 0 ? "\(outputChars) visible output character\(outputChars == 1 ? "" : "s")" : "visible output"
+        let fileText = fileChanges > 0 ? " and \(fileChanges) file change\(fileChanges == 1 ? "" : "s")" : ""
+        let saveText = savedState ? " ASTRA saved the run state successfully." : ""
+        return "The task reached its configured budget after producing \(outputText)\(fileText).\(saveText) Resume with a narrower prompt, split the work into smaller tasks, or increase the budget when the broader run is intentional."
+    }
+
+    private static func entriesForTasks(_ tasks: Set<String>, in entries: [LogEntry]) -> [LogEntry] {
+        guard !tasks.isEmpty else { return [] }
+        return entries.filter { entry in
+            guard let task = taskIdentifier(for: entry) else { return false }
+            return tasks.contains(task)
+        }
+    }
+
+    private static func uniqueEntries(_ entries: [LogEntry]) -> [LogEntry] {
+        var seen: Set<String> = []
+        return entries.filter { entry in
+            seen.insert(diagnosticEventSignature(for: entry, classificationKey: "related")).inserted
+        }
+    }
+
+    private static func sumIntField(_ name: String, in entries: [LogEntry]) -> Int {
+        entries.reduce(0) { partial, entry in
+            partial + (Int(field(name, in: entry.message) ?? "0") ?? 0)
+        }
     }
 
     private static func isRecoveredOrPendingPermissionWarning(
@@ -607,6 +662,10 @@ enum LogDiagnosticsService {
 
         if lower.contains(AuditEvent.specExtractionFailed.rawValue),
            lower.contains("operation=title_generation") {
+            guard entry.logLevel != .debug,
+                  field("result", in: message) != "candidate_failed" else {
+                return nil
+            }
             return (
                 key: "spec.title_generation.failed",
                 title: "Thread title generation failed",
@@ -616,7 +675,10 @@ enum LogDiagnosticsService {
             )
         }
 
-        if lower.contains(AuditEvent.workerTimeout.rawValue) || lower.contains("timeout") {
+        let isRuntimePersistenceTimeout = lower.contains(AuditEvent.runtimePersistenceSummary.rawValue)
+            && (field("run_status", in: message) == "timeout"
+                || field("run_stop_reason", in: message)?.contains("timeout") == true)
+        if lower.contains(AuditEvent.workerTimeout.rawValue) || isRuntimePersistenceTimeout {
             return (
                 key: "worker.timeout",
                 title: "Runtime timeout",
@@ -702,17 +764,30 @@ enum LogDiagnosticsService {
     private static func evidenceLines(for indexes: [Int], entries: [LogEntry]) -> [String] {
         var selected = Set<Int>()
         for index in indexes.prefix(5) {
+            guard entries.indices.contains(index) else { continue }
+            let issueTask = taskIdentifier(for: entries[index])
+            let issueCategory = entries[index].category
             for offset in -2...2 {
                 let candidate = index + offset
-                if entries.indices.contains(candidate) {
-                    selected.insert(candidate)
+                guard entries.indices.contains(candidate) else { continue }
+                if let issueTask {
+                    guard taskIdentifier(for: entries[candidate]) == issueTask else { continue }
+                } else if entries[candidate].category != issueCategory {
+                    continue
                 }
+                selected.insert(candidate)
             }
         }
+        var seenLines: Set<String> = []
         return selected
             .sorted()
             .prefix(maxEvidenceLinesPerIssue)
-            .map { sanitizedLine(entries[$0]) }
+            .compactMap { index in
+                let entry = entries[index]
+                let signature = diagnosticEventSignature(for: entry, classificationKey: "evidence")
+                guard seenLines.insert(signature).inserted else { return nil }
+                return sanitizedLine(entry)
+            }
     }
 
     private static func renderMarkdown(
@@ -726,7 +801,9 @@ enum LogDiagnosticsService {
     ) -> String {
         let errors = entries.filter { $0.logLevel == .error }.count
         let warnings = entries.filter { $0.logLevel == .warning }.count
-        let taskIDs = Set(entries.compactMap { $0.taskID.map { String($0.uuidString.prefix(8)) } }).sorted()
+        let tasksSeen = Set(entries.compactMap(taskIdentifier(for:))).sorted()
+        let issueTaskIDs = Set(issues.flatMap(\.affectedTasks)).sorted()
+        let otherTaskIDs = tasksSeen.filter { !issueTaskIDs.contains($0) }
         let categories = Dictionary(grouping: entries, by: \.category)
             .mapValues(\.count)
             .sorted { lhs, rhs in
@@ -754,7 +831,8 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
-            "- Affected tasks: \(taskIDs.isEmpty ? "none" : taskIDs.joined(separator: ", "))",
+            "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
+            "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
             "",
             "## Category Counts",
             "",
@@ -908,6 +986,32 @@ enum LogDiagnosticsService {
             return String(taskID.uuidString.prefix(8))
         }
         return field("task_short", in: entry.message)
+    }
+
+    private static func diagnosticEventSignature(for entry: LogEntry, classificationKey: String) -> String {
+        let timestampSecond = Int(entry.timestamp.timeIntervalSince1970)
+        let task = taskIdentifier(for: entry) ?? "none"
+        return [
+            classificationKey,
+            entry.logLevel.rawValue,
+            entry.category,
+            task,
+            String(timestampSecond),
+            canonicalMessage(entry.message)
+        ].joined(separator: "|")
+    }
+
+    private static func canonicalMessage(_ message: String) -> String {
+        let withoutTaskPrefix: Substring
+        if message.hasPrefix("task_short=") {
+            let pieces = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            withoutTaskPrefix = pieces.count > 1 ? pieces[1] : ""
+        } else {
+            withoutTaskPrefix = Substring(message)
+        }
+        return withoutTaskPrefix
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     private static func messagePrefix(_ message: String) -> String {
