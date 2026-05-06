@@ -48,6 +48,7 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let providerVersion: String?
     let exitCode: Int?
     let output: String
+    let hasVPNWarning: Bool
     let costUSD: Double
     let fileChangesJSONLength: Int
     let fileChanges: [StoredFileChange]
@@ -66,6 +67,7 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
         providerVersion = input.providerVersion
         exitCode = input.exitCode
         output = input.output
+        hasVPNWarning = Self.outputContainsVPNWarning(input.output)
         costUSD = input.costUSD
         fileChangesJSONLength = input.fileChangesJSON.count
         fileChanges = Self.decodeFileChanges(input.fileChangesJSON)
@@ -78,6 +80,12 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
             return []
         }
         return changes
+    }
+
+    private static func outputContainsVPNWarning(_ output: String) -> Bool {
+        output.contains("VPC_SERVICE_CONTROLS") ||
+            output.contains("SECURITY_POLICY_VIOLATED") ||
+            output.contains("Request is prohibited by organization's policy")
     }
 }
 
@@ -232,7 +240,7 @@ struct TaskThreadSnapshot: Sendable {
         await Task.detached(priority: .userInitiated) {
             PerformanceTelemetry.measure(
                 "thread_snapshot_build",
-                thresholdMilliseconds: 0,
+                thresholdMilliseconds: 8,
                 fields: fields
             ) {
                 TaskThreadSnapshot(input: input)
@@ -482,14 +490,12 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let eventCount: Int
     let runCount: Int
     let status: TaskStatus
-    let updatedAt: Date
 
     init(task: AgentTask) {
         taskID = task.id
         eventCount = task.events.count
         runCount = task.runs.count
         status = task.status
-        updatedAt = task.updatedAt
     }
 }
 

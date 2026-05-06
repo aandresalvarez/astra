@@ -29,6 +29,42 @@ final class PendingTaskCollector: @unchecked Sendable {
     }
 }
 
+/// Serializes main-actor event recording while still allowing runtime readers to
+/// enqueue work immediately from background pipe callbacks.
+final class OrderedMainActorTaskQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [Task<Void, Never>] = []
+    private var tail: Task<Void, Never>?
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }; return tasks.count
+    }
+
+    func add(_ operation: @escaping @MainActor () -> Void) {
+        lock.lock()
+        let previous = tail
+        let task = Task { @MainActor in
+            if let previous {
+                await previous.value
+            }
+            operation()
+        }
+        tasks.append(task)
+        tail = task
+        lock.unlock()
+    }
+
+    private func takeTail() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tail
+    }
+
+    func drainAll() async {
+        await takeTail()?.value
+    }
+}
+
 @Observable
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
@@ -187,7 +223,7 @@ final class AgentRuntimeWorker {
         // Collect in-flight @MainActor tasks so we can drain them before setting
         // final status. Without this, fire-and-forget Task blocks race with the
         // post-process code that reads task.tokensUsed, task.costUSD, etc.
-        let pendingEvents = PendingTaskCollector()
+        let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
         )
@@ -203,26 +239,24 @@ final class AgentRuntimeWorker {
                 // Parse each JSON line into structured events
                 for parsed in StreamEventParser.parseAll(line: line) {
                     for filtered in eventPipeline.process(parsed) {
-                        let t = Task { @MainActor [weak self] in
+                        pendingEvents.add { [weak self] in
                             guard self != nil else { return }
 
                             AgentEventRecorder.recordClaudeRunEvent(filtered, to: task, run: run, modelContext: modelContext)
                             onEvent(filtered)
                         }
-                        pendingEvents.add(t)
                     }
                 }
             }
         )
 
         for parsed in eventPipeline.flushParsedEvents() {
-            let t = Task { @MainActor [weak self] in
+            pendingEvents.add { [weak self] in
                 guard self != nil else { return }
 
                 AgentEventRecorder.recordClaudeRunEvent(parsed, to: task, run: run, modelContext: modelContext)
                 onEvent(parsed)
             }
-            pendingEvents.add(t)
         }
 
         // Drain all pending event-processing tasks before setting final status.
@@ -501,7 +535,7 @@ final class AgentRuntimeWorker {
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
 
-        let pendingEvents = PendingTaskCollector()
+        let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
         )
@@ -516,22 +550,20 @@ final class AgentRuntimeWorker {
             onLine: { line in
                 for parsed in StreamEventParser.parseAll(line: line) {
                     for filtered in eventPipeline.process(parsed) {
-                        let t = Task { @MainActor in
+                        pendingEvents.add {
                             AgentEventRecorder.recordClaudeFollowUpEvent(filtered, to: task, run: run, modelContext: modelContext)
                             onEvent(filtered)
                         }
-                        pendingEvents.add(t)
                     }
                 }
             }
         )
 
         for parsed in eventPipeline.flushParsedEvents() {
-            let t = Task { @MainActor in
+            pendingEvents.add {
                 AgentEventRecorder.recordClaudeFollowUpEvent(parsed, to: task, run: run, modelContext: modelContext)
                 onEvent(parsed)
             }
-            pendingEvents.add(t)
         }
 
         // Drain all pending event-processing tasks before setting final status
@@ -764,7 +796,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(skillEvent)
         }
 
-        let pendingEvents = PendingTaskCollector()
+        let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
         )
@@ -787,14 +819,13 @@ final class AgentRuntimeWorker {
                     let filteredEvents = eventPipeline.process(event)
                     streamTelemetry.recordEmitted(filteredEvents)
                     for filtered in filteredEvents {
-                        let t = Task { @MainActor [weak self] in
+                        pendingEvents.add { [weak self] in
                             guard self != nil else { return }
                             AgentEventRecorder.recordCopilotEvent(filtered, to: task, run: run, modelContext: modelContext)
                             if let parsed = AgentEventRecorder.parsedEvent(from: filtered) {
                                 onEvent(parsed)
                             }
                         }
-                        pendingEvents.add(t)
                     }
                 }
             }
@@ -802,14 +833,13 @@ final class AgentRuntimeWorker {
         let flushedEvents = eventPipeline.flushAgentEvents()
         streamTelemetry.recordEmitted(flushedEvents)
         for event in flushedEvents {
-            let t = Task { @MainActor [weak self] in
+            pendingEvents.add { [weak self] in
                 guard self != nil else { return }
                 AgentEventRecorder.recordCopilotEvent(event, to: task, run: run, modelContext: modelContext)
                 if let parsed = AgentEventRecorder.parsedEvent(from: event) {
                     onEvent(parsed)
                 }
             }
-            pendingEvents.add(t)
         }
         await pendingEvents.drainAll()
         let streamSnapshot = streamTelemetry.snapshot()
