@@ -124,6 +124,20 @@ struct PluginPackagePrereqTests {
         #expect(redcap?.skills.first?.behaviorInstructions.contains("content=formEventMapping") == true)
     }
 
+    @Test("Built-in Stanford Outlook Mail package is OAuth and text-only")
+    func builtInStanfordOutlookMailHasOAuthConnector() {
+        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-outlook-mail" }
+        #expect(mail != nil)
+        #expect(mail?.category == "Integrations")
+        #expect(mail?.connectors.count == 1)
+        #expect(mail?.connectors.first?.serviceType == "stanford_outlook_mail")
+        #expect(mail?.connectors.first?.authMethod == "oauth")
+        #expect(mail?.connectors.first?.credentialHints.isEmpty == true)
+        #expect(mail?.connectors.first?.configHints.map(\.key).contains("ASTRA_MAIL_CLIENT_ID") == true)
+        #expect(mail?.localTools.map(\.command) == ["stanford-mail"])
+        #expect(mail?.skills.first?.behaviorInstructions.contains("V1 is text-only") == true)
+    }
+
     @Test("Zero-config built-ins have no prerequisites")
     func builtInZeroConfigHasNoPrereqs() {
         // `test-runner` and `read-only-explorer` used to live here but

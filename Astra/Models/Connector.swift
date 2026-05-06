@@ -150,6 +150,9 @@ final class Connector {
 
     /// Delete all Keychain entries when connector is deleted.
     func cleanupKeychain() {
+        if isStanfordOutlookMail {
+            StanfordOutlookMailRegistry.remove(connectorID: id)
+        }
         KeychainService.deleteAll(connectorID: id)
         AppLogger.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": id.uuidString,
@@ -165,6 +168,35 @@ final class Connector {
         store: SecretStore = KeychainSecretStore(),
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport()
     ) async -> (Bool, String) {
+        if isStanfordOutlookMail {
+            do {
+                let me = try await StanfordOutlookMailGraphService().testConnection(connector: self)
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: [
+                    "connector_id": id.uuidString,
+                    "service_type": serviceType,
+                    "credential_evidence": "microsoft_graph_oauth",
+                    "credential_state": "authenticated",
+                    "auth_verified": "true",
+                    "connector_updated_at": Self.auditTimestamp(updatedAt),
+                    "result": "success"
+                ])
+                let identity = me.mail ?? me.userPrincipalName ?? outlookEmail
+                return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
+            } catch {
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: [
+                    "connector_id": id.uuidString,
+                    "service_type": serviceType,
+                    "credential_evidence": "microsoft_graph_oauth",
+                    "credential_state": "failed",
+                    "auth_verified": "false",
+                    "connector_updated_at": Self.auditTimestamp(updatedAt),
+                    "result": "oauth_failed",
+                    "error_type": String(describing: type(of: error))
+                ], level: .warning)
+                return (false, error.localizedDescription)
+            }
+        }
+
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
             AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                 "connector_id": id.uuidString,

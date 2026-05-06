@@ -118,7 +118,8 @@ enum CopilotCLIRuntime {
         capabilities: CopilotCLICapabilities,
         taskEnvironment: [String: String],
         copilotHome: String,
-        providerEnvironment: [String: String] = [:]
+        providerEnvironment: [String: String] = [:],
+        includeAstraToolsPath: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
 
@@ -164,7 +165,10 @@ enum CopilotCLIRuntime {
         }
 
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
+        let pathSuffix = includeAstraToolsPath
+            ? RuntimePathResolver.agentPathSuffix
+            : RuntimePathResolver.shellPathSuffix
+        env["PATH"] = (env["PATH"] ?? "") + ":\(pathSuffix)"
         env["COPILOT_HOME"] = copilotHome
         env["NO_COLOR"] = "1"
         env["TERM"] = env["TERM"] ?? "xterm-256color"

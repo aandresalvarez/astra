@@ -182,7 +182,8 @@ struct CapabilityLibraryTests {
             "github-workflow",
             "jira-workflow",
             "redcap-workflow",
-            "security-auditor"
+            "security-auditor",
+            "stanford-outlook-mail"
         ]
 
         #expect(ApprovedCapabilityBundle.bundledDirectory()?.lastPathComponent == "Capabilities")
@@ -194,6 +195,7 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
+        #expect(packages.first { $0.id == "stanford-outlook-mail" }?.localTools.map(\.command) == ["stanford-mail"])
     }
 
     @Test("resource bundle resolver exposes app icon")

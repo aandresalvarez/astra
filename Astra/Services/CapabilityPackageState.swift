@@ -114,6 +114,20 @@ struct CapabilityPackageState {
         guard connector.authMethod != "none" else { return [] }
 
         let name = connector.name.isEmpty ? "Connector" : connector.name
+        if connector.isStanfordOutlookMail {
+            var messages: [String] = []
+            if connector.outlookClientID.isEmpty {
+                messages.append("\(name): missing Microsoft client ID")
+            }
+            if !connector.hasConfiguredOutlookTenantDomain {
+                messages.append("\(name): missing tenant domain")
+            }
+            if !connector.hasOutlookRefreshToken {
+                messages.append("\(name): not signed in")
+            }
+            return messages
+        }
+
         let missing = connector.missingCredentialKeys()
         if !missing.isEmpty {
             return ["\(name): missing \(missing.joined(separator: ", "))"]
