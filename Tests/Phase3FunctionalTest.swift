@@ -159,7 +159,7 @@ struct Phase3FunctionalTest {
         print("=============================================\n")
     }
 
-    @Test("Budget exceeded kills swarm cleanly")
+    @Test("Budget exceeded kills swarm cleanly", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
     @MainActor
     func budgetExceededKillsSwarm() async throws {
         // 1. Create workspace

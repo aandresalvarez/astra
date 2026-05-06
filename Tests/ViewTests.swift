@@ -240,6 +240,22 @@ struct TaskThreadSnapshotTests {
         }
     }
 
+    @Test("Task run snapshot precomputes VPN warning markers")
+    func taskRunSnapshotPrecomputesVPNWarningMarkers() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        run.output = "Request is prohibited by organization's policy"
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        #expect(snapshot.latestRun?.hasVPNWarning == true)
+    }
+
     @Test("Tool activity is grouped once per run")
     func toolActivityGrouping() {
         let task = makeTask()

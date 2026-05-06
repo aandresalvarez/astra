@@ -1005,7 +1005,7 @@ struct TaskMainView: View {
             }
 
             // VPN warning
-            if run.output.contains("VPC_SERVICE_CONTROLS") || run.output.contains("SECURITY_POLICY_VIOLATED") || run.output.contains("Request is prohibited by organization's policy") {
+            if run.hasVPNWarning {
                 HStack(spacing: 10) {
                     Image(systemName: "network.slash")
                         .font(Stanford.ui(16))
@@ -1037,9 +1037,18 @@ struct TaskMainView: View {
 
             // Response text — flows directly, no card
             if !run.output.isEmpty {
-                MarkdownTextView(text: run.output)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                if run.status == .running {
+                    Text(run.output)
+                        .font(Stanford.ui(15))
+                        .foregroundStyle(Stanford.black)
+                        .textSelection(.enabled)
+                        .lineSpacing(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    MarkdownTextView(text: run.output)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
             }
 
             // Generated files
