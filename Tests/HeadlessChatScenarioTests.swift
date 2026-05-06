@@ -213,6 +213,98 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Changing runtime from Claude to Copilot starts a clean provider run")
+    func changingRuntimeFromClaudeToCopilotStartsCleanProviderRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude first answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude first answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"session.mcp_servers_loaded","session":{"id":"copilot-session-1","model":"gpt-5"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot follow-up answer"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":4,"output_tokens":6},"duration_ms":9,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Start with Claude", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "claude-session-1")
+
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.model = "gpt-5"
+        _ = await harness.continueTask(task: task, message: "Continue with Copilot", worker: worker)
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(runs[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(runs[0].providerSessionId == "claude-session-1")
+        #expect(runs[1].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(runs[1].providerSessionId == "copilot-session-1")
+        #expect(runs[1].providerSessionId != "claude-session-1")
+        #expect(runs[1].output == "Copilot follow-up answer")
+        #expect(task.sessionId == "copilot-session-1")
+        #expect(task.status == .completed)
+    }
+
+    @Test("Changing runtime from Copilot to Claude starts a clean provider run")
+    func changingRuntimeFromCopilotToClaudeStartsCleanProviderRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"session.mcp_servers_loaded","session":{"id":"copilot-session-1","model":"gpt-5"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot first answer"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-session-2","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude follow-up answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":13,"num_turns":1,"result":"Claude follow-up answer","usage":{"input_tokens":5,"output_tokens":7}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Start with Copilot", model: "gpt-5")
+        let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "copilot-session-1")
+
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        task.model = "claude-sonnet-4-6"
+        _ = await harness.continueTask(task: task, message: "Continue with Claude", worker: worker)
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(runs[0].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(runs[0].providerSessionId == "copilot-session-1")
+        #expect(runs[1].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(runs[1].providerSessionId == "claude-session-2")
+        #expect(runs[1].providerSessionId != "copilot-session-1")
+        #expect(runs[1].output == "Claude follow-up answer")
+        #expect(task.sessionId == "claude-session-2")
+        #expect(task.status == .completed)
+    }
+
     private static func copilotScript(body: String, argsFile: URL? = nil) -> String {
         let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
         return """
@@ -318,6 +410,20 @@ private final class HeadlessChatHarness {
             worker.copilotPath = executablePath
             worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
         }
+        return worker
+    }
+
+    func makeWorker(
+        claudePath: String,
+        copilotPath: String,
+        permissionPolicy: PermissionPolicy = .restricted
+    ) -> AgentRuntimeWorker {
+        let worker = AgentRuntimeWorker()
+        worker.timeoutSeconds = 10
+        worker.permissionPolicy = permissionPolicy
+        worker.claudePath = claudePath
+        worker.copilotPath = copilotPath
+        worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
         return worker
     }
 

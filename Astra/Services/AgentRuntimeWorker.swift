@@ -108,7 +108,9 @@ final class AgentRuntimeWorker {
         modelContext: ModelContext,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        if runtimeConfiguration.selectedRuntime(for: task) == .copilotCLI {
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
+        if selectedRuntime == .copilotCLI {
             await executeCopilot(task: task, modelContext: modelContext, onEvent: onEvent)
             return
         }
@@ -477,7 +479,9 @@ final class AgentRuntimeWorker {
         modelContext: ModelContext,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        if runtimeConfiguration.selectedRuntime(for: task) == .copilotCLI {
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
+        if selectedRuntime == .copilotCLI {
             let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": "fresh_follow_up",
@@ -1020,6 +1024,42 @@ final class AgentRuntimeWorker {
 
     static let compactionThreshold = AgentEventCompactor.threshold
     static let compactionKeepCount = AgentEventCompactor.keepCount
+
+    @MainActor
+    private func clearMismatchedProviderSessionIfNeeded(
+        for task: AgentTask,
+        selectedRuntime: AgentRuntimeID,
+        phase: String
+    ) {
+        guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return
+        }
+
+        let sessionRun = task.runs
+            .filter { $0.providerSessionId == sessionID }
+            .max { $0.startedAt < $1.startedAt }
+        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
+        let owningRuntime = Self.runtimeID(from: sessionRun?.runtimeID)
+            ?? Self.runtimeID(from: latestRun?.runtimeID)
+
+        guard let owningRuntime, owningRuntime != selectedRuntime else {
+            return
+        }
+
+        task.sessionId = nil
+        AppLogger.audit(.workerSessionCleared, category: "Worker", taskID: task.id, fields: [
+            "reason": "runtime_changed",
+            "from_runtime": owningRuntime.rawValue,
+            "to_runtime": selectedRuntime.rawValue,
+            "phase": phase,
+            "history_run_count": String(task.runs.count)
+        ], level: .info)
+    }
+
+    private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {
+        rawValue.flatMap(AgentRuntimeID.init(rawValue:))
+    }
 
     @MainActor
     private static func logCopilotStreamTelemetry(
