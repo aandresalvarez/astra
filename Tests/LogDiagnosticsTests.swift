@@ -175,6 +175,140 @@ struct LogDiagnosticsTests {
         #expect(!report.markdown.contains("Application warning"))
     }
 
+    @Test("UI timeout snapshots are not classified as runtime timeouts")
+    func uiTimeoutSnapshotIsNotRuntimeTimeout() {
+        let timedOutTask = UUID(uuidString: "437BF453-D7D2-48AC-B316-971AF314ADB4")!
+        let unrelatedTask = UUID(uuidString: "011185C8-0000-4000-8000-000000000000")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "UI",
+                message: "thread.snapshot_built latest_run_status=timeout status=failed event_count=84",
+                taskID: timedOutTask,
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .debug,
+                category: "UI",
+                message: "thread.snapshot_built latest_run_status=running status=running event_count=62",
+                taskID: unrelatedTask,
+                timestamp: Date(timeIntervalSince1970: 1_010)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issueCount == 0)
+        #expect(!report.markdown.contains("Runtime timeout"))
+        #expect(report.markdown.contains("Tasks with issues: none"))
+        #expect(report.markdown.contains("Other tasks seen: 011185C8, 437BF453"))
+    }
+
+    @Test("Real runtime timeout events are still classified")
+    func realRuntimeTimeoutIsClassified() {
+        let taskID = UUID(uuidString: "437BF453-D7D2-48AC-B316-971AF314ADB4")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Worker",
+                message: "worker.timeout idle_seconds=300 runtime=claude_code",
+                taskID: taskID,
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issues.contains { $0.id == "worker.timeout" })
+        #expect(report.markdown.contains("Tasks with issues: 437BF453"))
+    }
+
+    @Test("Mirrored task log lines are deduplicated in issue counts")
+    func mirroredTaskLinesAreDeduplicated() {
+        let taskID = UUID(uuidString: "7E734355-0000-4000-8000-000000000000")!
+        let first = Date(timeIntervalSince1970: 1_000)
+        let second = Date(timeIntervalSince1970: 1_600)
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "worker.budget_exceeded reason=max_budget_reached redacted_key=200000",
+                taskID: taskID,
+                timestamp: first
+            ),
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "task_short=7E734355 worker.budget_exceeded reason=max_budget_reached redacted_key=200000",
+                timestamp: first
+            ),
+            LogEntry(
+                level: .debug,
+                category: "Persistence",
+                message: "runtime.persistence_summary file_changes=1 result=swiftdata_save_succeeded run_output_chars=2768 run_status=budget_exceeded task_status=budget_exceeded",
+                taskID: taskID,
+                timestamp: first.addingTimeInterval(1)
+            ),
+            LogEntry(
+                level: .debug,
+                category: "UI",
+                message: "thread.snapshot_built latest_run_status=completed status=completed",
+                taskID: UUID(uuidString: "011185C8-0000-4000-8000-000000000000")!,
+                timestamp: second.addingTimeInterval(-1)
+            ),
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "worker.budget_exceeded phase=resume reason=max_budget_reached redacted_key=1001909",
+                taskID: taskID,
+                timestamp: second
+            ),
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "task_short=7E734355 worker.budget_exceeded phase=resume reason=max_budget_reached redacted_key=1001909",
+                timestamp: second
+            ),
+            LogEntry(
+                level: .debug,
+                category: "Persistence",
+                message: "task_short=7E734355 runtime.persistence_summary file_changes=1 result=swiftdata_save_succeeded run_output_chars=839 run_status=budget_exceeded task_status=budget_exceeded",
+                timestamp: second.addingTimeInterval(1)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_700))
+
+        let issue = report.issues.first { $0.id == "worker.budget_exceeded" }
+        #expect(issue?.count == 2)
+        #expect(issue?.affectedTasks == ["7E734355"])
+        #expect(issue?.analysis.contains("visible output") == true)
+        #expect(issue?.analysis.contains("file change") == true)
+        #expect(issue?.evidence.contains { $0.contains("task_short=011185C8") || $0.contains("thread.snapshot_built") } == false)
+        #expect(report.markdown.contains("Tasks with issues: 7E734355"))
+        #expect(report.markdown.contains("Other tasks seen: 011185C8"))
+    }
+
+    @Test("Debug title generation candidate failures are non-actionable")
+    func debugTitleGenerationCandidateFailureIsNonActionable() {
+        let debugReport = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "spec.extraction_failed error_summary=model unavailable exit_code=1 model=claude-haiku-4-5-20251001 operation=title_generation result=candidate_failed",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(debugReport.issueCount == 0)
+        #expect(!debugReport.markdown.contains("Thread title generation failed"))
+
+        let warningReport = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Worker",
+                message: "spec.extraction_failed candidate_count=2 error_summary=model unavailable operation=title_generation result=all_candidates_failed",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(warningReport.issues.contains { $0.id == "spec.title_generation.failed" })
+    }
+
     @Test("Report scopes entries and labels issue freshness")
     func reportScopeAndFreshness() {
         let previous = Date(timeIntervalSince1970: 1_200)

@@ -1016,6 +1016,23 @@ struct SidebarGroupingTests {
         #expect(index.hasAnyTask(in: firstWorkspace))
     }
 
+    @Test("SidebarTaskIndex pre-sorts workspace review tasks newest first")
+    func sidebarTaskIndexSortsWorkspaceTasksNewestFirst() {
+        let workspace = makeWorkspace(name: "Sorted")
+        let older = makeTask(title: "Older", status: .completed, workspace: workspace)
+        older.updatedAt = Date(timeIntervalSince1970: 100)
+
+        let newer = makeTask(title: "Newer", status: .running, workspace: workspace)
+        newer.updatedAt = Date(timeIntervalSince1970: 300)
+
+        let middle = makeTask(title: "Middle", status: .pendingUser, workspace: workspace)
+        middle.updatedAt = Date(timeIntervalSince1970: 200)
+
+        let index = SidebarTaskIndex(tasks: [older, newer, middle], searchText: "")
+
+        #expect(index.reviewTasks(for: workspace).map(\.id) == [newer.id, middle.id, older.id])
+    }
+
     @Test("SidebarTaskIndex surfaces unread tasks under the dock")
     func sidebarTaskIndexUnreadTasks() {
         let workspace = makeWorkspace(name: "Unread")
@@ -1070,6 +1087,21 @@ struct SidebarGroupingTests {
             matchingSearch: true,
             workspaceMatchesSearch: false
         ).map(\.id) == [taskMatchedTask.id])
+    }
+
+    @Test("TaskThreadSnapshotTrigger ignores unrelated task metadata updates")
+    func taskThreadSnapshotTriggerIgnoresUpdatedAtOnlyChanges() {
+        let task = makeTask(status: .running)
+        let initial = TaskThreadSnapshotTrigger(task: task)
+
+        task.updatedAt = Date(timeIntervalSince1970: 999)
+        let afterMetadataUpdate = TaskThreadSnapshotTrigger(task: task)
+
+        task.status = .completed
+        let afterStatusUpdate = TaskThreadSnapshotTrigger(task: task)
+
+        #expect(afterMetadataUpdate == initial)
+        #expect(afterStatusUpdate != initial)
     }
 
     @Test("Workspace sidebar filter applies starred-only before search")

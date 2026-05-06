@@ -558,13 +558,15 @@ struct ContentView: View {
     private func fetchRunningTaskCount() -> Int {
         PerformanceTelemetry.measure(
             "update_safety_count",
-            thresholdMilliseconds: 0
+            thresholdMilliseconds: 8
         ) {
-            let descriptor = FetchDescriptor<AgentTask>()
-            let tasks = (try? modelContext.fetch(descriptor)) ?? []
-            return tasks.reduce(0) { count, task in
-                count + (task.status == .running ? 1 : 0)
-            }
+            let runningStatus = TaskStatus.running
+            let descriptor = FetchDescriptor<AgentTask>(
+                predicate: #Predicate<AgentTask> { task in
+                    task.status == runningStatus
+                }
+            )
+            return (try? modelContext.fetchCount(descriptor)) ?? 0
         }
     }
 

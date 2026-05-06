@@ -987,9 +987,7 @@ struct TaskSidebarView: View {
 
     @ViewBuilder
     private func workspaceTaskGroups(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
-        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex).sorted { lhs, rhs in
-            lhs.updatedAt > rhs.updatedAt
-        }
+        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
 

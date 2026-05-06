@@ -232,7 +232,7 @@ struct TaskThreadSnapshot: Sendable {
         await Task.detached(priority: .userInitiated) {
             PerformanceTelemetry.measure(
                 "thread_snapshot_build",
-                thresholdMilliseconds: 0,
+                thresholdMilliseconds: 8,
                 fields: fields
             ) {
                 TaskThreadSnapshot(input: input)
@@ -482,14 +482,12 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let eventCount: Int
     let runCount: Int
     let status: TaskStatus
-    let updatedAt: Date
 
     init(task: AgentTask) {
         taskID = task.id
         eventCount = task.events.count
         runCount = task.runs.count
         status = task.status
-        updatedAt = task.updatedAt
     }
 }
 

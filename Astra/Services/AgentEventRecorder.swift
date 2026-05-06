@@ -82,6 +82,7 @@ enum AgentEventRecorder {
         case .systemInit(let model, let sessionId):
             if let sessionId {
                 task.sessionId = sessionId
+                run.providerSessionId = sessionId
                 AppLogger.audit(.workerSessionStarted, category: "Worker", taskID: task.id, fields: [
                     "session_id_prefix": String(sessionId.prefix(8))
                 ], level: .debug)
@@ -182,7 +183,10 @@ enum AgentEventRecorder {
                 run.costUSD = cost
             }
         case .systemInit(_, let sessionId):
-            if let sessionId { task.sessionId = sessionId }
+            if let sessionId {
+                task.sessionId = sessionId
+                run.providerSessionId = sessionId
+            }
         case .toolResult(_, let content):
             if !content.isEmpty {
                 modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))

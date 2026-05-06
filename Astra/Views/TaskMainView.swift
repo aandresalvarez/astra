@@ -101,10 +101,11 @@ struct TaskMainView: View {
     }
 
     private var threadScrollSignature: String {
-        let itemIDs = currentThreadSnapshot.conversationItems.map(\.id).joined(separator: "|")
+        let itemCount = currentThreadSnapshot.conversationItems.count
+        let lastItemID = currentThreadSnapshot.conversationItems.last?.id ?? "none"
         let latestOutputCount = currentThreadSnapshot.latestRun?.output.count ?? 0
         let latestStatus = currentThreadSnapshot.latestRun?.status.rawValue ?? "none"
-        return "\(itemIDs)#latest=\(latestOutputCount)#status=\(latestStatus)"
+        return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
     var body: some View {
@@ -537,7 +538,7 @@ struct TaskMainView: View {
         ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
-                    VStack(spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
                         chatThreadContent
                         Color.clear
                             .frame(height: 1)

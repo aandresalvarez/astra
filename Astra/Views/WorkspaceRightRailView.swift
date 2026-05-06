@@ -36,6 +36,8 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
 }
 
 struct WorkspaceRightRailView: View {
+    private static let maxRecentLogEntries = 64
+
     let workspace: Workspace
     let selectedTask: AgentTask?
     let onConfigure: () -> Void
@@ -67,7 +69,9 @@ struct WorkspaceRightRailView: View {
     @State private var isContextCollapsed = false
     @State private var isAccessCollapsed = true
     @State private var isSchedulesSectionCollapsed = false
-    @State private var logEntries: [LogEntry] = AppLogger.entries
+    @State private var logEntries: [LogEntry] = Array(AppLogger.entries.suffix(maxRecentLogEntries))
+    @State private var logEntryCount = AppLogger.entries.count
+    @State private var pendingLogEntries: [LogEntry] = []
     @State private var sshConnections: [SSHConnection] = []
     @State private var isConnectorsExpanded = false
     @State private var isToolsExpanded = false
@@ -162,12 +166,40 @@ struct WorkspaceRightRailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
             guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
             DispatchQueue.main.async {
-                logEntries.append(entry)
-                if logEntries.count > 2000 {
-                    logEntries.removeFirst(logEntries.count - 2000)
-                }
+                guard selectedTab == .logs else { return }
+                pendingLogEntries.append(entry)
             }
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            flushPendingLogEntries()
+        }
+        .onChange(of: selectedTab) { _, newTab in
+            if newTab == .logs {
+                refreshRecentLogEntries()
+            } else {
+                pendingLogEntries.removeAll(keepingCapacity: true)
+            }
+        }
+        .onDisappear {
+            pendingLogEntries.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private func refreshRecentLogEntries() {
+        let latestEntries = AppLogger.entries
+        logEntryCount = latestEntries.count
+        logEntries = Array(latestEntries.suffix(Self.maxRecentLogEntries))
+        pendingLogEntries.removeAll(keepingCapacity: true)
+    }
+
+    private func flushPendingLogEntries() {
+        guard selectedTab == .logs, !pendingLogEntries.isEmpty else { return }
+        logEntryCount += pendingLogEntries.count
+        logEntries.append(contentsOf: pendingLogEntries)
+        if logEntries.count > Self.maxRecentLogEntries {
+            logEntries.removeFirst(logEntries.count - Self.maxRecentLogEntries)
+        }
+        pendingLogEntries.removeAll(keepingCapacity: true)
     }
 
     // MARK: - Workspace Identity Anchor
@@ -1370,10 +1402,10 @@ struct WorkspaceRightRailView: View {
 
             inspectorSectionWithTrailing("Recent Entries") {
                 HStack(spacing: 8) {
-                    RailCountBadge(count: logEntries.count)
+                    RailCountBadge(count: logEntryCount)
 
                     Button {
-                        logEntries = AppLogger.entries
+                        refreshRecentLogEntries()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(Stanford.ui(11))
@@ -1398,7 +1430,7 @@ struct WorkspaceRightRailView: View {
             }
         }
         .onAppear {
-            logEntries = AppLogger.entries
+            refreshRecentLogEntries()
         }
     }
 
