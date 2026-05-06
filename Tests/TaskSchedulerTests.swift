@@ -109,6 +109,33 @@ struct SchedulePropertyTests {
         #expect(vars["mode"] == "strict")
     }
 
+    @Test("routine metadata round-trips without polluting template variables")
+    func routineMetadata() {
+        let schedule = TaskSchedule(name: "Daily Tickets", goal: "Review assigned Jira tickets")
+        schedule.templateVariables = ["project": "SUPPORT"]
+        schedule.routineDescription = "Daily support triage"
+        schedule.routinePaths = ["/tmp/support-docs", "/tmp/support-docs", "  "]
+
+        #expect(schedule.routineDescription == "Daily support triage")
+        #expect(schedule.routineInstructions == "Review assigned Jira tickets")
+        #expect(schedule.routinePaths == ["/tmp/support-docs"])
+        #expect(schedule.templateSubstitutionVariables == ["project": "SUPPORT"])
+    }
+
+    @Test("effectiveGoal includes routine description and folders")
+    func effectiveGoalWithRoutineMetadata() {
+        let schedule = TaskSchedule(name: "Daily Tickets", goal: "Review assigned Jira tickets")
+        schedule.routineDescription = "Daily support triage"
+        schedule.routinePaths = ["/tmp/support-docs"]
+
+        let goal = schedule.effectiveGoal
+        #expect(goal.contains("Routine description:"))
+        #expect(goal.contains("Daily support triage"))
+        #expect(goal.contains("Routine instructions:"))
+        #expect(goal.contains("Review assigned Jira tickets"))
+        #expect(goal.contains("/tmp/support-docs"))
+    }
+
     @Test("runtimeID resolves to a stable provider")
     func runtimeIDResolution() {
         let defaultSchedule = TaskSchedule(name: "Default")
@@ -361,6 +388,23 @@ struct ScheduleFireLogicTests {
         )
 
         #expect(resolved.map(\.name) == ["Enabled Shared"])
+    }
+
+    @Test("task runtime additional paths include folder inputs")
+    func taskRuntimeAdditionalPathsIncludeFolderInputs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-routine-paths-\(UUID().uuidString)", isDirectory: true)
+        let extra = root.appendingPathComponent("extra", isDirectory: true)
+        let routine = root.appendingPathComponent("routine", isDirectory: true)
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: routine, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Paths", primaryPath: root.path, additionalPaths: [extra.path])
+        let task = AgentTask(title: "Routine Run", goal: "Run", workspace: workspace)
+        task.inputs = [routine.path]
+
+        #expect(task.runtimeAdditionalPaths == [extra.path, routine.path])
     }
 
     @Test("Due vs future filtering logic")

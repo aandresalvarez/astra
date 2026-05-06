@@ -60,7 +60,7 @@ final class TaskScheduler {
 
         if let templateID = schedule.templateID,
            let template = schedule.workspace?.templates.first(where: { $0.id == templateID }) {
-            let variables = schedule.templateVariables
+            let variables = schedule.templateSubstitutionVariables
             let resolvedGoal = template.resolveGoal(template.mainGoal, with: variables)
             task = AgentTask(
                 title: "\(schedule.name) — \(Self.dateFormatter.string(from: Date()))",
@@ -77,6 +77,10 @@ final class TaskScheduler {
                 tokenBudget: schedule.tokenBudget,
                 model: schedule.model
             )
+        }
+
+        for path in schedule.routinePaths where !task.inputs.contains(path) {
+            task.inputs.append(path)
         }
 
         task.runtimeID = schedule.resolvedRuntimeID.rawValue

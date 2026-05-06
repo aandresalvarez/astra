@@ -99,6 +99,31 @@ final class AgentTask {
         workspaceAccess.codeWorkingDirectory
     }
 
+    var runtimeAdditionalPaths: [String] {
+        var paths = workspace?.additionalPaths ?? []
+        paths.append(contentsOf: inputDirectoryPaths)
+
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let path = (rawPath as NSString).expandingTildeInPath
+            guard !path.isEmpty, !seen.contains(path) else { return nil }
+            seen.insert(path)
+            return path
+        }
+    }
+
+    private var inputDirectoryPaths: [String] {
+        inputs.compactMap { input in
+            let path = (input as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            return path
+        }
+    }
+
     /// Per-task subfolder within the workspace for task-specific outputs
     var taskFolder: String {
         workspaceAccess.taskFolder

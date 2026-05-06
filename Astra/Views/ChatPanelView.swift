@@ -17,7 +17,7 @@ enum SlashWizardType: String {
     case tool = "/tool"
     case connector = "/connector"
     case template = "/template"
-    case schedule = "/schedule"
+    case schedule = "/routine"
     case recap = "/recap"
 }
 
@@ -85,7 +85,7 @@ struct SlashWizard {
                 return "Enter **\(varLabel)**\(defaultHint):"
             }
         case .schedule:
-            return "" // Schedule uses Claude-driven conversation, not wizard steps
+            return "" // Routine uses Claude-driven conversation, not wizard steps
         case .recap:
             return "" // Recap is one-shot, bypasses the wizard
         }
@@ -144,7 +144,7 @@ struct SlashWizard {
         case .template:
             return "Let's create a task from a **template**. Templates define multi-phase workflows with before, main, and after agents."
         case .schedule:
-            return "Let's create a **schedule**. I'll help you set up a recurring task."
+            return "Let's create a **routine**. I'll help you set up recurring work."
         case .recap:
             return "" // Recap is one-shot, bypasses the wizard
         }
@@ -425,7 +425,7 @@ struct ChatPanelView: View {
 
     private var isSlashCommandInput: Bool {
         let lower = messageText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["/skill", "/tool", "/connector", "/template", "/schedule", "/remember", "/recap"].contains { command in
+        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap"].contains { command in
             lower == command || lower.hasPrefix(command + " ")
         }
     }
@@ -449,8 +449,8 @@ struct ChatPanelView: View {
                        title: "Create Connector", description: "Set up auth for Jira, GitHub, Slack, or APIs"),
             SlashOption(id: "template", command: "/template", icon: "rectangle.3.group", color: Stanford.poppy,
                        title: "Use Template", description: "Create a multi-phase task from a template"),
-            SlashOption(id: "schedule", command: "/schedule", icon: "clock.badge.checkmark", color: Stanford.poppy,
-                       title: "Create Schedule", description: "Automate a recurring task (daily, weekly, etc.)"),
+            SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
+                       title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
             SlashOption(id: "remember", command: "/remember", icon: "brain", color: Stanford.plum,
                        title: "Add Memory", description: "Save a fact for the agent to remember in this workspace"),
             SlashOption(id: "recap", command: "/recap", icon: "doc.text", color: Stanford.paloAltoGreen,
@@ -1015,7 +1015,7 @@ struct ChatPanelView: View {
             return
         }
 
-        if let slashType = (["/skill", "/tool", "/connector", "/template", "/schedule"] as [String])
+        if let slashType = (["/skill", "/tool", "/connector", "/template", "/routine", "/schedule"] as [String])
             .first(where: { lower == $0 || lower.hasPrefix($0 + " ") }) {
 
             // Build context for the slash command
@@ -1423,7 +1423,7 @@ struct ChatPanelView: View {
             onTaskCreated?(creation.mainTask)
 
         case .schedule:
-            break // Schedule uses Claude-driven conversation, not wizard steps
+            break // Routine uses Claude-driven conversation, not wizard steps
         case .recap:
             break // Recap is one-shot, bypasses the wizard
         }
@@ -1649,29 +1649,31 @@ struct ChatPanelView: View {
             ```
             """
 
-        case "/schedule":
+        case "/routine", "/schedule":
             let existingSchedules = (ws.schedules.map { "\($0.name) (\($0.frequencySummary))" }).joined(separator: ", ")
             let skillList = availableSkills.map { $0.name }.joined(separator: ", ")
             return """
-            The user wants to create a new Schedule for their workspace. A Schedule runs a task automatically on a \
+            The user wants to create a new Routine for their workspace. A Routine runs work automatically on a \
             recurring basis (daily, weekly, at intervals, or once). Have a natural conversation to understand what they need.
 
             Ask about:
-            - What the schedule should be called (a short name)
-            - What the agent should do each time it runs (the goal/prompt)
+            - What the routine should be called (a short name)
+            - A short description, if useful
+            - What the agent should do each time it runs (detailed instructions)
+            - Any folders the routine should use as context
             - How often it should run: "once", "interval" (e.g. every 2 hours), "daily" (at a specific time), or "weekly" (on a specific day and time)
             - For interval: how many seconds between runs (900=15m, 1800=30m, 3600=1h, 14400=4h, 43200=12h)
             - For daily/weekly: what hour (0-23) and minute (0, 15, 30, 45)
             - For weekly: what day (1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday, 7=Saturday)
 
-            Existing schedules: \(existingSchedules.isEmpty ? "none" : existingSchedules)
-            Available skills to attach: \(skillList.isEmpty ? "none" : skillList)
+            Existing routines: \(existingSchedules.isEmpty ? "none" : existingSchedules)
+            Available capabilities to attach: \(skillList.isEmpty ? "none" : skillList)
 
             When you have enough information, output a JSON block to create it:
             ```json
-            {"action": "create_schedule", "name": "...", "goal": "...", "scheduleType": "daily", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "skills": ["skill name", ...]}
+            {"action": "create_schedule", "name": "...", "description": "...", "instructions": "...", "scheduleType": "daily", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "routinePaths": ["/absolute/folder"], "skills": ["skill name", ...]}
             ```
-            Only include the fields relevant to the chosen scheduleType. skills is optional.
+            Only include the fields relevant to the chosen scheduleType. routinePaths and skills are optional.
             """
 
         default:
@@ -1811,12 +1813,14 @@ struct ChatPanelView: View {
             onTaskCreated?(creation.mainTask)
 
         case "create_schedule":
-            let name = json["name"] as? String ?? "New Schedule"
-            let goal = json["goal"] as? String ?? ""
+            let name = json["name"] as? String ?? "New Routine"
+            let goal = (json["instructions"] as? String) ?? (json["goal"] as? String) ?? ""
+            let description = json["description"] as? String ?? ""
             let scheduleTypeRaw = json["scheduleType"] as? String ?? "daily"
             let scheduleType = ScheduleType(rawValue: scheduleTypeRaw) ?? .daily
 
             let schedule = TaskSchedule(name: name, goal: goal, workspace: ws, runtimeID: defaultRuntimeID, scheduleType: scheduleType)
+            schedule.routineDescription = description
 
             // Configure based on type
             if let interval = json["intervalSeconds"] as? Int {
@@ -1830,6 +1834,9 @@ struct ChatPanelView: View {
             }
             if let dow = json["weeklyDayOfWeek"] as? Int {
                 schedule.weeklyDayOfWeek = dow
+            }
+            if let paths = json["routinePaths"] as? [String] {
+                schedule.routinePaths = paths
             }
 
             // Compute initial nextFireDate
@@ -1866,7 +1873,7 @@ struct ChatPanelView: View {
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
             activeSlashContext = nil
 
-            messages.append(ChatMessage(role: "assistant", content: "Schedule **\(name)** created.\nFrequency: \(schedule.frequencySummary)\nGoal: \(goal.prefix(120))...\n\nThe schedule is enabled and will run automatically. You can manage it in the **Schedules** section of the sidebar."))
+            messages.append(ChatMessage(role: "assistant", content: "Routine **\(name)** created.\nFrequency: \(schedule.frequencySummary)\nInstructions: \(goal.prefix(120))...\n\nThe routine is enabled and will run automatically. You can manage it in the **Routines** section of the sidebar."))
             AppLogger.audit(.taskStats, category: "UI", fields: [
                 "event": "schedule_created",
                 "source": "conversation",

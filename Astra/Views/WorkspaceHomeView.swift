@@ -136,7 +136,7 @@ struct WorkspaceHomeView: View {
                 // duplicate block was taking ~150pt of prime real estate
                 // below the Kanban board for the same information.
 
-                // Schedules (only when they exist)
+                // Routines (only when they exist)
                 if !workspace.schedules.isEmpty {
                     WorkspaceScheduleSection(
                         schedules: workspace.schedules.sorted { $0.name < $1.name },
@@ -409,7 +409,7 @@ private extension View {
     }
 }
 
-// MARK: - Schedule Section
+// MARK: - Routine Section
 
 private struct WorkspaceScheduleSection: View {
     let schedules: [TaskSchedule]
@@ -420,7 +420,7 @@ private struct WorkspaceScheduleSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Schedules")
+                Text("Routines")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
                 Spacer()
@@ -436,7 +436,7 @@ private struct WorkspaceScheduleSection: View {
                 ForEach(schedules) { schedule in
                     Button { onEdit(schedule) } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: schedule.isEnabled ? "clock.fill" : "clock")
+                            Image(systemName: "arrow.triangle.2.circlepath")
                                 .font(Stanford.ui(12))
                                 .foregroundStyle(schedule.isEnabled ? Stanford.lagunita : .secondary)
 

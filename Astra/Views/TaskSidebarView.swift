@@ -558,14 +558,14 @@ struct TaskSidebarView: View {
         return "\(Int(interval / 2592000))mo"
     }
 
-    // MARK: - Schedules Section
+    // MARK: - Routines Section
 
     private var schedulesSection: some View {
         Section {
             if isSchedulesExpanded {
                 if allSchedules.isEmpty {
                     // Empty state is now an actionable link instead of an
-                    // inert "No schedules yet" label. One line to learn:
+                    // inert "No routines yet" label. One line to learn:
                     // the section has an affordance.
                     Button {
                         onNewSchedule?()
@@ -573,7 +573,7 @@ struct TaskSidebarView: View {
                         HStack(spacing: 5) {
                             Image(systemName: "plus")
                                 .font(Stanford.ui(10, weight: .medium))
-                            Text("Add schedule")
+                            Text("Add routine")
                                 .font(Stanford.caption(12))
                         }
                         .foregroundStyle(.tertiary)
@@ -582,7 +582,7 @@ struct TaskSidebarView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Create a recurring task")
+                    .help("Create a routine")
                     .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
                     .listRowBackground(Color.clear)
                 } else {
@@ -594,7 +594,7 @@ struct TaskSidebarView: View {
                             onEditSchedule?(schedule)
                         } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: schedule.isEnabled ? "clock.fill" : "clock")
+                                Image(systemName: "arrow.triangle.2.circlepath")
                                     .font(Stanford.ui(12))
                                     .foregroundStyle(schedule.isEnabled ? Stanford.lagunita : .secondary)
                                     .frame(width: 13, height: 13)
@@ -645,7 +645,7 @@ struct TaskSidebarView: View {
                         Image(systemName: "calendar.badge.clock")
                             .font(Stanford.ui(12, weight: .medium))
                             .foregroundStyle(.tertiary)
-                        Text("Schedules")
+                        Text("Routines")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
                     }
@@ -665,11 +665,11 @@ struct TaskSidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { isSchedulesAddHovered = $0 }
-                .help("New Schedule")
+                .help("New Routine")
             }
             .padding(.horizontal, 8)
             // Extra top padding creates breathing room between the three
-            // top-level sections (Pinned / Workspaces / Schedules). Cheaper
+            // top-level sections (Pinned / Workspaces / Routines). Cheaper
             // than a divider and lets the eye find the section boundaries.
             .padding(.top, 20)
             .padding(.bottom, 4)
@@ -757,7 +757,7 @@ struct TaskSidebarView: View {
                 .accessibilityLabel(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
 
                 // Direct-action Button — identical wrapper and visual
-                // chrome to the Schedules header's + button. Previously a
+                // chrome to the Routines header's + button. Previously a
                 // Menu with New / Import choices, but Menu's button style
                 // introduces press-animation chrome that plain Button
                 // doesn't, so the two could never render byte-identical.
@@ -775,8 +775,8 @@ struct TaskSidebarView: View {
                 .help("New Workspace")
             }
             .padding(.horizontal, 8)
-            // See Schedules section — 20pt top creates visual rhythm
-            // between top-level sections (Pinned / Workspaces / Schedules).
+            // See Routines section — 20pt top creates visual rhythm
+            // between top-level sections (Pinned / Workspaces / Routines).
             .padding(.top, 20)
             .padding(.bottom, 4)
             .textCase(nil)
@@ -1341,7 +1341,7 @@ private struct SidebarCountBadge: View {
 }
 
 /// Visual used inside every sidebar section-header "+" affordance
-/// (Workspaces, Schedules). Calm secondary glyph that lights up lagunita
+/// (Workspaces, Routines). Calm secondary glyph that lights up lagunita
 /// on hover — reserves the cardinal-red brand hue for CTAs like
 /// "+ New task", and avoids the "red filled circle = notification"
 /// confusion we had before.

@@ -2,7 +2,7 @@
 
 Welcome to ASTRA: a Stanford-inspired macOS app for supervising delegated AI work.
 
-ASTRA stands for **Agent Scheduler for Tasks, Runs, and Automation**. It helps you create durable workspaces, assign AI-powered tasks, review what changed, and decide when an agent should keep going, pause, or ask for help.
+ASTRA stands for **Agent Routines for Tasks, Runs, and Automation**. It helps you create durable workspaces, assign AI-powered tasks, review what changed, and decide when an agent should keep going, pause, or ask for help.
 
 ASTRA is built around a simple idea:
 
@@ -15,7 +15,7 @@ ASTRA is a command center for agentic work on your Mac:
 - Create workspaces that behave like durable software agents.
 - Queue, run, resume, and review tasks across projects.
 - Connect skills, tools, and local CLIs through a plugin catalog.
-- Track runs, events, artifacts, logs, schedules, and task history.
+- Track runs, events, artifacts, logs, routines, and task history.
 - Validate local prerequisites before agents start doing work.
 - Keep the interface calm, readable, and grounded in a Stanford-inspired visual system.
 

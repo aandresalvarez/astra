@@ -117,10 +117,18 @@ enum AgentPromptBuilder {
         guard !task.inputs.isEmpty else { return }
         var contextParts: [String] = []
         for input in task.inputs {
-            if input.hasPrefix("/") || input.hasPrefix("~"),
-               let content = try? String(contentsOfFile: (input as NSString).expandingTildeInPath, encoding: .utf8) {
-                let truncated = content.count > 5000 ? String(content.prefix(5000)) + "\n... (truncated)" : content
-                contextParts.append("File: \(input)\n```\n\(truncated)\n```")
+            if input.hasPrefix("/") || input.hasPrefix("~") {
+                let path = (input as NSString).expandingTildeInPath
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                   isDirectory.boolValue {
+                    contextParts.append("Folder: \(path)\nUse this folder as routine context when needed.")
+                } else if let content = try? String(contentsOfFile: path, encoding: .utf8) {
+                    let truncated = content.count > 5000 ? String(content.prefix(5000)) + "\n... (truncated)" : content
+                    contextParts.append("File: \(input)\n```\n\(truncated)\n```")
+                } else {
+                    contextParts.append("Context: \(input)")
+                }
             } else {
                 contextParts.append("Context: \(input)")
             }

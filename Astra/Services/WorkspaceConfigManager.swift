@@ -8,12 +8,12 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v7 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v8 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v8)
+    // MARK: - Config Schema (v9)
 
-    static let currentVersion = 8
+    static let currentVersion = 9
 
     struct WorkspaceConfig: Codable {
         var version: Int = WorkspaceConfigManager.currentVersion
@@ -127,6 +127,9 @@ enum WorkspaceConfigManager {
         var name: String
         var isEnabled: Bool
         var goal: String
+        var routineDescription: String?
+        var routineInstructions: String?
+        var routinePaths: [String]?
         var templateID: String?
         var templateVariablesJSON: String
         var model: String
@@ -673,6 +676,9 @@ enum WorkspaceConfigManager {
             name: schedule.name,
             isEnabled: schedule.isEnabled,
             goal: schedule.goal,
+            routineDescription: schedule.routineDescription.isEmpty ? nil : schedule.routineDescription,
+            routineInstructions: schedule.routineInstructions.isEmpty ? nil : schedule.routineInstructions,
+            routinePaths: schedule.routinePaths.isEmpty ? nil : schedule.routinePaths,
             templateID: schedule.templateID?.uuidString,
             templateVariablesJSON: schedule.templateVariablesJSON,
             model: schedule.model,
@@ -1000,6 +1006,9 @@ enum WorkspaceConfigManager {
         schedule.isEnabled = config.isEnabled
         schedule.templateID = config.templateID.flatMap(UUID.init(uuidString:))
         schedule.templateVariablesJSON = config.templateVariablesJSON
+        schedule.routineDescription = config.routineDescription ?? schedule.routineDescription
+        schedule.routineInstructions = config.routineInstructions ?? schedule.routineInstructions
+        schedule.routinePaths = config.routinePaths ?? schedule.routinePaths
         schedule.intervalSeconds = config.intervalSeconds
         schedule.dailyHour = config.dailyHour
         schedule.dailyMinute = config.dailyMinute

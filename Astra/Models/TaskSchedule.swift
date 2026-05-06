@@ -33,6 +33,13 @@ enum ScheduleResultMode: String, Codable, CaseIterable {
 
 @Model
 final class TaskSchedule {
+    private static let routineDescriptionKey = "__astra_routine_description"
+    private static let routinePathsKey = "__astra_routine_paths_json"
+    private static let routineMetadataKeys: Set<String> = [
+        routineDescriptionKey,
+        routinePathsKey
+    ]
+
     var id: UUID
     var name: String
     var isEnabled: Bool
@@ -148,17 +155,67 @@ final class TaskSchedule {
         }
     }
 
+    var templateSubstitutionVariables: [String: String] {
+        templateVariables.filter { !Self.routineMetadataKeys.contains($0.key) }
+    }
+
+    var routineDescription: String {
+        get { templateVariables[Self.routineDescriptionKey] ?? "" }
+        set { setRoutineMetadataValue(newValue, forKey: Self.routineDescriptionKey) }
+    }
+
+    var routineInstructions: String {
+        get { goal }
+        set { goal = newValue }
+    }
+
+    var routinePaths: [String] {
+        get {
+            guard let json = templateVariables[Self.routinePathsKey],
+                  let data = json.data(using: .utf8) else {
+                return []
+            }
+            return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        }
+        set {
+            let cleaned = Self.uniqueNonEmptyPaths(newValue)
+            guard !cleaned.isEmpty,
+                  let data = try? JSONEncoder().encode(cleaned),
+                  let json = String(data: data, encoding: .utf8) else {
+                setRoutineMetadataValue("", forKey: Self.routinePathsKey)
+                return
+            }
+            setRoutineMetadataValue(json, forKey: Self.routinePathsKey)
+        }
+    }
+
     /// The full goal including conversation context, used when firing the schedule.
     var effectiveGoal: String {
-        if conversationContext.isEmpty {
+        let description = routineDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let instructions = routineInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let paths = routinePaths
+
+        if description.isEmpty, paths.isEmpty, conversationContext.isEmpty {
             return goal
         }
-        return """
-        \(goal)
 
-        --- Conversation context from when this schedule was created ---
-        \(conversationContext)
-        """
+        var sections: [String] = []
+        if !description.isEmpty {
+            sections.append("Routine description:\n\(description)")
+        }
+        if !instructions.isEmpty {
+            sections.append("Routine instructions:\n\(routineInstructions)")
+        }
+        if !paths.isEmpty {
+            sections.append("Routine folders:\n" + paths.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        if !conversationContext.isEmpty {
+            sections.append("""
+            Conversation context from when this routine was created:
+            \(conversationContext)
+            """)
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     /// Human-readable summary of the schedule frequency
@@ -210,5 +267,29 @@ final class TaskSchedule {
         // Keep last 50 results
         if results.count > 50 { results = Array(results.suffix(50)) }
         runResults = results
+    }
+
+    private func setRoutineMetadataValue(_ value: String, forKey key: String) {
+        var variables = templateVariables
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            variables.removeValue(forKey: key)
+        } else {
+            variables[key] = value
+        }
+        templateVariables = variables
+    }
+
+    private static func uniqueNonEmptyPaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for path in paths {
+            let expanded = (path as NSString).expandingTildeInPath
+            let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
     }
 }
