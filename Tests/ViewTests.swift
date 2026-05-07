@@ -240,6 +240,43 @@ struct TaskThreadSnapshotTests {
         }
     }
 
+    @Test("Plan conversation events appear inline")
+    func planConversationEventsAppearInline() {
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let planUser = makeEvent(
+            task: task,
+            type: TaskPlanConversationEventTypes.userMessage,
+            payload: "Plan this first",
+            timestamp: Date(timeIntervalSince1970: 110)
+        )
+        let planAssistant = makeEvent(
+            task: task,
+            type: TaskPlanConversationEventTypes.assistantMessage,
+            payload: "Here is the plan",
+            timestamp: Date(timeIntervalSince1970: 120)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [planAssistant, planUser],
+            runs: []
+        )
+
+        #expect(snapshot.conversationItems.count == 3)
+        if case .planUserMessage(let text, _) = snapshot.conversationItems[1] {
+            #expect(text == "Plan this first")
+        } else {
+            Issue.record("Expected plan user message")
+        }
+        if case .planAssistantMessage(let text, _) = snapshot.conversationItems[2] {
+            #expect(text == "Here is the plan")
+        } else {
+            Issue.record("Expected plan assistant message")
+        }
+    }
+
     @Test("Task run snapshot precomputes VPN warning markers")
     func taskRunSnapshotPrecomputesVPNWarningMarkers() {
         let task = makeTask()
@@ -254,6 +291,37 @@ struct TaskThreadSnapshotTests {
         )
 
         #expect(snapshot.latestRun?.hasVPNWarning == true)
+    }
+
+    @Test("Task run snapshot hides persisted ASTRA protocol marker fragments")
+    func taskRunSnapshotHidesProtocolMarkerFragments() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        run.output = """
+        ● I'll build a clean page.
+           tepID":"step-1","status":"running"}
+        ✓ Create .astra/tasks/3BAB3C9D/index.html (+124)
+        ● ASTRA_EVENT {"v":1,"type":"complete","summary":"Verified both files created successfully
+           with index.html and styles.css in black and white design. All placeholder content is clearly
+           marked for customization.","verifiedBy":"File system verification"}
+        Final response.
+        """
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        let output = snapshot.latestRun?.output ?? ""
+        #expect(!output.contains("ASTRA_EVENT"))
+        #expect(!output.contains("tepID"))
+        #expect(!output.contains("verifiedBy"))
+        #expect(!output.contains("marked for customization"))
+        #expect(output.contains("I'll build a clean page."))
+        #expect(output.contains("Create .astra/tasks/3BAB3C9D/index.html"))
+        #expect(output.contains("Final response."))
     }
 
     @Test("Tool activity is grouped once per run")
@@ -1285,5 +1353,10 @@ struct EnumTests {
         #expect(RunStatus.cancelled.rawValue == "cancelled")
         #expect(RunStatus.timeout.rawValue == "timeout")
         #expect(RunStatus.budgetExceeded.rawValue == "budget_exceeded")
+    }
+
+    @Test("Plan execution failure is a lifecycle event")
+    func planExecutionFailureEventCategory() {
+        #expect(TaskEvent.categoryFor(type: "plan.execution.failed") == "lifecycle")
     }
 }

@@ -164,11 +164,12 @@ final class AgentRuntimeProcessRunner {
         copilotPath: String,
         copilotHome: String,
         permissionPolicy: PermissionPolicy,
+        allowedToolsOverride: [String]? = nil,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = task.resolvedEnvironmentVariables
-        let allowed = task.resolvedClaudeAllowedTools
+        let allowed = allowedToolsOverride ?? task.resolvedClaudeAllowedTools
         let tokenBudget = task.tokenBudget == 0 ? Int.max : task.tokenBudget
 
         return await withCheckedContinuation { continuation in
@@ -186,12 +187,13 @@ final class AgentRuntimeProcessRunner {
             let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
             let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
             let model = Self.model(task.model, for: .copilotCLI)
+            let additionalPaths = Self.copilotAdditionalPaths(for: task)
             let plan = CopilotCLIRuntime.buildCommand(
                 executablePath: executable,
                 prompt: prompt,
                 model: model,
                 workspacePath: workspacePath,
-                additionalPaths: task.workspace?.additionalPaths ?? [],
+                additionalPaths: additionalPaths,
                 permissionPolicy: permissionPolicy,
                 allowedTools: allowed,
                 timeoutSeconds: timeoutSeconds,
@@ -217,10 +219,12 @@ final class AgentRuntimeProcessRunner {
                 "supports_no_ask_user": String(capabilities.supportsNoAskUser),
                 "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
                 "supports_silent": String(capabilities.supportsSilent),
+                "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": permissionPolicy.rawValue,
                 "allowed_tools_count": String(allowed.count),
-                "additional_paths_count": String(task.workspace?.additionalPaths.count ?? 0),
+                "allowed_tools_override": String(allowedToolsOverride != nil),
+                "additional_paths_count": String(additionalPaths.count),
                 "task_env_count": String(taskEnv.count),
                 "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
                 "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
@@ -267,11 +271,15 @@ final class AgentRuntimeProcessRunner {
                     onLine(line, plan.parsesJSONLines)
                     let parsedEvents = plan.parsesJSONLines
                         ? CopilotStreamEventParser.parseAll(line: line)
-                        : [ParsedEvent.text(text: line)]
+                        : CopilotStreamEventParser.parsePlainText(line: line)
                     for parsed in parsedEvents {
                         for filtered in eventPipeline.process(parsed) {
                             _ = monitor.processEvent(filtered, process: process)
                         }
+                    }
+                    if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
+                        errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
+                        process.terminate()
                     }
                 }
             }
@@ -296,11 +304,15 @@ final class AgentRuntimeProcessRunner {
                         onLine(line, plan.parsesJSONLines)
                         let parsedEvents = plan.parsesJSONLines
                             ? CopilotStreamEventParser.parseAll(line: line)
-                            : [ParsedEvent.text(text: line)]
+                            : CopilotStreamEventParser.parsePlainText(line: line)
                         for parsed in parsedEvents {
                             for filtered in eventPipeline.process(parsed) {
                                 _ = monitor.processEvent(filtered, process: process)
                             }
+                        }
+                        if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
+                            errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
+                            process.terminate()
                         }
                     }
                 }
@@ -315,11 +327,15 @@ final class AgentRuntimeProcessRunner {
                     onLine(remaining, plan.parsesJSONLines)
                     let parsedEvents = plan.parsesJSONLines
                         ? CopilotStreamEventParser.parseAll(line: remaining)
-                        : [ParsedEvent.text(text: remaining)]
+                        : CopilotStreamEventParser.parsePlainText(line: remaining)
                     for parsed in parsedEvents {
                         for filtered in eventPipeline.process(parsed) {
                             _ = monitor.processEvent(filtered, process: process)
                         }
+                    }
+                    if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: remaining) {
+                        errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(remaining)\n")
+                        process.terminate()
                     }
                 }
                 for filtered in eventPipeline.flushParsedEvents() {
@@ -347,6 +363,17 @@ final class AgentRuntimeProcessRunner {
 
             monitor.startWatchdog(process: process)
         }
+    }
+
+    private static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
+        var paths = task.workspace?.additionalPaths ?? []
+        if !task.effectiveWorkspacePath.isEmpty {
+            paths.append(task.effectiveWorkspacePath)
+        }
+        if !task.taskFolder.isEmpty {
+            paths.append(task.taskFolder)
+        }
+        return Array(Set(paths.filter { !$0.isEmpty })).sorted()
     }
 
     @MainActor

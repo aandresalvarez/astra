@@ -80,6 +80,16 @@ enum AuditEvent: String, CaseIterable {
     case runtimePersistenceSummary = "runtime.persistence_summary"
     case runtimeProgressState = "runtime.progress_state"
 
+    case planCreated = "plan.created"
+    case planUpdated = "plan.updated"
+    case planApproved = "plan.approved"
+    case planCancelled = "plan.cancelled"
+    case planExecutionStarted = "plan.execution.started"
+    case planExecutionCompleted = "plan.execution.completed"
+    case planExecutionFailed = "plan.execution.failed"
+    case planStepStateChanged = "plan.step.state_changed"
+    case planStepBlocked = "plan.step.blocked"
+
     case specExtractionStarted = "spec.extraction_started"
     case specExtractionCompleted = "spec.extraction_completed"
     case specExtractionFailed = "spec.extraction_failed"
@@ -251,7 +261,8 @@ enum AppLogger {
         let categories = [
             "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
             "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-            "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics", "General"
+            "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics",
+            "Plan", "General"
         ]
         var dict: [String: os.Logger] = [:]
         for cat in categories {

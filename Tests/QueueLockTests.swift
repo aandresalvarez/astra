@@ -205,6 +205,11 @@ struct TaskFolderTests {
         var isDir: ObjCBool = false
         #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDir))
         #expect(isDir.boolValue)
+        #expect(FileManager.default.fileExists(
+            atPath: (path as NSString).appendingPathComponent("outputs"),
+            isDirectory: &isDir
+        ))
+        #expect(isDir.boolValue)
     }
 }
 

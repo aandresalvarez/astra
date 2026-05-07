@@ -393,6 +393,8 @@ struct ChatPanelView: View {
     @State private var slashSelectedIndex: Int = 0
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
+    @State private var pendingPlan: TaskPlanPayload?
+    @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State private var newTaskPromptIndex = 0
     @FocusState private var isComposerFocused: Bool
@@ -465,6 +467,19 @@ struct ChatPanelView: View {
         !messages.isEmpty
     }
 
+    private var pendingPlanInsertionMessageID: UUID? {
+        guard pendingPlan != nil else { return nil }
+        return messages.last(where: { $0.role == "assistant" })?.id
+    }
+
+    private var approvedDraftPlan: TaskPlanPayload? {
+        guard let draftTask,
+              draftTask.status == .draft else { return nil }
+        let state = TaskPlanService.reconstruct(for: draftTask)
+        guard state.lifecycleStatus == .approved else { return nil }
+        return state.plan
+    }
+
     private var newTaskPrompt: String {
         Self.newTaskPrompts[newTaskPromptIndex % Self.newTaskPrompts.count]
     }
@@ -510,15 +525,26 @@ struct ChatPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Chat area — hero centered when empty, scrollable when has messages
-            if messages.isEmpty && !isThinking && !showSpecCard {
+            if messages.isEmpty && !isThinking && !showSpecCard && pendingPlan == nil && approvedDraftPlan == nil {
                 heroView
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(spacing: 10) {
-                            ForEach(messages) { msg in
-                                messageBubble(msg)
-                                    .id(msg.id)
+                            if let approvedPlan = approvedDraftPlan,
+                               pendingPlan == nil {
+                                ApprovedPlanReadyCard(
+                                    plan: approvedPlan,
+                                    isHistoryExpanded: $isApprovedPlanHistoryExpanded
+                                )
+                                .padding(.horizontal)
+                                .id("approved-plan-card")
+
+                                if isApprovedPlanHistoryExpanded {
+                                    conversationMessages
+                                }
+                            } else {
+                                conversationMessages
                             }
 
                             if isThinking {
@@ -541,7 +567,13 @@ struct ChatPanelView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .onChange(of: messages.count) {
-                        if let last = messages.last {
+                        if approvedDraftPlan != nil,
+                           pendingPlan == nil,
+                           !isApprovedPlanHistoryExpanded {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                            }
+                        } else if let last = messages.last {
                             withAnimation(.easeOut(duration: 0.2)) {
                                 proxy.scrollTo(last.id, anchor: .bottom)
                             }
@@ -554,11 +586,25 @@ struct ChatPanelView: View {
                             }
                         }
                     }
+                    .onChange(of: pendingPlan?.planID) {
+                        if pendingPlan != nil {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("pending-plan-card", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: approvedDraftPlan?.planID) {
+                        if approvedDraftPlan != nil {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                            }
+                        }
+                    }
                 }
             }
 
             // Action bar (when conversation has content)
-            if hasConversation && !showSpecCard {
+            if (hasConversation || approvedDraftPlan != nil) && !showSpecCard {
                 actionBar
             }
 
@@ -652,6 +698,21 @@ struct ChatPanelView: View {
     }
 
     // MARK: - Message Bubbles
+
+    @ViewBuilder
+    private var conversationMessages: some View {
+        ForEach(messages) { msg in
+            if let pendingPlan,
+               msg.id == pendingPlanInsertionMessageID {
+                DraftPlanPreviewCard(plan: pendingPlan)
+                    .padding(.horizontal)
+                    .id("pending-plan-card")
+            }
+
+            messageBubble(msg)
+                .id(msg.id)
+        }
+    }
 
     @ViewBuilder
     private func messageBubble(_ msg: ChatMessage) -> some View {
@@ -778,12 +839,18 @@ struct ChatPanelView: View {
     private var actionBar: some View {
         HStack(spacing: 12) {
             Button {
-                extractSpecFromConversation()
+                if let approvedPlan = approvedDraftPlan {
+                    runApprovedPlan(approvedPlan)
+                } else if pendingPlan != nil {
+                    approvePendingPlan()
+                } else {
+                    generatePlanFromConversation()
+                }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "sparkles")
+                    Image(systemName: actionBarPrimaryIcon)
                         .font(Stanford.ui(14))
-                    Text("Generate Spec")
+                    Text(actionBarPrimaryTitle)
                         .font(Stanford.body(15))
                         .fontWeight(.medium)
                 }
@@ -796,6 +863,24 @@ struct ChatPanelView: View {
             .buttonStyle(.plain)
             .disabled(isThinking)
 
+            if pendingPlan != nil && approvedDraftPlan == nil {
+                Button {
+                    generatePlanFromConversation()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(Stanford.ui(13))
+                        Text("Regenerate")
+                            .font(Stanford.caption(14))
+                    }
+                    .foregroundStyle(Stanford.coolGrey)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .disabled(isThinking)
+            }
+
             Button {
                 if let draft = draftTask {
                     modelContext.delete(draft)
@@ -804,6 +889,8 @@ struct ChatPanelView: View {
                 messages = []
                 extractedSpec = nil
                 showSpecCard = false
+                pendingPlan = nil
+                isApprovedPlanHistoryExpanded = false
                 activeSlashContext = nil
                 isPlanMode = false
             } label: {
@@ -824,6 +911,26 @@ struct ChatPanelView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .background(Stanford.fog.opacity(0.5))
+    }
+
+    private var actionBarPrimaryTitle: String {
+        if approvedDraftPlan != nil {
+            return skipPermissions ? "Run Full Plan" : "Approve Next Step"
+        }
+        if pendingPlan != nil {
+            return "Approve Plan"
+        }
+        return "Generate Plan"
+    }
+
+    private var actionBarPrimaryIcon: String {
+        if approvedDraftPlan != nil {
+            return skipPermissions ? "play.fill" : "checkmark.circle.fill"
+        }
+        if pendingPlan != nil {
+            return "checkmark.circle.fill"
+        }
+        return "sparkles"
     }
 
     // MARK: - Composer
@@ -1044,7 +1151,7 @@ struct ChatPanelView: View {
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
-        saveDraft()
+        let planningDraft = saveDraft()
         isThinking = true
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
@@ -1091,6 +1198,10 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "RECAP COMMAND:\n" + recapCtx
         }
 
+        if activeSlashContext == nil, recapContext == nil {
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
+        }
+
         Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
@@ -1102,7 +1213,15 @@ struct ChatPanelView: View {
                 isThinking = false
                 switch result {
                 case .success(let response):
-                    messages.append(ChatMessage(role: "assistant", content: response))
+                    let visibleResponse = activeSlashContext == nil && recapContext == nil
+                        ? TaskPlanService.userVisiblePlanningText(from: response)
+                        : response
+                    messages.append(ChatMessage(role: "assistant", content: visibleResponse))
+                    if activeSlashContext == nil,
+                       recapContext == nil,
+                       let draft = planningDraft ?? draftTask {
+                        preparePendingPlan(from: response, fallbackGoal: input, on: draft)
+                    }
                     handleSlashAction(in: response)
                 case .failure(let error):
                     messages.append(ChatMessage(role: "assistant", content: "Sorry, I encountered an error: \(error.localizedDescription)"))
@@ -1138,6 +1257,8 @@ struct ChatPanelView: View {
         messageText = ""
         messages = []
         attachedFiles = []
+        pendingPlan = nil
+        isApprovedPlanHistoryExpanded = false
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: [
@@ -1149,30 +1270,86 @@ struct ChatPanelView: View {
         onQuickRun?(task)
     }
 
-    /// Extract spec from the full conversation
-    private func extractSpecFromConversation() {
+    /// Generate a concrete plan candidate from the full planning conversation.
+    private func generatePlanFromConversation() {
         guard !messages.isEmpty else { return }
 
         isThinking = true
-        let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
+        let conversationHistory = messages.map { (role: $0.role, content: $0.content) } + [
+            (
+                role: "user",
+                content: "Generate the final execution plan now. Include exactly one ASTRA_PLAN structured plan line first for ASTRA to parse. After that, add any short clarification questions or assumptions the user may want to refine before approval."
+            )
+        ]
         let ws = resolvedWorkspace
 
         Task {
-            let result = await SpecEngine.extractFromConversation(
+            let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
+                skillContext: newTaskPlanInstructions(),
                 model: planningModel
             )
             await MainActor.run {
                 isThinking = false
                 switch result {
-                case .success(let spec):
-                    extractedSpec = spec
-                    showSpecCard = true
-                    // spec extracted successfully
+                case .success(let response):
+                    messages.append(ChatMessage(role: "assistant", content: TaskPlanService.userVisiblePlanningText(from: response)))
+                    if let draft = draftTask ?? saveDraft() {
+                        preparePendingPlan(from: response, fallbackGoal: draft.goal, on: draft, allowFallback: true)
+                    }
                 case .failure(let error):
-                    messages.append(ChatMessage(role: "assistant", content: "Failed to extract spec: \(error.localizedDescription). Try describing the task differently."))
+                    messages.append(ChatMessage(role: "assistant", content: "Failed to generate a plan: \(error.localizedDescription). Try describing the task differently."))
                 }
+                saveDraft()
+            }
+        }
+    }
+
+    private func approvePendingPlan() {
+        guard var plan = pendingPlan else { return }
+        guard let task = draftTask ?? saveDraft() else { return }
+
+        if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
+            plan.planID = existingPlan.planID
+        }
+
+        recordPlanConversationEvents(on: task)
+        TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        task.title = plan.title
+        task.goal = plan.goal.isEmpty ? task.goal : plan.goal
+        task.status = .draft
+        task.updatedAt = Date()
+        pendingPlan = nil
+        isApprovedPlanHistoryExpanded = false
+        isPlanMode = false
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        onTaskCreated?(task)
+    }
+
+    private func runApprovedPlan(_ plan: TaskPlanPayload) {
+        guard let task = draftTask,
+              task.status != .running else { return }
+
+        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        task.title = plan.title
+        task.goal = plan.goal.isEmpty ? plan.title : plan.goal
+        task.status = .queued
+        task.completedAt = nil
+        task.updatedAt = Date()
+        pendingPlan = nil
+        isApprovedPlanHistoryExpanded = false
+        isPlanMode = false
+        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        onTaskCreated?(task)
+
+        Task {
+            let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
+            await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
+            await MainActor.run {
+                _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
         }
     }
@@ -1211,6 +1388,8 @@ struct ChatPanelView: View {
         messages = []
         extractedSpec = nil
         showSpecCard = false
+        pendingPlan = nil
+        isApprovedPlanHistoryExpanded = false
         attachedFiles = []
         chainedGoal = ""
         isPlanMode = false
@@ -1881,8 +2060,9 @@ struct ChatPanelView: View {
 
     // MARK: - Draft Management
 
-    private func saveDraft() {
-        guard !messages.isEmpty else { return }
+    @discardableResult
+    private func saveDraft() -> AgentTask? {
+        guard !messages.isEmpty else { return draftTask }
 
         struct DraftMessage: Codable {
             let role: String
@@ -1890,19 +2070,29 @@ struct ChatPanelView: View {
         }
         let draftMessages = messages.map { DraftMessage(role: $0.role, content: $0.content) }
         guard let data = try? JSONEncoder().encode(draftMessages),
-              let json = String(data: data, encoding: .utf8) else { return }
+              let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
             // Update existing draft
             draft.draftMessages = json
             draft.title = String(messages.first?.content.prefix(60) ?? "Draft")
+            draft.goal = messages.first?.content ?? draft.goal
+            draft.tokenBudget = defaultBudget
+            draft.model = defaultModel
+            draft.runtimeID = defaultRuntimeID
+            draft.inputs = attachedFiles
+            draft.skills = selectedSkills
+            draft.captureSkillSnapshots()
+            draft.useAgentTeam = useAgentTeam
+            draft.teamSize = teamSize
             draft.updatedAt = Date()
+            return draft
         } else {
             // Create new draft
             let title = String(messages.first?.content.prefix(60) ?? "Draft")
             let draft = AgentTask(
                 title: title,
-                goal: "",
+                goal: messages.first?.content ?? "",
                 workspace: workspace,
                 tokenBudget: defaultBudget,
                 model: defaultModel
@@ -1910,9 +2100,53 @@ struct ChatPanelView: View {
             draft.runtimeID = defaultRuntimeID
             draft.status = .draft
             draft.draftMessages = json
+            draft.inputs = attachedFiles
+            draft.skills = selectedSkills
+            draft.captureSkillSnapshots()
+            draft.useAgentTeam = useAgentTeam
+            draft.teamSize = teamSize
             modelContext.insert(draft)
             draftTask = draft
+            return draft
         }
+    }
+
+    private func preparePendingPlan(from response: String, fallbackGoal: String, on task: AgentTask, allowFallback: Bool = false) {
+        if let structuredPlan = TaskPlanService.parsePlanPayload(from: response) {
+            pendingPlan = structuredPlan
+        } else if allowFallback {
+            pendingPlan = TaskPlanService.parsePlan(from: response, fallbackGoal: fallbackGoal)
+        }
+        task.updatedAt = Date()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func recordPlanConversationEvents(on task: AgentTask) {
+        let existingCount = task.events.filter {
+            $0.type == TaskPlanConversationEventTypes.userMessage ||
+                $0.type == TaskPlanConversationEventTypes.assistantMessage
+        }.count
+        guard existingCount < messages.count else { return }
+
+        for message in messages.dropFirst(existingCount) {
+            let type = message.role == "user"
+                ? TaskPlanConversationEventTypes.userMessage
+                : TaskPlanConversationEventTypes.assistantMessage
+            modelContext.insert(TaskEvent(task: task, type: type, payload: message.content))
+        }
+    }
+
+    private func newTaskPlanInstructions() -> String {
+        """
+        PLAN MODE:
+        You are planning a new ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Help the user refine the work before execution.
+        The user's confirmation button is named "Approve Plan". Do not tell the user to click "Create Task" in Plan Mode; when the draft is acceptable, tell them to click "Approve Plan".
+
+        When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+
+        Step risk must be low, medium, or high. Step status must be pending. Include likely tools and a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if you truly cannot propose a useful starting plan.
+        """
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
@@ -1976,6 +2210,163 @@ struct ChatPanelView: View {
 }
 
 // MARK: - Spec Card (editable review of extracted spec)
+
+private struct ApprovedPlanReadyCard: View {
+    let plan: TaskPlanPayload
+    @Binding var isHistoryExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(Stanford.ui(22, weight: .semibold))
+                    .foregroundStyle(Stanford.paloAltoGreen)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Plan ready")
+                        .font(Stanford.heading(20))
+                    Text("The approved plan is in the Plan tab. Use the action below when you're ready to start execution.")
+                        .font(Stanford.caption(14))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(plan.title)
+                    .font(Stanford.body(16).weight(.semibold))
+                Text("\(plan.steps.count) planned \(plan.steps.count == 1 ? "step" : "steps")")
+                    .font(Stanford.caption(13))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 40)
+
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isHistoryExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isHistoryExpanded ? "chevron.up" : "chevron.down")
+                        .font(Stanford.ui(11, weight: .semibold))
+                    Text(isHistoryExpanded ? "Hide planning discussion" : "Show planning discussion")
+                        .font(Stanford.caption(13).weight(.semibold))
+                }
+                .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 40)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.fog)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+        )
+    }
+}
+
+private struct DraftPlanPreviewCard: View {
+    let plan: TaskPlanPayload
+    @State private var isCollapsed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "list.bullet.clipboard")
+                    .font(Stanford.ui(20, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Draft plan")
+                        .font(Stanford.heading(19))
+                    Text("Review the proposed steps. Use the action bar below to approve, regenerate, or keep discussing.")
+                        .font(Stanford.caption(13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(isCollapsed ? "Show" : "Hide")
+                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                    }
+                    .font(Stanford.caption(13).weight(.semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Stanford.lagunita.opacity(0.08))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "Show draft plan" : "Hide draft plan")
+            }
+
+            if isCollapsed {
+                Text("\(plan.steps.count) planned \(plan.steps.count == 1 ? "step" : "steps") hidden")
+                    .font(Stanford.caption(13))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 36)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(plan.title)
+                        .font(Stanford.body(16).weight(.semibold))
+                    Text(plan.goal)
+                        .font(Stanford.caption(14))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(plan.steps.prefix(5).enumerated()), id: \.element.id) { index, step in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(index + 1).")
+                                .font(Stanford.caption(13).weight(.semibold))
+                                .foregroundStyle(Stanford.lagunita)
+                                .frame(width: 22, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(step.title)
+                                    .font(Stanford.caption(14).weight(.semibold))
+                                if !step.detail.isEmpty {
+                                    Text(step.detail)
+                                        .font(Stanford.caption(13))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                    if plan.steps.count > 5 {
+                        Text("+ \(plan.steps.count - 5) more steps")
+                            .font(Stanford.caption(13))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 32)
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.fog)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+        )
+    }
+}
 
 struct SpecCardView: View {
     @Binding var spec: TaskSpec?

@@ -7,6 +7,7 @@ struct CopilotCLICapabilities: Equatable {
     var supportsNoAskUser: Bool
     var supportsSilent: Bool
     var supportsSecretEnvVars: Bool
+    var supportsAllowAllTools: Bool
     var requiresAllowAllToolsForPrompt: Bool
 
     static let conservative = CopilotCLICapabilities(
@@ -15,6 +16,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoAskUser: false,
         supportsSilent: false,
         supportsSecretEnvVars: false,
+        supportsAllowAllTools: false,
         requiresAllowAllToolsForPrompt: true
     )
 
@@ -24,6 +26,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoAskUser = helpText.contains("--no-ask-user")
         supportsSilent = helpText.contains("--silent") || helpText.contains("-s,")
         supportsSecretEnvVars = helpText.contains("--secret-env-vars")
+        supportsAllowAllTools = helpText.contains("--allow-all-tools")
         requiresAllowAllToolsForPrompt = helpText.contains("required for\n                                      non-interactive mode")
             || helpText.contains("required for non-interactive mode")
     }
@@ -34,6 +37,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoAskUser: Bool,
         supportsSilent: Bool,
         supportsSecretEnvVars: Bool,
+        supportsAllowAllTools: Bool,
         requiresAllowAllToolsForPrompt: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
@@ -41,6 +45,7 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsNoAskUser = supportsNoAskUser
         self.supportsSilent = supportsSilent
         self.supportsSecretEnvVars = supportsSecretEnvVars
+        self.supportsAllowAllTools = supportsAllowAllTools
         self.requiresAllowAllToolsForPrompt = requiresAllowAllToolsForPrompt
     }
 }
@@ -139,6 +144,7 @@ enum CopilotCLIRuntime {
         let permissionArgs = copilotPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
+            supportsAllowAllTools: capabilities.supportsAllowAllTools,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
         args += permissionArgs
@@ -180,11 +186,12 @@ enum CopilotCLIRuntime {
     static func copilotPermissionArguments(
         policy: PermissionPolicy,
         allowedTools: [String],
+        supportsAllowAllTools: Bool = false,
         requiresAllowAllToolsForPrompt: Bool
     ) -> [String] {
         switch policy {
         case .autonomous:
-            if requiresAllowAllToolsForPrompt {
+            if supportsAllowAllTools || requiresAllowAllToolsForPrompt {
                 return ["--allow-all-tools"]
             }
             return [
@@ -215,6 +222,8 @@ enum CopilotCLIRuntime {
             return ["write"]
         case "bash":
             return ["shell(git:*)", "shell(swift:*)", "shell(./script/*)"]
+        case "webfetch", "websearch":
+            return ["shell(curl:*)"]
         default:
             if tool.hasPrefix("shell(") || tool == "read" || tool == "write" {
                 return [tool]

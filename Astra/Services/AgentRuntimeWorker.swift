@@ -106,12 +106,24 @@ final class AgentRuntimeWorker {
     func execute(
         task: AgentTask,
         modelContext: ModelContext,
+        promptOverride: String? = nil,
+        startEventPayload: String? = nil,
+        copilotPermissionPolicyOverride: PermissionPolicy? = nil,
+        copilotAllowedToolsOverride: [String]? = nil,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
         if selectedRuntime == .copilotCLI {
-            await executeCopilot(task: task, modelContext: modelContext, onEvent: onEvent)
+            await executeCopilot(
+                task: task,
+                modelContext: modelContext,
+                onEvent: onEvent,
+                promptOverride: promptOverride,
+                startEventPayload: startEventPayload,
+                permissionPolicyOverride: copilotPermissionPolicyOverride,
+                allowedToolsOverride: copilotAllowedToolsOverride
+            )
             return
         }
 
@@ -126,6 +138,9 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
+        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: "run") else {
+            return
+        }
         isRunning = true
         cancellationRequested = false
 
@@ -136,7 +151,12 @@ final class AgentRuntimeWorker {
         let run = TaskRun(task: task)
         modelContext.insert(run)
 
-        let startEvent = TaskEvent(task: task, type: "task.started", payload: "Agent started working on: \(task.goal)", run: run)
+        let startEvent = TaskEvent(
+            task: task,
+            type: "task.started",
+            payload: startEventPayload ?? "Agent started working on: \(task.goal)",
+            run: run
+        )
         modelContext.insert(startEvent)
 
         // Verify CLI exists
@@ -201,7 +221,7 @@ final class AgentRuntimeWorker {
             return
         }
 
-        let prompt = buildPrompt(for: task)
+        let prompt = promptOverride ?? buildPrompt(for: task)
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
         AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
             "model": task.model,
@@ -471,6 +491,118 @@ final class AgentRuntimeWorker {
         isRunning = false
     }
 
+    @MainActor
+    func executeApprovedPlan(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        mode: TaskPlanExecutionMode = .fullPlan,
+        modelContext: ModelContext,
+        onEvent: @escaping (ParsedEvent) -> Void
+    ) async {
+        let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
+        if mode == .nextStep, approvedStep == nil {
+            TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
+            task.status = .completed
+            task.updatedAt = Date()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            return
+        }
+
+        TaskPlanService.recordExecutionStarted(planID: currentPlan.planID, task: task, modelContext: modelContext)
+        let prompt = if let approvedStep {
+            AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: task, plan: currentPlan, step: approvedStep)
+        } else {
+            AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: currentPlan)
+        }
+        let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        let copilotPolicyOverride = selectedRuntime == .copilotCLI
+            ? Self.approvedPlanCopilotPermissionPolicy(current: permissionPolicy)
+            : nil
+        let copilotAllowedToolsOverride = selectedRuntime == .copilotCLI
+            ? Self.approvedPlanAllowedTools(for: task, plan: currentPlan, step: approvedStep)
+            : nil
+        await execute(
+            task: task,
+            modelContext: modelContext,
+            promptOverride: prompt,
+            startEventPayload: approvedStep.map { "Agent started approved plan step: \($0.title)" }
+                ?? "Agent started executing approved plan: \(currentPlan.title)",
+            copilotPermissionPolicyOverride: copilotPolicyOverride,
+            copilotAllowedToolsOverride: copilotAllowedToolsOverride,
+            onEvent: onEvent
+        )
+        if task.status == .completed {
+            if let approvedStep {
+                finalizeApprovedPlanStep(
+                    approvedStep,
+                    plan: currentPlan,
+                    task: task,
+                    modelContext: modelContext
+                )
+            } else {
+                TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
+            }
+        } else if task.isTerminal {
+            TaskPlanService.recordExecutionFailed(
+                planID: currentPlan.planID,
+                task: task,
+                modelContext: modelContext,
+                reason: task.status.rawValue
+            )
+        }
+    }
+
+    @MainActor
+    private func finalizeApprovedPlanStep(
+        _ step: TaskPlanPayloadStep,
+        plan: TaskPlanPayload,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        let stateAfterRun = TaskPlanService.reconstruct(for: task)
+        let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
+        let shouldFallbackComplete: Bool = {
+            switch currentStepStatus {
+            case .done, .skipped, .blocked:
+                return false
+            case .pending, .running, nil:
+                return true
+            }
+        }()
+        if shouldFallbackComplete {
+            TaskPlanService.recordStepProgress(
+                type: TaskPlanEventTypes.stepCompleted,
+                planID: plan.planID,
+                stepID: step.id,
+                status: .done,
+                task: task,
+                modelContext: modelContext,
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
+                title: step.title,
+                summary: "Completed approved step: \(step.title)"
+            )
+        }
+
+        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        if TaskPlanService.hasRemainingExecutableSteps(in: refreshedPlan) {
+            let notice = TaskEvent(
+                task: task,
+                type: "system.info",
+                payload: "Plan step complete. Review the next step, then approve it when you're ready.",
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
+            modelContext.insert(notice)
+            task.status = .pendingUser
+            task.completedAt = nil
+            task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        } else {
+            TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
+        }
+    }
+
     /// Continue an existing session with a follow-up message (HITL flow).
     @MainActor
     func continueSession(
@@ -509,6 +641,9 @@ final class AgentRuntimeWorker {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "worker_already_running"
             ], level: .warning)
+            return
+        }
+        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: "resume") else {
             return
         }
         isRunning = true
@@ -691,7 +826,9 @@ final class AgentRuntimeWorker {
         promptOverride: String? = nil,
         startEventType: String = "task.started",
         startEventPayload: String? = nil,
-        auditPhase: String = "run"
+        auditPhase: String = "run",
+        permissionPolicyOverride: PermissionPolicy? = nil,
+        allowedToolsOverride: [String]? = nil
     ) async {
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
@@ -704,6 +841,9 @@ final class AgentRuntimeWorker {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "worker_already_running"
             ], level: .warning)
+            return
+        }
+        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: auditPhase) else {
             return
         }
         isRunning = true
@@ -811,13 +951,14 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             copilotPath: copilotPath,
             copilotHome: copilotHome,
-            permissionPolicy: permissionPolicy,
+            permissionPolicy: permissionPolicyOverride ?? permissionPolicy,
+            allowedToolsOverride: allowedToolsOverride,
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
                 streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
                 let events: [AgentEvent] = parsesJSONLines
                     ? CopilotStreamEventParser.parseAgentEvents(line: line)
-                    : [.text(text: line + "\n")]
+                    : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
                 streamTelemetry.recordParsed(events)
                 for event in events {
                     let filteredEvents = eventPipeline.process(event)
@@ -1019,6 +1160,41 @@ final class AgentRuntimeWorker {
 
     // MARK: - Private
 
+    @MainActor
+    private func prepareTaskFolderForLaunch(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        do {
+            let folder = try task.ensureTaskFolder()
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
+                "event": "task_folder_prepared",
+                "phase": phase,
+                "folder_available": String(!folder.isEmpty)
+            ], level: .debug)
+            return true
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+                "reason": "task_folder_create_failed",
+                "phase": phase,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            task.status = .failed
+            let now = Date()
+            task.updatedAt = now
+            task.completedAt = now
+            task.markUnreadForCurrentStatus(at: now)
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "error",
+                payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
+            ))
+            try? modelContext.save()
+            return false
+        }
+    }
+
     typealias ProcessResult = AgentProcessResult
     typealias ProcessMonitor = AgentProcessMonitor
 
@@ -1164,6 +1340,51 @@ final class AgentRuntimeWorker {
         let remaining = names.count - min(names.count, limit)
         guard remaining > 0 else { return visible }
         return visible.isEmpty ? "+\(remaining)_more" : "\(visible),+\(remaining)_more"
+    }
+
+    private static func approvedPlanCopilotPermissionPolicy(current: PermissionPolicy) -> PermissionPolicy {
+        switch current {
+        case .restricted:
+            // The user has explicitly approved the plan in ASTRA. For Copilot,
+            // use a non-interactive run so hidden provider approval prompts do
+            // not strand the task after execution starts.
+            return .autonomous
+        case .autonomous, .interactive:
+            return current
+        }
+    }
+
+    private static func approvedPlanAllowedTools(
+        for task: AgentTask,
+        plan: TaskPlanPayload,
+        step approvedStep: TaskPlanPayloadStep? = nil
+    ) -> [String] {
+        var tools = Set(task.resolvedClaudeAllowedTools)
+        let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
+        for step in scopedSteps {
+            for tool in step.likelyTools {
+                tools.insert(tool)
+            }
+            if stepLooksWebBacked(step) {
+                tools.insert("WebFetch")
+            }
+        }
+        if planTextLooksWebBacked(plan.title) || planTextLooksWebBacked(plan.goal) {
+            tools.insert("WebFetch")
+        }
+        return Array(tools).sorted()
+    }
+
+    private static func stepLooksWebBacked(_ step: TaskPlanPayloadStep) -> Bool {
+        planTextLooksWebBacked(step.title) ||
+            planTextLooksWebBacked(step.detail) ||
+            step.likelyTools.contains { ["WebFetch", "WebSearch"].contains($0) }
+    }
+
+    private static func planTextLooksWebBacked(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return ["http://", "https://", "web", "fetch", "research", "curl", "api", "ncbi"]
+            .contains { lower.contains($0) }
     }
 
     private static func unknownEventShapeFields(raw: String) -> [String: String] {

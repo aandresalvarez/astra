@@ -340,6 +340,25 @@ enum AgentEventRecorder {
         run: TaskRun,
         modelContext: ModelContext
     ) {
+        if case .valid(.planStep(let progress)) = event,
+           let planID = progress.planID.flatMap(UUID.init(uuidString:)) ?? TaskPlanService.reconstruct(for: task).plan?.planID,
+           let status = TaskPlanPayloadStepStatus(rawValue: progress.status.rawValue) {
+            TaskPlanService.recordStepProgress(
+                type: progress.type,
+                planID: planID,
+                stepID: progress.stepID,
+                status: status,
+                task: task,
+                modelContext: modelContext,
+                run: run,
+                title: progress.title,
+                detail: progress.detail,
+                summary: progress.summary,
+                reason: progress.reason
+            )
+            return
+        }
+
         modelContext.insert(TaskEvent(
             task: task,
             type: event.taskEventType,

@@ -38,6 +38,10 @@ struct TaskWorkspaceAccess {
             return ""
         }
         try fileSystem.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: true)
+        try fileSystem.createDirectory(
+            at: URL(fileURLWithPath: path).appendingPathComponent("outputs", isDirectory: true),
+            withIntermediateDirectories: true
+        )
         return path
     }
 }

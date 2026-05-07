@@ -248,6 +248,12 @@ enum LogDiagnosticsService {
             if isRecoveredOrPendingPermissionWarning(entry, entries: entries, generatedAt: generatedAt) {
                 continue
             }
+            if isResolvedPlanBlocker(entry, entries: entries) {
+                continue
+            }
+            if isGenericRuntimeWarningCoveredBySpecificFailure(entry, entries: entries) {
+                continue
+            }
             if classifyNotice(entry) != nil {
                 continue
             }
@@ -475,6 +481,78 @@ enum LogDiagnosticsService {
         return false
     }
 
+    private static func isResolvedPlanBlocker(_ entry: LogEntry, entries: [LogEntry]) -> Bool {
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.planStepBlocked.rawValue) else {
+            return false
+        }
+
+        guard let task = taskIdentifier(for: entry) else {
+            return false
+        }
+
+        let planID = field("plan_id", in: entry.message)
+        let stepID = field("step_id", in: entry.message)
+
+        return entries.contains { candidate in
+            guard candidate.timestamp > entry.timestamp,
+                  taskIdentifier(for: candidate) == task else {
+                return false
+            }
+
+            let candidateLower = candidate.message.lowercased()
+            if candidateLower.contains(AuditEvent.planCancelled.rawValue) ||
+                candidateLower.contains(AuditEvent.planExecutionCompleted.rawValue) ||
+                candidateLower.contains(AuditEvent.planExecutionFailed.rawValue) ||
+                candidateLower.contains(AuditEvent.taskCompleted.rawValue) {
+                return samePlan(candidate, planID: planID)
+            }
+
+            guard candidateLower.contains(AuditEvent.planStepStateChanged.rawValue) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepCompleted) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepSkipped) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepStarted) else {
+                return false
+            }
+
+            guard samePlan(candidate, planID: planID), sameStep(candidate, stepID: stepID) else {
+                return false
+            }
+
+            guard let status = field("step_status", in: candidate.message)
+                ?? field("status", in: candidate.message)
+            else {
+                return false
+            }
+            return ["done", "skipped", "running"].contains(status)
+        }
+    }
+
+    private static func isGenericRuntimeWarningCoveredBySpecificFailure(_ entry: LogEntry, entries: [LogEntry]) -> Bool {
+        guard entry.logLevel == .warning else { return false }
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.workerExited.rawValue) else { return false }
+        guard let task = taskIdentifier(for: entry) else { return false }
+
+        return entries.contains { candidate in
+            guard taskIdentifier(for: candidate) == task else { return false }
+            let candidateLower = candidate.message.lowercased()
+            return candidateLower.contains(AuditEvent.runtimeFailureDiagnostic.rawValue) ||
+                candidateLower.contains(AuditEvent.workerTimeout.rawValue) ||
+                candidateLower.contains(AuditEvent.workerBudgetExceeded.rawValue)
+        }
+    }
+
+    private static func samePlan(_ entry: LogEntry, planID: String?) -> Bool {
+        guard let planID, !planID.isEmpty else { return true }
+        return field("plan_id", in: entry.message) == planID
+    }
+
+    private static func sameStep(_ entry: LogEntry, stepID: String?) -> Bool {
+        guard let stepID, !stepID.isEmpty else { return true }
+        return field("step_id", in: entry.message) == stepID
+    }
+
     private static func classifyNotice(_ entry: LogEntry) -> (
         key: String,
         title: String,
@@ -549,6 +627,17 @@ enum LogDiagnosticsService {
                 severity: .warning,
                 signal: "worker.permission_denied tool=\(tool)",
                 analysis: "A tool permission warning was emitted and no later progress or completion signal was found in the analyzed window after the five-minute quiet threshold. Review the task log to see whether the agent is waiting for approval or should be retried with different tools."
+            )
+        }
+
+        if lower.contains(AuditEvent.planStepBlocked.rawValue) {
+            let stepID = field("step_id", in: message) ?? "unknown"
+            return (
+                key: "plan.step.blocked.\(stepID)",
+                title: "Plan execution is blocked",
+                severity: .warning,
+                signal: "plan.step.blocked step_id=\(stepID)",
+                analysis: "A plan step reported a blocker and no later step progress, plan cancellation, or task completion resolved it in the analyzed window. Review the plan panel for the blocked step and decide whether to approve, edit, skip, or cancel the remaining work."
             )
         }
 
@@ -944,7 +1033,7 @@ enum LogDiagnosticsService {
         case "quota_exceeded": "Provider quota exceeded"
         case "rate_limited": "Provider rate limited the request"
         case "provider_configuration_invalid": "Provider configuration invalid"
-        case "permission_denied": "Provider or organization denied access"
+        case "permission_denied": "Runtime permission approval blocked"
         case "unsupported_output_format": "Runtime output format unsupported"
         case "network_failed": "Provider network failure"
         case "runtime_timed_out": "Runtime timed out"
@@ -962,6 +1051,8 @@ enum LogDiagnosticsService {
             "The runtime could not authenticate with the provider. Re-run the provider login flow or verify configured tokens for this app channel."
         case "provider_configuration_invalid":
             "The provider path is configured but incomplete or invalid. Check BYOK/base URL/deployment/API key settings without exposing secret values."
+        case "permission_denied":
+            "The runtime was blocked by provider policy, organization policy, or an interactive CLI approval prompt. Check the redacted error summary for denied tools or workspace paths; this should surface quickly instead of waiting for the idle timeout."
         case "quota_exceeded", "rate_limited":
             "The provider accepted the runtime request path but refused service due to account limits. Retrying with the same model may continue to fail until the limit resets or billing/config changes."
         case "unsupported_output_format":
@@ -1015,7 +1106,14 @@ enum LogDiagnosticsService {
     }
 
     private static func messagePrefix(_ message: String) -> String {
-        let first = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
+        let normalized: Substring
+        if message.hasPrefix("task_short=") {
+            let pieces = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            normalized = pieces.count > 1 ? pieces[1] : ""
+        } else {
+            normalized = Substring(message)
+        }
+        let first = normalized.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
         return first.map(String.init) ?? "unknown"
     }
 

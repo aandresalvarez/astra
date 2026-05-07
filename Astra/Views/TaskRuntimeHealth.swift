@@ -74,20 +74,35 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let latestProgressAt = latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp)
         let latestConversationAt = runEvents.last(where: Self.isConversationActivityEvent)?.timestamp
         let latestWarning = runEvents.last { $0.type == "permission.denied" }
+        let latestPlanBlock = runEvents.last { $0.type == "plan.step.blocked" }
         let laterProgressAfterWarningAt = latestWarning.flatMap { warning -> Date? in
             let laterEventAt = progressEvents.last { $0.timestamp > warning.timestamp }?.timestamp
             let laterFileAt = fileActivity.flatMap { $0.timestamp > warning.timestamp ? $0.timestamp : nil }
             return latestDate(laterEventAt, laterFileAt)
         }
+        let laterProgressAfterPlanBlockAt = latestPlanBlock.flatMap { block -> Date? in
+            let laterEventAt = progressEvents.last { $0.timestamp > block.timestamp }?.timestamp
+            let laterFileAt = fileActivity.flatMap { $0.timestamp > block.timestamp ? $0.timestamp : nil }
+            return latestDate(laterEventAt, laterFileAt)
+        }
 
-        let lastActivityAt = latestDate(latestProgressAt, latestDate(latestConversationAt, latestWarning?.timestamp)) ?? run.startedAt
+        let lastActivityAt = latestDate(
+            latestProgressAt,
+            latestDate(latestConversationAt, latestDate(latestWarning?.timestamp, latestPlanBlock?.timestamp))
+        ) ?? run.startedAt
         let secondsSinceProgress = latestProgressAt.map { now.timeIntervalSince($0) } ?? now.timeIntervalSince(run.startedAt)
         let secondsSinceWarning = latestWarning.map { now.timeIntervalSince($0.timestamp) }
+        let secondsSincePlanBlock = latestPlanBlock.map { now.timeIntervalSince($0.timestamp) }
         let latestTool = latestToolName(from: runEvents)
         let warningTool = latestWarning.flatMap(permissionToolName)
+        let blockedStep = latestPlanBlock.flatMap(planStepID)
 
         let state: TaskRuntimeHealthState
-        if latestWarning != nil, laterProgressAfterWarningAt == nil, (secondsSinceWarning ?? 0) >= quietThreshold {
+        if latestPlanBlock != nil,
+           laterProgressAfterPlanBlockAt == nil,
+           (secondsSincePlanBlock ?? 0) >= quietThreshold {
+            state = .possiblyStalled
+        } else if latestWarning != nil, laterProgressAfterWarningAt == nil, (secondsSinceWarning ?? 0) >= quietThreshold {
             state = .possiblyStalled
         } else if latestWarning != nil,
                   laterProgressAfterWarningAt != nil,
@@ -110,7 +125,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             latestRuntimeProgressAt: latestProgressAt,
             latestConversationAt: latestConversationAt,
             quietThreshold: quietThreshold,
-            warningTool: warningTool
+            warningTool: warningTool,
+            blockedStep: blockedStep
         )
         let detail = detail(
             state: state,
@@ -119,7 +135,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             latestRuntimeProgressAt: latestProgressAt,
             latestConversationAt: latestConversationAt,
             quietThreshold: quietThreshold,
-            latestWarning: latestWarning
+            latestWarning: latestWarning,
+            latestPlanBlock: latestPlanBlock
         )
 
         return TaskRuntimeHealth(
@@ -168,7 +185,9 @@ struct TaskRuntimeHealth: Equatable, Sendable {
     private static func isProgressEvent(_ event: TaskEventSnapshot) -> Bool {
         switch event.type {
         case "task.started", "agent.response", "agent.thinking", "tool.use", "tool.result",
-             "task.stats", "task.completed", "astra.todo.replace", "astra.complete":
+             "task.stats", "task.completed", "astra.todo.replace", "astra.complete",
+             "plan.step.started", "plan.step.completed", "plan.step.blocked", "plan.step.skipped",
+             "plan.execution.started", "plan.execution.completed", "plan.execution.failed":
             return true
         default:
             return false
@@ -216,6 +235,16 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         return clean.isEmpty || clean == "unknown" ? nil : clean
     }
 
+    private static func planStepID(from event: TaskEventSnapshot) -> String? {
+        guard let data = event.payload.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stepID = decoded["stepID"] as? String else {
+            return nil
+        }
+        let clean = stepID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : clean
+    }
+
     private static func message(
         state: TaskRuntimeHealthState,
         latestProgressEvent: TaskEventSnapshot?,
@@ -226,7 +255,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         latestRuntimeProgressAt: Date?,
         latestConversationAt: Date?,
         quietThreshold: TimeInterval,
-        warningTool: String?
+        warningTool: String?,
+        blockedStep: String?
     ) -> String {
         let waitingForResponse = isWaitingForAgentResponse(
             latestRuntimeProgressAt: latestRuntimeProgressAt,
@@ -236,6 +266,9 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         case .notRunning:
             return ""
         case .possiblyStalled:
+            if let blockedStep {
+                return "Plan step \(blockedStep) is blocked"
+            }
             if let warningTool {
                 return "Possibly waiting after \(warningTool) permission warning"
             }
@@ -267,6 +300,17 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             }
             if let event = latestProgressEvent {
                 switch event.type {
+                case "plan.step.started":
+                    return "Working on a plan step..."
+                case "plan.step.completed":
+                    return "Plan step completed..."
+                case "plan.step.blocked":
+                    if let blockedStep {
+                        return "Plan step \(blockedStep) is blocked"
+                    }
+                    return "Plan step is blocked"
+                case "plan.step.skipped":
+                    return "Skipping a plan step..."
                 case "tool.use":
                     return latestTool.map { "Running \($0)..." } ?? "Running a tool..."
                 case "tool.result":
@@ -294,7 +338,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         latestRuntimeProgressAt: Date?,
         latestConversationAt: Date?,
         quietThreshold: TimeInterval,
-        latestWarning: TaskEventSnapshot?
+        latestWarning: TaskEventSnapshot?,
+        latestPlanBlock: TaskEventSnapshot?
     ) -> String? {
         let waitingForResponse = isWaitingForAgentResponse(
             latestRuntimeProgressAt: latestRuntimeProgressAt,
@@ -304,6 +349,9 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         case .notRunning:
             return nil
         case .possiblyStalled:
+            if let latestPlanBlock {
+                return "No new plan progress, agent output, tool results, or file changes for \(relativeAge(from: latestPlanBlock.timestamp, to: now)) after the blocker."
+            }
             return "No new agent output, tool results, or file changes for \(relativeAge(from: latestWarning?.timestamp ?? lastActivityAt, to: now)) after the warning."
         case .quiet:
             if waitingForResponse, let latestConversationAt {

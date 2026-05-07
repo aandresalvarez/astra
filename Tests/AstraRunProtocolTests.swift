@@ -43,6 +43,25 @@ struct AstraRunProtocolTests {
         #expect(parsed.taskEventType == "astra.complete")
     }
 
+    @Test("Valid plan step marker parses and normalizes")
+    func validPlanStepMarkerParses() throws {
+        let line = #"ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87","stepID":"step-1","summary":"Verified output"}"#
+
+        let parsed = try #require(AstraRunProtocolParser.parseMarkerLine(line))
+        guard case .valid(.planStep(let progress)) = parsed else {
+            Issue.record("Expected valid plan step, got \(parsed)")
+            return
+        }
+
+        #expect(progress.type == "plan.step.completed")
+        #expect(progress.planID == "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")
+        #expect(progress.stepID == "step-1")
+        #expect(progress.status == .done)
+        #expect(progress.summary == "Verified output")
+        #expect(parsed.taskEventType == "plan.step.completed")
+        #expect(parsed.normalizedPayload.contains(#""type":"plan.step.completed""#))
+    }
+
     @Test("Unknown version, unknown type, and malformed JSON become invalid events")
     func invalidMarkersParse() throws {
         let unsupportedVersion = try #require(AstraRunProtocolParser.parseMarkerLine(#"ASTRA_EVENT {"v":2,"type":"complete","summary":"done"}"#))
@@ -90,6 +109,82 @@ struct AstraRunProtocolTests {
         #expect(result.outputs[2] == .text("After"))
     }
 
+    @Test("Filter strips markdown-bulleted marker lines")
+    func filterStripsBulletedMarkers() {
+        var filter = AstraRunProtocolTextFilter()
+        let marker = #"• ASTRA_EVENT {"v":1,"type":"plan.step.started","planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87","stepID":"research","status":"running"}"#
+        let result = filter.process(text: "Visible\n\(marker)\n")
+
+        #expect(result.outputs.count == 2)
+        #expect(result.outputs[0] == .text("Visible\n"))
+        guard case .protocolEvent(.valid(.planStep(let progress))) = result.outputs[1] else {
+            Issue.record("Expected plan.step marker")
+            return
+        }
+        #expect(progress.stepID == "research")
+        #expect(progress.status == .running)
+    }
+
+    @Test("Filter strips heavy-bulleted hard-wrapped plan markers")
+    func filterStripsHardWrappedPlanMarkers() {
+        var filter = AstraRunProtocolTextFilter()
+        let text = """
+        ● I'll build a clean page.
+        ● ASTRA_EVENT {"v":1,"type":"plan.step.started","planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87","s
+           tepID":"step-1","status":"running"}
+        ✓ Create index.html (+124)
+        ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87",
+           "stepID":"step-1","status":"done","summary":"Created index.html"}
+        Done.
+        """
+
+        let result = filter.process(text: text)
+        let visible = result.outputs.compactMap { output -> String? in
+            guard case .text(let text) = output else { return nil }
+            return text
+        }.joined()
+        let planEvents = result.outputs.compactMap { output -> AstraRunProtocolEvent.PlanStepProgress? in
+            guard case .protocolEvent(.valid(.planStep(let progress))) = output else { return nil }
+            return progress
+        }
+
+        #expect(!visible.contains("ASTRA_EVENT"))
+        #expect(!visible.contains("tepID"))
+        #expect(visible.contains("I'll build a clean page."))
+        #expect(visible.contains("Create index.html"))
+        #expect(visible.contains("Done."))
+        #expect(planEvents.map(\.type) == ["plan.step.started", "plan.step.completed"])
+        #expect(planEvents.map(\.stepID) == ["step-1", "step-1"])
+    }
+
+    @Test("Filter strips hard-wrapped completion marker continuations")
+    func filterStripsHardWrappedCompletionMarkerContinuations() {
+        var filter = AstraRunProtocolTextFilter()
+        let text = """
+        ● ASTRA_EVENT {"v":1,"type":"complete","summary":"Created index.html and styles.css
+           with placeholder content that wrapped before the closing quote
+           and still belongs to the summary.","verifiedBy":"File system verification"}
+        Visible final response.
+        """
+
+        let result = filter.process(text: text)
+        let visible = result.outputs.compactMap { output -> String? in
+            guard case .text(let text) = output else { return nil }
+            return text
+        }.joined()
+
+        #expect(!visible.contains("ASTRA_EVENT"))
+        #expect(!visible.contains("verifiedBy"))
+        #expect(!visible.contains("wrapped before the closing quote"))
+        #expect(visible.contains("Visible final response."))
+        guard case .protocolEvent(.valid(.complete(let summary, let verifiedBy))) = result.outputs.first else {
+            Issue.record("Expected completion protocol marker")
+            return
+        }
+        #expect(summary.contains("wrapped before the closing quote"))
+        #expect(verifiedBy == "File system verification")
+    }
+
     @Test("Filter strips invalid marker lines")
     func filterStripsInvalidMarkers() {
         var filter = AstraRunProtocolTextFilter()
@@ -103,6 +198,35 @@ struct AstraRunProtocolTests {
         }
         #expect(reason == "malformed JSON")
         #expect(result.outputs[2] == .text("B"))
+    }
+
+    @Test("Display sanitizer hides persisted orphan protocol fragments")
+    func displaySanitizerHidesPersistedOrphanProtocolFragments() {
+        let text = """
+        ● I'll build a clean page.
+           tepID":"step-1","status":"running"}
+        ✓ Create .astra/tasks/3BAB3C9D/index.html (+124)
+        ● ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+           "stepID":"step-1","status":"done","summary":"Created index.html with semantic sections"}
+           tepID":"step-2","status":"running"}
+        ✓ Create .astra/tasks/3BAB3C9D/styles.css (+326)
+        ● ASTRA_EVENT {"v":1,"type":"complete","summary":"Verified both files created successfully
+           with index.html and styles.css in black and white design. All placeholder content is clearly
+           marked for customization.","verifiedBy":"File system verification"}
+        Final response.
+        """
+
+        let cleaned = AstraRunProtocolDisplaySanitizer.clean(text)
+
+        #expect(!cleaned.contains("ASTRA_EVENT"))
+        #expect(!cleaned.contains("tepID"))
+        #expect(!cleaned.contains("\"stepID\""))
+        #expect(!cleaned.contains("verifiedBy"))
+        #expect(!cleaned.contains("marked for customization"))
+        #expect(cleaned.contains("I'll build a clean page."))
+        #expect(cleaned.contains("Create .astra/tasks/3BAB3C9D/index.html"))
+        #expect(cleaned.contains("Create .astra/tasks/3BAB3C9D/styles.css"))
+        #expect(cleaned.contains("Final response."))
     }
 
     @Test("Filter reassembles split marker chunks before parsing")
@@ -278,5 +402,39 @@ struct AstraRunProtocolRecordingTests {
         #expect(run.output == "Visible output")
         #expect(task.events.contains { $0.type == "astra.complete" })
         #expect(task.events.contains { $0.type == "agent.response" && $0.payload == "Visible output" })
+    }
+
+    @Test("Recorder applies plan step progress to current plan")
+    func recorderAppliesPlanStepProgress() throws {
+        let container = try makeProtocolTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "G",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Inspect")
+            ]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+
+        let protocolEvent = AstraRunProtocolParsedEvent.valid(.planStep(.init(
+            type: "plan.step.completed",
+            planID: plan.planID.uuidString,
+            stepID: "step-1",
+            status: .done,
+            summary: "Inspected files"
+        )))
+        AgentEventRecorder.recordClaudeRunEvent(.astraProtocol(protocolEvent), to: task, run: run, modelContext: context)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(state.plan?.steps.first?.status == .done)
+        #expect(task.events.contains { $0.type == "plan.step.completed" })
+        #expect(run.output.isEmpty)
     }
 }

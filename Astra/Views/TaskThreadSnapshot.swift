@@ -4,6 +4,8 @@ import ASTRACore
 enum TaskConversationItem: Identifiable, Sendable {
     case userMessage(text: String, timestamp: Date)
     case agentResponse(run: TaskRunSnapshot)
+    case planUserMessage(text: String, timestamp: Date)
+    case planAssistantMessage(text: String, timestamp: Date)
     case scheduleResult(text: String, timestamp: Date)
     case systemInfo(text: String, timestamp: Date)
     case recapResult(text: String, timestamp: Date)
@@ -12,6 +14,8 @@ enum TaskConversationItem: Identifiable, Sendable {
         switch self {
         case .userMessage(_, let timestamp): return "user-\(timestamp.timeIntervalSince1970)"
         case .agentResponse(let run): return "agent-\(run.id)"
+        case .planUserMessage(_, let timestamp): return "plan-user-\(timestamp.timeIntervalSince1970)"
+        case .planAssistantMessage(_, let timestamp): return "plan-assistant-\(timestamp.timeIntervalSince1970)"
         case .scheduleResult(_, let timestamp): return "schedule-\(timestamp.timeIntervalSince1970)"
         case .systemInfo(_, let timestamp): return "system-\(timestamp.timeIntervalSince1970)"
         case .recapResult(_, let timestamp): return "recap-\(timestamp.timeIntervalSince1970)"
@@ -66,7 +70,7 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
         providerSessionId = input.providerSessionId
         providerVersion = input.providerVersion
         exitCode = input.exitCode
-        output = input.output
+        output = AstraRunProtocolDisplaySanitizer.clean(input.output)
         hasVPNWarning = Self.outputContainsVPNWarning(input.output)
         costUSD = input.costUSD
         fileChangesJSONLength = input.fileChangesJSON.count
@@ -387,6 +391,8 @@ struct TaskThreadSnapshot: Sendable {
         let conversationEvents = events.filter {
             $0.type == "user.message" ||
             $0.type == "agent.response" ||
+            $0.type == TaskPlanConversationEventTypes.userMessage ||
+            $0.type == TaskPlanConversationEventTypes.assistantMessage ||
             $0.type == "schedule.result" ||
             $0.type == "system.info" ||
             $0.type == "recap.result"
@@ -417,6 +423,10 @@ struct TaskThreadSnapshot: Sendable {
             switch event.type {
             case "user.message":
                 items.append(.userMessage(text: event.payload, timestamp: event.timestamp))
+            case TaskPlanConversationEventTypes.userMessage:
+                items.append(.planUserMessage(text: event.payload, timestamp: event.timestamp))
+            case TaskPlanConversationEventTypes.assistantMessage:
+                items.append(.planAssistantMessage(text: event.payload, timestamp: event.timestamp))
             case "schedule.result":
                 items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
             case "system.info":
