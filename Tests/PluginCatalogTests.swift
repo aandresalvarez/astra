@@ -167,6 +167,20 @@ struct PluginCatalogLoadTests {
         let cats = catalog.categories
         #expect(cats.count == 2)
     }
+
+    @Test("Jira capability uses permission probe and current search endpoint")
+    func jiraCapabilityGuidesAuthAndSearch() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let skill = try #require(package.skills.first)
+
+        #expect(package.version == "2.0.2")
+        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
+        #expect(skill.behaviorInstructions.contains("/rest/api/3/search/jql?jql="))
+        #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
+        #expect(skill.behaviorInstructions.contains("First verify auth with /rest/api/3/myself"))
+        #expect(skill.behaviorInstructions.contains("Do not call /rest/api/3/permissions"))
+        #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token"))
+    }
 }
 
 // MARK: - isInstalled
