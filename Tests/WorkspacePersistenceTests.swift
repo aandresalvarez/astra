@@ -511,6 +511,8 @@ struct WorkspacePersistenceTests {
         context.insert(run)
 
         let schedule = TaskSchedule(name: "Reply Monitor", goal: "Check for updates", workspace: workspace)
+        schedule.routineDescription = "Watch reply activity"
+        schedule.routinePaths = ["/tmp/reply-context"]
         schedule.resultMode = .sameThread
         schedule.sourceTaskID = sourceTask.id
         context.insert(schedule)
@@ -531,6 +533,8 @@ struct WorkspacePersistenceTests {
         #expect(sourceTask.costUSD == 0.42)
         #expect(sourceTask.runs.count == 1)
         #expect(sourceTask.runs.first?.output == "Here is the scheduled follow-up output.")
-        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Scheduled run: Reply Monitor") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Routine run: Reply Monitor") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Watch reply activity") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("/tmp/reply-context") })
     }
 }

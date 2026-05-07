@@ -248,10 +248,20 @@ enum LogDiagnosticsService {
             if isRecoveredOrPendingPermissionWarning(entry, entries: entries, generatedAt: generatedAt) {
                 continue
             }
+            if isResolvedPlanBlocker(entry, entries: entries) {
+                continue
+            }
+            if isGenericRuntimeWarningCoveredBySpecificFailure(entry, entries: entries) {
+                continue
+            }
             if classifyNotice(entry) != nil {
                 continue
             }
-            guard let classification = classify(entry) else { continue }
+            guard let classification = classifyConnectorCredentialRegression(
+                entry,
+                index: index,
+                entries: entries
+            ) ?? classify(entry) else { continue }
             let signature = diagnosticEventSignature(for: entry, classificationKey: classification.key)
             guard seenIssueEvents.insert(signature).inserted else { continue }
             let task = taskIdentifier(for: entry)
@@ -386,6 +396,61 @@ enum LogDiagnosticsService {
         return "The task reached its configured budget after producing \(outputText)\(fileText).\(saveText) Resume with a narrower prompt, split the work into smaller tasks, or increase the budget when the broader run is intentional."
     }
 
+    private static func classifyConnectorCredentialRegression(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> (
+        key: String,
+        title: String,
+        severity: LogLevel,
+        signal: String,
+        analysis: String
+    )? {
+        let message = entry.message
+        let lower = message.lowercased()
+        guard lower.contains(AuditEvent.connectorTested.rawValue) else { return nil }
+        let explicitlyRejected = lower.contains("credential_state=rejected")
+            || lower.contains("result=auth_failed")
+        let rejectedAuthProbe = lower.contains("auth_verified=false")
+            && lower.contains("http_status=401")
+        guard explicitlyRejected || rejectedAuthProbe
+        else { return nil }
+        guard let evidenceKey = connectorEvidenceKey(for: entry) else { return nil }
+        guard entries.indices.contains(index), index > entries.startIndex else { return nil }
+
+        let hadEarlierAuth = entries[..<index].contains { prior in
+            guard connectorEvidenceKey(for: prior) == evidenceKey else { return false }
+            let priorLower = prior.message.lowercased()
+            guard priorLower.contains(AuditEvent.connectorTested.rawValue) else { return false }
+            return priorLower.contains("credential_state=authenticated")
+                || priorLower.contains("auth_verified=true")
+                || priorLower.contains("result=authenticated")
+                || priorLower.contains("result=success")
+        }
+        guard hadEarlierAuth else { return nil }
+
+        let service = field("service_type", in: message) ?? "connector"
+        return (
+            key: "connector.tested.auth_regressed.\(evidenceKey)",
+            title: "Connector credentials stopped authenticating",
+            severity: .error,
+            signal: "connector.tested credential_state changed authenticated_to_rejected",
+            analysis: "This \(service) connector previously authenticated in the retained logs but later had its credentials rejected. The external token, account access, or auth policy likely changed; rotate or re-enter the credentials and then re-run the connector test."
+        )
+    }
+
+    private static func connectorEvidenceKey(for entry: LogEntry) -> String? {
+        let message = entry.message
+        if let connectorID = field("connector_id", in: message), !connectorID.isEmpty {
+            return "id:\(connectorID)"
+        }
+        if let serviceType = field("service_type", in: message), !serviceType.isEmpty {
+            return "service:\(serviceType)"
+        }
+        return nil
+    }
+
     private static func entriesForTasks(_ tasks: Set<String>, in entries: [LogEntry]) -> [LogEntry] {
         guard !tasks.isEmpty else { return [] }
         return entries.filter { entry in
@@ -475,6 +540,78 @@ enum LogDiagnosticsService {
         return false
     }
 
+    private static func isResolvedPlanBlocker(_ entry: LogEntry, entries: [LogEntry]) -> Bool {
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.planStepBlocked.rawValue) else {
+            return false
+        }
+
+        guard let task = taskIdentifier(for: entry) else {
+            return false
+        }
+
+        let planID = field("plan_id", in: entry.message)
+        let stepID = field("step_id", in: entry.message)
+
+        return entries.contains { candidate in
+            guard candidate.timestamp > entry.timestamp,
+                  taskIdentifier(for: candidate) == task else {
+                return false
+            }
+
+            let candidateLower = candidate.message.lowercased()
+            if candidateLower.contains(AuditEvent.planCancelled.rawValue) ||
+                candidateLower.contains(AuditEvent.planExecutionCompleted.rawValue) ||
+                candidateLower.contains(AuditEvent.planExecutionFailed.rawValue) ||
+                candidateLower.contains(AuditEvent.taskCompleted.rawValue) {
+                return samePlan(candidate, planID: planID)
+            }
+
+            guard candidateLower.contains(AuditEvent.planStepStateChanged.rawValue) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepCompleted) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepSkipped) ||
+                    candidateLower.contains(TaskPlanEventTypes.stepStarted) else {
+                return false
+            }
+
+            guard samePlan(candidate, planID: planID), sameStep(candidate, stepID: stepID) else {
+                return false
+            }
+
+            guard let status = field("step_status", in: candidate.message)
+                ?? field("status", in: candidate.message)
+            else {
+                return false
+            }
+            return ["done", "skipped", "running"].contains(status)
+        }
+    }
+
+    private static func isGenericRuntimeWarningCoveredBySpecificFailure(_ entry: LogEntry, entries: [LogEntry]) -> Bool {
+        guard entry.logLevel == .warning else { return false }
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.workerExited.rawValue) else { return false }
+        guard let task = taskIdentifier(for: entry) else { return false }
+
+        return entries.contains { candidate in
+            guard taskIdentifier(for: candidate) == task else { return false }
+            let candidateLower = candidate.message.lowercased()
+            return candidateLower.contains(AuditEvent.runtimeFailureDiagnostic.rawValue) ||
+                candidateLower.contains(AuditEvent.workerTimeout.rawValue) ||
+                candidateLower.contains(AuditEvent.workerBudgetExceeded.rawValue)
+        }
+    }
+
+    private static func samePlan(_ entry: LogEntry, planID: String?) -> Bool {
+        guard let planID, !planID.isEmpty else { return true }
+        return field("plan_id", in: entry.message) == planID
+    }
+
+    private static func sameStep(_ entry: LogEntry, stepID: String?) -> Bool {
+        guard let stepID, !stepID.isEmpty else { return true }
+        return field("step_id", in: entry.message) == stepID
+    }
+
     private static func classifyNotice(_ entry: LogEntry) -> (
         key: String,
         title: String,
@@ -552,6 +689,17 @@ enum LogDiagnosticsService {
             )
         }
 
+        if lower.contains(AuditEvent.planStepBlocked.rawValue) {
+            let stepID = field("step_id", in: message) ?? "unknown"
+            return (
+                key: "plan.step.blocked.\(stepID)",
+                title: "Plan execution is blocked",
+                severity: .warning,
+                signal: "plan.step.blocked step_id=\(stepID)",
+                analysis: "A plan step reported a blocker and no later step progress, plan cancellation, or task completion resolved it in the analyzed window. Review the plan panel for the blocked step and decide whether to approve, edit, skip, or cancel the remaining work."
+            )
+        }
+
         if lower.contains(AuditEvent.runtimeEmptyOutput.rawValue) {
             return (
                 key: "runtime.empty_output",
@@ -600,6 +748,15 @@ enum LogDiagnosticsService {
         }
 
         if lower.contains(AuditEvent.connectorTested.rawValue) {
+            if lower.contains("result=preflight_failed") {
+                return (
+                    key: "connector.tested.preflight_failed",
+                    title: "Connector preflight blocked task launch",
+                    severity: .error,
+                    signal: "connector.tested result=preflight_failed",
+                    analysis: "ASTRA stopped the task before launching the agent because a required connector did not pass its own auth or permission check. Fix the connector configuration, then retry the task."
+                )
+            }
             if lower.contains("missing_count=") {
                 return (
                     key: "connector.tested.missing_credentials",
@@ -607,6 +764,34 @@ enum LogDiagnosticsService {
                     severity: .warning,
                     signal: "connector.tested missing_count",
                     analysis: "A configured connector was tested before all required credential fields were available. The user needs to complete the connector configuration before this capability can be used."
+                )
+            }
+            if lower.contains("result=project_not_visible") {
+                return (
+                    key: "connector.tested.jira_project_not_visible",
+                    title: "Jira project is not visible",
+                    severity: .warning,
+                    signal: "connector.tested result=project_not_visible",
+                    analysis: "Jira accepted the connector credentials, but at least one configured project was not visible or the project key is wrong. Check project membership, Browse Projects permission, and the configured project keys."
+                )
+            }
+            if lower.contains("result=missing_permission") {
+                let permission = field("permission", in: message) ?? "required permission"
+                return (
+                    key: "connector.tested.missing_permission.\(permission)",
+                    title: "Connector authenticated but lacks permission",
+                    severity: .warning,
+                    signal: "connector.tested result=missing_permission",
+                    analysis: "The connector authenticated successfully, but the account lacks \(permission). Grant the permission in the external service instead of rotating the token."
+                )
+            }
+            if lower.contains("result=endpoint_scope_failure") {
+                return (
+                    key: "connector.tested.endpoint_scope_failure",
+                    title: "Connector auth probe needs scope or endpoint review",
+                    severity: .warning,
+                    signal: "connector.tested result=endpoint_scope_failure",
+                    analysis: "A connector credential probe was rejected, but the evidence is not enough to call the token invalid. Check scoped-token support, service-account auth mode, gateway URL requirements, and endpoint-specific scopes."
                 )
             }
             if lower.contains("http_status=401") || lower.contains("unauthorized") {
@@ -944,7 +1129,7 @@ enum LogDiagnosticsService {
         case "quota_exceeded": "Provider quota exceeded"
         case "rate_limited": "Provider rate limited the request"
         case "provider_configuration_invalid": "Provider configuration invalid"
-        case "permission_denied": "Provider or organization denied access"
+        case "permission_denied": "Runtime permission approval blocked"
         case "unsupported_output_format": "Runtime output format unsupported"
         case "network_failed": "Provider network failure"
         case "runtime_timed_out": "Runtime timed out"
@@ -962,6 +1147,8 @@ enum LogDiagnosticsService {
             "The runtime could not authenticate with the provider. Re-run the provider login flow or verify configured tokens for this app channel."
         case "provider_configuration_invalid":
             "The provider path is configured but incomplete or invalid. Check BYOK/base URL/deployment/API key settings without exposing secret values."
+        case "permission_denied":
+            "The runtime was blocked by provider policy, organization policy, or an interactive CLI approval prompt. Check the redacted error summary for denied tools or workspace paths; this should surface quickly instead of waiting for the idle timeout."
         case "quota_exceeded", "rate_limited":
             "The provider accepted the runtime request path but refused service due to account limits. Retrying with the same model may continue to fail until the limit resets or billing/config changes."
         case "unsupported_output_format":
@@ -1015,7 +1202,14 @@ enum LogDiagnosticsService {
     }
 
     private static func messagePrefix(_ message: String) -> String {
-        let first = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
+        let normalized: Substring
+        if message.hasPrefix("task_short=") {
+            let pieces = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            normalized = pieces.count > 1 ? pieces[1] : ""
+        } else {
+            normalized = Substring(message)
+        }
+        let first = normalized.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
         return first.map(String.init) ?? "unknown"
     }
 

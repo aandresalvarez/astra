@@ -12,13 +12,13 @@ enum ScheduleType: String, Codable, CaseIterable {
 enum ScheduleResultMode: String, Codable, CaseIterable {
     case sameThread = "same_thread"     // Post results back to the source task's conversation
     case newTask = "new_task"           // Each run creates an independent task
-    case scheduleLog = "schedule_log"   // Store results in the schedule's own run history
+    case scheduleLog = "schedule_log"   // Store results in the routine's own run history
 
     var label: String {
         switch self {
         case .sameThread: return "Same thread"
         case .newTask: return "New task"
-        case .scheduleLog: return "Schedule log"
+        case .scheduleLog: return "Routine log"
         }
     }
 
@@ -26,7 +26,7 @@ enum ScheduleResultMode: String, Codable, CaseIterable {
         switch self {
         case .sameThread: return "Post results to the original conversation"
         case .newTask: return "Create a new task for each run"
-        case .scheduleLog: return "Store results in the schedule's run history"
+        case .scheduleLog: return "Store results in the routine's run history"
         }
     }
 }
@@ -204,7 +204,7 @@ final class TaskSchedule {
             sections.append("Routine description:\n\(description)")
         }
         if !instructions.isEmpty {
-            sections.append("Routine instructions:\n\(routineInstructions)")
+            sections.append("Routine instructions:\n\(instructions)")
         }
         if !paths.isEmpty {
             sections.append("Routine folders:\n" + paths.map { "- \($0)" }.joined(separator: "\n"))
@@ -286,7 +286,8 @@ final class TaskSchedule {
         for path in paths {
             let expanded = (path as NSString).expandingTildeInPath
             let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            guard (trimmed as NSString).isAbsolutePath,
+                  !seen.contains(trimmed) else { continue }
             seen.insert(trimmed)
             result.append(trimmed)
         }

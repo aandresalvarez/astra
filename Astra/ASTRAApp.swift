@@ -251,7 +251,13 @@ public struct ASTRAApp: App {
             ])
             if !isUITesting {
                 WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
+                let capabilityLibrary = CapabilityLibrary()
+                try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
+                CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
+                    modelContext: modelContainer.mainContext,
+                    library: capabilityLibrary,
+                    approvedPackages: PluginCatalog.builtInPackages
+                )
                 Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                 Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
                 TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)
@@ -273,7 +279,13 @@ public struct ASTRAApp: App {
                 ])
                 if !isUITesting {
                     WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
-                    try? CapabilityLibrary().syncApprovedPackages(PluginCatalog.builtInPackages)
+                    let capabilityLibrary = CapabilityLibrary()
+                    try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
+                    CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
+                        modelContext: modelContainer.mainContext,
+                        library: capabilityLibrary,
+                        approvedPackages: PluginCatalog.builtInPackages
+                    )
                     Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                     Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
                     TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)

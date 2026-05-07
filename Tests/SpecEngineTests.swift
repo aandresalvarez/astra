@@ -153,6 +153,44 @@ struct SpecEngineTests {
         #expect(title == "Review query results")
     }
 
+    @Test("Chat runs Claude in read-only tool mode")
+    func chatUsesReadOnlyToolFlags() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-chat-read-only-\(UUID().uuidString)", isDirectory: true)
+        let fakeClaude = root.appendingPathComponent("claude")
+        let argsFile = root.appendingPathComponent("args.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf 'Planning response\\n'
+        """
+        try script.write(to: fakeClaude, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeClaude.path)
+
+        let result = await SpecEngine.chat(
+            messages: [(role: "user", content: "Plan the work")],
+            workspacePath: root.path,
+            claudePath: fakeClaude.path,
+            model: "claude-sonnet-4-6"
+        )
+
+        guard case .success(let response) = result else {
+            Issue.record("Expected fake Claude success")
+            return
+        }
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(response == "Planning response")
+        #expect(args.contains("normal task-spec"))
+        #expect(args.contains("Plan Mode this is \"Approve Plan\""))
+        #expect(args.contains("--allowedTools"))
+        #expect(args.contains("Read,Glob,Grep"))
+        #expect(args.contains("--disallowedTools"))
+        #expect(args.contains("Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"))
+    }
+
     @Test("JSON extraction handles nested fences")
     func nestedFences() {
         let wrapped = "```\n{\"title\": \"test\"}\n```"

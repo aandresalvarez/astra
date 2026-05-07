@@ -701,7 +701,7 @@ struct ConnectorEditorView: View {
             connector.authMethod = "basic"
             connector.testHTTPMethod = "GET"
             if connector.credentialKeys.isEmpty {
-                newCredKey = "JIRA_TOKEN"
+                newCredKey = "JIRA_API_TOKEN"
                 isAddingCredential = true
             }
         case "github":

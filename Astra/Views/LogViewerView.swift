@@ -3,6 +3,11 @@ import SwiftUI
 struct LogViewerView: View {
     private static let maxVisibleEntries = 2000
 
+    private enum DiagnosticsDelivery {
+        case file
+        case clipboard
+    }
+
     @State private var entries: [LogEntry] = AppLogger.entries
     @State private var filteredEntries: [LogEntry] = []
     @State private var pendingLiveEntries: [LogEntry] = []
@@ -270,7 +275,7 @@ struct LogViewerView: View {
                 .help("Choose how far back diagnostics should analyze")
 
                 Button {
-                    generateDiagnosticsReport()
+                    generateDiagnosticsReport(delivery: .file)
                 } label: {
                     if isGeneratingDiagnostics {
                         ProgressView()
@@ -283,6 +288,15 @@ struct LogViewerView: View {
                 .help("Generate a sanitized developer diagnostics report")
                 .disabled(isGeneratingDiagnostics)
 
+                Button {
+                    generateDiagnosticsReport(delivery: .clipboard)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.clipboard")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy the diagnostics report markdown to the clipboard")
+                .disabled(isGeneratingDiagnostics)
+
                 Spacer(minLength: 0)
             }
         }
@@ -290,7 +304,7 @@ struct LogViewerView: View {
         .padding(.vertical, 8)
     }
 
-    private func generateDiagnosticsReport() {
+    private func generateDiagnosticsReport(delivery: DiagnosticsDelivery) {
         isGeneratingDiagnostics = true
         let generatedAt = Date()
         let scope = LogDiagnosticsScope(rawValue: diagnosticsScopeRawValue) ?? .sinceLastReport
@@ -308,27 +322,49 @@ struct LogViewerView: View {
                 scope: scope,
                 history: history
             )
-            let url = try LogDiagnosticsService.writeReport(report)
             LogDiagnosticsService.saveHistory(from: report)
-            diagnosticsReportURL = url
-            if report.issueCount == 0 {
-                diagnosticsMessage = report.notices.isEmpty
-                    ? "Diagnostics report saved. No issue signals were detected for \(scope.label.lowercased())."
-                    : "Diagnostics report saved. No actionable issues were detected for \(scope.label.lowercased()); \(report.notices.count) recovery event\(report.notices.count == 1 ? "" : "s") noted."
-            } else {
-                diagnosticsMessage = "Diagnostics report saved with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
+
+            switch delivery {
+            case .file:
+                let url = try LogDiagnosticsService.writeReport(report)
+                diagnosticsReportURL = url
+                diagnosticsMessage = diagnosticsSuccessMessage(
+                    report: report,
+                    scope: scope,
+                    verb: "saved"
+                )
+                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                    "entries": String(report.entryCount),
+                    "issues": String(report.issueCount),
+                    "notices": String(report.notices.count),
+                    "errors": String(report.errorCount),
+                    "warnings": String(report.warningCount),
+                    "scope": scope.rawValue,
+                    "delivery": "file",
+                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+                    "report": url.path
+                ], level: .info)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .clipboard:
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(report.markdown, forType: .string)
+                diagnosticsReportURL = nil
+                diagnosticsMessage = diagnosticsSuccessMessage(
+                    report: report,
+                    scope: scope,
+                    verb: "copied to clipboard"
+                )
+                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                    "entries": String(report.entryCount),
+                    "issues": String(report.issueCount),
+                    "notices": String(report.notices.count),
+                    "errors": String(report.errorCount),
+                    "warnings": String(report.warningCount),
+                    "scope": scope.rawValue,
+                    "delivery": "clipboard",
+                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none"
+                ], level: .info)
             }
-            AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
-                "entries": String(report.entryCount),
-                "issues": String(report.issueCount),
-                "notices": String(report.notices.count),
-                "errors": String(report.errorCount),
-                "warnings": String(report.warningCount),
-                "scope": scope.rawValue,
-                "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
-                "report": url.path
-            ], level: .info)
-            NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
             diagnosticsReportURL = nil
             diagnosticsMessage = "Diagnostics report failed: \(LogSanitizer.sanitize(error.localizedDescription))"
@@ -338,6 +374,20 @@ struct LogViewerView: View {
         }
 
         isGeneratingDiagnostics = false
+    }
+
+    private func diagnosticsSuccessMessage(
+        report: LogDiagnosticsReport,
+        scope: LogDiagnosticsScope,
+        verb: String
+    ) -> String {
+        if report.issueCount == 0 {
+            if report.notices.isEmpty {
+                return "Diagnostics report \(verb). No issue signals were detected for \(scope.label.lowercased())."
+            }
+            return "Diagnostics report \(verb). No actionable issues were detected for \(scope.label.lowercased()); \(report.notices.count) recovery event\(report.notices.count == 1 ? "" : "s") noted."
+        }
+        return "Diagnostics report \(verb) with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
     }
 }
 

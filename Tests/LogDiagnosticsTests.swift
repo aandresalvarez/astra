@@ -135,6 +135,91 @@ struct LogDiagnosticsTests {
         #expect(!report.markdown.contains("[redacted-[redacted-secret-key]-key]"))
     }
 
+    @Test("Jira connector diagnostics do not collapse permission failures into invalid token")
+    func jiraConnectorPermissionDiagnosticsAreSpecific() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested endpoint_kind=jira.project_permissions http_status=200 permission=CREATE_ISSUES project_count=1 result=missing_permission service_type=jira"
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested endpoint_kind=jira.project_permissions http_status=404 project_count=1 result=project_not_visible service_type=jira"
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested endpoint_kind=jira.mypermissions fallback_endpoint_kind=jira.myself fallback_http_status=200 http_status=401 result=endpoint_scope_failure service_type=jira"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Connector authenticated but lacks permission" })
+        #expect(report.issues.contains { $0.title == "Jira project is not visible" })
+        #expect(report.issues.contains { $0.title == "Connector auth probe needs scope or endpoint review" })
+        #expect(!report.markdown.contains("Re-enter or refresh the token"))
+    }
+
+    @Test("Connector diagnostics detect credentials that stopped authenticating")
+    func connectorCredentialRegressionDiagnostics() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested auth_verified=true connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=authenticated endpoint_kind=jira.myself result=authenticated service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested auth_verified=false connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=rejected endpoint_kind=jira.myself http_status=401 result=auth_failed service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_100)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_200))
+
+        #expect(report.issues.contains { $0.title == "Connector credentials stopped authenticating" })
+        #expect(report.issues.first { $0.title == "Connector credentials stopped authenticating" }?.severity == .error)
+        #expect(report.markdown.contains("previously authenticated"))
+        #expect(report.markdown.contains("credential_state=authenticated"))
+        #expect(report.markdown.contains("credential_state=rejected"))
+    }
+
+    @Test("Connector scope failures are not reported as auth regressions")
+    func connectorScopeFailureDoesNotBecomeCredentialRegression() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested auth_verified=true connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=authenticated endpoint_kind=jira.myself result=authenticated service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested auth_verified=true connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=authenticated endpoint_kind=jira.mypermissions fallback_endpoint_kind=jira.myself fallback_http_status=200 http_status=401 result=endpoint_scope_failure service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_100)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_200))
+
+        #expect(!report.issues.contains { $0.title == "Connector credentials stopped authenticating" })
+        #expect(report.issues.contains { $0.title == "Connector auth probe needs scope or endpoint review" })
+    }
+
+    @Test("Connector preflight failure is reported as task-blocking")
+    func connectorPreflightFailureIsTaskBlocking() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "task_short=EFE79794 connector.tested connector_id=JIRA connector_name=Jira result=preflight_failed service_type=jira"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Connector preflight blocked task launch" })
+        #expect(report.markdown.contains("Fix the connector configuration"))
+    }
+
     @Test("Startup recovery interruption is reported as non-actionable")
     func startupRecoveryInterruptionIsNonActionable() {
         let report = LogDiagnosticsService.makeReport(entries: [
@@ -462,6 +547,57 @@ struct LogDiagnosticsTests {
         #expect(!report.issues.contains { $0.id.hasPrefix("worker.permission_denied") })
     }
 
+    @Test("Runtime failure suppresses duplicate worker exit warnings")
+    func runtimeFailureSuppressesDuplicateWorkerExitWarnings() {
+        let taskID = UUID(uuidString: "BEB972EC-3D4C-45F9-9A42-3E134BD11103")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .error,
+                    category: "Worker",
+                    message: "runtime.failure_diagnostic failure_category=permission_denied runtime=copilot_cli exit_code=15",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_001)
+                ),
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "task_short=BEB972EC worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    timestamp: Date(timeIntervalSince1970: 1_001)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.map(\.id) == ["runtime.failure_diagnostic.permission_denied"])
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Generic task_short warning uses underlying signal")
+    func genericTaskShortWarningUsesUnderlyingSignal() {
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "task_short=BEB972EC worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.first?.id == "warning.worker.exited")
+        #expect(report.issues.first?.signal == "worker.exited")
+    }
+
     @Test("Possibly stalled runtime progress state is reported")
     func possiblyStalledProgressStateIsReported() {
         let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
@@ -480,5 +616,87 @@ struct LogDiagnosticsTests {
 
         #expect(report.issues.contains { $0.id == "runtime.progress_state.possibly_stalled" })
         #expect(report.markdown.contains("Running task may be stalled"))
+    }
+
+    @Test("Blocked plan step is reported when unresolved")
+    func unresolvedPlanStepBlockerIsReported() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.contains { $0.id == "plan.step.blocked.step-2" })
+        #expect(report.markdown.contains("Plan execution is blocked"))
+        #expect(report.markdown.contains("20DBCF1C"))
+    }
+
+    @Test("Resolved plan step blocker is suppressed")
+    func resolvedPlanStepBlockerIsSuppressed() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .debug,
+                    category: "Plan",
+                    message: "plan.step.state_changed latest_run_status=running plan_id=PLAN step_id=step-2 step_status=done summary=Finished",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_030)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("plan.step.blocked") })
+        #expect(!report.markdown.contains("Plan execution is blocked"))
+    }
+
+    @Test("Failed plan execution suppresses earlier plan blocker")
+    func failedPlanExecutionSuppressesEarlierPlanBlocker() {
+        let taskID = UUID(uuidString: "BEB972EC-3D4C-45F9-9A42-3E134BD11103")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .error,
+                    category: "Worker",
+                    message: "runtime.failure_diagnostic failure_category=permission_denied runtime=copilot_cli exit_code=15",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_030)
+                ),
+                LogEntry(
+                    level: .info,
+                    category: "Plan",
+                    message: "plan.execution.failed plan_id=PLAN reason=failed",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_031)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("plan.step.blocked") })
+        #expect(report.issues.contains { $0.id == "runtime.failure_diagnostic.permission_denied" })
     }
 }

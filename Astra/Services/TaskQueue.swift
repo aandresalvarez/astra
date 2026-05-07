@@ -93,13 +93,8 @@ final class TaskQueue {
             return
         }
 
-        do {
-            try task.ensureTaskFolder()
-        } catch {
-            AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id, fields: [
-                "reason": "task_folder_create_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "task") else {
+            return
         }
 
         activeTasks.insert(task.id)
@@ -256,10 +251,10 @@ final class TaskQueue {
     }()
 
     private static func sameThreadSchedulePrompt(schedule: TaskSchedule, fallbackGoal: String) -> String {
-        let trimmedGoal = schedule.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGoal = schedule.effectiveGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = trimmedGoal.isEmpty ? fallbackGoal : trimmedGoal
         return """
-        Scheduled run: \(schedule.name)
+        Routine run: \(schedule.name)
 
         \(goal)
         """
@@ -277,9 +272,87 @@ final class TaskQueue {
             return
         }
 
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+            return
+        }
+
         taskWorkerMap[task.id] = worker
         await worker.continueSession(task: task, message: message, modelContext: modelContext, onEvent: onEvent)
         taskWorkerMap.removeValue(forKey: task.id)
+    }
+
+    /// Execute a user-approved plan on the next available worker.
+    @MainActor
+    func executeApprovedPlan(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        mode: TaskPlanExecutionMode = .fullPlan,
+        modelContext: ModelContext,
+        onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async {
+        guard let worker = nextAvailableWorker() else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "pool_busy",
+                "mode": "approved_plan",
+                "pool_size": String(poolSize)
+            ], level: .warning)
+            return
+        }
+
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan") else {
+            return
+        }
+
+        activeTasks.insert(task.id)
+        taskWorkerMap[task.id] = worker
+        AppLogger.audit(.taskAssigned, category: "Queue", taskID: task.id, fields: [
+            "worker_index": String(workerIndex(worker) + 1),
+            "pool_size": String(poolSize),
+            "mode": "approved_plan",
+            "plan_execution_mode": mode.rawValue
+        ])
+
+        await worker.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext, onEvent: onEvent)
+
+        taskWorkerMap.removeValue(forKey: task.id)
+        activeTasks.remove(task.id)
+        AppLogger.audit(.workerExited, category: "Queue", taskID: task.id, fields: [
+            "worker_index": String(workerIndex(worker) + 1),
+            "status": task.status.rawValue,
+            "mode": "approved_plan",
+            "plan_execution_mode": mode.rawValue
+        ])
+    }
+
+    @MainActor
+    private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
+        do {
+            let folder = try task.ensureTaskFolder()
+            AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
+                "event": "task_folder_prepared",
+                "mode": mode,
+                "folder_available": String(!folder.isEmpty)
+            ], level: .debug)
+            return true
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id, fields: [
+                "reason": "task_folder_create_failed",
+                "mode": mode,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            task.status = .failed
+            let now = Date()
+            task.updatedAt = now
+            task.completedAt = now
+            task.markUnreadForCurrentStatus(at: now)
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "error",
+                payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
+            ))
+            try? modelContext.save()
+            return false
+        }
     }
 
     /// Process all queued tasks, dispatching to available workers in parallel.

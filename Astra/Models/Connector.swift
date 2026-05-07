@@ -161,22 +161,35 @@ final class Connector {
 
     /// Test the connection by hitting a known health endpoint.
     /// Returns (success, message) tuple.
-    func testConnection() async -> (Bool, String) {
+    func testConnection(
+        store: SecretStore = KeychainSecretStore(),
+        transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport()
+    ) async -> (Bool, String) {
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
             AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                 "connector_id": id.uuidString,
                 "service_type": serviceType,
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "missing_base_url"
             ], level: .warning)
             return (false, "No base URL configured")
         }
 
-        let creds = credentials
-        let missingKeys = missingCredentialKeys()
+        let creds = credentials(store: store)
+        let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
             AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                 "connector_id": id.uuidString,
                 "service_type": serviceType,
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "missing",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "missing_credentials",
                 "missing_count": String(missingKeys.count)
             ], level: .warning)
@@ -184,17 +197,40 @@ final class Connector {
         }
 
         let method = testHTTPMethod.isEmpty ? "GET" : testHTTPMethod.uppercased()
+        let normalizedServiceType = serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedServiceType == "jira" {
+            let outcome = await JiraConnectorAuthTester(
+                connectorID: id,
+                baseURL: base,
+                authMethod: authMethod,
+                credentials: creds,
+                config: config,
+                transport: transport
+            ).test()
+            AppLogger.audit(
+                .connectorTested,
+                category: "Keychain",
+                fields: outcome.auditFields(adding: [
+                    "connector_id": id.uuidString,
+                    "service_type": serviceType,
+                    "credential_key_count": String(credentialKeys.count),
+                    "connector_updated_at": Self.auditTimestamp(updatedAt)
+                ]),
+                level: outcome.level
+            )
+            return (outcome.success, outcome.message)
+        }
 
         let testPath: String
-        switch serviceType {
-        case "jira": testPath = "/rest/api/3/myself"
+        switch normalizedServiceType {
         case "github": testPath = "/user"
         case "slack": testPath = "/auth.test"
         case "confluence": testPath = "/rest/api/content?limit=1"
         default: testPath = ""
         }
 
-        let testURL = testPath.isEmpty ? base : base.appendingPathComponent(testPath)
+        let testURL = testPath.isEmpty ? base : ConnectorRequestBuilder.url(base: base, path: testPath)
         var request = URLRequest(url: testURL)
         request.httpMethod = method
         request.timeoutInterval = 10
@@ -207,43 +243,29 @@ final class Connector {
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.httpBody = "token=\(encodedToken)&content=version".data(using: .utf8)
         } else {
-            switch authMethod {
-            case "basic":
-                let email = creds.first { $0.key.contains("EMAIL") || $0.key.contains("USER") }?.value ?? ""
-                let token = creds.first { $0.key.contains("TOKEN") || $0.key.contains("PASSWORD") || $0.key.contains("KEY") }?.value ?? ""
-                if !email.isEmpty || !token.isEmpty {
-                    let combined = "\(email):\(token)"
-                    if let data = combined.data(using: .utf8) {
-                        request.setValue("Basic \(data.base64EncodedString())", forHTTPHeaderField: "Authorization")
-                    }
-                }
-            case "bearer":
-                let token = creds.first { $0.key.contains("TOKEN") || $0.key.contains("KEY") }?.value ?? ""
-                if !token.isEmpty {
-                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                }
-            case "api_key":
-                let token = creds.first?.value ?? ""
-                if !token.isEmpty {
-                    request.setValue(token, forHTTPHeaderField: "Authorization")
-                }
-            default:
-                break
-            }
+            ConnectorRequestBuilder.applyAuthentication(authMethod: authMethod, credentials: creds, to: &request)
             request.setValue("application/json", forHTTPHeaderField: "Accept")
         }
 
-        return await executeTestRequest(request)
+        return await executeTestRequest(request, transport: transport)
     }
 
-    private func executeTestRequest(_ request: URLRequest) async -> (Bool, String) {
+    private func executeTestRequest(
+        _ request: URLRequest,
+        transport: any ConnectorHTTPTransport
+    ) async -> (Bool, String) {
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await transport.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if (200...299).contains(http.statusCode) {
                     AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                         "connector_id": id.uuidString,
                         "service_type": serviceType,
+                        "credential_evidence": "connector_auth_v1",
+                        "credential_state": "authenticated",
+                        "auth_verified": "true",
+                        "credential_key_count": String(credentialKeys.count),
+                        "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "success",
                         "http_status": String(http.statusCode)
                     ])
@@ -252,6 +274,11 @@ final class Connector {
                     AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                         "connector_id": id.uuidString,
                         "service_type": serviceType,
+                        "credential_evidence": "connector_auth_v1",
+                        "credential_state": "rejected",
+                        "auth_verified": "false",
+                        "credential_key_count": String(credentialKeys.count),
+                        "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "auth_failed",
                         "http_status": String(http.statusCode)
                     ], level: .warning)
@@ -260,6 +287,11 @@ final class Connector {
                     AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                         "connector_id": id.uuidString,
                         "service_type": serviceType,
+                        "credential_evidence": "connector_auth_v1",
+                        "credential_state": "unknown",
+                        "auth_verified": "false",
+                        "credential_key_count": String(credentialKeys.count),
+                        "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "http_error",
                         "http_status": String(http.statusCode)
                     ], level: .warning)
@@ -269,6 +301,11 @@ final class Connector {
             AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                 "connector_id": id.uuidString,
                 "service_type": serviceType,
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "unknown_response"
             ], level: .warning)
             return (false, "Unknown response")
@@ -276,11 +313,20 @@ final class Connector {
             AppLogger.audit(.connectorTested, category: "Keychain", fields: [
                 "connector_id": id.uuidString,
                 "service_type": serviceType,
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "request_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .warning)
             return (false, error.localizedDescription)
         }
+    }
+
+    private static func auditTimestamp(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
     }
 
     /// Summary line for display

@@ -192,6 +192,33 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Plain Copilot approval prompt maps to workspace access permission")
+    func plainApprovalPromptMapsToPermission() {
+        let line = "Allow access to these paths? (y/n):"
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .permissionDenied(let tool, let reason) = parsed {
+            #expect(tool == "WorkspaceAccess")
+            #expect(reason.contains("Allow access"))
+            #expect(CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line))
+        } else {
+            Issue.record("Expected permission event")
+        }
+    }
+
+    @Test("Plain Copilot permission denial avoids unknown tool")
+    func plainPermissionDeniedAvoidsUnknownTool() {
+        let line = "Permission denied and could not request permission from user"
+        let parsed = CopilotStreamEventParser.parse(line: line)
+        if case .permissionDenied(let tool, let reason) = parsed {
+            #expect(tool == "ToolApproval")
+            #expect(!tool.isEmpty)
+            #expect(tool != "unknown")
+            #expect(reason.contains("Permission denied"))
+        } else {
+            Issue.record("Expected permission event")
+        }
+    }
+
     @Test("Usage event maps to result stats")
     func usageStats() {
         let line = #"{"type":"usage","usage":{"input_tokens":120,"output_tokens":30,"cost_usd":0.01},"duration_ms":500,"turns":2}"#
@@ -342,6 +369,21 @@ struct AgentRuntimeFailureDiagnosticsTests {
         #expect(diagnostic.redactedSummary.contains("[redacted-path]"))
     }
 
+    @Test("Classifies hidden Copilot approval prompts as permission denied")
+    func classifiesHiddenApprovalPrompt() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            exitCode: 15,
+            rawError: "Copilot is waiting for a permission approval ASTRA cannot answer directly: Allow access to these paths? (y/n):",
+            providerVersion: "GitHub Copilot CLI 0.0.342",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .permissionDenied)
+        #expect(diagnostic.userMessage.contains("approval prompt"))
+    }
+
     @Test("Includes stream counters in failure audit fields")
     func includesStreamCountersInAuditFields() {
         let telemetry = AgentRuntimeStreamTelemetry()
@@ -419,6 +461,28 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.arguments.contains("--allow-all-tools"))
         #expect(!plan.arguments.contains("--allow-all-paths"))
         #expect(!plan.arguments.contains("--output-format=json"))
+    }
+
+    @Test("Autonomous mode uses allow-all when the CLI supports it")
+    func autonomousUsesAllowAllWhenSupported() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all-tools"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Do work",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home"
+        )
+
+        #expect(plan.arguments.contains("--allow-all-tools"))
+        #expect(!plan.arguments.contains("--allow-tool"))
     }
 
     @Test("Restricted permissions map common Claude tools")
@@ -693,6 +757,138 @@ struct CopilotWorkerExecutionTests {
         #expect(errorEvent.payload.contains("Provider error:"))
         #expect(!errorEvent.payload.contains("sk-test-secret"))
         #expect(!errorEvent.payload.contains("person@example.invalid"))
+    }
+
+    @Test("Approved plan precreates relative task folder before Copilot launch")
+    func approvedPlanPrecreatesRelativeTaskFolder() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-plan-folder-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        prompt=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--prompt" ]; then
+            shift
+            prompt="$1"
+          fi
+          shift || true
+        done
+        task_folder="$(printf '%s\\n' "$prompt" | sed -n 's/^Task Output Folder: //p' | head -n 1)"
+        if [ -z "$task_folder" ] || [ ! -d "$task_folder" ]; then
+          printf 'missing task folder: %s\\n' "$task_folder" >&2
+          exit 2
+        fi
+        printf 'artifact\\n' > "$task_folder/index.html"
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"created plan artifact"}}'
+        printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Plan", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Execute plan", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        let plan = TaskPlanPayload(
+            title: "Write artifact",
+            goal: "Create one HTML file",
+            steps: [TaskPlanPayloadStep(id: "write", title: "Write HTML", likelyTools: ["Write"])]
+        )
+        await worker.executeApprovedPlan(task: task, plan: plan, modelContext: context) { _ in }
+
+        #expect(task.status == .completed)
+        #expect(FileManager.default.fileExists(atPath: task.taskFolder))
+        #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("outputs")))
+        #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("index.html")))
+    }
+
+    @Test("Worker fails fast when Copilot waits for hidden permission prompt")
+    func copilotHiddenPermissionPromptFailsFast() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-permission-prompt-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        /usr/bin/python3 -u - <<'PY'
+        import sys
+        import time
+        print('The following paths are outside the allowed directories:', flush=True)
+        print('  - /Users/example/Documents/Astra\\\\', flush=True)
+        print('Allow access to these paths? (y/n):', flush=True)
+        time.sleep(20)
+        PY
+        exit $?
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Prompt", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Trigger permission prompt", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .failed)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "failed")
+        #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
+        let errorEvent = try #require(task.events.first { $0.type == "error" })
+        #expect(errorEvent.payload.contains("approval prompt ASTRA could not answer"))
     }
 
     @discardableResult

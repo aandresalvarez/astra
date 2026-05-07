@@ -106,6 +106,47 @@ struct TaskRuntimeHealthTests {
 
         #expect(health.state == .notRunning)
     }
+
+    @Test("Recent plan step activity is active")
+    func recentPlanStepActivityIsActive() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let fixture = SnapshotFixture(now: now)
+        fixture.addEvent(
+            type: "plan.step.started",
+            payload: #"{"v":1,"type":"plan.step.started","stepID":"step-1","status":"running"}"#,
+            secondsAgo: 20
+        )
+
+        let health = TaskRuntimeHealth.evaluate(
+            taskStatus: .running,
+            snapshot: fixture.snapshot(),
+            now: now
+        )
+
+        #expect(health.state == .active)
+        #expect(health.message == "Working on a plan step...")
+    }
+
+    @Test("Blocked plan step without later activity becomes possibly stalled")
+    func blockedPlanStepPossiblyStalled() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let fixture = SnapshotFixture(now: now)
+        fixture.addEvent(
+            type: "plan.step.blocked",
+            payload: #"{"v":1,"type":"plan.step.blocked","stepID":"step-2","status":"blocked","reason":"Need approval"}"#,
+            secondsAgo: 420
+        )
+
+        let health = TaskRuntimeHealth.evaluate(
+            taskStatus: .running,
+            snapshot: fixture.snapshot(),
+            now: now
+        )
+
+        #expect(health.state == .possiblyStalled)
+        #expect(health.message == "Plan step step-2 is blocked")
+        #expect(health.detail?.contains("7m") == true)
+    }
 }
 
 private final class SnapshotFixture {

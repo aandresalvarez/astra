@@ -114,7 +114,7 @@ struct SchedulePropertyTests {
         let schedule = TaskSchedule(name: "Daily Tickets", goal: "Review assigned Jira tickets")
         schedule.templateVariables = ["project": "SUPPORT"]
         schedule.routineDescription = "Daily support triage"
-        schedule.routinePaths = ["/tmp/support-docs", "/tmp/support-docs", "  "]
+        schedule.routinePaths = ["/tmp/support-docs", "/tmp/support-docs", "docs", "  "]
 
         #expect(schedule.routineDescription == "Daily support triage")
         #expect(schedule.routineInstructions == "Review assigned Jira tickets")

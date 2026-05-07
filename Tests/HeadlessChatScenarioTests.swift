@@ -213,6 +213,413 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Approved plan execution records runtime step progress")
+    func approvedPlanExecutionRecordsStepProgress() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Headless plan",
+            goal: "Execute one planned step",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Inspect", likelyTools: ["Read"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.started\\",\\"stepID\\":\\"step-1\\"}\\n"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan executed"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(task.runs.first?.output == "Plan executed")
+        #expect(state.lifecycleStatus == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+        #expect(task.events.contains { $0.type == "plan.execution.started" })
+        #expect(task.events.contains { $0.type == "plan.execution.completed" })
+        #expect(task.events.contains { $0.type == "plan.step.started" })
+        #expect(task.events.contains { $0.type == "plan.step.completed" })
+    }
+
+    @Test("Approved plan execution records failure lifecycle on failure")
+    func approvedPlanExecutionRecordsFailureLifecycleOnFailure() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Failing plan",
+            goal: "Fail during execution",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Run")
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"error","message":"provider failed"}'
+            exit 1
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .failed)
+        #expect(state.lifecycleStatus == .failed)
+        #expect(task.events.contains { $0.type == "plan.execution.failed" })
+        #expect(!task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Approved plan execution uses explicit approval for Copilot Review mode")
+    func approvedPlanExecutionUsesExplicitApprovalForCopilotReviewMode() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("review-plan-args.txt")
+        let plan = TaskPlanPayload(
+            title: "Review plan",
+            goal: "Execute in review mode",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Verify artifact", likelyTools: ["Read"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"review plan executed"}}'
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(args.contains("--allow-all-tools"))
+        #expect(!args.contains("--allow-tool"))
+        #expect(args.contains("ASTRA review mode approved only the next plan step"))
+        #expect(args.contains("Execute exactly this approved step and stop: step-1"))
+        #expect(args.contains("Do not execute later plan steps"))
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.first?.output == "review plan executed")
+        #expect(state.lifecycleStatus == .executing)
+        #expect(state.plan?.steps.first(where: { $0.id == "step-1" })?.status == .done)
+        #expect(state.plan?.steps.first(where: { $0.id == "step-2" })?.status == .pending)
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Review the next step") })
+        #expect(!task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Review mode executes the next unfinished plan step on each approval")
+    func reviewModeExecutesNextUnfinishedPlanStepOnEachApproval() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("review-next-step-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("review-next-step-count.txt")
+        let plan = TaskPlanPayload(
+            title: "Two step review plan",
+            goal: "Execute one approved step at a time",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Verify artifact", likelyTools: ["Read"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+                count=$((count + 1))
+                printf '%s' "$count" > \(Self.shQuote(countFile.path))
+                printf '%s\\n' "{\\"sessionUpdate\\":\\"agent_message_chunk\\",\\"content\\":{\\"type\\":\\"text\\",\\"text\\":\\"review step $count executed\\"}}"
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+        #expect(task.status == .pendingUser)
+
+        let stateAfterFirstStep = TaskPlanService.reconstruct(for: task)
+        let currentPlan = try #require(stateAfterFirstStep.plan)
+        _ = await harness.executeApprovedPlan(task: task, plan: currentPlan, worker: worker, mode: .nextStep)
+
+        let finalState = TaskPlanService.reconstruct(for: task)
+        let secondPromptArgs = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(secondPromptArgs.contains("Execute exactly this approved step and stop: step-2"))
+        #expect(task.status == .completed)
+        #expect(task.runs.count == 2)
+        #expect(finalState.lifecycleStatus == .completed)
+        #expect(finalState.plan?.steps.allSatisfy { $0.status == .done } == true)
+        #expect(task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Review mode preserves blocked plan steps for user approval")
+    func reviewModePreservesBlockedPlanStepForUserApproval() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let planID = UUID(uuidString: "73EF73A8-433C-485E-8E76-91881D1D3798")!
+        let plan = TaskPlanPayload(
+            planID: planID,
+            title: "Blocked review plan",
+            goal: "Stop when blocked",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Verify artifact", likelyTools: ["Read"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"planID\\":\\"\(planID.uuidString)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Needs credentials\\"}\\n"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Need credentials before continuing."}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .pendingUser)
+        #expect(state.lifecycleStatus == .executing)
+        #expect(state.plan?.steps.first(where: { $0.id == "step-1" })?.status == .blocked)
+        #expect(state.plan?.steps.first(where: { $0.id == "step-2" })?.status == .pending)
+        #expect(!task.events.contains { $0.type == "plan.step.completed" && $0.payload.contains("step-1") })
+        #expect(!task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Approved plan execution keeps Auto mode autonomous for Copilot")
+    func approvedPlanExecutionKeepsAutoModeAutonomousForCopilot() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("auto-plan-args.txt")
+        let plan = TaskPlanPayload(
+            title: "Auto plan",
+            goal: "Execute in auto mode",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Verify artifact", likelyTools: ["Read"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"auto plan executed"}}'
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(args.contains("--allow-all-tools"))
+        #expect(!args.contains("--allow-tool"))
+        #expect(args.contains("ASTRA auto mode approved the full plan"))
+        #expect(args.contains("Execute the remaining approved plan steps"))
+        #expect(task.status == .completed)
+        #expect(task.runs.first?.output == "auto plan executed")
+    }
+
+    @Test("Approved plan execution records step progress with Claude")
+    func approvedPlanExecutionRecordsStepProgressWithClaude() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Claude plan",
+            goal: "Execute one planned step with Claude",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Inspect", likelyTools: ["Read"])
+            ]
+        )
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-plan-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.started\\",\\"stepID\\":\\"step-1\\"}\\n"}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude plan executed"}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude plan executed","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: plan.goal, model: "claude-sonnet-4-6")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(task.sessionId == "claude-plan-session")
+        #expect(task.runs.first?.output == "Claude plan executed")
+        #expect(state.lifecycleStatus == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+        #expect(task.events.contains { $0.type == "plan.step.started" })
+        #expect(task.events.contains { $0.type == "plan.step.completed" })
+    }
+
+    @Test("Plan mode can be approved and executed after an existing chat turn")
+    func planModeCanExecuteAfterExistingChatTurn() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let countFile = harness.rootURL.appendingPathComponent("plan-call-count.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Initial chat answer"}}'
+            else
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Approved plan executed"}}'
+            fi
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":5,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let plan = TaskPlanPayload(
+            title: "Mid-thread plan",
+            goal: "Execute a plan after chat context exists",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Apply plan", likelyTools: ["Write"])
+            ]
+        )
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Start normally", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(runs.count == 2)
+        #expect(runs[0].output == "Initial chat answer")
+        #expect(runs[1].output == "Approved plan executed")
+        #expect(task.status == .completed)
+        #expect(state.lifecycleStatus == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+    }
+
+    @Test("Approved plan permission prompts fail fast instead of timing out")
+    func approvedPlanPermissionPromptFailsFastInsteadOfTimingOut() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Prompt plan",
+            goal: "Trigger a hidden permission prompt",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write outside workspace", likelyTools: ["Write"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            /usr/bin/python3 -u - <<'PY'
+            import time
+            print('The following paths are outside the allowed directories:', flush=True)
+            print('  - /Users/example/Documents/Astra\\\\', flush=True)
+            print('Allow access to these paths? (y/n):', flush=True)
+            time.sleep(20)
+            PY
+            exit $?
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let run = try #require(task.runs.first)
+        let errorEvent = try #require(task.events.first { $0.type == "error" })
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "failed")
+        #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
+        #expect(errorEvent.payload.contains("approval prompt ASTRA could not answer"))
+        #expect(!errorEvent.payload.contains("idle timeout"))
+    }
+
     @Test("Changing runtime from Claude to Copilot starts a clean provider run")
     func changingRuntimeFromClaudeToCopilotStartsCleanProviderRun() async throws {
         let harness = try HeadlessChatHarness()
@@ -439,6 +846,20 @@ private final class HeadlessChatHarness {
     func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
         await worker.continueSession(task: task, message: message, modelContext: context) { event in
+            events.append(event)
+        }
+        try? context.save()
+        return events
+    }
+
+    func executeApprovedPlan(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        worker: AgentRuntimeWorker,
+        mode: TaskPlanExecutionMode = .fullPlan
+    ) async -> [ParsedEvent] {
+        var events: [ParsedEvent] = []
+        await worker.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: context) { event in
             events.append(event)
         }
         try? context.save()

@@ -142,7 +142,9 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         }
         if containsAny(haystack, [
             "forbidden", "http 403", "status 403", "disabled by organization",
-            "not enabled for this organization", "policy", "permission denied", "access denied"
+            "not enabled for this organization", "policy", "permission denied", "access denied",
+            "permission approval", "approval prompt", "allow access to these paths",
+            "outside the allowed directories"
         ]) {
             return .permissionDenied
         }
@@ -180,7 +182,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         case .providerConfigurationInvalid:
             return "\(runtime.displayName) has an invalid or incomplete provider configuration for model `\(model)`."
         case .permissionDenied:
-            return "\(runtime.displayName) was denied access by account, organization, or runtime policy."
+            return "\(runtime.displayName) was denied access by account, organization, runtime policy, or a CLI approval prompt ASTRA could not answer."
         case .unsupportedOutputFormat:
             return "\(runtime.displayName) did not accept ASTRA's streaming/output-format arguments. Update the CLI or use a supported runtime version."
         case .networkFailed:
