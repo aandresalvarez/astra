@@ -319,7 +319,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Security",
             tags: ["security", "audit", "owasp", "vulnerabilities"],
-            version: "2.0.0",
+            version: "2.0.1",
             setupGuide: """
             Assign this skill to audit your codebase for security issues. \
             The agent scans for OWASP Top 10 vulnerabilities, hardcoded \
@@ -394,7 +394,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.0",
+            version: "2.0.2",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to interact with your Jira instance directly.
@@ -425,9 +425,13 @@ final class PluginCatalog {
                 AUTHENTICATION
                 Use Basic auth with the JIRA_EMAIL and JIRA_API_TOKEN environment variables:
                 curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json" "$JIRA_BASE_URL/rest/api/3/..."
+                First verify auth with /rest/api/3/myself. If /myself returns 401/403, stop and tell the user the Jira connector credentials are not authenticating.
+                Do not treat /rest/api/3/myself as the only auth check. Prefer /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS, and for configured projects check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS,CREATE_ISSUES. If permissions authenticate but project checks fail, report project visibility or CREATE_ISSUES problems instead of saying the token is invalid.
+                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.
+                Only recommend generating a new API token when the Jira auth probes themselves return 401/403. If permissions authenticate but searches return zero projects or issues, first check JIRA_PROJECTS, Browse Projects, Create Issues, and site/project membership.
 
                 COMMON OPERATIONS
-                • Search: GET /rest/api/3/search?jql=project=KEY+AND+status!=Done&maxResults=20
+                • Search: GET /rest/api/3/search/jql?jql=project=KEY+AND+status!=Done&maxResults=20
                 • Get issue: GET /rest/api/3/issue/{KEY-123}
                 • Create issue: POST /rest/api/3/issue with {"fields":{"project":{"key":"..."},"summary":"...","issuetype":{"name":"Task"}}}
                 • Update fields: PUT /rest/api/3/issue/{KEY-123}

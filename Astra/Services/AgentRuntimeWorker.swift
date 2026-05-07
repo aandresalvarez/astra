@@ -159,6 +159,16 @@ final class AgentRuntimeWorker {
         )
         modelContext.insert(startEvent)
 
+        guard await preflightConnectorsBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: "run",
+            contextText: task.goal
+        ) else {
+            return
+        }
+
         // Verify CLI exists
         guard FileManager.default.isExecutableFile(atPath: claudePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -659,6 +669,16 @@ final class AgentRuntimeWorker {
         let userEvent = TaskEvent(task: task, type: "user.message", payload: message, run: run)
         modelContext.insert(userEvent)
 
+        guard await preflightConnectorsBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: "resume",
+            contextText: message
+        ) else {
+            return
+        }
+
         // Build a fresh prompt with session history instead of --resume (which resends full conversation).
         // This cuts input tokens by ~90% on follow-ups.
         let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
@@ -861,6 +881,16 @@ final class AgentRuntimeWorker {
         let startPayload = startEventPayload ?? "Copilot started working on: \(task.goal)"
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
+
+        guard await preflightConnectorsBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            contextText: promptOverride ?? startPayload
+        ) else {
+            return
+        }
 
         let copilotPath = runtimeConfiguration.resolvedCopilotPath()
         guard FileManager.default.isExecutableFile(atPath: copilotPath) else {
@@ -1289,10 +1319,79 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
+    private func preflightConnectorsBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String
+    ) async -> Bool {
+        let fullContext = [
+            task.goal,
+            task.title,
+            contextText
+        ].joined(separator: "\n")
+        let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
+            from: TaskCapabilityResolver(task: task).allConnectors,
+            contextText: fullContext
+        )
+        guard let issue = await ConnectorPreflightService.firstBlockingIssue(
+            connectors: connectors,
+            contextText: fullContext
+        ) else {
+            return true
+        }
+
+        var fields = issue.auditFields
+        fields["phase"] = phase
+        AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
+
+        let message = """
+        \(issue.connectorName) connector check failed before the agent ran:
+
+        \(issue.message)
+
+        Fix this connector in Manage Capabilities, then retry the task. ASTRA stopped here so the agent does not guess about Jira permissions from partial API results.
+        """
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "connector_preflight_failed",
+            payload: message
+        )
+        return false
+    }
+
+    @MainActor
+    private func finishPreLaunchFailure(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        reason: String,
+        payload: String
+    ) {
+        run.status = .failed
+        run.stopReason = reason
+        run.completedAt = Date()
+        task.status = .failed
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+        modelContext.insert(event)
+        AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            "reason": reason
+        ], level: .error)
+        try? modelContext.save()
+        isRunning = false
+    }
+
+    @MainActor
     private static func logCapabilityResolution(for task: AgentTask, runtime: AgentRuntimeID, phase: String) {
         let resolver = TaskCapabilityResolver(task: task)
         let connectors = resolver.allConnectors
         let tools = resolver.allLocalTools
+        let skills = resolver.allBehaviorSkills
         AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
             "runtime": runtime.rawValue,
             "phase": phase,
@@ -1303,9 +1402,11 @@ final class AgentRuntimeWorker {
             "workspace_enabled_global_tools_count": String(task.workspace?.enabledGlobalToolIDs.count ?? 0),
             "task_skill_count": String(task.skills.count),
             "task_skill_snapshot_count": String(task.skillSnapshots.count),
+            "resolved_skill_count": String(skills.count),
             "connector_count": String(connectors.count),
             "local_tool_count": String(tools.count),
             "skill_names": compactNames(task.skills.map(\.name)),
+            "resolved_skill_names": compactNames(skills.map(\.name)),
             "connector_names": compactNames(connectors.map(\.name)),
             "local_tool_names": compactNames(tools.map(\.name))
         ], level: .debug)

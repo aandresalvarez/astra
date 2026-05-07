@@ -12,6 +12,8 @@ struct TaskCapabilityResolver {
     var resolver: SkillResolver {
         let standaloneTools = allLocalTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
+        let liveConnectors = allConnectors
+        let liveSkills = allBehaviorSkills(connectors: liveConnectors)
 
         let liveCLICommands = Set(
             allLocalTools
@@ -20,14 +22,14 @@ struct TaskCapabilityResolver {
         )
 
         var liveEnvVars: [String: String] = [:]
-        for skill in task.skills {
+        for skill in liveSkills {
             for (key, value) in skill.environmentVariables {
                 liveEnvVars[key] = value
             }
         }
 
         var connEnvVars: [String: String] = [:]
-        for connector in allConnectors {
+        for connector in liveConnectors {
             for (key, value) in connector.allEnvironmentVariables {
                 connEnvVars[key] = value
             }
@@ -41,6 +43,21 @@ struct TaskCapabilityResolver {
             liveSkillEnvVars: liveEnvVars,
             connectorEnvVars: connEnvVars
         )
+    }
+
+    var allBehaviorSkills: [Skill] {
+        allBehaviorSkills(connectors: allConnectors)
+    }
+
+    private func allBehaviorSkills(connectors: [Connector]) -> [Skill] {
+        var combined = task.skills
+        for connector in connectors {
+            guard let skill = connector.skill else { continue }
+            combined.append(skill)
+        }
+
+        var seen = Set<UUID>()
+        return combined.filter { seen.insert($0.id).inserted }
     }
 
     var allConnectors: [Connector] {
@@ -85,7 +102,7 @@ struct TaskCapabilityResolver {
     }
 
     private var effectiveSkillSnapshots: [SkillSnapshotConfig] {
-        let liveSnapshots = task.skills.map(SkillSnapshotConfig.init(skill:))
+        let liveSnapshots = allBehaviorSkills.map(SkillSnapshotConfig.init(skill:))
         guard !task.skillSnapshots.isEmpty else { return liveSnapshots }
         guard !liveSnapshots.isEmpty else { return task.skillSnapshots }
 
@@ -109,10 +126,11 @@ struct TaskCapabilityResolver {
 
     private var detachedSkillSnapshots: [SkillSnapshotConfig] {
         guard !task.skillSnapshots.isEmpty else { return [] }
-        guard !task.skills.isEmpty else { return task.skillSnapshots }
+        let liveSkills = allBehaviorSkills
+        guard !liveSkills.isEmpty else { return task.skillSnapshots }
 
-        let liveIDs = Set(task.skills.map { $0.id.uuidString })
-        let liveNames = Set(task.skills.map { $0.name.lowercased() })
+        let liveIDs = Set(liveSkills.map { $0.id.uuidString })
+        let liveNames = Set(liveSkills.map { $0.name.lowercased() })
 
         return task.skillSnapshots.filter { snapshot in
             if let id = snapshot.id, liveIDs.contains(id) {
