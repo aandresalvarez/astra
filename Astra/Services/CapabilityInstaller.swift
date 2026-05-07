@@ -266,6 +266,9 @@ struct CapabilityInstaller {
         connector.isGlobal = true
         connector.workspace = nil
         connector.updatedAt = Date()
+        if connector.isStanfordOutlookMail {
+            connector.applyStanfordOutlookDefaults()
+        }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
                 connector.saveCredential(key: hint.key, value: value)
@@ -317,6 +320,9 @@ struct CapabilityInstaller {
         connector.workspace = workspace
         connector.skill = nil
         connector.updatedAt = Date()
+        if connector.isStanfordOutlookMail {
+            connector.applyStanfordOutlookDefaults()
+        }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
                 connector.saveCredential(key: hint.key, value: value)

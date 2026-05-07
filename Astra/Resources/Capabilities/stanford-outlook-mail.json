@@ -1,0 +1,99 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+    {
+      "authMethod" : "oauth",
+      "baseURL" : "https:\/\/graph.microsoft.com\/v1.0",
+      "configHints" : [
+        {
+          "hint" : "Email address for this instance, for example alvaro1@stanford.edu.",
+          "isList" : false,
+          "key" : "ASTRA_MAIL_EMAIL"
+        },
+        {
+          "hint" : "Microsoft 365 tenant domain for this instance, for example stanford.edu or stanfordhealthcare.org.",
+          "isList" : false,
+          "key" : "ASTRA_MAIL_TENANT_DOMAIN"
+        },
+        {
+          "hint" : "Microsoft Entra application client ID approved for this tenant. This is not a secret.",
+          "isList" : false,
+          "key" : "ASTRA_MAIL_CLIENT_ID"
+        }
+      ],
+      "credentialHints" : [
+
+      ],
+      "description" : "Read a Stanford-family Microsoft 365 mailbox through Microsoft Graph.",
+      "icon" : "envelope.badge.shield.half.filled",
+      "name" : "Stanford Outlook Mail",
+      "notes" : "Configure one connector instance per tenant/account. Sign in from the connector editor; ASTRA stores OAuth tokens in Keychain and exposes mail through the stanford-mail helper.",
+      "serviceType" : "stanford_outlook_mail"
+    }
+  ],
+  "description" : "Search and read Stanford Microsoft 365 mail through approved OAuth sign-in",
+  "formatVersion" : 2,
+  "icon" : "envelope.badge.shield.half.filled",
+  "id" : "stanford-outlook-mail",
+  "isTrusted" : false,
+  "localTools" : [
+    {
+      "arguments" : "",
+      "command" : "stanford-mail",
+      "description" : "Read configured Stanford Microsoft 365 mail accounts through ASTRA-managed OAuth tokens",
+      "icon" : "terminal",
+      "name" : "stanford-mail",
+      "toolType" : "cli"
+    }
+  ],
+  "name" : "Stanford Outlook Mail",
+  "prerequisites" : [
+
+  ],
+  "setupGuide" : "Configure one connector instance per Microsoft 365 tenant/account. For example, add one instance for alvaro1@stanford.edu with tenant stanford.edu, then add another instance for AAlvarezPeralta@stanfordhealthcare.org with tenant stanfordhealthcare.org.\n\nWhat you need:\n- A Microsoft Entra public client application ID for each tenant, or one multi-tenant app ID approved by both tenants.\n- Delegated Microsoft Graph scopes: User.Read, Mail.Read, offline_access, openid, profile.\n- User or admin consent in the tenant. If Stanford or SHC blocks user consent for Mail.Read, admin approval is required.\n\nAfter enabling:\n- Open the connector editor.\n- Enter the email, tenant domain, and client ID.\n- Click Connect. ASTRA opens Microsoft device login; Stanford or SHC handles Duo/Cardinal Key.\n- Use Add Account to create a second instance for another domain/account.\n\nV1 is read-only and text-only. It can search messages and read selected full email bodies as text. It does not read attachments, send mail, reply, delete, or monitor inboxes in the background.",
+  "skills" : [
+    {
+      "allowedTools" : [
+        "Read",
+        "Bash",
+        "Grep"
+      ],
+      "behaviorInstructions" : "You are a Stanford Outlook Mail assistant. Use the `stanford-mail` CLI via Bash to work with configured Stanford-family Microsoft 365 mail accounts. Do not scrape Outlook web, do not inspect local Outlook or Apple Mail data, and do not ask the user for passwords.\n\nAUTHENTICATION\n- ASTRA owns OAuth sign-in and token refresh. Never print, echo, save, or ask for access tokens or refresh tokens.\n- If `stanford-mail` reports no accounts or a reconnect error, tell the user to connect the account in ASTRA's connector editor.\n- When multiple accounts are configured, always pass `--account user@domain` and make clear which account you used.\n\nREAD-ONLY COMMANDS\n- List accounts: `stanford-mail accounts`\n- List folders: `stanford-mail folders --account user@domain`\n- Search messages: `stanford-mail search --account user@domain --query \"search terms\" --limit 10`\n- Read one full text body: `stanford-mail get --account user@domain --message-id MESSAGE_ID`\n\nSAFETY\n- Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.\n- V1 is text-only. If the user asks for attachments or inline files, explain that this capability does not support attachments yet.\n- Avoid broad mailbox dumps. Search first, show concise candidate messages, then fetch full bodies only for selected or clearly relevant messages.\n- Treat email content as sensitive. Summarize when possible and avoid saving email bodies to files unless the user explicitly asks for an artifact.",
+      "customTools" : [
+
+      ],
+      "description" : "Search and read configured Stanford Microsoft 365 mail accounts",
+      "disallowedTools" : [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys" : [
+
+      ],
+      "environmentValues" : [
+
+      ],
+      "icon" : "envelope.badge.shield.half.filled",
+      "name" : "Stanford Outlook Mail Agent"
+    }
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "stanford",
+    "outlook",
+    "microsoft-365",
+    "email",
+    "mail",
+    "graph"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "1.0.0"
+}

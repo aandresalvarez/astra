@@ -25,7 +25,8 @@ let package = Package(
             resources: [
                 .process("Assets.xcassets"),
                 .copy("Resources/AppIcon.icns"),
-                .copy("Resources/Capabilities")
+                .copy("Resources/Capabilities"),
+                .copy("Resources/Tools")
             ]
         ),
         .executableTarget(

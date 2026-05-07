@@ -19,7 +19,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String) -> Void
     ) async -> AgentProcessResult {
-        let taskEnv = task.resolvedEnvironmentVariables
+        let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let allowed = task.resolvedClaudeAllowedTools
         let tokenBudget = Self.tokenBudget(for: task)
 
@@ -168,7 +168,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let taskEnv = task.resolvedEnvironmentVariables
+        let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let allowed = allowedToolsOverride ?? task.resolvedClaudeAllowedTools
         let tokenBudget = task.tokenBudget == 0 ? Int.max : task.tokenBudget
 
@@ -199,7 +199,8 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 capabilities: capabilities,
                 taskEnvironment: taskEnv,
-                copilotHome: copilotHome
+                copilotHome: copilotHome,
+                includeAstraToolsPath: Self.hasActiveCLITools(task)
             )
 
             AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: task.id, fields: [
@@ -387,7 +388,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String) -> Void
     ) async -> AgentProcessResult {
-        let taskEnv = task.resolvedEnvironmentVariables
+        let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let allowed = task.resolvedClaudeAllowedTools
         let baseBudget = task.tokenBudget
         let remainingBudget = baseBudget == 0 ? Int.max : max(1000, baseBudget - task.tokensUsed)
@@ -565,7 +566,11 @@ final class AgentRuntimeProcessRunner {
         includeClaudeTeamFlag: Bool
     ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
+        var pathSuffix = RuntimePathResolver.shellPathSuffix
+        if hasActiveCLITools(task) {
+            pathSuffix += ":\(RuntimePathResolver.astraToolsPath)"
+        }
+        env["PATH"] = (env["PATH"] ?? "") + ":\(pathSuffix)"
         if includeClaudeTeamFlag {
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         }
@@ -579,6 +584,29 @@ final class AgentRuntimeProcessRunner {
             ])
         }
         return env
+    }
+
+    @MainActor
+    private static func scopedEnvironmentVariables(for task: AgentTask) -> [String: String] {
+        var taskEnv = task.resolvedEnvironmentVariables
+        if hasStanfordOutlookMailAccess(task) {
+            taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
+            taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
+        }
+        return taskEnv
+    }
+
+    @MainActor
+    private static func hasActiveCLITools(_ task: AgentTask) -> Bool {
+        task.allLocalTools.contains { tool in
+            tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    @MainActor
+    private static func hasStanfordOutlookMailAccess(_ task: AgentTask) -> Bool {
+        task.allConnectors.contains { $0.isStanfordOutlookMail } ||
+            task.allLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     private static func ensureSubAgentPermissions(

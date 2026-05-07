@@ -226,6 +226,7 @@ public struct ASTRAApp: App {
         AppLogger.audit(.appActivated, category: "App")
 
         let schema = ASTRASchema.current
+        BundledToolInstaller.installBundledTools(bundle: resourceBundle)
 
         // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })

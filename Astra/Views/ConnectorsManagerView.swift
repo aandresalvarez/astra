@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 
 struct ConnectorsManagerView: View {
     var workspace: Workspace
@@ -128,6 +129,11 @@ struct ConnectorEditorView: View {
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
+    @State private var oauthDeviceCode: MicrosoftDeviceCodeResponse?
+    @State private var oauthStatus = ""
+    @State private var isOAuthSigningIn = false
+    @State private var oauthSignInTask: Task<Void, Never>?
+    @State private var oauthSignInGeneration = UUID()
     @FocusState private var isNameFocused: Bool
 
     private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
@@ -163,14 +169,14 @@ struct ConnectorEditorView: View {
 
                         HStack(spacing: 12) {
                             Picker("Type", selection: $connector.serviceType) {
-                                ForEach(["jira", "github", "slack", "database", "rest_api", "confluence", "redcap", "custom"], id: \.self) { t in
+                                ForEach(["jira", "github", "slack", "database", "rest_api", "confluence", "redcap", "stanford_outlook_mail", "custom"], id: \.self) { t in
                                     Text(Self.serviceLabel(t)).tag(t)
                                 }
                             }
                             .frame(width: 200)
 
                             Picker("Auth", selection: $connector.authMethod) {
-                                ForEach(["none", "basic", "bearer", "api_key"], id: \.self) { a in
+                                ForEach(Self.authMethods(for: connector.serviceType), id: \.self) { a in
                                     Text(a.replacingOccurrences(of: "_", with: " ").capitalized).tag(a)
                                 }
                             }
@@ -225,9 +231,11 @@ struct ConnectorEditorView: View {
                             }
                         }
                         .disabled(
+                            isTesting ||
                             connector.baseURL.isEmpty ||
-                            (connector.authMethod != "none" && connector.credentialKeys.isEmpty) ||
-                            isTesting
+                            (connector.isStanfordOutlookMail
+                                ? !connector.hasOutlookRefreshToken
+                                : (connector.authMethod != "none" && connector.credentialKeys.isEmpty))
                         )
                         .buttonStyle(.borderedProminent)
                         .tint(Stanford.paloAltoGreen)
@@ -254,6 +262,10 @@ struct ConnectorEditorView: View {
                     .padding(.vertical, 4)
                 } label: {
                     Label("Connectivity", systemImage: "network")
+                }
+
+                if connector.isStanfordOutlookMail {
+                    outlookMailOAuthSection
                 }
 
                 // Configuration (non-secret)
@@ -589,6 +601,7 @@ struct ConnectorEditorView: View {
                 HStack {
                     Spacer()
                     Button(role: .destructive) {
+                        cancelOutlookSignIn()
                         onDelete()
                     } label: {
                         Label("Delete Connector", systemImage: "trash")
@@ -597,17 +610,278 @@ struct ConnectorEditorView: View {
             }
             .padding()
         }
-        .onAppear { if connector.name == "New Connector" { isNameFocused = true } }
+        .onAppear {
+            if connector.name == "New Connector" {
+                isNameFocused = true
+            }
+            normalizeAuthMethodForCurrentService()
+        }
         .onChange(of: connector.serviceType) { _, newType in
             applyServiceDefaults(for: newType)
         }
         .onDisappear {
+            cancelOutlookSignIn()
             connector.updatedAt = Date()
             WorkspacePersistenceCoordinator.flushPendingExport(
                 workspace: workspace ?? connector.workspace,
                 modelContext: modelContext
             )
         }
+    }
+
+    private var outlookMailOAuthSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Each account/domain is configured as a separate connector instance. Sign-in opens Microsoft device login, where Stanford or SHC handles Duo.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Email address", text: configBinding(StanfordOutlookMail.emailKey))
+                        .textFieldStyle(.roundedBorder)
+                        .font(Stanford.ui(13, design: .monospaced))
+
+                    TextField("Tenant domain (stanford.edu or stanfordhealthcare.org)", text: configBinding(StanfordOutlookMail.tenantDomainKey))
+                    .textFieldStyle(.roundedBorder)
+                    .font(Stanford.ui(13, design: .monospaced))
+
+                    TextField("Microsoft Entra client ID", text: configBinding(StanfordOutlookMail.clientIDKey))
+                        .textFieldStyle(.roundedBorder)
+                        .font(Stanford.ui(13, design: .monospaced))
+                }
+
+                HStack(spacing: 8) {
+                    Label(
+                        connector.hasOutlookRefreshToken ? "Signed in" : "Not signed in",
+                        systemImage: connector.hasOutlookRefreshToken ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
+                    )
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(connector.hasOutlookRefreshToken ? Stanford.paloAltoGreen : Stanford.poppy)
+
+                    if !connector.outlookDisplayName.isEmpty {
+                        Text(connector.outlookDisplayName)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+                }
+
+                if let oauthDeviceCode {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("Code")
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.secondary)
+                            Text(oauthDeviceCode.userCode)
+                                .font(Stanford.mono(16).weight(.semibold))
+                                .textSelection(.enabled)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(oauthDeviceCode.userCode, forType: .string)
+                            }
+                            .controlSize(.small)
+                        }
+
+                        Text(oauthDeviceCode.message)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(10)
+                    .background(Stanford.lagunita.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if !oauthStatus.isEmpty {
+                    Text(oauthStatus)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        startOutlookSignIn()
+                    } label: {
+                        if isOAuthSigningIn {
+                            HStack(spacing: 5) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Waiting for Sign-In")
+                            }
+                        } else {
+                            Label(connector.hasOutlookRefreshToken ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
+                        }
+                    }
+                    .disabled(isOAuthSigningIn || connector.outlookClientID.isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Stanford.lagunita)
+
+                    Button {
+                        Task { await testOutlookConnection() }
+                    } label: {
+                        Label("Test", systemImage: "bolt.horizontal.circle")
+                    }
+                    .disabled(!connector.hasOutlookRefreshToken || isTesting)
+
+                    Button {
+                        if isOAuthSigningIn {
+                            cancelOutlookSignIn(status: "Sign-in cancelled.")
+                        } else {
+                            signOutOutlook()
+                        }
+                    } label: {
+                        Label(isOAuthSigningIn ? "Cancel" : "Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    .disabled(!connector.hasOutlookRefreshToken && !isOAuthSigningIn)
+
+                    Spacer()
+
+                    Button {
+                        duplicateOutlookAccount()
+                    } label: {
+                        Label("Add Account", systemImage: "plus.circle")
+                    }
+                    .disabled(workspace == nil)
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Label("Stanford Microsoft 365", systemImage: "envelope.badge.shield.half.filled")
+        }
+    }
+
+    private func configBinding(_ key: String, defaultValue: String = "") -> Binding<String> {
+        Binding(
+            get: {
+                let value = connector.configValue(key)
+                return value.isEmpty ? defaultValue : value
+            },
+            set: { newValue in
+                connector.setConfigValue(key, value: newValue)
+                testResult = nil
+            }
+        )
+    }
+
+    private func startOutlookSignIn() {
+        connector.applyStanfordOutlookDefaults(defaultTenant: false)
+        cancelOutlookSignIn()
+        let generation = UUID()
+        oauthSignInGeneration = generation
+        oauthDeviceCode = nil
+        oauthStatus = "Requesting Microsoft sign-in code..."
+        isOAuthSigningIn = true
+        testResult = nil
+
+        oauthSignInTask = Task {
+            do {
+                let auth = StanfordOutlookMailAuthService()
+                let deviceCode = try await auth.startDeviceAuthorization(connector: connector)
+                await MainActor.run {
+                    guard oauthSignInGeneration == generation else { return }
+                    oauthDeviceCode = deviceCode
+                    oauthStatus = "A browser has opened. Complete Microsoft/Stanford sign-in, including Duo, then ASTRA will finish automatically."
+                    if let url = URL(string: deviceCode.verificationUri) {
+                        NSWorkspace.shared.open(url)
+                    }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(deviceCode.userCode, forType: .string)
+                }
+                let token = try await auth.pollForToken(connector: connector, deviceCode: deviceCode)
+                try Task.checkCancellation()
+                let savedToken = await MainActor.run {
+                    guard oauthSignInGeneration == generation else { return false }
+                    auth.saveTokenResponse(token, connector: connector)
+                    return true
+                }
+                guard savedToken else { return }
+                let me = try await StanfordOutlookMailGraphService().testConnection(connector: connector)
+                await MainActor.run {
+                    guard oauthSignInGeneration == generation else { return }
+                    let identity = me.mail ?? me.userPrincipalName ?? connector.outlookEmail
+                    oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
+                    testResult = (true, oauthStatus)
+                    oauthDeviceCode = nil
+                    isOAuthSigningIn = false
+                    oauthSignInTask = nil
+                    saveSharingChange()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard oauthSignInGeneration == generation else { return }
+                    oauthDeviceCode = nil
+                    oauthStatus = "Sign-in cancelled."
+                    isOAuthSigningIn = false
+                    oauthSignInTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    guard oauthSignInGeneration == generation else { return }
+                    oauthStatus = error.localizedDescription
+                    testResult = (false, error.localizedDescription)
+                    isOAuthSigningIn = false
+                    oauthSignInTask = nil
+                }
+            }
+        }
+    }
+
+    private func cancelOutlookSignIn(status: String? = nil) {
+        oauthSignInGeneration = UUID()
+        oauthSignInTask?.cancel()
+        oauthSignInTask = nil
+        oauthDeviceCode = nil
+        isOAuthSigningIn = false
+        if let status {
+            oauthStatus = status
+        }
+    }
+
+    private func testOutlookConnection() async {
+        await MainActor.run {
+            isTesting = true
+            testResult = nil
+        }
+        let result = await connector.testConnection()
+        await MainActor.run {
+            testResult = result
+            oauthStatus = result.1
+            isTesting = false
+            if result.0 {
+                saveSharingChange()
+            }
+        }
+    }
+
+    private func signOutOutlook() {
+        cancelOutlookSignIn()
+        connector.clearOutlookOAuthState()
+        oauthDeviceCode = nil
+        oauthStatus = "Signed out and removed stored OAuth tokens for this account."
+        testResult = nil
+        saveSharingChange()
+    }
+
+    private func duplicateOutlookAccount() {
+        guard let workspace else { return }
+        let copy = Connector(
+            name: "Stanford Outlook Mail",
+            serviceType: StanfordOutlookMail.serviceType,
+            icon: "envelope.badge.shield.half.filled",
+            connectorDescription: connector.connectorDescription,
+            baseURL: StanfordOutlookMail.graphBaseURL,
+            authMethod: StanfordOutlookMail.authMethod
+        )
+        copy.workspace = workspace
+        copy.skill = connector.skill
+        copy.applyStanfordOutlookDefaults()
+        copy.setConfigValue(StanfordOutlookMail.tenantDomainKey, value: connector.outlookTenantDomain)
+        modelContext.insert(copy)
+        onDuplicate?(copy)
+        saveSharingChange()
     }
 
     private func addCredential() {
@@ -667,7 +941,22 @@ struct ConnectorEditorView: View {
         case "redcap": return "REDCap"
         case "rest_api": return "REST API"
         case "github": return "GitHub"
+        case "stanford_outlook_mail": return "Stanford Outlook Mail"
         default: return type.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private static func authMethods(for serviceType: String) -> [String] {
+        serviceType == StanfordOutlookMail.serviceType
+            ? [StanfordOutlookMail.authMethod]
+            : ["none", "basic", "bearer", "api_key"]
+    }
+
+    private func normalizeAuthMethodForCurrentService() {
+        let methods = Self.authMethods(for: connector.serviceType)
+        if !methods.contains(connector.authMethod) {
+            connector.authMethod = connector.isStanfordOutlookMail ? StanfordOutlookMail.authMethod : "none"
+            connector.updatedAt = Date()
         }
     }
 
@@ -728,9 +1017,14 @@ struct ConnectorEditorView: View {
                 newCredKey = "CONFLUENCE_TOKEN"
                 isAddingCredential = true
             }
+        case "stanford_outlook_mail":
+            connector.applyStanfordOutlookDefaults()
+            isAddingCredential = false
+            newCredKey = ""
         default:
             break
         }
+        normalizeAuthMethodForCurrentService()
         connector.updatedAt = Date()
     }
 }

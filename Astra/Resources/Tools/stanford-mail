@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""
+stanford-mail - read-only Microsoft Graph mail helper for ASTRA agents.
+
+Commands:
+  stanford-mail accounts
+  stanford-mail folders --account email@example.org
+  stanford-mail search --account email@example.org --query "term" [--limit 10]
+  stanford-mail get --account email@example.org --message-id MESSAGE_ID
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+
+ACCESS_TOKEN_KEY = "ASTRA_MAIL_ACCESS_TOKEN"
+REFRESH_TOKEN_KEY = "ASTRA_MAIL_REFRESH_TOKEN"
+EXPIRES_AT_KEY = "ASTRA_MAIL_EXPIRES_AT"
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+DEFAULT_SCOPES = "https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read offline_access openid profile"
+
+
+class MailToolError(Exception):
+    pass
+
+
+def registry_candidates():
+    configured = os.environ.get("ASTRA_MAIL_REGISTRY_PATH")
+    if configured:
+        return [configured]
+    raise MailToolError(
+        "ASTRA mail registry is not available for this task. "
+        "Enable the Stanford Outlook Mail capability in ASTRA and run this helper from that task."
+    )
+
+
+def load_accounts():
+    for path in registry_candidates():
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+    return []
+
+
+def select_account(accounts, selector):
+    if selector:
+        lowered = selector.lower()
+        matches = [
+            account for account in accounts
+            if lowered in [
+                account.get("email", "").lower(),
+                account.get("connectorID", "").lower(),
+                account.get("name", "").lower(),
+            ]
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise MailToolError(f"No configured mail account matches {selector!r}.")
+        raise MailToolError(f"More than one mail account matches {selector!r}; use the full email address.")
+    if len(accounts) == 1:
+        return accounts[0]
+    if not accounts:
+        raise MailToolError("No Stanford Outlook mail accounts are configured in ASTRA.")
+    raise MailToolError("Multiple mail accounts are configured; pass --account with the email address.")
+
+
+def security_find(service, account):
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def security_save(service, account, value):
+    result = subprocess.run(
+        ["security", "add-generic-password", "-U", "-s", service, "-a", account, "-w", value],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise MailToolError(f"Could not update Keychain item {account}.")
+
+
+def token_endpoint(account):
+    tenant = account.get("tenantDomain") or "stanford.edu"
+    return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+
+
+def refresh_access_token(account):
+    service = account["keychainService"]
+    refresh_token = security_find(service, REFRESH_TOKEN_KEY)
+    if not refresh_token:
+        raise MailToolError(f"{account.get('email', 'account')} is not connected. Reconnect it in ASTRA.")
+
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "client_id": account["clientID"],
+        "refresh_token": refresh_token,
+        "scope": DEFAULT_SCOPES,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        token_endpoint(account),
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise MailToolError(f"Microsoft token refresh failed: HTTP {error.code} {details}")
+
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise MailToolError("Microsoft token refresh did not return an access token.")
+    security_save(service, ACCESS_TOKEN_KEY, access_token)
+    if payload.get("refresh_token"):
+        security_save(service, REFRESH_TOKEN_KEY, payload["refresh_token"])
+    expires_at = str(time.time() + int(payload.get("expires_in", 3600)))
+    security_save(service, EXPIRES_AT_KEY, expires_at)
+    return access_token
+
+
+def valid_access_token(account):
+    service = account["keychainService"]
+    token = security_find(service, ACCESS_TOKEN_KEY)
+    expires_raw = security_find(service, EXPIRES_AT_KEY)
+    try:
+        expires_at = float(expires_raw or "0")
+    except ValueError:
+        expires_at = 0
+    if token and expires_at - time.time() > 120:
+        return token
+    return refresh_access_token(account)
+
+
+def graph_get(account, path, query=None, prefer_text_body=False, consistency_level_eventual=False):
+    token = valid_access_token(account)
+    url = GRAPH_BASE + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    if prefer_text_body:
+        headers["Prefer"] = 'outlook.body-content-type="text"'
+    if consistency_level_eventual:
+        headers["ConsistencyLevel"] = "eventual"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise MailToolError(f"Microsoft Graph failed: HTTP {error.code} {details}")
+
+
+def cmd_accounts(_args):
+    accounts = load_accounts()
+    sanitized = []
+    for account in accounts:
+        sanitized.append({
+            "email": account.get("email"),
+            "tenantDomain": account.get("tenantDomain"),
+            "name": account.get("name"),
+            "displayName": account.get("displayName"),
+            "channel": account.get("channel"),
+            "connectorID": account.get("connectorID"),
+        })
+    print(json.dumps({"accounts": sanitized}, indent=2, sort_keys=True))
+
+
+def cmd_folders(args):
+    account = select_account(load_accounts(), args.account)
+    payload = graph_get(
+        account,
+        "/me/mailFolders",
+        {
+            "$top": str(max(1, min(args.limit, 100))),
+            "$select": "id,displayName,totalItemCount,unreadItemCount",
+        },
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_search(args):
+    account = select_account(load_accounts(), args.account)
+    limit = str(max(1, min(args.limit, 25)))
+    query = {
+        "$top": limit,
+        "$select": "id,subject,from,receivedDateTime,bodyPreview,hasAttachments,webLink",
+    }
+    if args.query:
+        query["$search"] = f'"{args.query}"'
+    else:
+        query["$orderby"] = "receivedDateTime desc"
+    payload = graph_get(
+        account,
+        "/me/messages",
+        query,
+        consistency_level_eventual=bool(args.query),
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_get(args):
+    account = select_account(load_accounts(), args.account)
+    message_id = urllib.parse.quote(args.message_id, safe="")
+    payload = graph_get(
+        account,
+        f"/me/messages/{message_id}",
+        {
+            "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,body,hasAttachments,webLink",
+        },
+        prefer_text_body=True,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Read Stanford Microsoft 365 mail through ASTRA.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    accounts = subparsers.add_parser("accounts")
+    accounts.set_defaults(func=cmd_accounts)
+
+    folders = subparsers.add_parser("folders")
+    folders.add_argument("--account")
+    folders.add_argument("--limit", type=int, default=50)
+    folders.set_defaults(func=cmd_folders)
+
+    search = subparsers.add_parser("search")
+    search.add_argument("--account")
+    search.add_argument("--query", default="")
+    search.add_argument("--limit", type=int, default=10)
+    search.set_defaults(func=cmd_search)
+
+    get = subparsers.add_parser("get")
+    get.add_argument("--account")
+    get.add_argument("--message-id", required=True)
+    get.set_defaults(func=cmd_get)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except MailToolError as error:
+        print(json.dumps({"error": str(error)}, indent=2), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
