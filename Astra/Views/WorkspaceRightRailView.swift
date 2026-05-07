@@ -390,8 +390,8 @@ struct WorkspaceRightRailView: View {
                 accessSection
             }
 
-            // SCHEDULES (expanded by default)
-            collapsibleSectionWithTrailing("Schedules", isCollapsed: $isSchedulesSectionCollapsed) {
+            // ROUTINES (expanded by default)
+            collapsibleSectionWithTrailing("Routines", isCollapsed: $isSchedulesSectionCollapsed) {
                 if !workspace.schedules.isEmpty {
                     Button { onNewSchedule?() } label: {
                         Image(systemName: "plus.circle.fill")
@@ -399,7 +399,7 @@ struct WorkspaceRightRailView: View {
                             .foregroundStyle(Stanford.lagunita)
                     }
                     .buttonStyle(.plain)
-                    .help("New Schedule")
+                    .help("New Routine")
                 }
             } content: {
                 schedulesContent
@@ -1094,13 +1094,13 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    // MARK: - Schedules Content
+    // MARK: - Routines Content
 
     private var schedulesContent: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
             if workspace.schedules.isEmpty {
                 Button { onNewSchedule?() } label: {
-                    Text("+ Add schedule")
+                    Text("+ Add routine")
                         .font(Stanford.caption(11).weight(.medium))
                         .foregroundStyle(Stanford.lagunita)
                 }
@@ -1111,7 +1111,7 @@ struct WorkspaceRightRailView: View {
                         HStack(spacing: 8) {
                             Button { onEditSchedule?(schedule) } label: {
                                 HStack(spacing: 8) {
-                                    Image(systemName: schedule.isEnabled ? "clock.fill" : "clock")
+                                    Image(systemName: "arrow.triangle.2.circlepath")
                                         .font(Stanford.ui(12))
                                         .foregroundStyle(schedule.isEnabled ? Stanford.lagunita : .secondary)
                                     VStack(alignment: .leading, spacing: 1) {

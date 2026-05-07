@@ -394,7 +394,7 @@ struct OnboardingWizardView: View {
             stepHeader(
                 icon: "hand.wave.fill",
                 title: "Welcome to ASTRA",
-                subtitle: "Agent Scheduler for Tasks, Runs, and Automation",
+                subtitle: "Agent Routines for Tasks, Runs, and Automation",
                 tint: Stanford.cardinalRed
             )
 

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 enum AstraAboutInfo {
-    static let fullName = "Agent Scheduler for Tasks, Runs, and Automation"
+    static let fullName = "Agent Routines for Tasks, Runs, and Automation"
     static let tagline = "A macOS command center for supervising delegated AI work."
     static let repositoryURLString = "https://github.com/susom/astra"
 
@@ -14,7 +14,7 @@ enum AstraAboutInfo {
         "Create durable workspaces for projects and recurring workflows.",
         "Queue, run, resume, and review delegated AI tasks.",
         "Connect skills, tools, local CLIs, and plugin capabilities.",
-        "Track runs, artifacts, schedules, logs, and task history.",
+        "Track runs, artifacts, routines, logs, and task history.",
         "Keep supervision calm, readable, and grounded in trust signals."
     ]
 

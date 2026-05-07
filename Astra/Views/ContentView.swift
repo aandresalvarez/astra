@@ -1593,18 +1593,18 @@ private struct LinkedScheduleWarning: Identifiable {
         var alertTitle: String {
             switch self {
             case .markDone:
-                return "Pause linked schedules before marking done?"
+                return "Pause linked routines before marking done?"
             case .delete:
-                return "Pause linked schedules before deleting?"
+                return "Pause linked routines before deleting?"
             }
         }
 
         var confirmLabel: String {
             switch self {
             case .markDone:
-                return "Pause Schedules and Mark Done"
+                return "Pause Routines and Mark Done"
             case .delete:
-                return "Pause Schedules and Delete"
+                return "Pause Routines and Delete"
             }
         }
     }
@@ -1616,6 +1616,6 @@ private struct LinkedScheduleWarning: Identifiable {
 
     var message: String {
         let names = schedules.map(\.name).joined(separator: ", ")
-        return "This task is the same-thread conversation source for active schedules: \(names). Continuing will pause those schedules first so future runs do not lose their thread."
+        return "This task is the same-thread conversation source for active routines: \(names). Continuing will pause those routines first so future runs do not lose their thread."
     }
 }

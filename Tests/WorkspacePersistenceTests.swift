@@ -104,11 +104,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v8")
+@Suite("Workspace Persistence v9")
 struct WorkspacePersistenceTests {
-    @Test("v8 export and import preserve IDs, stars, history, artifacts, and redacted credentials")
+    @Test("v9 export and import preserve IDs, stars, history, artifacts, and redacted credentials")
     @MainActor
-    func v8RoundTripPreservesDurableIDs() throws {
+    func v9RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
@@ -244,6 +244,8 @@ struct WorkspacePersistenceTests {
         context.insert(sourceTask)
 
         let schedule = TaskSchedule(name: "Watcher", goal: "Check updates", workspace: workspace)
+        schedule.routineDescription = "Daily ticket watcher"
+        schedule.routinePaths = ["/tmp/routine-docs"]
         schedule.runtimeID = AgentRuntimeID.copilotCLI.rawValue
         schedule.model = AgentRuntimeID.copilotCLI.defaultModel
         schedule.conversationContext = "User asked for a concise summary."
@@ -263,6 +265,9 @@ struct WorkspacePersistenceTests {
         #expect(config.schedules?.first?.runResultsJSON == schedule.runResultsJSON)
         #expect(config.schedules?.first?.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(config.schedules?.first?.lastFiredAt == schedule.lastFiredAt)
+        #expect(config.schedules?.first?.routineDescription == schedule.routineDescription)
+        #expect(config.schedules?.first?.routineInstructions == schedule.routineInstructions)
+        #expect(config.schedules?.first?.routinePaths == schedule.routinePaths)
 
         let importedContainer = try makeWorkspacePersistenceContainer()
         let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContainer.mainContext)
@@ -273,6 +278,9 @@ struct WorkspacePersistenceTests {
         #expect(importedSchedule.runResultsJSON == schedule.runResultsJSON)
         #expect(importedSchedule.resolvedRuntimeID == .copilotCLI)
         #expect(importedSchedule.lastFiredAt == schedule.lastFiredAt)
+        #expect(importedSchedule.routineDescription == schedule.routineDescription)
+        #expect(importedSchedule.routineInstructions == schedule.routineInstructions)
+        #expect(importedSchedule.routinePaths == schedule.routinePaths)
     }
 
     @Test("legacy v4 configs use name fallback only when IDs are absent")
@@ -503,6 +511,8 @@ struct WorkspacePersistenceTests {
         context.insert(run)
 
         let schedule = TaskSchedule(name: "Reply Monitor", goal: "Check for updates", workspace: workspace)
+        schedule.routineDescription = "Watch reply activity"
+        schedule.routinePaths = ["/tmp/reply-context"]
         schedule.resultMode = .sameThread
         schedule.sourceTaskID = sourceTask.id
         context.insert(schedule)
@@ -523,6 +533,8 @@ struct WorkspacePersistenceTests {
         #expect(sourceTask.costUSD == 0.42)
         #expect(sourceTask.runs.count == 1)
         #expect(sourceTask.runs.first?.output == "Here is the scheduled follow-up output.")
-        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Scheduled run: Reply Monitor") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Routine run: Reply Monitor") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Watch reply activity") })
+        #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("/tmp/reply-context") })
     }
 }

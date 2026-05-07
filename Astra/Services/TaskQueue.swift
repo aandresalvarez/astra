@@ -251,10 +251,10 @@ final class TaskQueue {
     }()
 
     private static func sameThreadSchedulePrompt(schedule: TaskSchedule, fallbackGoal: String) -> String {
-        let trimmedGoal = schedule.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGoal = schedule.effectiveGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = trimmedGoal.isEmpty ? fallbackGoal : trimmedGoal
         return """
-        Scheduled run: \(schedule.name)
+        Routine run: \(schedule.name)
 
         \(goal)
         """

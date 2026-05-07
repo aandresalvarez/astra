@@ -469,7 +469,7 @@ struct TaskMainView: View {
         }
     }
 
-    /// Snapshot the conversation at schedule creation time.
+    /// Snapshot the conversation at routine creation time.
     /// Captures user messages and agent responses chronologically.
     private var scheduleConversationContext: String {
         var lines: [String] = []
@@ -488,7 +488,7 @@ struct TaskMainView: View {
                 let output = String(response.prefix(3000))
                 lines.append("Agent: \(output)")
             case .scheduleResult(let text, _):
-                lines.append("Schedule: \(text)")
+                lines.append("Routine result: \(text)")
             case .systemInfo(let text, _):
                 lines.append("System: \(text)")
             case .recapResult(let text, _):
@@ -553,7 +553,7 @@ struct TaskMainView: View {
                 Button {
                     showScheduleEditor = true
                 } label: {
-                    Label("Convert to Schedule", systemImage: "clock.badge.checkmark")
+                    Label("Convert to Routine", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
         } label: {
@@ -658,7 +658,7 @@ struct TaskMainView: View {
             HStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Creating schedule...")
+                Text("Creating routine...")
                     .font(Stanford.body(13))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -732,7 +732,7 @@ struct TaskMainView: View {
         if let statusMsg = currentScheduleStatusMessage {
             HStack(spacing: 10) {
                 Image(systemName: isScheduleStatusError
-                      ? "exclamationmark.triangle" : "clock.badge.checkmark")
+                      ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
                     .foregroundStyle(isScheduleStatusError
                                      ? Stanford.poppy : Stanford.paloAltoGreen)
                 Text(MarkdownTextView.markdownAttributed(statusMsg))
@@ -897,7 +897,7 @@ struct TaskMainView: View {
 
     private func scheduleResultBubble(text: String, timestamp: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "clock.badge.checkmark")
+            Image(systemName: "arrow.triangle.2.circlepath")
                 .font(Stanford.body(14))
                 .foregroundStyle(Stanford.poppy)
                 .frame(width: 24, height: 24)
@@ -925,7 +925,7 @@ struct TaskMainView: View {
             Spacer(minLength: 40)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Schedule result: \(text)")
+        .accessibilityLabel("Routine result: \(text)")
     }
 
     private func systemInfoBubble(text: String, timestamp: Date) -> some View {
@@ -1564,9 +1564,9 @@ struct TaskMainView: View {
         return "/remember".hasPrefix(trimmed)
     }
 
-    private var slashMenuMatchesSchedule: Bool {
+    private var slashMenuMatchesRoutine: Bool {
         let trimmed = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        return "/schedule".hasPrefix(trimmed)
+        return "/routine".hasPrefix(trimmed) || "/schedule".hasPrefix(trimmed)
     }
 
     private var slashMenuMatchesRecap: Bool {
@@ -1577,7 +1577,7 @@ struct TaskMainView: View {
     private var visibleSlashOptions: [(id: String, command: String)] {
         var opts: [(id: String, command: String)] = []
         if slashMenuMatchesRemember { opts.append(("remember", "/remember ")) }
-        if slashMenuMatchesSchedule { opts.append(("schedule", "/schedule ")) }
+        if slashMenuMatchesRoutine { opts.append(("routine", "/routine ")) }
         if slashMenuMatchesRecap { opts.append(("recap", "/recap")) }
         return opts
     }
@@ -1587,8 +1587,8 @@ struct TaskMainView: View {
         switch id {
         case "remember":
             return ("brain", Stanford.plum, "Add Memory", "Save a fact to this workspace's memory")
-        case "schedule":
-            return ("clock.badge.checkmark", Stanford.poppy, "Create Schedule", "Automate this task on a recurring schedule")
+        case "routine":
+            return ("arrow.triangle.2.circlepath", Stanford.poppy, "Create Routine", "Automate this task on a recurring cadence")
         case "recap":
             return ("doc.text", Stanford.paloAltoGreen, "Recap Task", "Summarize progress so you can pause and resume later")
         default:
@@ -1934,19 +1934,19 @@ struct TaskMainView: View {
         return false
     }
 
-    /// Autocomplete /schedule in the composer with a trailing space for inline instructions.
+    /// Autocomplete /routine in the composer with a trailing space for inline instructions.
     private func selectSlashSchedule() {
-        messageText = "/schedule "
+        messageText = "/routine "
     }
 
-    // MARK: - Agentic Schedule Creation
+    // MARK: - Agentic Routine Creation
 
     private static let jsonBlockRegex = try? NSRegularExpression(
         pattern: "```json\\s*\\n([\\s\\S]*?)\\n\\s*```",
         options: []
     )
 
-    /// Use Claude to analyze the conversation context + user instruction and create a schedule.
+    /// Use Claude to analyze the conversation context + user instruction and create a routine.
     /// Ask Claude to summarize the task conversation so the user can resume later.
     /// Response is plain markdown (no JSON), inserted as a recap.result event.
     private func generateRecapAgentically() {
@@ -2056,31 +2056,33 @@ struct TaskMainView: View {
         let workspacePath = ws.primaryPath
 
         let systemPrompt = """
-        You are a scheduling assistant. The user is working on an existing task and wants to create a recurring schedule from it.
+        You are a routines assistant. The user is working on an existing task and wants to create a routine from it.
 
-        Analyze the user's instruction and the conversation context to create a schedule. You must output a single JSON block with the schedule configuration.
+        Analyze the user's instruction and the conversation context to create a routine. You must output a single JSON block with the routine configuration.
 
         ## Rules
         - Infer the schedule type (once, interval, daily, weekly) from the instruction
-        - Write a detailed, self-contained goal that captures the full intent from both the instruction AND the conversation context
-        - The goal should be specific enough that an agent running this schedule later (with no other context) can execute it correctly
-        - Pick a short, descriptive name for the schedule
+        - Write detailed, self-contained instructions that capture the full intent from both the instruction AND the conversation context
+        - The instructions should be specific enough that an agent running this routine later (with no other context) can execute it correctly
+        - Pick a short, descriptive name for the routine
+        - Add a short description if it helps distinguish the routine in a list
+        - Include routinePaths only if the instruction explicitly names local folders
         - If the instruction mentions a time, use it. Otherwise pick a sensible default (9:00 for daily, Monday 9:00 for weekly)
         - For interval: common values are 900 (15m), 1800 (30m), 3600 (1h), 14400 (4h), 43200 (12h)
         - For daily/weekly: hour is 0-23, minute is 0/15/30/45
         - For weekly: dayOfWeek 1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday, 7=Saturday
 
-        Existing schedules: \(existingSchedules.isEmpty ? "none" : existingSchedules)
-        Available skills to attach: \(skillList.isEmpty ? "none" : skillList)
+        Existing routines: \(existingSchedules.isEmpty ? "none" : existingSchedules)
+        Available capabilities to attach: \(skillList.isEmpty ? "none" : skillList)
 
         Current task title: \(source.title)
         Current task goal: \(source.goal)
 
         Output ONLY a JSON block — no other text:
         ```json
-        {"name": "...", "goal": "detailed goal text", "scheduleType": "daily|weekly|interval|once", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "skills": ["skill name", ...], "model": "\(source.model)"}
+        {"name": "...", "description": "...", "instructions": "detailed instructions", "scheduleType": "daily|weekly|interval|once", "intervalSeconds": 3600, "dailyHour": 9, "dailyMinute": 0, "weeklyDayOfWeek": 2, "routinePaths": ["/absolute/folder"], "skills": ["skill name", ...], "model": "\(source.model)"}
         ```
-        Only include fields relevant to the chosen scheduleType. skills is optional — only include if the instruction or context references specific skills.
+        Only include fields relevant to the chosen scheduleType. skills and routinePaths are optional.
         """
 
         let messages: [(role: String, content: String)] = [
@@ -2091,7 +2093,7 @@ struct TaskMainView: View {
 
             ---
 
-            Create a schedule: \(instruction)
+            Create a routine: \(instruction)
             """)
         ]
 
@@ -2112,13 +2114,13 @@ struct TaskMainView: View {
                 case .success(let response):
                     parseAndCreateSchedule(from: response, workspace: ws, source: source)
                 case .failure(let error):
-                    setScheduleStatusMessage("Failed to create schedule: \(error.localizedDescription)", for: source.taskID)
+                    setScheduleStatusMessage("Failed to create routine: \(error.localizedDescription)", for: source.taskID)
                 }
             }
         }
     }
 
-    /// Parse Claude's JSON response and create the TaskSchedule.
+    /// Parse Claude's JSON response and create the routine schedule.
     private func parseAndCreateSchedule(from response: String, workspace: Workspace, source: ScheduleSourceContext) {
         guard let regex = Self.jsonBlockRegex,
               let match = regex.firstMatch(in: response, range: NSRange(response.startIndex..., in: response)),
@@ -2130,7 +2132,7 @@ struct TaskMainView: View {
                 return
             }
             setScheduleStatusMessage(
-                "Could not parse schedule configuration. Try again with clearer instructions.",
+                "Could not parse routine configuration. Try again with clearer instructions.",
                 for: source.taskID
             )
             return
@@ -2139,26 +2141,29 @@ struct TaskMainView: View {
         let jsonStr = String(response[jsonRange])
         guard let data = jsonStr.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            setScheduleStatusMessage("Invalid schedule configuration. Try again.", for: source.taskID)
+            setScheduleStatusMessage("Invalid routine configuration. Try again.", for: source.taskID)
             return
         }
 
         createScheduleFromJSON(json, workspace: workspace, source: source)
     }
 
-    /// Create a TaskSchedule from parsed JSON fields.
+    /// Create a routine from parsed JSON fields.
     private func createScheduleFromJSON(_ json: [String: Any], workspace: Workspace, source: ScheduleSourceContext) {
         let name = json["name"] as? String ?? source.title
-        let goal = json["goal"] as? String ?? source.goal
+        let goal = (json["instructions"] as? String) ?? (json["goal"] as? String) ?? source.goal
+        let description = json["description"] as? String ?? ""
         let scheduleTypeRaw = json["scheduleType"] as? String ?? "daily"
         let scheduleType = ScheduleType(rawValue: scheduleTypeRaw) ?? .daily
 
         let schedule = TaskSchedule(name: name, goal: goal, workspace: workspace, scheduleType: scheduleType)
+        schedule.routineDescription = description
 
         if let interval = json["intervalSeconds"] as? Int { schedule.intervalSeconds = interval }
         if let hour = json["dailyHour"] as? Int { schedule.dailyHour = hour }
         if let minute = json["dailyMinute"] as? Int { schedule.dailyMinute = minute }
         if let dow = json["weeklyDayOfWeek"] as? Int { schedule.weeklyDayOfWeek = dow }
+        if let paths = json["routinePaths"] as? [String] { schedule.routinePaths = paths }
         schedule.runtimeID = source.runtimeID
         if let m = json["model"] as? String { schedule.model = m } else { schedule.model = source.model }
 
@@ -2196,7 +2201,7 @@ struct TaskMainView: View {
         modelContext.insert(schedule)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
 
-        setScheduleStatusMessage("Schedule **\(name)** created — \(schedule.frequencySummary)", for: source.taskID)
+        setScheduleStatusMessage("Routine **\(name)** created — \(schedule.frequencySummary)", for: source.taskID)
 
         AppLogger.audit(.taskStats, category: "UI", fields: [
             "event": "schedule_created",
@@ -2257,15 +2262,16 @@ struct TaskMainView: View {
             return
         }
 
-        // Intercept /schedule command — use agentic handler
-        if lower == "/schedule" || lower.hasPrefix("/schedule ") {
-            let instructions = lower == "/schedule" ? "" : String(trimmed.dropFirst("/schedule ".count)).trimmingCharacters(in: .whitespaces)
+        // Intercept /routine and legacy /schedule commands — use agentic handler
+        if lower == "/routine" || lower.hasPrefix("/routine ") || lower == "/schedule" || lower.hasPrefix("/schedule ") {
+            let commandLength = lower.hasPrefix("/routine") ? "/routine ".count : "/schedule ".count
+            let instructions = (lower == "/routine" || lower == "/schedule")
+                ? ""
+                : String(trimmed.dropFirst(commandLength)).trimmingCharacters(in: .whitespaces)
             messageText = ""
             if instructions.isEmpty {
-                // No instructions — open the manual schedule editor
                 showScheduleEditor = true
             } else {
-                // Agentic: Claude analyzes the instruction + conversation context
                 createScheduleAgentically(instruction: instructions)
             }
             return

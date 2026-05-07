@@ -366,7 +366,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     private static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
-        var paths = task.workspace?.additionalPaths ?? []
+        var paths = task.runtimeAdditionalPaths
         if !task.effectiveWorkspacePath.isEmpty {
             paths.append(task.effectiveWorkspacePath)
         }

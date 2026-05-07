@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SwiftData
 import ASTRACore
@@ -9,7 +10,7 @@ struct ScheduleEditorView: View {
     let workspace: Workspace
     var schedule: TaskSchedule?
 
-    // Prefill from existing task (Convert to Schedule)
+    // Prefill from existing task (Convert to Routine)
     var prefillName: String?
     var prefillGoal: String?
     var prefillRuntimeID: String?
@@ -28,6 +29,7 @@ struct ScheduleEditorView: View {
     @AppStorage("defaultModel") private var defaultModel = AgentRuntimeID.claudeCode.defaultModel
 
     @State private var name = ""
+    @State private var routineDescription = ""
     @State private var goal = ""
     @State private var runtimeID = AgentRuntimeID.claudeCode.rawValue
     @State private var model = "claude-sonnet-4-6"
@@ -39,6 +41,7 @@ struct ScheduleEditorView: View {
     @State private var dailyMinute = 0
     @State private var weeklyDayOfWeek = 2 // Monday
     @State private var selectedSkillIDs: Set<String> = []
+    @State private var routinePaths: [String] = []
     @State private var resultMode: ScheduleResultMode = .sameThread
     @State private var showDeleteConfirm = false
 
@@ -113,7 +116,7 @@ struct ScheduleEditorView: View {
             // Header
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isEditing ? "Edit Schedule" : "New Schedule")
+                    Text(isEditing ? "Edit Routine" : "New Routine")
                         .font(Stanford.heading(20))
                         .foregroundStyle(Stanford.black)
                     if isEditing, let s = schedule {
@@ -146,25 +149,34 @@ struct ScheduleEditorView: View {
 
             ScrollView {
                 VStack(spacing: 20) {
-                    // MARK: - Name & Goal
+                    // MARK: - Routine
                     VStack(alignment: .leading, spacing: 12) {
-                        sectionLabel("Schedule")
+                        sectionLabel("Routine")
 
                         VStack(spacing: 1) {
                             fieldRow {
                                 Text("Name").foregroundStyle(Stanford.coolGrey)
                                 Spacer()
-                                TextField("e.g., Nightly code review", text: $name)
+                                TextField("e.g., Jira support ticket triage", text: $name)
                                     .multilineTextAlignment(.trailing)
                                     .textFieldStyle(.plain)
                             }
                             Divider().padding(.leading, 16)
                             fieldRow {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Goal").foregroundStyle(Stanford.coolGrey)
-                                    TextField("What should the agent do each run?", text: $goal, axis: .vertical)
+                                    Text("Description").foregroundStyle(Stanford.coolGrey)
+                                    TextField("Short note about when this routine is useful", text: $routineDescription, axis: .vertical)
                                         .textFieldStyle(.plain)
                                         .lineLimit(2...5)
+                                }
+                            }
+                            Divider().padding(.leading, 16)
+                            fieldRow {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Instructions").foregroundStyle(Stanford.coolGrey)
+                                    TextField("What should the agent do each run?", text: $goal, axis: .vertical)
+                                        .textFieldStyle(.plain)
+                                        .lineLimit(4...8)
                                 }
                             }
                         }
@@ -191,6 +203,44 @@ struct ScheduleEditorView: View {
                             }
                             .padding(.horizontal, 4)
                         }
+                    }
+
+                    // MARK: - Folders
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            sectionLabel("Folders")
+                            Spacer()
+                            Button {
+                                addRoutineFolders()
+                            } label: {
+                                Label("Add Folder", systemImage: "plus")
+                                    .font(Stanford.caption(12))
+                                    .foregroundStyle(Stanford.lagunita)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        VStack(spacing: 1) {
+                            if routinePaths.isEmpty {
+                                fieldRow {
+                                    Image(systemName: "folder")
+                                        .foregroundStyle(.secondary)
+                                    Text("No routine-specific folders")
+                                        .foregroundStyle(Stanford.coolGrey)
+                                    Spacer()
+                                }
+                            } else {
+                                ForEach(Array(routinePaths.enumerated()), id: \.element) { index, path in
+                                    routinePathRow(path)
+                                    if index < routinePaths.count - 1 {
+                                        Divider().padding(.leading, 16)
+                                    }
+                                }
+                            }
+                        }
+                        .background(Stanford.cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
                     }
 
                     // MARK: - Frequency
@@ -326,10 +376,10 @@ struct ScheduleEditorView: View {
                             .padding(.horizontal, 4)
                     }
 
-                    // MARK: - Skills
+                    // MARK: - Capabilities
                     if !availableSkills.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            sectionLabel("Skills")
+                            sectionLabel("Capabilities")
 
                             VStack(spacing: 1) {
                                 ForEach(Array(availableSkills.enumerated()), id: \.element.id) { index, skill in
@@ -398,7 +448,7 @@ struct ScheduleEditorView: View {
 
                 Spacer()
 
-                Button(isEditing ? "Save" : "Create Schedule") {
+                Button(isEditing ? "Save" : "Create Routine") {
                     save()
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: true))
@@ -409,8 +459,8 @@ struct ScheduleEditorView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
         }
-        .frame(width: 520, height: 660)
-        .alert("Delete Schedule", isPresented: $showDeleteConfirm) {
+        .frame(width: 560, height: 760)
+        .alert("Delete Routine", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) { deleteSchedule() }
         } message: {
@@ -419,7 +469,8 @@ struct ScheduleEditorView: View {
         .onAppear {
             if let s = schedule {
                 name = s.name
-                goal = s.goal
+                routineDescription = s.routineDescription
+                goal = s.routineInstructions
                 runtimeID = s.resolvedRuntimeID.rawValue
                 model = s.model
                 tokenBudget = s.tokenBudget
@@ -430,9 +481,10 @@ struct ScheduleEditorView: View {
                 dailyMinute = s.dailyMinute
                 weeklyDayOfWeek = s.weeklyDayOfWeek
                 selectedSkillIDs = Set(s.skillIDs)
+                routinePaths = s.routinePaths
                 resultMode = s.resultMode
             } else {
-                // Apply prefill values (Convert to Schedule flow)
+                // Apply prefill values (Convert to Routine flow)
                 runtimeID = prefillRuntimeID ?? defaultRuntimeID
                 if let n = prefillName { name = n }
                 if let g = prefillGoal { goal = g }
@@ -510,13 +562,59 @@ struct ScheduleEditorView: View {
         }
     }
 
+    private func routinePathRow(_ path: String) -> some View {
+        fieldRow {
+            Image(systemName: "folder")
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text((path as NSString).lastPathComponent)
+                    .foregroundStyle(Stanford.black)
+                    .lineLimit(1)
+                Text((path as NSString).abbreviatingWithTildeInPath)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button {
+                removeRoutinePath(path)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove folder")
+        }
+    }
+
     // MARK: - Actions
+
+    private func addRoutineFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = true
+        panel.message = "Choose folders this routine can use as context"
+        panel.prompt = "Add Folders"
+        guard panel.runModal() == .OK else { return }
+
+        let newPaths = panel.urls.map(\.path)
+        routinePaths = uniquePaths(routinePaths + newPaths)
+    }
+
+    private func removeRoutinePath(_ path: String) {
+        routinePaths.removeAll { $0 == path }
+    }
 
     private func save() {
         let s = schedule ?? TaskSchedule(name: "", workspace: workspace)
 
         s.name = name.trimmingCharacters(in: .whitespaces)
-        s.goal = goal.trimmingCharacters(in: .whitespaces)
+        s.routineDescription = routineDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        s.routineInstructions = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         s.runtimeID = runtimeID
         s.model = model
         s.tokenBudget = tokenBudget
@@ -526,6 +624,7 @@ struct ScheduleEditorView: View {
         s.dailyMinute = dailyMinute
         s.weeklyDayOfWeek = weeklyDayOfWeek
         s.skillIDs = Array(selectedSkillIDs)
+        s.routinePaths = routinePaths
         s.resultMode = resultMode
 
         // Set conversation context and source task on first creation only
@@ -567,6 +666,19 @@ struct ScheduleEditorView: View {
 
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         dismiss()
+    }
+
+    private func uniquePaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for path in paths {
+            let expanded = (path as NSString).expandingTildeInPath
+            let trimmed = expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
     }
 
     private func toggleEnabled() {
