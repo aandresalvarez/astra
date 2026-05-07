@@ -258,7 +258,11 @@ enum SpecEngine {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", model]
+        process.arguments = [
+            "-p", prompt,
+            "--model", model,
+            "--allowedTools", "Read", "Glob", "Grep"
+        ]
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
@@ -319,7 +323,9 @@ enum SpecEngine {
         analyzing data, reviewing documents, research, writing, or other work. \
         Ask clarifying questions if the request is vague. Help them think through constraints, \
         acceptance criteria, and edge cases. Be concise and conversational. \
-        When the user seems ready, suggest they click "Create Task" to generate the structured spec. \
+        When the user seems ready, refer to ASTRA's visible primary action. In normal task-spec \
+        conversations this is "Create Task"; in Plan Mode this is "Approve Plan". Do not invent \
+        or rename the visible button label. \
         Working directory: \(workspacePath)
         """
         if !skillContext.isEmpty {
@@ -350,7 +356,12 @@ enum SpecEngine {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", model]
+        process.arguments = [
+            "-p", prompt,
+            "--model", model,
+            "--allowedTools", "Read,Glob,Grep",
+            "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+        ]
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment

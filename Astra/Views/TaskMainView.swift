@@ -67,6 +67,8 @@ struct TaskMainView: View {
     @State private var shouldScrollAfterUserMessage = false
     @State private var runtimeHealthNow = Date()
     @State private var lastLoggedRuntimeHealthSignature: String?
+    @State private var isPlanMode = false
+    @State private var isPlanning = false
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -98,6 +100,34 @@ struct TaskMainView: View {
             snapshot: currentThreadSnapshot,
             now: runtimeHealthNow
         )
+    }
+
+    private var currentPlanState: TaskPlanState {
+        TaskPlanService.reconstruct(for: task)
+    }
+
+    private var executableApprovedPlan: TaskPlanPayload? {
+        let state = currentPlanState
+        guard let plan = state.plan,
+              TaskPlanService.hasRemainingExecutableSteps(in: plan),
+              task.status != .queued,
+              task.status != .running,
+              !isPlanning else {
+            return nil
+        }
+
+        switch state.lifecycleStatus {
+        case .approved, .executing, .failed:
+            return plan
+        case .none, .draft, .completed, .cancelled:
+            return nil
+        }
+    }
+
+    private var planningModel: String {
+        task.resolvedRuntimeID == .claudeCode && AgentRuntimeID.claudeCode.defaultModels.contains(task.model)
+            ? task.model
+            : AgentRuntimeID.claudeCode.defaultModel
     }
 
     private var threadScrollSignature: String {
@@ -448,6 +478,10 @@ struct TaskMainView: View {
             switch item {
             case .userMessage(let text, _):
                 lines.append("User: \(text)")
+            case .planUserMessage(let text, _):
+                lines.append("User planning: \(text)")
+            case .planAssistantMessage(let text, _):
+                lines.append("Planning assistant: \(text)")
             case .agentResponse(let run):
                 let protocolState = currentThreadSnapshot.protocolState(for: run)
                 let response = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
@@ -727,6 +761,10 @@ struct TaskMainView: View {
         switch item {
         case .userMessage(let text, let timestamp):
             chatUserBubble(text: text, timestamp: timestamp)
+        case .planUserMessage(let text, let timestamp):
+            chatUserBubble(text: text, timestamp: timestamp)
+        case .planAssistantMessage(let text, let timestamp):
+            planAssistantBubble(text: text, timestamp: timestamp)
         case .agentResponse(let run):
             chatAgentBubble(run: run)
         case .scheduleResult(let text, let timestamp):
@@ -950,6 +988,35 @@ struct TaskMainView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Task recap")
+    }
+
+    private func planAssistantBubble(text: String, timestamp: Date) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "list.bullet.clipboard")
+                .font(Stanford.body(14))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 6) {
+                MarkdownTextView(text: text)
+                Text(timestamp, style: .relative)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Stanford.lagunita.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.25), lineWidth: 1)
+            )
+
+            Spacer(minLength: 40)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Planning response")
     }
 
     private func chatAgentBubble(run: TaskRunSnapshot) -> some View {
@@ -1566,9 +1633,70 @@ struct TaskMainView: View {
         }
     }
 
+    private func planExecutionActionBar(_ plan: TaskPlanPayload) -> some View {
+        let nextStep = TaskPlanService.nextExecutableStep(in: plan)
+        let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
+        let title = skipPermissions ? "Run remaining plan" : "Approve next step"
+        let detail = nextStep.map { "Next: \($0.title)" } ?? plan.title
+        let modeLabel = skipPermissions
+            ? "Auto mode runs every remaining step."
+            : "Review mode runs one approved step, then pauses again."
+
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill")
+                .font(Stanford.ui(20, weight: .semibold))
+                .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(Stanford.body(14).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(detail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(modeLabel)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                runApprovedPlan(plan, mode: mode)
+            } label: {
+                Label(title, systemImage: skipPermissions ? "play.fill" : "checkmark")
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(StanfordButtonStyle(isPrimary: true))
+            .controlSize(.small)
+            .disabled(taskQueue == nil)
+            .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
+        }
+        .padding(12)
+        .background((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.18), lineWidth: 1)
+        )
+    }
+
     private var composerView: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                if let plan = executableApprovedPlan {
+                    planExecutionActionBar(plan)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 14)
+                        .padding(.bottom, 10)
+
+                    Divider()
+                        .overlay(Stanford.sandstone.opacity(0.25))
+                }
+
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -1627,7 +1755,7 @@ struct TaskMainView: View {
                     skills: task.skills,
                     availableSkills: availableSkills,
                     workspace: task.workspace,
-                    isRunning: task.status == .running,
+                    isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
@@ -1663,7 +1791,8 @@ struct TaskMainView: View {
                     skipPermissions: $skipPermissions,
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
-                    isPlanMode: .constant(false),
+                    isPlanMode: $isPlanMode,
+                    planModeHelp: "Plan and refine before resuming this thread",
                     showSecurityGate: true,
                     sshConnections: sshConnections
                 )
@@ -2080,6 +2209,28 @@ struct TaskMainView: View {
 
     // MARK: - Helpers
 
+    private func runApprovedPlan(_ plan: TaskPlanPayload, mode: TaskPlanExecutionMode) {
+        guard let taskQueue,
+              task.status != .queued,
+              task.status != .running else { return }
+
+        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        task.status = .queued
+        task.completedAt = nil
+        task.updatedAt = Date()
+        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        threadViewModel.refreshSnapshot(for: task)
+
+        Task {
+            await taskQueue.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
+            await MainActor.run {
+                _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                threadViewModel.refreshSnapshot(for: task)
+            }
+        }
+    }
+
     private func sendMessage() {
         guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedFiles.isEmpty else { return }
 
@@ -2128,6 +2279,11 @@ struct TaskMainView: View {
         }
         messageText = ""
 
+        if isPlanMode {
+            sendPlanningMessage(msg)
+            return
+        }
+
         if task.status == .queued {
             task.status = .draft
             task.updatedAt = Date()
@@ -2164,6 +2320,104 @@ struct TaskMainView: View {
             let event = TaskEvent(task: task, type: "user.message", payload: msg)
             modelContext.insert(event)
         }
+    }
+
+    private func sendPlanningMessage(_ msg: String) {
+        guard !isPlanning else { return }
+
+        shouldScrollAfterUserMessage = true
+        let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
+        modelContext.insert(userEvent)
+        task.updatedAt = Date()
+        try? modelContext.save()
+        threadViewModel.refreshSnapshot(for: task)
+
+        let history = planningConversationHistory(appendingUserMessage: msg)
+        let workspacePath = planningWorkspacePath
+        let skillContext = planModeSkillContext()
+        isPlanning = true
+
+        Task {
+            let result = await SpecEngine.chat(
+                messages: history,
+                workspacePath: workspacePath,
+                skillContext: skillContext,
+                model: planningModel
+            )
+
+            await MainActor.run {
+                isPlanning = false
+                switch result {
+                case .success(let response):
+                    let assistantEvent = TaskEvent(
+                        task: task,
+                        type: TaskPlanConversationEventTypes.assistantMessage,
+                        payload: TaskPlanService.userVisiblePlanningText(from: response)
+                    )
+                    modelContext.insert(assistantEvent)
+
+                    let existingPlan = TaskPlanService.reconstruct(for: task).plan
+                    var plan = TaskPlanService.parsePlanPayload(from: response)
+                        ?? TaskPlanFallbackBuilder.plan(from: response, fallbackGoal: msg)
+                    if let existingPlan {
+                        plan.planID = existingPlan.planID
+                        TaskPlanService.recordUpdated(plan, task: task, modelContext: modelContext)
+                    } else {
+                        TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
+                    }
+
+                case .failure(let error):
+                    let errorEvent = TaskEvent(
+                        task: task,
+                        type: TaskPlanConversationEventTypes.assistantMessage,
+                        payload: "Plan mode failed: \(error.localizedDescription)"
+                    )
+                    modelContext.insert(errorEvent)
+                }
+
+                task.updatedAt = Date()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                threadViewModel.refreshSnapshot(for: task)
+            }
+        }
+    }
+
+    private var planningWorkspacePath: String {
+        if !task.codeWorkingDirectory.isEmpty {
+            return task.codeWorkingDirectory
+        }
+        return task.workspace?.primaryPath ?? FileManager.default.currentDirectoryPath
+    }
+
+    private func planningConversationHistory(appendingUserMessage _: String) -> [(role: String, content: String)] {
+        currentThreadSnapshot.conversationItems.compactMap { item in
+            switch item {
+            case .userMessage(let text, _), .planUserMessage(let text, _):
+                return (role: "user", content: text)
+            case .planAssistantMessage(let text, _):
+                return (role: "assistant", content: text)
+            case .agentResponse(let run):
+                let response = run.output.isEmpty
+                    ? currentThreadSnapshot.protocolState(for: run).completionSummary
+                    : run.output
+                return response.map { (role: "assistant", content: String($0.prefix(2000))) }
+            case .scheduleResult, .systemInfo, .recapResult:
+                return nil
+            }
+        }
+    }
+
+    private func planModeSkillContext() -> String {
+        """
+        PLAN MODE:
+        You are planning a follow-up for an existing ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Use the visible conversation context to propose a safe execution plan.
+        The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Plan Mode.
+
+        Return concise planning prose, then include exactly one structured plan line using this prefix:
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+
+        Step risk must be low, medium, or high. Step status must be pending. Include likely tools and a done signal for each step. The user must confirm from the Plan panel before execution starts.
+        """
     }
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "heic"]

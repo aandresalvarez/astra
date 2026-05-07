@@ -51,13 +51,31 @@ public enum CopilotStreamEventParser {
         return parsed
     }
 
+    public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
+        parsePlainTextAgentEvents(line: line, appendingNewline: appendingNewline)
+            .compactMap(parsedEvent(from:))
+    }
+
+    public static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        if let prompt = plainTextPermissionPrompt(line: trimmed) {
+            return [.permissionRequested(tool: prompt.tool, reason: prompt.reason)]
+        }
+        return [.text(text: appendingNewline ? line + "\n" : trimmed)]
+    }
+
+    public static func isBlockingPlainTextPermissionPrompt(line: String) -> Bool {
+        plainTextPermissionPrompt(line: line.trimmingCharacters(in: .whitespacesAndNewlines))?.isBlocking == true
+    }
+
     public static func parseAgentEvents(line: String) -> [AgentEvent] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
         guard let data = trimmed.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return [.text(text: trimmed)]
+            return parsePlainTextAgentEvents(line: trimmed)
         }
 
         return events(from: object, raw: trimmed)
@@ -353,6 +371,39 @@ public enum CopilotStreamEventParser {
             if !value.isEmpty {
                 return value
             }
+        }
+        return nil
+    }
+
+    private static func plainTextPermissionPrompt(line: String) -> (tool: String, reason: String, isBlocking: Bool)? {
+        let lower = line.lowercased()
+        if lower.contains("permission denied and could not request permission from user") {
+            return (
+                tool: inferredToolName(from: line) ?? "ToolApproval",
+                reason: line,
+                isBlocking: true
+            )
+        }
+        if lower.contains("allow access to these paths") && lower.contains("(y/n)") {
+            return (
+                tool: "WorkspaceAccess",
+                reason: line,
+                isBlocking: true
+            )
+        }
+        if lower.contains("outside the allowed directories") {
+            return (
+                tool: "WorkspaceAccess",
+                reason: line,
+                isBlocking: false
+            )
+        }
+        if lower.contains("permission denied") {
+            return (
+                tool: inferredToolName(from: line) ?? "ToolApproval",
+                reason: line,
+                isBlocking: false
+            )
         }
         return nil
     }

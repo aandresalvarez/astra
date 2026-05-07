@@ -462,6 +462,57 @@ struct LogDiagnosticsTests {
         #expect(!report.issues.contains { $0.id.hasPrefix("worker.permission_denied") })
     }
 
+    @Test("Runtime failure suppresses duplicate worker exit warnings")
+    func runtimeFailureSuppressesDuplicateWorkerExitWarnings() {
+        let taskID = UUID(uuidString: "BEB972EC-3D4C-45F9-9A42-3E134BD11103")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .error,
+                    category: "Worker",
+                    message: "runtime.failure_diagnostic failure_category=permission_denied runtime=copilot_cli exit_code=15",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_001)
+                ),
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "task_short=BEB972EC worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    timestamp: Date(timeIntervalSince1970: 1_001)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.map(\.id) == ["runtime.failure_diagnostic.permission_denied"])
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Generic task_short warning uses underlying signal")
+    func genericTaskShortWarningUsesUnderlyingSignal() {
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Worker",
+                    message: "task_short=BEB972EC worker.exited exit_code=15 phase=run runtime=copilot_cli",
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.first?.id == "warning.worker.exited")
+        #expect(report.issues.first?.signal == "worker.exited")
+    }
+
     @Test("Possibly stalled runtime progress state is reported")
     func possiblyStalledProgressStateIsReported() {
         let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
@@ -480,5 +531,87 @@ struct LogDiagnosticsTests {
 
         #expect(report.issues.contains { $0.id == "runtime.progress_state.possibly_stalled" })
         #expect(report.markdown.contains("Running task may be stalled"))
+    }
+
+    @Test("Blocked plan step is reported when unresolved")
+    func unresolvedPlanStepBlockerIsReported() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(report.issues.contains { $0.id == "plan.step.blocked.step-2" })
+        #expect(report.markdown.contains("Plan execution is blocked"))
+        #expect(report.markdown.contains("20DBCF1C"))
+    }
+
+    @Test("Resolved plan step blocker is suppressed")
+    func resolvedPlanStepBlockerIsSuppressed() {
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .debug,
+                    category: "Plan",
+                    message: "plan.step.state_changed latest_run_status=running plan_id=PLAN step_id=step-2 step_status=done summary=Finished",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_030)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("plan.step.blocked") })
+        #expect(!report.markdown.contains("Plan execution is blocked"))
+    }
+
+    @Test("Failed plan execution suppresses earlier plan blocker")
+    func failedPlanExecutionSuppressesEarlierPlanBlocker() {
+        let taskID = UUID(uuidString: "BEB972EC-3D4C-45F9-9A42-3E134BD11103")!
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .warning,
+                    category: "Plan",
+                    message: "plan.step.blocked blocked_reason=Need approval latest_run_status=running plan_id=PLAN step_id=step-2 step_status=blocked",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_000)
+                ),
+                LogEntry(
+                    level: .error,
+                    category: "Worker",
+                    message: "runtime.failure_diagnostic failure_category=permission_denied runtime=copilot_cli exit_code=15",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_030)
+                ),
+                LogEntry(
+                    level: .info,
+                    category: "Plan",
+                    message: "plan.execution.failed plan_id=PLAN reason=failed",
+                    taskID: taskID,
+                    timestamp: Date(timeIntervalSince1970: 1_031)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+
+        #expect(!report.issues.contains { $0.id.hasPrefix("plan.step.blocked") })
+        #expect(report.issues.contains { $0.id == "runtime.failure_diagnostic.permission_denied" })
     }
 }

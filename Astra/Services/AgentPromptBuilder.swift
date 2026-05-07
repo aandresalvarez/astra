@@ -64,6 +64,24 @@ enum AgentPromptBuilder {
         return parts.joined(separator: "\n\n")
     }
 
+    static func buildApprovedPlanExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload) -> String {
+        var prompt = buildPrompt(for: task)
+        prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan)
+        return prompt
+    }
+
+    static func buildApprovedPlanStepExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload, step: TaskPlanPayloadStep) -> String {
+        var prompt = buildPrompt(for: task)
+        prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan, approvedStep: step)
+        return prompt
+    }
+
+    static func buildApprovedPlanFollowUpPrompt(message: String, task: AgentTask, plan: TaskPlanPayload) -> String {
+        var prompt = buildFreshFollowUpPrompt(message: message, task: task)
+        prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan, userRequest: message)
+        return prompt
+    }
+
     private static func appendSSHContext(for task: AgentTask, to parts: inout [String]) {
         guard let ws = task.workspace else { return }
         let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
@@ -109,8 +127,35 @@ enum AgentPromptBuilder {
     private static func appendTaskOutputFolder(for task: AgentTask, to parts: inout [String]) {
         let taskDir = task.taskFolder
         if !taskDir.isEmpty {
-            parts.append("Task Output Folder: \(taskDir)\nSave any output files, reports, or artifacts to this folder. The workspace root is available for reading shared files.")
+            let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
+            if let relativePath {
+                parts.append("""
+                Task Output Folder: \(relativePath)
+                Absolute path: \(taskDir)
+                This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
+                """)
+            } else {
+                parts.append("""
+                Task Output Folder: \(taskDir)
+                This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
+                """)
+            }
         }
+    }
+
+    private static func relativeTaskFolderPath(for task: AgentTask, taskDir: String) -> String? {
+        let base = task.codeWorkingDirectory
+        guard !base.isEmpty else { return nil }
+        let standardizedBase = URL(fileURLWithPath: base).standardizedFileURL.path
+        let standardizedTaskDir = URL(fileURLWithPath: taskDir).standardizedFileURL.path
+        guard standardizedTaskDir == standardizedBase || standardizedTaskDir.hasPrefix(standardizedBase + "/") else {
+            return nil
+        }
+        if standardizedTaskDir == standardizedBase {
+            return "."
+        }
+        let suffix = standardizedTaskDir.dropFirst(standardizedBase.count + 1)
+        return suffix.isEmpty ? "." : String(suffix)
     }
 
     private static func appendInputs(for task: AgentTask, to parts: inout [String]) {
@@ -383,10 +428,64 @@ enum AgentPromptBuilder {
         Marker prefix must be exactly `ASTRA_EVENT ` followed by one JSON object.
         Supported markers:
         ASTRA_EVENT {"v":1,"type":"todo.replace","items":[{"text":"Short step","status":"pending"}]}
+        ASTRA_EVENT {"v":1,"type":"plan.step.started","planID":"PLAN_UUID","stepID":"stable-step-id","status":"running"}
+        ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"PLAN_UUID","stepID":"stable-step-id","status":"done","summary":"What finished"}
+        ASTRA_EVENT {"v":1,"type":"plan.step.blocked","planID":"PLAN_UUID","stepID":"stable-step-id","status":"blocked","reason":"What is blocking progress"}
+        ASTRA_EVENT {"v":1,"type":"plan.step.skipped","planID":"PLAN_UUID","stepID":"stable-step-id","status":"skipped","reason":"Why skipped"}
         ASTRA_EVENT {"v":1,"type":"complete","summary":"What changed and what is ready for review.","verifiedBy":"Tests or checks run"}
         For todo.replace, replace the whole visible plan. Each item status must be `pending` or `done`.
+        For plan.step markers, use the exact planID and stepID from the approved plan. Emit started before work on a step, completed when it is done, blocked when permission or missing context prevents progress, and skipped when intentionally not doing a step.
         For complete, summarize completed work and include verifiedBy when you ran checks. This marker is advisory only: keep writing the final response normally and do not rely on it to end the task.
         Do not wrap ASTRA_EVENT lines in markdown, quotes, bullets, or code fences.
         """)
+    }
+
+    private static func approvedPlanExecutionInstructions(
+        plan: TaskPlanPayload,
+        userRequest: String? = nil,
+        approvedStep: TaskPlanPayloadStep? = nil
+    ) -> String {
+        let scopeInstructions = if let approvedStep {
+            """
+            ASTRA review mode approved only the next plan step.
+            Execute exactly this approved step and stop: \(approvedStep.id) — \(approvedStep.title).
+            Do not execute later plan steps. If the approved step requires a later step first, emit a blocked marker for this step and explain the dependency.
+            """
+        } else {
+            """
+            ASTRA auto mode approved the full plan.
+            Execute the remaining approved plan steps until the plan is complete or blocked.
+            Do not redo steps already marked done or skipped.
+            """
+        }
+
+        var parts: [String] = [
+            """
+            You are executing an ASTRA-approved plan.
+            Use the full plan for context, but work step by step.
+            \(scopeInstructions)
+            Before starting a step, emit ASTRA_EVENT {"v":1,"type":"plan.step.started","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"running"}.
+            When a step finishes, emit ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"done","summary":"What finished"}.
+            If blocked, emit ASTRA_EVENT {"v":1,"type":"plan.step.blocked","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"blocked","reason":"What is blocking progress"} and explain the blocker.
+            If skipped, emit ASTRA_EVENT {"v":1,"type":"plan.step.skipped","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"skipped","reason":"Why skipped"}.
+            Do not materially change the approved plan without saying why.
+            The user has explicitly approved this plan in ASTRA. Do not ask for a separate interactive tool approval; if a permission or policy blocks work, emit a blocked marker and explain the exact missing permission.
+            """
+        ]
+
+        if let userRequest, !userRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("User's approved execution request:\n\(userRequest)")
+        }
+
+        parts.append("Approved plan JSON:\n\(TaskPlanService.encodePlanPayload(plan))")
+        if let approvedStep {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let data = try? encoder.encode(approvedStep),
+               let stepJSON = String(data: data, encoding: .utf8) {
+                parts.append("Approved next step JSON:\n\(stepJSON)")
+            }
+        }
+        return parts.joined(separator: "\n\n")
     }
 }
