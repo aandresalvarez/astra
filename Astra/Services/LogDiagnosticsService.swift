@@ -410,9 +410,11 @@ enum LogDiagnosticsService {
         let message = entry.message
         let lower = message.lowercased()
         guard lower.contains(AuditEvent.connectorTested.rawValue) else { return nil }
-        guard lower.contains("credential_state=rejected")
-                || lower.contains("result=auth_failed")
-                || lower.contains("http_status=401")
+        let explicitlyRejected = lower.contains("credential_state=rejected")
+            || lower.contains("result=auth_failed")
+        let rejectedAuthProbe = lower.contains("auth_verified=false")
+            && lower.contains("http_status=401")
+        guard explicitlyRejected || rejectedAuthProbe
         else { return nil }
         guard let evidenceKey = connectorEvidenceKey(for: entry) else { return nil }
         guard entries.indices.contains(index), index > entries.startIndex else { return nil }

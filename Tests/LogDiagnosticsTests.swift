@@ -185,6 +185,27 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("credential_state=rejected"))
     }
 
+    @Test("Connector scope failures are not reported as auth regressions")
+    func connectorScopeFailureDoesNotBecomeCredentialRegression() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested auth_verified=true connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=authenticated endpoint_kind=jira.myself result=authenticated service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested auth_verified=true connector_id=JIRA-1 credential_evidence=connector_auth_v1 credential_state=authenticated endpoint_kind=jira.mypermissions fallback_endpoint_kind=jira.myself fallback_http_status=200 http_status=401 result=endpoint_scope_failure service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_100)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_200))
+
+        #expect(!report.issues.contains { $0.title == "Connector credentials stopped authenticating" })
+        #expect(report.issues.contains { $0.title == "Connector auth probe needs scope or endpoint review" })
+    }
+
     @Test("Connector preflight failure is reported as task-blocking")
     func connectorPreflightFailureIsTaskBlocking() {
         let report = LogDiagnosticsService.makeReport(entries: [

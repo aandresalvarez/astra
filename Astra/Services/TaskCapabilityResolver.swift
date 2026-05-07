@@ -12,7 +12,8 @@ struct TaskCapabilityResolver {
     var resolver: SkillResolver {
         let standaloneTools = allLocalTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
-        let liveSkills = allBehaviorSkills
+        let liveConnectors = allConnectors
+        let liveSkills = allBehaviorSkills(connectors: liveConnectors)
 
         let liveCLICommands = Set(
             allLocalTools
@@ -28,7 +29,7 @@ struct TaskCapabilityResolver {
         }
 
         var connEnvVars: [String: String] = [:]
-        for connector in allConnectors {
+        for connector in liveConnectors {
             for (key, value) in connector.allEnvironmentVariables {
                 connEnvVars[key] = value
             }
@@ -45,8 +46,12 @@ struct TaskCapabilityResolver {
     }
 
     var allBehaviorSkills: [Skill] {
+        allBehaviorSkills(connectors: allConnectors)
+    }
+
+    private func allBehaviorSkills(connectors: [Connector]) -> [Skill] {
         var combined = task.skills
-        for connector in allConnectors {
+        for connector in connectors {
             guard let skill = connector.skill else { continue }
             combined.append(skill)
         }

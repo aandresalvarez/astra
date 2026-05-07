@@ -181,6 +181,13 @@ struct PluginCatalogLoadTests {
         #expect(skill.behaviorInstructions.contains("Do not call /rest/api/3/permissions"))
         #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token"))
     }
+
+    @Test("Security auditor bundled capability version matches fallback catalog")
+    func securityAuditorVersionMatchesFallbackCatalog() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })
+
+        #expect(package.version == "2.0.1")
+    }
 }
 
 // MARK: - isInstalled

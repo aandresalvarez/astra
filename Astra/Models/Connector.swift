@@ -197,8 +197,9 @@ final class Connector {
         }
 
         let method = testHTTPMethod.isEmpty ? "GET" : testHTTPMethod.uppercased()
+        let normalizedServiceType = serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
-        if serviceType == "jira" {
+        if normalizedServiceType == "jira" {
             let outcome = await JiraConnectorAuthTester(
                 connectorID: id,
                 baseURL: base,
@@ -222,7 +223,7 @@ final class Connector {
         }
 
         let testPath: String
-        switch serviceType {
+        switch normalizedServiceType {
         case "github": testPath = "/user"
         case "slack": testPath = "/auth.test"
         case "confluence": testPath = "/rest/api/content?limit=1"

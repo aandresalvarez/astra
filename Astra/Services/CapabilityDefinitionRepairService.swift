@@ -28,7 +28,7 @@ enum CapabilityDefinitionRepairService {
 
         var updated = 0
         for package in approvedPackages where installedIDs.contains(package.id) {
-            let serviceTypes = Set(package.connectors.map(\.serviceType))
+            let serviceTypes = Set(package.connectors.map { normalizedServiceType($0.serviceType) })
             for pluginSkill in package.skills {
                 for skill in skills where shouldRefresh(
                     skill,
@@ -77,12 +77,16 @@ enum CapabilityDefinitionRepairService {
         }
 
         if connectors.contains(where: { connector in
-            connector.workspace?.id == workspace.id && serviceTypes.contains(connector.serviceType)
+            connector.workspace?.id == workspace.id && serviceTypes.contains(normalizedServiceType(connector.serviceType))
         }) {
             return true
         }
 
         return skill.behaviorInstructions != pluginSkill.behaviorInstructions
+    }
+
+    private static func normalizedServiceType(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func isLikelyApprovedPackageCopy(_ skill: Skill, pluginSkill: PluginSkill) -> Bool {

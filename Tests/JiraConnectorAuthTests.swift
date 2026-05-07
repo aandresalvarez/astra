@@ -33,6 +33,57 @@ struct JiraConnectorAuthTests {
         ])
     }
 
+    @Test("Jira test normalizes service type before selecting auth tester")
+    func jiraServiceTypeIsCaseInsensitive() async throws {
+        let (connector, store) = makeConnector(serviceType: "Jira")
+        let transport = MockConnectorHTTPTransport(stubs: [
+            .init(
+                path: "/rest/api/3/myself",
+                queryContains: [],
+                statusCode: 200,
+                body: #"{"accountId":"abc"}"#
+            ),
+            .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["permissions=BROWSE_PROJECTS"],
+                statusCode: 200,
+                body: permissionsJSON(browse: true)
+            )
+        ])
+
+        let result = await connector.testConnection(store: store, transport: transport)
+
+        #expect(result.0)
+        #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/myself",
+            "/rest/api/3/mypermissions"
+        ])
+    }
+
+    @Test("Generic connector test preserves query parameters embedded in test path")
+    func genericConnectorTestPreservesEmbeddedQueryParameters() async throws {
+        let connector = Connector(
+            name: "Confluence",
+            serviceType: "confluence",
+            baseURL: "https://example.atlassian.net/wiki",
+            authMethod: "none"
+        )
+        let transport = MockConnectorHTTPTransport(stubs: [
+            .init(
+                path: "/wiki/rest/api/content",
+                queryContains: ["limit=1"],
+                statusCode: 200,
+                body: #"{"results":[]}"#
+            )
+        ])
+
+        let result = await connector.testConnection(store: MockSecretStore(), transport: transport)
+
+        #expect(result.0)
+        #expect(transport.requests.first?.url?.path == "/wiki/rest/api/content")
+        #expect(transport.requests.first?.url?.query == "limit=1")
+    }
+
     @Test("Jira auth outcome includes redacted credential health evidence")
     func jiraOutcomeIncludesCredentialEvidence() async throws {
         let (connector, store) = makeConnector()
@@ -206,10 +257,10 @@ struct JiraConnectorAuthTests {
     }
 }
 
-private func makeConnector(projects: String = "") -> (Connector, MockSecretStore) {
+private func makeConnector(serviceType: String = "jira", projects: String = "") -> (Connector, MockSecretStore) {
     let connector = Connector(
         name: "Jira",
-        serviceType: "jira",
+        serviceType: serviceType,
         baseURL: "https://example.atlassian.net/",
         authMethod: "basic"
     )

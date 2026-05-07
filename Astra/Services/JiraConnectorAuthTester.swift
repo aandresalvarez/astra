@@ -20,12 +20,25 @@ enum ConnectorRequestBuilder {
             return base
         }
 
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmedPath.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let pathWithoutQuery = parts.first.map(String.init) ?? ""
+        let embeddedQueryItems: [URLQueryItem]
+        if parts.count > 1 {
+            var queryComponents = URLComponents()
+            queryComponents.percentEncodedQuery = String(parts[1])
+            embeddedQueryItems = queryComponents.queryItems ?? []
+        } else {
+            embeddedQueryItems = []
+        }
+
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let childPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let childPath = pathWithoutQuery.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = "/" + [basePath, childPath]
             .filter { !$0.isEmpty }
             .joined(separator: "/")
-        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        let combinedQueryItems = (components.queryItems ?? []) + embeddedQueryItems + queryItems
+        components.queryItems = combinedQueryItems.isEmpty ? nil : combinedQueryItems
         return components.url ?? base
     }
 

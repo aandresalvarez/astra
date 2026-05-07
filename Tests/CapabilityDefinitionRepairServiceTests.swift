@@ -79,7 +79,7 @@ struct CapabilityDefinitionRepairServiceTests {
         skill.workspace = workspace
         context.insert(skill)
 
-        let connector = Connector(name: "Jira", serviceType: "jira")
+        let connector = Connector(name: "Jira", serviceType: "Jira")
         connector.workspace = workspace
         context.insert(connector)
         try context.save()
