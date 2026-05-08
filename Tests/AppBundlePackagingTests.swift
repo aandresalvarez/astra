@@ -7,12 +7,15 @@ struct AppBundlePackagingTests {
     func swiftPMResourcesAreStagedInSignedResourcesDirectory() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
         let resourceCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/""#
+        let toolCopy = #"cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product""#
         let invalidRootCopy = #"cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_BUNDLE/""#
         let signingCommand = #"/usr/bin/codesign --force --deep"#
 
         #expect(script.contains(resourceCopy))
+        #expect(script.contains(toolCopy))
         #expect(!script.contains(invalidRootCopy))
         #expect(try index(of: resourceCopy, in: script) < index(of: signingCommand, in: script))
+        #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
     private var repoRoot: URL {
