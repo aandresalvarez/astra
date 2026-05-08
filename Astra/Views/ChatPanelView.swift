@@ -369,6 +369,7 @@ struct ChatPanelView: View {
     var onTaskCreated: ((AgentTask) -> Void)?
     var onAddSSHConnection: (() -> Void)?
     var onManageSkills: (() -> Void)?
+    var onPlanApproved: ((AgentTask) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1326,6 +1327,7 @@ struct ChatPanelView: View {
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
+        onPlanApproved?(task)
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload) {
@@ -1344,6 +1346,7 @@ struct ChatPanelView: View {
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
+        onPlanApproved?(task)
 
         Task {
             let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
@@ -2233,7 +2236,7 @@ private struct ApprovedPlanReadyCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Plan ready")
                         .font(Stanford.heading(20))
-                    Text("The approved plan is in the Plan tab. Use the action below when you're ready to start execution.")
+                    Text("The approved plan is open in Canvas. You can still refine pending or blocked steps there before running it.")
                         .font(Stanford.caption(14))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

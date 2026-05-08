@@ -251,6 +251,7 @@ struct ContentView: View {
                 onRetryTask: retryTask,
                 onResumeTask: resumeTask,
                 onApproveTask: approveTask,
+                onPlanApproved: handlePlanApproved,
                 onToggleDone: toggleDone,
                 onMoveToDraft: moveTaskToDraft,
                 onForkTask: setSelectedTask,
@@ -566,6 +567,24 @@ struct ContentView: View {
     private func handleTaskCreated(_ task: AgentTask) {
         setSelectedTask(task)
         isComposingTask = false
+        revealApprovedPlanCanvasIfNeeded(for: task)
+    }
+
+    private func handlePlanApproved(_ task: AgentTask) {
+        if selectedTask?.id != task.id {
+            setSelectedTask(task)
+        }
+        isComposingTask = false
+        revealApprovedPlanCanvasIfNeeded(for: task)
+    }
+
+    private func revealApprovedPlanCanvasIfNeeded(for task: AgentTask) {
+        let state = TaskPlanService.reconstruct(for: task)
+        guard state.plan != nil,
+              state.lifecycleStatus == .approved || state.lifecycleStatus == .executing else {
+            return
+        }
+        activeWorkspaceCanvasItem = .plan
     }
 
     private func openExistingTask(_ task: AgentTask) {
@@ -1186,6 +1205,7 @@ private struct ContentDetailAreaView: View {
     let onRetryTask: (AgentTask) -> Void
     let onResumeTask: (AgentTask) -> Void
     let onApproveTask: (AgentTask) -> Void
+    let onPlanApproved: (AgentTask) -> Void
     let onToggleDone: (AgentTask) -> Void
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
@@ -1269,6 +1289,7 @@ private struct ContentDetailAreaView: View {
             onRetryTask: onRetryTask,
             onResumeTask: onResumeTask,
             onApproveTask: onApproveTask,
+            onPlanApproved: onPlanApproved,
             onToggleDone: onToggleDone,
             onMoveToDraft: onMoveToDraft,
             onForkTask: onForkTask,
@@ -1329,6 +1350,7 @@ private struct ContentDetailContentView: View {
     let onRetryTask: (AgentTask) -> Void
     let onResumeTask: (AgentTask) -> Void
     let onApproveTask: (AgentTask) -> Void
+    let onPlanApproved: (AgentTask) -> Void
     let onToggleDone: (AgentTask) -> Void
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
@@ -1362,7 +1384,8 @@ private struct ContentDetailContentView: View {
                     onQuickRun: onQuickRun,
                     onTaskCreated: onTaskCreated,
                     onAddSSHConnection: onAddSSHConnection,
-                    onManageSkills: onManageSkills
+                    onManageSkills: onManageSkills,
+                    onPlanApproved: onPlanApproved
                 )
                 .id(task.id)
             }
@@ -1376,6 +1399,7 @@ private struct ContentDetailContentView: View {
                     onRetryTask: onRetryTask,
                     onResumeTask: onResumeTask,
                     onApproveTask: onApproveTask,
+                    onPlanApproved: onPlanApproved,
                     onToggleDone: onToggleDone,
                     sshReloadTrigger: sshReloadTrigger,
                     onMoveToDraft: onMoveToDraft,
@@ -1392,7 +1416,8 @@ private struct ContentDetailContentView: View {
                 onQuickRun: onQuickRun,
                 onTaskCreated: onTaskCreated,
                 onAddSSHConnection: onAddSSHConnection,
-                onManageSkills: onManageSkills
+                onManageSkills: onManageSkills,
+                onPlanApproved: onPlanApproved
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {

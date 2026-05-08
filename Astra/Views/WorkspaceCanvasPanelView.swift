@@ -130,6 +130,9 @@ struct WorkspaceCanvasPanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     planHeader
+                    if let approvalNoticeText {
+                        approvalNotice(text: approvalNoticeText)
+                    }
                     stepList
                     if canEditPlan {
                         addStepButton
@@ -183,6 +186,46 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
         }
+    }
+
+    private var approvalNoticeText: String? {
+        switch planState.lifecycleStatus {
+        case .approved:
+            if canEditPlan {
+                return "Approved plan is open in Canvas. You can still refine pending or blocked steps here before running them."
+            }
+            return "Approved plan is open in Canvas. It is read-only while the current step is running."
+        case .executing:
+            if canEditPlan {
+                return "This approved plan is running step by step. You can still refine future pending or blocked steps before approving them."
+            }
+            return "This approved plan is running. Canvas is read-only until the current step pauses or finishes."
+        case .none, .draft, .completed, .cancelled, .failed:
+            return nil
+        }
+    }
+
+    private func approvalNotice(text: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(Stanford.ui(14, weight: .semibold))
+                .foregroundStyle(Stanford.paloAltoGreen)
+                .frame(width: 18, height: 18)
+
+            Text(text)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Stanford.paloAltoGreen.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Stanford.paloAltoGreen.opacity(0.18), lineWidth: 1)
+        )
     }
 
     private var stepList: some View {

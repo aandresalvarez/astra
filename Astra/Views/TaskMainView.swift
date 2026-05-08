@@ -40,6 +40,7 @@ struct TaskMainView: View {
     var onRetryTask: ((AgentTask) -> Void)?
     var onResumeTask: ((AgentTask) -> Void)?
     var onApproveTask: ((AgentTask) -> Void)?
+    var onPlanApproved: ((AgentTask) -> Void)?
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
@@ -2226,6 +2227,7 @@ struct TaskMainView: View {
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
+        onPlanApproved?(task)
 
         Task {
             await taskQueue.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
