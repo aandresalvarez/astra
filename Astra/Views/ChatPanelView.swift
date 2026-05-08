@@ -625,19 +625,10 @@ struct ChatPanelView: View {
             if let draft = draftToLoad {
                 loadDraftMessages(draft)
             }
-            pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if event.modifierFlags.contains(.command),
-                   event.charactersIgnoringModifiers == "v" {
-                    if smartPaste() { return nil }
-                }
-                return event
-            }
+            installPasteMonitor()
         }
         .onDisappear {
-            if let monitor = pasteMonitor {
-                NSEvent.removeMonitor(monitor)
-                pasteMonitor = nil
-            }
+            removePasteMonitor()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
     }
@@ -1679,6 +1670,24 @@ struct ChatPanelView: View {
         }
 
         return false
+    }
+
+    private func installPasteMonitor() {
+        removePasteMonitor()
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.modifierFlags.contains(.command),
+               event.charactersIgnoringModifiers == "v" {
+                if smartPaste() { return nil }
+            }
+            return event
+        }
+    }
+
+    private func removePasteMonitor() {
+        if let monitor = pasteMonitor {
+            NSEvent.removeMonitor(monitor)
+            pasteMonitor = nil
+        }
     }
 
     private func attachFile() {

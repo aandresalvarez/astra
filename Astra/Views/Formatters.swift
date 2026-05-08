@@ -48,6 +48,27 @@ enum Formatters {
         return f.string(from: date)
     }
 
+    /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
+    /// compact rows preserve both the recognizable prefix and useful suffix.
+    /// Normal prose is left alone.
+    static func shortenIdentifierTokens(
+        _ text: String,
+        maxTokenLength: Int = 28,
+        keepEachSide: Int = 10
+    ) -> String {
+        text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isWhitespace })
+            .map { rawToken -> String in
+                let token = String(rawToken)
+                guard token.count > maxTokenLength else { return token }
+                let hasIdSeparator = token.contains(where: { "._-/".contains($0) })
+                guard hasIdSeparator else { return token }
+                let head = token.prefix(keepEachSide)
+                let tail = token.suffix(keepEachSide)
+                return "\(head)…\(tail)"
+            }
+            .joined(separator: " ")
+    }
+
     /// Return an SF Symbol name for a file path based on its extension.
     static func fileIcon(for path: String) -> String {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()

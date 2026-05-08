@@ -854,7 +854,7 @@ struct KanbanBoardView: View {
             Text("Empty Kanban")
                 .font(Stanford.body(15).weight(.semibold))
                 .foregroundStyle(.primary)
-            Text("Create a task to start moving work from Open to Done.")
+            Text("Create a task to start the workspace board.")
                 .font(Stanford.caption(12))
                 .foregroundStyle(.secondary)
         }
@@ -1239,9 +1239,7 @@ struct KanbanColumnView: View {
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isColumnHovered)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isTrashHovered)
                 }
-                Text("\(tasks.count)")
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(.secondary)
+                KanbanCountBadge(count: tasks.count, tint: category.color)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -1321,6 +1319,22 @@ struct KanbanColumnView: View {
         .scaleEffect(isActiveDropTarget ? 1.018 : 1)
         .shadow(color: category.color.opacity(isActiveDropTarget ? 0.16 : 0), radius: isActiveDropTarget ? 12 : 0, x: 0, y: isActiveDropTarget ? 6 : 0)
         .animation(reduceMotion ? .easeInOut(duration: 0.1) : .spring(response: 0.28, dampingFraction: 0.82), value: isActiveDropTarget)
+    }
+}
+
+private struct KanbanCountBadge: View {
+    let count: Int
+    let tint: Color
+
+    var body: some View {
+        Text("\(count)")
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(count == 0 ? .secondary : tint)
+            .padding(.horizontal, Stanford.sidebarBadgeHorizontalPadding)
+            .frame(minWidth: Stanford.sidebarBadgeMinWidth, minHeight: Stanford.sidebarBadgeHeight)
+            .background(tint.opacity(count == 0 ? 0.06 : 0.12))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.sidebarBadgeCornerRadius, style: .continuous))
+            .accessibilityLabel("\(count) \(count == 1 ? "task" : "tasks")")
     }
 }
 
@@ -1598,17 +1612,11 @@ struct KanbanTaskCardView: View {
         maxTokenLength: Int = 28,
         keepEachSide: Int = 10
     ) -> String {
-        text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isWhitespace })
-            .map { rawToken -> String in
-                let token = String(rawToken)
-                guard token.count > maxTokenLength else { return token }
-                let hasIdSeparator = token.contains(where: { "._-/".contains($0) })
-                guard hasIdSeparator else { return token }
-                let head = token.prefix(keepEachSide)
-                let tail = token.suffix(keepEachSide)
-                return "\(head)…\(tail)"
-            }
-            .joined(separator: " ")
+        Formatters.shortenIdentifierTokens(
+            text,
+            maxTokenLength: maxTokenLength,
+            keepEachSide: keepEachSide
+        )
     }
 
     @ViewBuilder

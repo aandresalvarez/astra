@@ -1413,6 +1413,10 @@ private struct SidebarThreadRow: View {
         }
     }
 
+    private var displayTitle: String {
+        Formatters.shortenIdentifierTokens(task.title)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
             statusIcon
@@ -1420,11 +1424,12 @@ private struct SidebarThreadRow: View {
                 .opacity(showIcon ? (isActionableStatus && !isSelected && !isHovered ? 0.6 : 1) : 0)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(task.title)
+                Text(displayTitle)
                     .font(Stanford.ui(14, weight: titleWeight))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(task.title)
 
                 if let secondaryText {
                     Text(secondaryText)
@@ -1561,10 +1566,13 @@ struct SearchPanelOverlay: View {
     }
 
     private var filteredTasks: [AgentTask] {
-        guard !searchText.isEmpty else { return recentTasks }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return recentTasks }
         return tasks.filter {
-            $0.title.localizedCaseInsensitiveContains(searchText) ||
-            $0.goal.localizedCaseInsensitiveContains(searchText)
+            $0.title.localizedCaseInsensitiveContains(query) ||
+            $0.goal.localizedCaseInsensitiveContains(query) ||
+            ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
+            ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
         }
         .sorted { $0.updatedAt > $1.updatedAt }
         .prefix(12)
@@ -1572,10 +1580,11 @@ struct SearchPanelOverlay: View {
     }
 
     private var filteredWorkspaces: [Workspace] {
-        guard !searchText.isEmpty else { return [] }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
         return workspaces.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.primaryPath.localizedCaseInsensitiveContains(searchText)
+            $0.name.localizedCaseInsensitiveContains(query) ||
+            $0.primaryPath.localizedCaseInsensitiveContains(query)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -1605,7 +1614,7 @@ struct SearchPanelOverlay: View {
                         .font(Stanford.ui(15))
                         .foregroundStyle(.secondary)
 
-                    TextField("Search tasks...", text: $searchText)
+                    TextField("Search tasks and workspaces", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(Stanford.ui(16))
                         .focused($isFocused)
@@ -1648,6 +1657,8 @@ struct SearchPanelOverlay: View {
                                                 .font(Stanford.ui(14))
                                                 .foregroundStyle(.primary)
                                                 .lineLimit(1)
+                                                .truncationMode(.middle)
+                                                .help(ws.name)
                                             Spacer()
                                         }
                                         .contentShape(Rectangle())
@@ -1691,15 +1702,20 @@ struct SearchPanelOverlay: View {
                                             .font(Stanford.ui(13))
                                             .foregroundStyle(.secondary)
                                             .frame(width: 18)
-                                        Text(task.title)
+                                        Text(Formatters.shortenIdentifierTokens(task.title))
                                             .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
                                             .foregroundStyle(.primary)
                                             .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .help(task.title)
                                         Spacer()
                                         if let ws = task.workspace {
-                                            Text(ws.name)
+                                            Text(Formatters.shortenIdentifierTokens(ws.name, maxTokenLength: 24, keepEachSide: 8))
                                                 .font(Stanford.caption(11))
                                                 .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+                                                .help(ws.name)
                                         }
                                     }
                                     .contentShape(Rectangle())

@@ -33,4 +33,17 @@ struct FormattersTests {
 
     @Test("fileIcon for markdown")
     func markdownIcon() { #expect(Formatters.fileIcon(for: "README.md") == "doc.plaintext") }
+
+    @Test("shortenIdentifierTokens preserves normal prose")
+    func shortenIdentifierTokensLeavesProseAlone() {
+        #expect(Formatters.shortenIdentifierTokens("Review the workspace import flow") == "Review the workspace import flow")
+    }
+
+    @Test("shortenIdentifierTokens middle-ellipsizes long identifiers")
+    func shortenIdentifierTokensKeepsIdentifierHeadAndTail() {
+        let input = "Inspect project-alpha-prod-eu.table_long_identifier_notes_archive"
+        let output = Formatters.shortenIdentifierTokens(input)
+
+        #expect(output == "Inspect project-al…es_archive")
+    }
 }

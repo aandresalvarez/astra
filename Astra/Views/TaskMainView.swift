@@ -203,20 +203,11 @@ struct TaskMainView: View {
             threadViewModel.reset(for: task)
             loadSSHConnections()
             logRuntimeHealthIfNeeded(reason: "appear")
-            pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if event.modifierFlags.contains(.command),
-                   event.charactersIgnoringModifiers == "v" {
-                    if smartPaste() { return nil }
-                }
-                return event
-            }
+            installPasteMonitor()
         }
         .onDisappear {
             threadViewModel.cancelGeneratedFilesRefresh()
-            if let monitor = pasteMonitor {
-                NSEvent.removeMonitor(monitor)
-                pasteMonitor = nil
-            }
+            removePasteMonitor()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
@@ -1945,6 +1936,24 @@ struct TaskMainView: View {
         }
 
         return false
+    }
+
+    private func installPasteMonitor() {
+        removePasteMonitor()
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.modifierFlags.contains(.command),
+               event.charactersIgnoringModifiers == "v" {
+                if smartPaste() { return nil }
+            }
+            return event
+        }
+    }
+
+    private func removePasteMonitor() {
+        if let monitor = pasteMonitor {
+            NSEvent.removeMonitor(monitor)
+            pasteMonitor = nil
+        }
     }
 
     /// Autocomplete /routine in the composer with a trailing space for inline instructions.
