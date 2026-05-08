@@ -201,6 +201,9 @@ struct ContentView: View {
                 effectiveWorkspace != nil && isWorkspaceRightRailVisible
             },
             set: { newValue in
+                if newValue {
+                    activeWorkspaceCanvasItem = nil
+                }
                 isWorkspaceRightRailVisible = newValue
             }
         )
@@ -542,7 +545,12 @@ struct ContentView: View {
     }
 
     private func toggleRightRail() {
-        isWorkspaceRightRailVisible.toggle()
+        if activeWorkspaceCanvasItem != nil {
+            activeWorkspaceCanvasItem = nil
+            isWorkspaceRightRailVisible = true
+        } else {
+            isWorkspaceRightRailVisible.toggle()
+        }
     }
 
     private func toggleWorkspaceCanvas() {
@@ -550,7 +558,12 @@ struct ContentView: View {
             activeWorkspaceCanvasItem = nil
             return
         }
-        activeWorkspaceCanvasItem = activeWorkspaceCanvasItem == .plan ? nil : .plan
+        if activeWorkspaceCanvasItem == .plan {
+            activeWorkspaceCanvasItem = nil
+        } else {
+            isWorkspaceRightRailVisible = false
+            activeWorkspaceCanvasItem = .plan
+        }
     }
 
     private func startComposingTask() {
@@ -575,6 +588,7 @@ struct ContentView: View {
             setSelectedTask(task)
         }
         isComposingTask = false
+        isWorkspaceRightRailVisible = false
         activeWorkspaceCanvasItem = .plan
     }
 
