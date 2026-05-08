@@ -369,7 +369,7 @@ struct ChatPanelView: View {
     var onTaskCreated: ((AgentTask) -> Void)?
     var onAddSSHConnection: (() -> Void)?
     var onManageSkills: (() -> Void)?
-    var onPlanApproved: ((AgentTask) -> Void)?
+    var onOpenPlan: ((AgentTask) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -536,7 +536,12 @@ struct ChatPanelView: View {
                                pendingPlan == nil {
                                 ApprovedPlanReadyCard(
                                     plan: approvedPlan,
-                                    isHistoryExpanded: $isApprovedPlanHistoryExpanded
+                                    isHistoryExpanded: $isApprovedPlanHistoryExpanded,
+                                    onOpenPlan: {
+                                        if let draftTask {
+                                            onOpenPlan?(draftTask)
+                                        }
+                                    }
                                 )
                                 .padding(.horizontal)
                                 .id("approved-plan-card")
@@ -1327,7 +1332,6 @@ struct ChatPanelView: View {
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
-        onPlanApproved?(task)
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload) {
@@ -1346,7 +1350,6 @@ struct ChatPanelView: View {
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
-        onPlanApproved?(task)
 
         Task {
             let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
@@ -2224,6 +2227,7 @@ struct ChatPanelView: View {
 private struct ApprovedPlanReadyCard: View {
     let plan: TaskPlanPayload
     @Binding var isHistoryExpanded: Bool
+    let onOpenPlan: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2236,7 +2240,7 @@ private struct ApprovedPlanReadyCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Plan ready")
                         .font(Stanford.heading(20))
-                    Text("The approved plan is open in Canvas. You can still refine pending or blocked steps there before running it.")
+                    Text("The approved plan can still be refined in Canvas before running it.")
                         .font(Stanford.caption(14))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2254,20 +2258,33 @@ private struct ApprovedPlanReadyCard: View {
             }
             .padding(.leading, 40)
 
-            Button {
-                withAnimation(.snappy(duration: 0.18)) {
-                    isHistoryExpanded.toggle()
+            HStack(spacing: 10) {
+                Button {
+                    onOpenPlan()
+                } label: {
+                    Label("Open Plan", systemImage: "rectangle.inset.filled")
+                        .labelStyle(.titleAndIcon)
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isHistoryExpanded ? "chevron.up" : "chevron.down")
-                        .font(Stanford.ui(11, weight: .semibold))
-                    Text(isHistoryExpanded ? "Hide planning discussion" : "Show planning discussion")
-                        .font(Stanford.caption(13).weight(.semibold))
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .controlSize(.small)
+
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        isHistoryExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isHistoryExpanded ? "chevron.up" : "chevron.down")
+                            .font(Stanford.ui(11, weight: .semibold))
+                        Text(isHistoryExpanded ? "Hide planning discussion" : "Show planning discussion")
+                            .font(Stanford.caption(13).weight(.semibold))
+                    }
+                    .foregroundStyle(Stanford.lagunita)
                 }
-                .foregroundStyle(Stanford.lagunita)
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
             .padding(.leading, 40)
         }
         .padding(18)

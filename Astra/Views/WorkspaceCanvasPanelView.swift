@@ -192,7 +192,7 @@ struct WorkspaceCanvasPanelView: View {
         switch planState.lifecycleStatus {
         case .approved:
             if canEditPlan {
-                return "Approved plan is open in Canvas. You can still refine pending or blocked steps here before running them."
+                return "Approved plan can still be refined here. Edit pending or blocked steps before running them."
             }
             return "Approved plan is open in Canvas. It is read-only while the current step is running."
         case .executing:

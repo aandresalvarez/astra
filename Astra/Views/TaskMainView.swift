@@ -40,7 +40,7 @@ struct TaskMainView: View {
     var onRetryTask: ((AgentTask) -> Void)?
     var onResumeTask: ((AgentTask) -> Void)?
     var onApproveTask: ((AgentTask) -> Void)?
-    var onPlanApproved: ((AgentTask) -> Void)?
+    var onOpenPlan: ((AgentTask) -> Void)?
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
@@ -1665,6 +1665,18 @@ struct TaskMainView: View {
 
             Spacer(minLength: 12)
 
+            if let onOpenPlan {
+                Button {
+                    onOpenPlan(task)
+                } label: {
+                    Label("Open Plan", systemImage: "rectangle.inset.filled")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .controlSize(.small)
+                .accessibilityIdentifier("OpenPlanButton")
+            }
+
             Button {
                 runApprovedPlan(plan, mode: mode)
             } label: {
@@ -2227,7 +2239,6 @@ struct TaskMainView: View {
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
-        onPlanApproved?(task)
 
         Task {
             await taskQueue.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
