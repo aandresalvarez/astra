@@ -3,6 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 PRODUCT_NAME="ASTRA"
+TOOL_PRODUCTS=("stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
@@ -70,6 +71,9 @@ if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
 fi
 
 swift build "${SWIFT_BUILD_ARGS[@]}"
+for tool_product in "${TOOL_PRODUCTS[@]}"; do
+  swift build "${SWIFT_BUILD_ARGS[@]}" --product "$tool_product"
+done
 BUILD_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
 
@@ -81,6 +85,13 @@ chmod +x "$APP_BINARY"
 if [ -d "$BUILD_DIR/ASTRA_ASTRA.bundle" ]; then
   cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/"
 fi
+
+BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
+mkdir -p "$BUNDLED_TOOLS_DIR"
+for tool_product in "${TOOL_PRODUCTS[@]}"; do
+  cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"
+  chmod +x "$BUNDLED_TOOLS_DIR/$tool_product"
+done
 
 if [ -f "$ROOT_DIR/Astra/Resources/AppIcon.icns" ]; then
   cp "$ROOT_DIR/Astra/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"

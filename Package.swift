@@ -5,7 +5,10 @@ let package = Package(
     name: "ASTRA",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "ASTRA", targets: ["ASTRAExecutable"])
+        .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
+        .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
+        .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
+        .executable(name: "stanford-graph-mail", targets: ["StanfordGraphMailTool"])
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.1")
@@ -14,6 +17,25 @@ let package = Package(
         .target(
             name: "ASTRACore",
             path: "ASTRACore"
+        ),
+        .target(
+            name: "MailToolSupport",
+            path: "Tools/MailToolSupport"
+        ),
+        .executableTarget(
+            name: "StanfordMailTool",
+            dependencies: ["MailToolSupport"],
+            path: "Tools/StanfordMailTool"
+        ),
+        .executableTarget(
+            name: "StanfordAppleMailTool",
+            dependencies: ["MailToolSupport"],
+            path: "Tools/StanfordAppleMailTool"
+        ),
+        .executableTarget(
+            name: "StanfordGraphMailTool",
+            dependencies: ["MailToolSupport"],
+            path: "Tools/StanfordGraphMailTool"
         ),
         .target(
             name: "ASTRA",
