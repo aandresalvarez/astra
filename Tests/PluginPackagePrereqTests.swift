@@ -124,18 +124,35 @@ struct PluginPackagePrereqTests {
         #expect(redcap?.skills.first?.behaviorInstructions.contains("content=formEventMapping") == true)
     }
 
-    @Test("Built-in Stanford Outlook Mail package is OAuth and text-only")
-    func builtInStanfordOutlookMailHasOAuthConnector() {
-        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-outlook-mail" }
+    @Test("Built-in Stanford Apple Mail package is local and text-only")
+    func builtInStanfordAppleMailUsesLocalMailBridge() {
+        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-apple-mail" }
         #expect(mail != nil)
         #expect(mail?.category == "Integrations")
-        #expect(mail?.connectors.count == 1)
-        #expect(mail?.connectors.first?.serviceType == "stanford_outlook_mail")
-        #expect(mail?.connectors.first?.authMethod == "oauth")
-        #expect(mail?.connectors.first?.credentialHints.isEmpty == true)
-        #expect(mail?.connectors.first?.configHints.map(\.key).contains("ASTRA_MAIL_CLIENT_ID") == true)
-        #expect(mail?.localTools.map(\.command) == ["stanford-mail"])
+        #expect(mail?.connectors.isEmpty == true)
+        #expect(mail?.localTools.map(\.command) == ["stanford-apple-mail"])
+        #expect(mail?.prerequisites.map(\.binary) == ["osascript"])
+        #expect(mail?.skills.first?.environmentKeys == ["ASTRA_APPLE_MAIL_ACCOUNT"])
+        #expect(mail?.skills.first?.environmentValues == [""])
+        #expect(mail?.setupGuide.contains("Graph is blocked") == true)
+        #expect(mail?.setupGuide.contains("@stanford.edu") == true)
         #expect(mail?.skills.first?.behaviorInstructions.contains("V1 is text-only") == true)
+        #expect(mail?.skills.first?.behaviorInstructions.contains("auto-detects exactly one @stanford.edu account") == true)
+    }
+
+    @Test("Built-in SHC Graph Mail package is local tool based")
+    func builtInSHCGraphMailUsesPowerShellBridge() {
+        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" }
+        #expect(mail != nil)
+        #expect(mail?.category == "Integrations")
+        #expect(mail?.connectors.isEmpty == true)
+        #expect(mail?.localTools.map(\.command) == ["stanford-graph-mail"])
+        #expect(mail?.prerequisites.map(\.binary) == ["pwsh"])
+        #expect(mail?.skills.first?.environmentKeys == ["ASTRA_GRAPH_MAIL_TENANT", "ASTRA_GRAPH_MAIL_ACCOUNT"])
+        #expect(mail?.skills.first?.environmentValues == ["stanfordhealthcare.org", ""])
+        #expect(mail?.skills.first?.behaviorInstructions.contains("Graph PowerShell") == true)
+        #expect(mail?.skills.first?.behaviorInstructions.contains("@stanfordhealthcare.org") == true)
+        #expect(mail?.skills.first?.behaviorInstructions.contains("Do not use it for @stanford.edu") == true)
     }
 
     @Test("Zero-config built-ins have no prerequisites")
@@ -160,7 +177,8 @@ struct PluginPackagePrereqTests {
         let removed = [
             "test-runner", "read-only-explorer",
             "code-reviewer", "docker-manager",
-            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt"
+            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt",
+            "stanford-outlook-mail", "stanford-graph-mail"
         ]
         for id in removed {
             let pkg = PluginCatalog.builtInPackages.first { $0.id == id }

@@ -267,7 +267,8 @@ final class PluginCatalog {
             "slack-connector", "confluence-connector",
             "test-runner", "read-only-explorer",
             "code-reviewer", "docker-manager",
-            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt"
+            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt",
+            "stanford-outlook-mail", "stanford-graph-mail"
         ]
         for oldID in deprecated {
             let path = (dir as NSString).appendingPathComponent("\(oldID).json")

@@ -102,6 +102,8 @@ struct PluginCatalogView: View {
     @State private var expandedPackageID: String?
     @State private var installingPackage: PluginPackage?
     @State private var installError: String?
+    @State private var removalCandidate: PluginPackage?
+    @State private var removalError: String?
     @State private var showCreateWizard = false
     /// Cached prereq status per package id, aggregated from the badges.
     /// `nil` = not yet probed; `true` = all green; `false` = at least one
@@ -249,6 +251,26 @@ struct PluginCatalogView: View {
             Button("OK", role: .cancel) { installError = nil }
         } message: {
             Text(installError ?? "")
+        }
+        .alert("Remove Capability Package?", isPresented: Binding(
+            get: { removalCandidate != nil },
+            set: { if !$0 { removalCandidate = nil } }
+        ), presenting: removalCandidate) { package in
+            Button("Cancel", role: .cancel) { removalCandidate = nil }
+            Button("Remove", role: .destructive) {
+                removalCandidate = nil
+                removeCapabilityPackage(package)
+            }
+        } message: { package in
+            Text("This removes \(package.name) from the app-local capability library and disables it in every workspace. Shared resources that are still used by another installed package are kept.")
+        }
+        .alert("Capability could not be removed", isPresented: Binding(
+            get: { removalError != nil },
+            set: { if !$0 { removalError = nil } }
+        )) {
+            Button("OK", role: .cancel) { removalError = nil }
+        } message: {
+            Text(removalError ?? "")
         }
     }
 
@@ -587,6 +609,19 @@ struct PluginCatalogView: View {
         }
     }
 
+    private func removeCapabilityPackage(_ package: PluginPackage) {
+        do {
+            _ = try CapabilityUninstaller().remove(package, modelContext: modelContext)
+            if expandedPackageID == package.id {
+                expandedPackageID = nil
+            }
+            catalog.loadApprovedCapabilities()
+            onCatalogChanged?()
+        } catch {
+            removalError = error.localizedDescription
+        }
+    }
+
     // MARK: - Prerequisite Section
 
     private func prerequisiteSection(_ package: PluginPackage) -> some View {
@@ -756,6 +791,8 @@ struct PluginCatalogView: View {
                     }
                 }
 
+                capabilityRemovalSection(package)
+
                 // Enable button in expanded view too
                 if !enabled {
                     HStack {
@@ -766,6 +803,49 @@ struct PluginCatalogView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func capabilityRemovalSection(_ package: PluginPackage) -> some View {
+        let sourceKind = package.sourceMetadata?.kind ?? "local"
+
+        if sourceKind == "built-in" {
+            Divider().opacity(0.35)
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "lock.fill")
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14)
+                Text("Built-in capabilities stay in the catalog. Disable this capability per workspace when you do not want it active.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if sourceKind == "local" || sourceKind == "remote" {
+            Divider().opacity(0.35)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Library Package")
+                        .font(Stanford.caption(11))
+                        .fontWeight(.semibold)
+                    Text("Remove from the app-local catalog and detach package-owned resources.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    removalCandidate = package
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                        .font(Stanford.caption(11).weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Remove \(package.name) from the capability library")
+            }
         }
     }
 

@@ -51,6 +51,115 @@ struct CapabilityLibraryTests {
         #expect(library.installedPackage(id: package.id)?.sourceMetadata == .localLibrary())
     }
 
+    @Test("remove deletes local package file")
+    func removeDeletesLocalPackageFile() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-remove-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let package = PluginPackage(
+            id: "stanford.local.remove",
+            name: "Local Remove",
+            icon: "trash",
+            description: "Local capability",
+            author: "Stanford",
+            category: "Local",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        try library.install(package)
+
+        let removed = try library.removePackage(id: package.id)
+
+        #expect(removed.id == package.id)
+        #expect(library.installedPackage(id: package.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: library.packageURL(for: package.id).path))
+    }
+
+    @Test("remove rejects built-in package file")
+    func removeRejectsBuiltInPackageFile() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-remove-builtin-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let package = PluginPackage(
+            id: "stanford.builtin",
+            name: "Built In",
+            icon: "lock",
+            description: "Built-in capability",
+            author: "ASTRA",
+            category: "Built In",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        try library.install(package, sourceMetadata: .builtIn())
+
+        do {
+            _ = try library.removePackage(id: package.id)
+            Issue.record("Built-in package removal should fail")
+        } catch let error as CapabilityLibrary.RemovalError {
+            #expect(error == .builtInPackage(package.name))
+        }
+
+        #expect(library.installedPackage(id: package.id) != nil)
+    }
+
+    @Test("catalog refresh does not restore removed local package")
+    func catalogRefreshDoesNotRestoreRemovedLocalPackage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-remove-refresh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let local = PluginPackage(
+            id: "stanford.local.refresh",
+            name: "Local Refresh",
+            icon: "arrow.clockwise",
+            description: "Local capability",
+            author: "Stanford",
+            category: "Local",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        let builtIn = PluginPackage(
+            id: "stanford.builtin.refresh",
+            name: "Built In Refresh",
+            icon: "checkmark.seal",
+            description: "Built-in capability",
+            author: "ASTRA",
+            category: "Built In",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        try library.install(local)
+        try library.syncApprovedPackages([builtIn])
+        _ = try library.removePackage(id: local.id)
+        try library.syncApprovedPackages([builtIn])
+
+        let ids = Set(library.installedPackages().map(\.id))
+        #expect(!ids.contains(local.id))
+        #expect(ids.contains(builtIn.id))
+    }
+
     @Test("capability library detects package updates")
     func detectsPackageUpdates() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -183,7 +292,8 @@ struct CapabilityLibraryTests {
             "jira-workflow",
             "redcap-workflow",
             "security-auditor",
-            "stanford-outlook-mail"
+            "stanford-apple-mail",
+            "stanford-healthcare-graph-mail"
         ]
 
         #expect(ApprovedCapabilityBundle.bundledDirectory()?.lastPathComponent == "Capabilities")
@@ -195,7 +305,10 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
-        #expect(packages.first { $0.id == "stanford-outlook-mail" }?.localTools.map(\.command) == ["stanford-mail"])
+        #expect(packages.first { $0.id == "stanford-apple-mail" }?.connectors.isEmpty == true)
+        #expect(packages.first { $0.id == "stanford-apple-mail" }?.localTools.map(\.command) == ["stanford-apple-mail"])
+        #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.connectors.isEmpty == true)
+        #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.localTools.map(\.command) == ["stanford-graph-mail"])
     }
 
     @Test("resource bundle resolver exposes app icon")

@@ -1,0 +1,69 @@
+{
+  "author": "ASTRA",
+  "category": "Integrations",
+  "connectors": [],
+  "description": "Read a Stanford University @stanford.edu mailbox through the local Apple Mail app when Stanford Graph access is blocked",
+  "formatVersion": 2,
+  "icon": "envelope.badge.shield.half.filled",
+  "id": "stanford-apple-mail",
+  "isTrusted": false,
+  "localTools": [
+    {
+      "arguments": "",
+      "command": "stanford-apple-mail",
+      "description": "Read a locally configured Stanford.edu mailbox through Apple Mail automation",
+      "icon": "terminal",
+      "name": "stanford-apple-mail",
+      "toolType": "cli"
+    }
+  ],
+  "name": "Stanford Mail via Apple Mail",
+  "prerequisites": [
+    {
+      "authHint": "Open Apple Mail and confirm your @stanford.edu account is configured and synced. Approve ASTRA's macOS Automation permission when prompted.",
+      "binary": "osascript",
+      "displayName": "Apple Mail automation",
+      "installHint": "Apple Mail and osascript are included with macOS.",
+      "installURL": "https://support.apple.com/guide/mail/welcome/mac",
+      "livenessArgs": [
+        "-e",
+        "return \"ok\""
+      ],
+      "purpose": "Uses Apple Events to read messages already available in the local Apple Mail app."
+    }
+  ],
+  "setupGuide": "Use this capability for Stanford University mail when Microsoft Graph is blocked by Stanford's app assignment policy.\n\nThis is a local bridge, not a Graph connector:\n- It reads the @stanford.edu mailbox already configured in Apple Mail on this Mac.\n- If ASTRA_APPLE_MAIL_ACCOUNT is blank, the helper auto-detects exactly one @stanford.edu account in Apple Mail.\n- If multiple @stanford.edu accounts are configured, set ASTRA_APPLE_MAIL_ACCOUNT to the intended Stanford email address or pass --account.\n- It can only see messages that Apple Mail has synced locally.\n- macOS will ask for permission for ASTRA to control Mail the first time it runs.\n\nSetup:\n- Configure your @stanford.edu account in Apple Mail.\n- Open Apple Mail once and let the mailbox sync.\n- Enable this capability in the workspace.\n- If macOS blocks automation, open System Settings > Privacy & Security > Automation and allow ASTRA or ASTRA Dev to control Mail. Depending on how the task runtime launches the helper, the permission prompt may also appear for Terminal or osascript.\n\nV1 is read-only and text-only. It can list accounts and folders, fetch today's messages or recent messages from a selected mailbox, search subject/sender in a selected mailbox, and attempt to read selected full text bodies after Apple Mail has materialized them locally. It does not read attachments, send mail, reply, delete, move, archive, mark read/unread, or monitor inboxes in the background.",
+  "skills": [
+    {
+      "allowedTools": [
+        "Read",
+        "Bash",
+        "Grep"
+      ],
+      "behaviorInstructions": "You are a Stanford Mail via Apple Mail assistant. Use the `stanford-apple-mail` CLI via Bash for the user's Stanford University @stanford.edu mailbox. This capability is for Stanford University mail through the local Apple Mail app because Stanford Graph access is blocked by app assignment policy. Do not use Microsoft Graph, Outlook web scraping, or the SHC Graph mail capability for @stanford.edu mail.\n\nAUTHENTICATION AND PERMISSIONS\n- Apple Mail owns the mailbox login. Never ask for passwords or tokens.\n- If ASTRA_APPLE_MAIL_ACCOUNT is blank, the tool auto-detects exactly one @stanford.edu account configured in Apple Mail. If more than one @stanford.edu account is configured, ask the user which address to use and set ASTRA_APPLE_MAIL_ACCOUNT or pass `--account user@stanford.edu`.\n- If a metadata command such as `today`, `latest`, `search`, `accounts`, or `folders` reports an Apple Events, Automation, timeout, or Mail-not-responding error, tell the user to open Apple Mail and allow ASTRA, ASTRA Dev, Terminal, or osascript to control Mail in System Settings > Privacy & Security > Automation.\n- If a full-body command times out but metadata commands work, do not call it an automation permission failure. Explain that Apple Mail has not materialized that message body locally yet, then retry only the selected message with a larger timeout or ask the user to open Mail and the selected message.\n- If the tool reports that no @stanford.edu account matches, tell the user to add or re-enable their Stanford University account in Apple Mail and let it sync.\n\nREAD-ONLY COMMANDS\n- List local Mail accounts: `stanford-apple-mail accounts`\n- List folders: `stanford-apple-mail folders`\n- Today's inbox messages, metadata only: `stanford-apple-mail today --limit 50 --timeout 60`\n- Recent inbox messages, metadata only: `stanford-apple-mail latest --limit 50 --timeout 60`\n- Latest inbox message with body: `stanford-apple-mail latest --limit 1 --include-body --timeout 120`\n- Search the inbox by subject/sender: `stanford-apple-mail search --query \"search terms\" --limit 10 --timeout 60`\n- Search a named folder: `stanford-apple-mail search --mailbox \"Archive\" --query \"search terms\" --limit 10 --timeout 60`\n- Read one full text body from the inbox: `stanford-apple-mail get --message-id MESSAGE_ID --timeout 120`\n- Read one full text body from another folder: `stanford-apple-mail get --mailbox \"Archive\" --message-id MESSAGE_ID --timeout 120`\n\nSAFETY\n- Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.\n- Never run bulk body reads such as `stanford-apple-mail latest --limit 50 --include-body`; `--include-body` is only for `--limit 1`. For multi-message requests, get metadata first with `today`, `latest`, or `search`, then call `get` only for selected message IDs.\n- V1 is text-only and local-sync-only. If the user asks for attachments or messages not synced into Apple Mail, explain that this capability does not support that yet.\n- Avoid broad mailbox dumps. Use `today` for today's mail, `latest` for recent mail, and `search` for specific subject/sender terms; fetch full bodies only for selected or clearly relevant messages.\n- Treat email content as sensitive. Summarize when possible and avoid saving email bodies to files unless the user explicitly asks for an artifact.",
+      "customTools": [],
+      "description": "Search and read a Stanford University @stanford.edu mailbox through local Apple Mail",
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys": [
+        "ASTRA_APPLE_MAIL_ACCOUNT"
+      ],
+      "environmentValues": [
+        ""
+      ],
+      "icon": "envelope.badge.shield.half.filled",
+      "name": "Stanford Mail via Apple Mail Agent"
+    }
+  ],
+  "tags": [
+    "stanford",
+    "stanford.edu",
+    "apple-mail",
+    "local-mail",
+    "email"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

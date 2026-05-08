@@ -2,6 +2,20 @@ import Foundation
 import ASTRACore
 
 struct CapabilityLibrary {
+    enum RemovalError: Error, Equatable, LocalizedError {
+        case notInstalled(String)
+        case builtInPackage(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notInstalled(let id):
+                return "Capability package \(id) is not installed."
+            case .builtInPackage(let name):
+                return "\(name) is built in and cannot be removed from the app catalog. Disable it per workspace instead."
+            }
+        }
+    }
+
     let directory: URL
     private let fileManager: FileManager
 
@@ -122,6 +136,26 @@ struct CapabilityLibrary {
             }
             try fileManager.removeItem(at: url)
         }
+    }
+
+    @discardableResult
+    func removePackage(id: String) throws -> PluginPackage {
+        let url = packageURL(for: id)
+        guard let data = try? Data(contentsOf: url) else {
+            throw RemovalError.notInstalled(id)
+        }
+
+        var package = try JSONDecoder().decode(PluginPackage.self, from: data)
+        if package.sourceMetadata == nil {
+            package.sourceMetadata = .localLibrary()
+        }
+
+        if package.sourceMetadata?.kind == "built-in" {
+            throw RemovalError.builtInPackage(package.name)
+        }
+
+        try fileManager.removeItem(at: url)
+        return package
     }
 
     func packageURL(for id: String) -> URL {

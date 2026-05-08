@@ -119,7 +119,8 @@ enum CopilotCLIRuntime {
         taskEnvironment: [String: String],
         copilotHome: String,
         providerEnvironment: [String: String] = [:],
-        includeAstraToolsPath: Bool = false
+        includeAstraToolsPath: Bool = false,
+        localToolCommands: [String] = []
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
 
@@ -145,6 +146,7 @@ enum CopilotCLIRuntime {
         let permissionArgs = copilotPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
+            localToolCommands: localToolCommands,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
@@ -190,9 +192,11 @@ enum CopilotCLIRuntime {
     static func copilotPermissionArguments(
         policy: PermissionPolicy,
         allowedTools: [String],
+        localToolCommands: [String] = [],
         supportsAllowAllTools: Bool = false,
         requiresAllowAllToolsForPrompt: Bool
     ) -> [String] {
+        let localToolPermissions = copilotShellPermissions(forLocalToolCommands: localToolCommands)
         switch policy {
         case .autonomous:
             if supportsAllowAllTools || requiresAllowAllToolsForPrompt {
@@ -206,16 +210,35 @@ enum CopilotCLIRuntime {
                 "shell(swift:*)",
                 "shell(./script/*)",
                 "shell(xcodebuild:*)"
-            ]
+            ] + localToolPermissions
         case .restricted:
-            let mapped = allowedTools.isEmpty
+            let mapped = (allowedTools.isEmpty
                 ? ["read", "shell(git status)", "shell(git diff)", "shell(git log)"]
-                : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)
+                : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)) + localToolPermissions
             guard !mapped.isEmpty else { return [] }
             return ["--allow-tool"] + Array(Set(mapped)).sorted()
         case .interactive:
             return []
         }
+    }
+
+    static func copilotShellPermissions(forLocalToolCommands commands: [String]) -> [String] {
+        Array(Set(commands.compactMap(copilotShellPermission(forLocalToolCommand:)))).sorted()
+    }
+
+    private static func copilotShellPermission(forLocalToolCommand command: String) -> String? {
+        guard let executable = shellExecutableToken(command) else { return nil }
+        return "shell(\(executable):*)"
+    }
+
+    private static func shellExecutableToken(_ command: String) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let token = trimmed.split(whereSeparator: { $0.isWhitespace }).first else { return nil }
+        let executable = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard !executable.isEmpty else { return nil }
+        guard executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil else { return nil }
+        return executable
     }
 
     private static func mapClaudeToolToCopilotPermissions(_ tool: String) -> [String] {
