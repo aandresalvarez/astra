@@ -3,6 +3,12 @@ import Testing
 
 @Suite("App Bundle Packaging")
 struct AppBundlePackagingTests {
+    private let swiftMailTools = [
+        "stanford-mail": "StanfordMailTool",
+        "stanford-apple-mail": "StanfordAppleMailTool",
+        "stanford-graph-mail": "StanfordGraphMailTool"
+    ]
+
     @Test("build script stages SwiftPM resources inside Contents/Resources before signing")
     func swiftPMResourcesAreStagedInSignedResourcesDirectory() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
@@ -16,6 +22,36 @@ struct AppBundlePackagingTests {
         #expect(!script.contains(invalidRootCopy))
         #expect(try index(of: resourceCopy, in: script) < index(of: signingCommand, in: script))
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
+    }
+
+    @Test("Stanford mail tools are compiled Swift products, not bundled Python scripts")
+    func stanfordMailToolsAreCompiledSwiftProducts() throws {
+        let package = try String(contentsOf: repoRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let resourceToolsURL = repoRoot.appendingPathComponent("Astra/Resources/Tools", isDirectory: true)
+
+        for (command, target) in swiftMailTools {
+            #expect(package.contains(".executable(name: \"\(command)\", targets: [\"\(target)\"])"))
+            #expect(package.contains("name: \"\(target)\""))
+            #expect(package.contains("dependencies: [\"MailToolSupport\"]"))
+            #expect(package.contains("path: \"Tools/\(target)\""))
+            #expect(script.contains("\"\(command)\""))
+
+            let legacyPythonScript = resourceToolsURL.appendingPathComponent(command)
+            #expect(!FileManager.default.fileExists(atPath: legacyPythonScript.path))
+
+            let swiftEntrypoint = repoRoot
+                .appendingPathComponent("Tools", isDirectory: true)
+                .appendingPathComponent(target, isDirectory: true)
+                .appendingPathComponent("main.swift")
+            #expect(FileManager.default.fileExists(atPath: swiftEntrypoint.path))
+
+            let source = try String(contentsOf: swiftEntrypoint, encoding: .utf8)
+            #expect(!source.contains("#!/usr/bin/env python3"))
+        }
+
+        let resourceToolFiles = try FileManager.default.contentsOfDirectory(atPath: resourceToolsURL.path)
+        #expect(resourceToolFiles == [".gitkeep"])
     }
 
     private var repoRoot: URL {
