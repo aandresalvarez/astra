@@ -356,4 +356,140 @@ struct CapabilityInstallerTests {
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
     }
+
+    @Test("uninstall removes local package and owned shared resources")
+    func uninstallRemovesLocalPackageAndOwnedSharedResources() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Remove", primaryPath: "/tmp/remove-capability")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.templates = [
+            PluginTemplate(
+                name: "BQ Summary",
+                icon: "doc.text",
+                description: "Summarize BigQuery",
+                mainGoal: "Summarize BigQuery cost",
+                beforeGoal: "",
+                afterGoal: "",
+                mainBudget: 1000,
+                beforeBudget: 0,
+                afterBudget: 0,
+                variablesJSON: "[]",
+                passContextToMain: true,
+                passContextToAfter: false
+            )
+        ]
+
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
+        )).first)
+        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
+        )).first)
+        connector.saveCredential(key: "GCP_TOKEN", value: "secret")
+        let connectorID = connector.id
+        let skillID = skill.id
+        defer {
+            KeychainService.deleteAll(connectorID: connectorID)
+            KeychainService.deleteAll(skillID: skillID)
+        }
+        #expect(KeychainService.exists(key: "GCP_TOKEN", connectorID: connectorID))
+        #expect(workspace.templates.map(\.name) == ["BQ Summary"])
+
+        let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+
+        #expect(result.packageID == package.id)
+        #expect(result.disabledWorkspaceIDs == [workspace.id])
+        #expect(result.removedSkillIDs == [skillID])
+        #expect(result.removedConnectorIDs == [connectorID])
+        #expect(result.removedToolIDs.count == 1)
+        #expect(result.removedTemplateIDs.count == 1)
+        #expect(library.installedPackage(id: package.id) == nil)
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
+        #expect(workspace.installedPluginIDs.isEmpty)
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+        #expect(workspace.enabledGlobalToolIDs.isEmpty)
+        #expect(workspace.templates.isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
+        #expect(!KeychainService.exists(key: "GCP_TOKEN", connectorID: connectorID))
+    }
+
+    @Test("uninstall rejects built-in packages")
+    func uninstallRejectsBuiltInPackages() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })
+        try library.install(package, sourceMetadata: .builtIn())
+
+        do {
+            _ = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+            Issue.record("Built-in package uninstall should fail")
+        } catch let error as CapabilityLibrary.RemovalError {
+            #expect(error == .builtInPackage(package.name))
+        }
+
+        #expect(library.installedPackage(id: package.id) != nil)
+    }
+
+    @Test("uninstall keeps shared resources claimed by another package")
+    func uninstallKeepsResourcesClaimedByAnotherPackage() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/remove-first")
+        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/remove-second")
+        context.insert(firstWorkspace)
+        context.insert(secondWorkspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var firstPackage = makeAnalystCapabilityPackage()
+        firstPackage.id = "stanford.bigquery.first"
+        var secondPackage = makeAnalystCapabilityPackage()
+        secondPackage.id = "stanford.bigquery.second"
+
+        try CapabilityInstaller(library: library).install(firstPackage, into: firstWorkspace, modelContext: context)
+        try CapabilityInstaller(library: library).install(secondPackage, into: secondWorkspace, modelContext: context)
+
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
+        )).first)
+        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
+        )).first)
+        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "bq" }
+        )).first)
+
+        let result = try CapabilityUninstaller(library: library).remove(firstPackage, modelContext: context)
+
+        #expect(result.removedSkillIDs.isEmpty)
+        #expect(result.removedConnectorIDs.isEmpty)
+        #expect(result.removedToolIDs.isEmpty)
+        #expect(firstWorkspace.enabledCapabilityIDs.isEmpty)
+        #expect(firstWorkspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(firstWorkspace.enabledGlobalConnectorIDs.isEmpty)
+        #expect(firstWorkspace.enabledGlobalToolIDs.isEmpty)
+        #expect(secondWorkspace.enabledCapabilityIDs == [secondPackage.id])
+        #expect(secondWorkspace.enabledGlobalSkillIDs == [skill.id.uuidString])
+        #expect(secondWorkspace.enabledGlobalConnectorIDs == [connector.id.uuidString])
+        #expect(secondWorkspace.enabledGlobalToolIDs.isEmpty)
+        #expect(library.installedPackage(id: firstPackage.id) == nil)
+        #expect(library.installedPackage(id: secondPackage.id) != nil)
+        #expect(try context.fetch(FetchDescriptor<Skill>()).filter { $0.id == skill.id }.count == 1)
+        #expect(try context.fetch(FetchDescriptor<Connector>()).filter { $0.id == connector.id }.count == 1)
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).filter { $0.id == tool.id }.count == 1)
+    }
 }
