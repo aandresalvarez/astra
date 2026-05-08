@@ -103,56 +103,6 @@ struct JiraConnectorAuthTester {
     let transport: any ConnectorHTTPTransport
 
     func test() async -> ConnectorTestOutcome {
-        let myself = await probe(
-            endpointKind: "jira.myself",
-            path: "/rest/api/3/myself",
-            queryItems: []
-        )
-
-        switch myself.statusCode {
-        case let status? where (200..<300).contains(status):
-            break
-        case 401, 403:
-            var fields: [String: String] = [
-                "auth_endpoint_kind": "jira.myself",
-                "auth_http_status": String(myself.statusCode ?? 0)
-            ]
-            if let reason = myself.seraphLoginReason {
-                fields["seraph_loginreason"] = reason
-            }
-            return outcome(
-                result: "auth_failed",
-                endpointKind: "jira.myself",
-                statusCode: myself.statusCode,
-                message: "Jira rejected the credentials. Verify the Jira email and API token pair; Jira Cloud Basic auth requires the Atlassian account email, not a username.",
-                level: .warning,
-                fields: fields
-            )
-        case 404:
-            return outcome(
-                result: "endpoint_unavailable",
-                endpointKind: "jira.myself",
-                statusCode: myself.statusCode,
-                message: "Jira account endpoint was not found. Verify the Jira Cloud base URL or Data Center support.",
-                level: .warning
-            )
-        case nil:
-            return outcome(
-                result: "request_failed",
-                endpointKind: "jira.myself",
-                message: myself.errorMessage ?? "Jira authentication probe failed",
-                level: .warning
-            )
-        default:
-            return outcome(
-                result: "http_error",
-                endpointKind: "jira.myself",
-                statusCode: myself.statusCode,
-                message: "Jira authentication probe returned HTTP \(myself.statusCode ?? 0)",
-                level: .warning
-            )
-        }
-
         let global = await probe(
             endpointKind: "jira.mypermissions",
             path: "/rest/api/3/mypermissions",
@@ -165,17 +115,8 @@ struct JiraConnectorAuthTester {
         case 200:
             return await classifyGlobalPermissions(global)
         case 401, 403:
-            return outcome(
-                result: "endpoint_scope_failure",
-                endpointKind: "jira.mypermissions",
-                statusCode: global.statusCode,
-                message: "Jira authenticated through /myself, but the permission endpoint was rejected. Check token scopes, service-account auth mode, or Jira gateway URL.",
-                level: .warning,
-                fields: [
-                    "fallback_endpoint_kind": "jira.myself",
-                    "fallback_http_status": String(myself.statusCode ?? 0)
-                ]
-            )
+            let myself = await probeMyself()
+            return classifyRejectedPermissionProbe(global, fallback: myself)
         case 404:
             return outcome(
                 result: "endpoint_unavailable",
@@ -198,6 +139,87 @@ struct JiraConnectorAuthTester {
                 statusCode: global.statusCode,
                 message: "Jira permission probe returned HTTP \(global.statusCode ?? 0)",
                 level: .warning
+            )
+        }
+    }
+
+    private func probeMyself() async -> ProbeResult {
+        await probe(
+            endpointKind: "jira.myself",
+            path: "/rest/api/3/myself",
+            queryItems: []
+        )
+    }
+
+    private func classifyRejectedPermissionProbe(
+        _ global: ProbeResult,
+        fallback myself: ProbeResult
+    ) -> ConnectorTestOutcome {
+        switch myself.statusCode {
+        case let status? where (200..<300).contains(status):
+            return outcome(
+                result: "endpoint_scope_failure",
+                endpointKind: "jira.mypermissions",
+                statusCode: global.statusCode,
+                message: "Jira authenticated through /myself, but the permission endpoint was rejected. Check token scopes, service-account auth mode, or Jira gateway URL.",
+                level: .warning,
+                fields: [
+                    "fallback_endpoint_kind": "jira.myself",
+                    "fallback_http_status": String(status)
+                ]
+            )
+        case 401, 403:
+            var fields: [String: String] = [
+                "auth_endpoint_kind": "jira.myself",
+                "auth_http_status": String(myself.statusCode ?? 0),
+                "primary_endpoint_kind": "jira.mypermissions",
+                "primary_http_status": String(global.statusCode ?? 0)
+            ]
+            if let reason = myself.seraphLoginReason {
+                fields["seraph_loginreason"] = reason
+            }
+            return outcome(
+                result: "auth_failed",
+                endpointKind: "jira.myself",
+                statusCode: myself.statusCode,
+                message: "Jira rejected the credentials in both permission and account probes. Verify the Jira email and API token pair; Jira Cloud Basic auth requires the Atlassian account email, not a username.",
+                level: .warning,
+                fields: fields
+            )
+        case 404:
+            return outcome(
+                result: "endpoint_unavailable",
+                endpointKind: "jira.myself",
+                statusCode: myself.statusCode,
+                message: "Jira account endpoint was not found after the permission endpoint was rejected. Verify the Jira Cloud base URL or Data Center support.",
+                level: .warning,
+                fields: [
+                    "primary_endpoint_kind": "jira.mypermissions",
+                    "primary_http_status": String(global.statusCode ?? 0)
+                ]
+            )
+        case nil:
+            return outcome(
+                result: "request_failed",
+                endpointKind: "jira.myself",
+                message: myself.errorMessage ?? "Jira account fallback probe failed after the permission endpoint was rejected",
+                level: .warning,
+                fields: [
+                    "primary_endpoint_kind": "jira.mypermissions",
+                    "primary_http_status": String(global.statusCode ?? 0)
+                ]
+            )
+        default:
+            return outcome(
+                result: "http_error",
+                endpointKind: "jira.myself",
+                statusCode: myself.statusCode,
+                message: "Jira account fallback probe returned HTTP \(myself.statusCode ?? 0) after the permission endpoint was rejected",
+                level: .warning,
+                fields: [
+                    "primary_endpoint_kind": "jira.mypermissions",
+                    "primary_http_status": String(global.statusCode ?? 0)
+                ]
             )
         }
     }
@@ -246,7 +268,6 @@ struct JiraConnectorAuthTester {
                         message: "Jira authenticated, but project \(project) is not visible to this account.",
                         level: .warning,
                         fields: [
-                            "project_key": project,
                             "project_index": String(index),
                             "project_count": String(projects.count),
                             "permission": "BROWSE_PROJECTS"
@@ -261,7 +282,6 @@ struct JiraConnectorAuthTester {
                         message: "Jira authenticated, but this account lacks CREATE_ISSUES for project \(project).",
                         level: .warning,
                         fields: [
-                            "project_key": project,
                             "project_index": String(index),
                             "project_count": String(projects.count),
                             "permission": "CREATE_ISSUES"
@@ -276,7 +296,6 @@ struct JiraConnectorAuthTester {
                     message: "Jira authenticated, but project \(project) is not visible or the project key is wrong.",
                     level: .warning,
                     fields: [
-                        "project_key": project,
                         "project_index": String(index),
                         "project_count": String(projects.count)
                     ]
@@ -289,7 +308,6 @@ struct JiraConnectorAuthTester {
                     message: "Jira authenticated globally, but the project permission probe for \(project) was rejected. Check token scopes and project access.",
                     level: .warning,
                     fields: [
-                        "project_key": project,
                         "project_index": String(index),
                         "project_count": String(projects.count)
                     ]
@@ -301,7 +319,7 @@ struct JiraConnectorAuthTester {
                     message: scoped.errorMessage ?? "Jira project permission probe failed",
                     level: .warning,
                     fields: [
-                        "project_key": project,
+                        "project_index": String(index),
                         "project_count": String(projects.count)
                     ]
                 )
@@ -313,7 +331,7 @@ struct JiraConnectorAuthTester {
                     message: "Jira project permission probe returned HTTP \(scoped.statusCode ?? 0)",
                     level: .warning,
                     fields: [
-                        "project_key": project,
+                        "project_index": String(index),
                         "project_count": String(projects.count)
                     ]
                 )
