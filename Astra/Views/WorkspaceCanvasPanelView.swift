@@ -372,6 +372,7 @@ struct WorkspaceCanvasPanelView: View {
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: false))
                 .foregroundStyle(Stanford.cardinalRed)
+                .help("Cancel this plan and stop using it for the task.")
 
                 Spacer(minLength: 8)
 
@@ -380,12 +381,14 @@ struct WorkspaceCanvasPanelView: View {
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: false))
                 .disabled(currentDraft == sourcePlan)
+                .help(currentDraft == sourcePlan ? "There are no local plan edits to discard." : "Discard local plan edits.")
 
                 Button("Save changes") {
                     saveDraft()
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: true))
                 .disabled(!canSave)
+                .help(saveButtonHelp)
             } else {
                 Text(readOnlyFooterMessage)
                     .font(Stanford.caption(11))
@@ -414,6 +417,22 @@ struct WorkspaceCanvasPanelView: View {
         case .none, .draft, .approved, .executing, .failed:
             return "No editable steps are available."
         }
+    }
+
+    private var saveButtonHelp: String {
+        guard canEditPlan else {
+            return "This plan cannot be edited right now."
+        }
+        guard let draft = currentDraft else {
+            return "There is no plan draft to save."
+        }
+        guard sanitizedPlan(draft) != nil else {
+            return "Fill in the plan title, goal, and step titles before saving."
+        }
+        guard canSave else {
+            return "Make a plan edit before saving."
+        }
+        return "Save plan edits."
     }
 
     private var emptyCanvas: some View {
