@@ -1251,7 +1251,7 @@ struct PromptBuildingTests {
     func basicPrompt() {
         let task = makeTask(goal: "Fix the login bug")
         // Replicate buildPrompt logic
-        var parts: [String] = ["Goal: \(task.goal)"]
+        let parts: [String] = ["Goal: \(task.goal)"]
         let prompt = parts.joined(separator: "\n\n")
         #expect(prompt == "Goal: Fix the login bug")
     }

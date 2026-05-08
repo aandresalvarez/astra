@@ -11,6 +11,7 @@ struct WorkspaceCanvasPanelView: View {
     @State private var lastPlanSignature = ""
 
     private let knownTools = ["Read", "Grep", "Write", "Edit", "Bash"]
+    private let formLabelWidth: CGFloat = 70
 
     private var planState: TaskPlanState {
         guard let selectedTask else { return .empty }
@@ -90,15 +91,15 @@ struct WorkspaceCanvasPanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "rectangle.inset.filled")
-                .font(Stanford.ui(16, weight: .semibold))
+                .font(Stanford.ui(14, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
-                .frame(width: 24, height: 24)
+                .frame(width: 20, height: 20)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Canvas")
-                    .font(Stanford.heading(15))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Shelf")
+                    .font(Stanford.heading(14))
                 Text("Plan")
-                    .font(Stanford.caption(11).weight(.medium))
+                    .font(Stanford.caption(10).weight(.medium))
                     .foregroundStyle(Stanford.lagunita)
             }
 
@@ -118,11 +119,11 @@ struct WorkspaceCanvasPanelView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Close canvas")
+            .help("Close shelf")
             .accessibilityIdentifier("WorkspaceCanvasCloseButton")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private func planCanvas(_ sourcePlan: TaskPlan) -> some View {
@@ -138,7 +139,10 @@ struct WorkspaceCanvasPanelView: View {
                         addStepButton
                     }
                 }
-                .padding(16)
+                .padding(.leading, 16)
+                .padding(.trailing, 30)
+                .padding(.top, 10)
+                .padding(.bottom, 14)
             }
 
             Divider()
@@ -148,17 +152,19 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var planHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             if canEditPlan {
                 TextField("Plan title", text: planTitleBinding)
                     .textFieldStyle(.plain)
                     .font(Stanford.heading(18))
+                    .lineLimit(2)
 
                 TextEditor(text: planGoalBinding)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .frame(minHeight: 44, maxHeight: 72)
+                    .frame(minHeight: 42, maxHeight: 64)
                     .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 4)
                     .background(Stanford.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(
@@ -194,12 +200,12 @@ struct WorkspaceCanvasPanelView: View {
             if canEditPlan {
                 return "Approved plan can still be refined here. Edit pending or blocked steps before running them."
             }
-            return "Approved plan is open in Canvas. It is read-only while the current step is running."
+            return "Approved plan is open on the Shelf. It is read-only while the current step is running."
         case .executing:
             if canEditPlan {
                 return "This approved plan is running step by step. You can still refine future pending or blocked steps before approving them."
             }
-            return "This approved plan is running. Canvas is read-only until the current step pauses or finishes."
+            return "This approved plan is running. Shelf is read-only until the current step pauses or finishes."
         case .none, .draft, .completed, .cancelled, .failed:
             return nil
         }
@@ -274,8 +280,8 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func editableStepCard(index: Int, step: TaskPlanStep) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 ZStack {
                     Circle()
                         .fill(color(for: step.status).opacity(0.14))
@@ -285,11 +291,16 @@ struct WorkspaceCanvasPanelView: View {
                 }
                 .frame(width: 22, height: 22)
 
-                Text(step.status == .blocked ? "Blocked step" : "Editable step")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.secondary)
+                TextField("Step title", text: stepTitleBinding(index))
+                    .textFieldStyle(.plain)
+                    .font(Stanford.caption(13).weight(.semibold))
+                    .lineLimit(2)
 
                 Spacer(minLength: 8)
+
+                if step.status == .blocked {
+                    canvasChip("Blocked", color: Stanford.poppy)
+                }
 
                 moveButton(systemImage: "arrow.up", isDisabled: !canMoveStepUp(index)) {
                     moveStep(index, by: -1)
@@ -302,12 +313,11 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
 
-            labeledTextField("Title", text: stepTitleBinding(index))
             labeledTextEditor("Details", text: stepDetailBinding(index))
             labeledTextField("Done signal", text: stepDoneSignalBinding(index))
 
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text("Risk")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -317,11 +327,11 @@ struct WorkspaceCanvasPanelView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 188)
+                    .frame(width: 176)
                     .labelsHidden()
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text("Tools")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -401,13 +411,14 @@ struct WorkspaceCanvasPanelView: View {
             }
         }
         .controlSize(.small)
-        .padding(14)
-        .background(Stanford.panelBackground)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.bar)
     }
 
     private var readOnlyFooterMessage: String {
         if isTaskRunning {
-            return "Canvas is read-only while the task is running."
+            return "Shelf is read-only while the task is running."
         }
         switch planState.lifecycleStatus {
         case .completed:
@@ -437,9 +448,9 @@ struct WorkspaceCanvasPanelView: View {
 
     private var emptyCanvas: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("No canvas item")
+            Text("Nothing on the Shelf")
                 .font(Stanford.heading(16))
-            Text("Generate or select a plan to open it in the reusable canvas.")
+            Text("Generate or select a plan to open it on the Shelf.")
                 .font(Stanford.caption(12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -453,7 +464,7 @@ struct WorkspaceCanvasPanelView: View {
             Text(label)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: formLabelWidth, alignment: .leading)
             TextField(label, text: text)
                 .textFieldStyle(.plain)
                 .font(Stanford.caption(12))
@@ -473,11 +484,11 @@ struct WorkspaceCanvasPanelView: View {
             Text(label)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: formLabelWidth, alignment: .leading)
                 .padding(.top, 7)
             TextEditor(text: text)
                 .font(Stanford.caption(12))
-                .frame(minHeight: 58)
+                .frame(minHeight: 52)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 3)
                 .background(Stanford.fog.opacity(0.55))
@@ -590,7 +601,7 @@ struct WorkspaceCanvasPanelView: View {
             planID: plan.planID,
             task: selectedTask,
             modelContext: modelContext,
-            reason: "Cancelled from canvas."
+            reason: "Cancelled from shelf."
         )
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)

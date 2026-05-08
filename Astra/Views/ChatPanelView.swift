@@ -369,6 +369,7 @@ struct ChatPanelView: View {
     var onTaskCreated: ((AgentTask) -> Void)?
     var onAddSSHConnection: (() -> Void)?
     var onManageSkills: (() -> Void)?
+    var isPlanCanvasVisible = false
     var onOpenPlan: ((AgentTask) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
@@ -537,6 +538,7 @@ struct ChatPanelView: View {
                                 ApprovedPlanReadyCard(
                                     plan: approvedPlan,
                                     isHistoryExpanded: $isApprovedPlanHistoryExpanded,
+                                    isPlanCanvasVisible: isPlanCanvasVisible,
                                     onOpenPlan: {
                                         if let draftTask {
                                             onOpenPlan?(draftTask)
@@ -2236,6 +2238,7 @@ struct ChatPanelView: View {
 private struct ApprovedPlanReadyCard: View {
     let plan: TaskPlanPayload
     @Binding var isHistoryExpanded: Bool
+    let isPlanCanvasVisible: Bool
     let onOpenPlan: () -> Void
 
     var body: some View {
@@ -2249,7 +2252,7 @@ private struct ApprovedPlanReadyCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Plan ready")
                         .font(Stanford.heading(20))
-                    Text("The approved plan can still be refined in Canvas before running it.")
+                    Text("The approved plan can still be refined on the Shelf before running it.")
                         .font(Stanford.caption(14))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2271,11 +2274,15 @@ private struct ApprovedPlanReadyCard: View {
                 Button {
                     onOpenPlan()
                 } label: {
-                    Label("Open Plan", systemImage: "rectangle.inset.filled")
+                    Label(
+                        isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
+                        systemImage: "rectangle.inset.filled"
+                    )
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: false))
                 .controlSize(.small)
+                .help(isPlanCanvasVisible ? "Hide plan shelf" : "Open plan shelf")
 
                 Button {
                     withAnimation(.snappy(duration: 0.18)) {
