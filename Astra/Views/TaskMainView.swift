@@ -41,6 +41,7 @@ struct TaskMainView: View {
     var onResumeTask: ((AgentTask) -> Void)?
     var onApproveTask: ((AgentTask) -> Void)?
     var onOpenPlan: ((AgentTask) -> Void)?
+    var isPlanCanvasVisible = false
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
@@ -1660,11 +1661,15 @@ struct TaskMainView: View {
                 Button {
                     onOpenPlan(task)
                 } label: {
-                    Label("Open Plan", systemImage: "rectangle.inset.filled")
+                    Label(
+                        isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
+                        systemImage: "rectangle.inset.filled"
+                    )
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: false))
                 .controlSize(.small)
+                .help(isPlanCanvasVisible ? "Hide plan shelf" : "Open plan shelf")
                 .accessibilityIdentifier("OpenPlanButton")
             }
 

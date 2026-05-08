@@ -83,7 +83,7 @@ struct PluginCatalogLoadTests {
         pkg1.category = "B-Category"
         try writePackage(pkg1, to: dir)
 
-        var pkg2 = PluginPackage(
+        let pkg2 = PluginPackage(
             id: "another-plugin", name: "Another", icon: "gear",
             description: "d", author: "a", category: "A-Category",
             tags: [], version: "1.0.0",
@@ -153,7 +153,7 @@ struct PluginCatalogLoadTests {
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
         for (id, cat) in [("a", "Security"), ("b", "Development"), ("c", "Security")] {
-            var pkg = PluginPackage(
+            let pkg = PluginPackage(
                 id: id, name: id, icon: "star", description: "d",
                 author: "a", category: cat, tags: [], version: "1.0.0",
                 skills: [], connectors: [], localTools: [], templates: []
@@ -503,14 +503,13 @@ struct PluginCatalogSeedTests {
         // Modify a built-in file on disk
         let firstPkg = PluginCatalog.builtInPackages[0]
         let path = (dir as NSString).appendingPathComponent("\(firstPkg.id).json")
-        var modified = try JSONDecoder().decode(
+        _ = try JSONDecoder().decode(
             PluginPackage.self,
             from: Data(contentsOf: URL(fileURLWithPath: path))
         )
-        let originalDesc = modified.description
 
         // Manually write a modified description at same version
-        var customPkg = firstPkg
+        let customPkg = firstPkg
         // Keep same version but change description to prove it's not overwritten
         let customJSON = try JSONEncoder().encode(customPkg)
         // Write a marker we can detect

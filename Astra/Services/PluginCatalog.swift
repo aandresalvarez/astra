@@ -4,7 +4,7 @@ import ASTRACore
 
 @Observable @MainActor
 final class PluginCatalog {
-    internal(set) var packages: [PluginPackage] = []
+    var packages: [PluginPackage] = []
 
     static let pluginsDirectory: String = {
         NSHomeDirectory() + "/.astra/plugins"

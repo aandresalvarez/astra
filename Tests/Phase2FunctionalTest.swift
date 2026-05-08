@@ -14,6 +14,34 @@ private func makeTestContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private func findOutputFile(named name: String, workspacePath: String, task: AgentTask) -> String? {
+    let fm = FileManager.default
+    let directCandidates = [
+        (workspacePath as NSString).appendingPathComponent(name),
+        (task.taskFolder as NSString).appendingPathComponent(name),
+        ((task.taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
+    ].filter { !$0.isEmpty }
+
+    if let direct = directCandidates.first(where: { fm.fileExists(atPath: $0) }) {
+        return direct
+    }
+
+    guard let enumerator = fm.enumerator(atPath: workspacePath) else { return nil }
+    for case let relativePath as String in enumerator {
+        guard (relativePath as NSString).lastPathComponent == name else { continue }
+        return (workspacePath as NSString).appendingPathComponent(relativePath)
+    }
+    return nil
+}
+
+private func workspaceFileListing(at workspacePath: String) -> String {
+    guard let enumerator = FileManager.default.enumerator(atPath: workspacePath) else {
+        return "<unreadable>"
+    }
+    let files = enumerator.compactMap { $0 as? String }.prefix(120)
+    return files.isEmpty ? "<empty>" : files.joined(separator: ", ")
+}
+
 @Suite("Phase 2 Functional — Maker & Checker Team", .tags(.integration))
 struct Phase2FunctionalTest {
 
@@ -36,15 +64,18 @@ struct Phase2FunctionalTest {
         let task = AgentTask(
             title: "Regex email extractor with QA",
             goal: """
-            Write a JavaScript function in regex.js that extracts all email addresses from a string. \
-            Then write a test script test.js that tests the function with edge cases including: \
-            simple emails, emails with subdomains, emails with plus signs, and invalid strings. \
-            Run the tests and fix any bugs found. Save a summary of test results to test_results.txt.
+            Complete this small JavaScript task with concise team coordination.
+            The final deliverables must exist in the current working directory:
+            - ./regex.js: exports a function that extracts all email addresses from a string.
+            - ./test.js: tests simple emails, subdomains, plus signs, and invalid strings.
+            - ./test_results.txt: the captured result from running `node test.js`.
+            Run the tests, fix any bug found, and verify all three files exist before your final response.
             """,
             workspace: workspace,
-            tokenBudget: 200000,
+            tokenBudget: 350000,
             model: "claude-sonnet-4-6"
         )
+        task.status = .queued
         task.useAgentTeam = true
         task.teamSize = 2
         task.teamInstructions = """
@@ -52,7 +83,8 @@ struct Phase2FunctionalTest {
         1. A 'Developer' who writes the regex.js email extractor function.
         2. A 'QA Tester' who writes test.js to find edge cases and validates the implementation.
         The QA Tester should wait for the Developer to finish before testing. \
-        If bugs are found, communicate to fix them.
+        If bugs are found, communicate to fix them. The lead agent remains responsible for ensuring \
+        regex.js, test.js, and test_results.txt exist in the current working directory before finishing.
         """
         context.insert(task)
         try context.save()
@@ -101,21 +133,30 @@ struct Phase2FunctionalTest {
 
         // 9. Verify files on disk
         let fm = FileManager.default
-        #expect(fm.fileExists(atPath: "\(testDir)/regex.js"), "regex.js should exist")
-        #expect(fm.fileExists(atPath: "\(testDir)/test.js"), "test.js should exist")
+        let fileListing = workspaceFileListing(at: testDir)
+        let regexPath = try #require(
+            findOutputFile(named: "regex.js", workspacePath: testDir, task: task),
+            "regex.js missing from workspace or task output folder. Files: \(fileListing)"
+        )
+        let testPath = try #require(
+            findOutputFile(named: "test.js", workspacePath: testDir, task: task),
+            "test.js missing from workspace or task output folder. Files: \(fileListing)"
+        )
+        #expect(fm.fileExists(atPath: regexPath), "regex.js should exist")
+        #expect(fm.fileExists(atPath: testPath), "test.js should exist")
 
         // Verify regex.js has email extraction logic
-        let regexContent = try String(contentsOfFile: "\(testDir)/regex.js", encoding: .utf8)
+        let regexContent = try String(contentsOfFile: regexPath, encoding: .utf8)
         #expect(regexContent.contains("email") || regexContent.contains("Email") || regexContent.contains("@"),
                 "regex.js should contain email-related code")
 
         // Verify test.js has test cases
-        let testContent = try String(contentsOfFile: "\(testDir)/test.js", encoding: .utf8)
+        let testContent = try String(contentsOfFile: testPath, encoding: .utf8)
         #expect(testContent.contains("test") || testContent.contains("assert") || testContent.contains("expect"),
                 "test.js should contain test assertions")
 
         // Check for test results
-        let hasTestResults = fm.fileExists(atPath: "\(testDir)/test_results.txt")
+        let hasTestResults = findOutputFile(named: "test_results.txt", workspacePath: testDir, task: task) != nil
 
         // 10. Verify callback events include team-related events
         let parsedTeamEvents = receivedEvents.filter {

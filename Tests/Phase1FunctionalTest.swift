@@ -13,6 +13,34 @@ private func makeTestContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private func findOutputFile(named name: String, workspacePath: String, task: AgentTask) -> String? {
+    let fm = FileManager.default
+    let directCandidates = [
+        (workspacePath as NSString).appendingPathComponent(name),
+        (task.taskFolder as NSString).appendingPathComponent(name),
+        ((task.taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
+    ].filter { !$0.isEmpty }
+
+    if let direct = directCandidates.first(where: { fm.fileExists(atPath: $0) }) {
+        return direct
+    }
+
+    guard let enumerator = fm.enumerator(atPath: workspacePath) else { return nil }
+    for case let relativePath as String in enumerator {
+        guard (relativePath as NSString).lastPathComponent == name else { continue }
+        return (workspacePath as NSString).appendingPathComponent(relativePath)
+    }
+    return nil
+}
+
+private func workspaceFileListing(at workspacePath: String) -> String {
+    guard let enumerator = FileManager.default.enumerator(atPath: workspacePath) else {
+        return "<unreadable>"
+    }
+    let files = enumerator.compactMap { $0 as? String }.prefix(80)
+    return files.isEmpty ? "<empty>" : files.joined(separator: ", ")
+}
+
 @Suite("Phase 1 Functional — Worker E2E", .tags(.integration))
 struct Phase1FunctionalTest {
 
@@ -89,21 +117,24 @@ struct Phase1FunctionalTest {
         let task = AgentTask(
             title: "Word counter test",
             goal: """
-            Create a Python script named word_counter.py that takes a text file as an argument \
-            and prints the top 5 most frequent words. Then, create a file named sample.txt with \
-            three paragraphs of dummy text. Finally, execute the script on sample.txt and save \
-            the output to results.txt.
+            Complete this small filesystem task with minimal discussion and no subagents.
+            Create these final deliverables in the current working directory:
+            - ./word_counter.py: a Python script that takes one text file argument and prints the top 5 most frequent words.
+            - ./sample.txt: three short paragraphs of dummy text.
+            - ./results.txt: the captured output from running `python3 word_counter.py sample.txt`.
+            Verify all three files exist before your final response.
             """,
             workspace: workspace,
-            tokenBudget: 100000,
+            tokenBudget: 250000,
             model: "claude-sonnet-4-6"
         )
+        task.status = .queued
         context.insert(task)
         try context.save()
 
         #expect(task.workspace === workspace, "Task should be linked to workspace")
         #expect(task.effectiveWorkspacePath == testDir, "Task workspace path should match")
-        #expect(task.status == .queued, "Initial status should be queued")
+        #expect(task.status == .queued, "Task should be explicitly queued before direct worker execution")
         #expect(workspace.tasks.contains(task), "Workspace should contain the task")
 
         // 4. Run through AgentRuntimeWorker (same code path as the app)
@@ -154,11 +185,24 @@ struct Phase1FunctionalTest {
 
         // 9. Verify files on disk
         let fm = FileManager.default
-        #expect(fm.fileExists(atPath: "\(testDir)/word_counter.py"), "word_counter.py missing from disk")
-        #expect(fm.fileExists(atPath: "\(testDir)/sample.txt"), "sample.txt missing from disk")
-        #expect(fm.fileExists(atPath: "\(testDir)/results.txt"), "results.txt missing from disk")
+        let fileListing = workspaceFileListing(at: testDir)
+        let wordCounterPath = try #require(
+            findOutputFile(named: "word_counter.py", workspacePath: testDir, task: task),
+            "word_counter.py missing from workspace or task output folder. Files: \(fileListing)"
+        )
+        let samplePath = try #require(
+            findOutputFile(named: "sample.txt", workspacePath: testDir, task: task),
+            "sample.txt missing from workspace or task output folder. Files: \(fileListing)"
+        )
+        let resultsPath = try #require(
+            findOutputFile(named: "results.txt", workspacePath: testDir, task: task),
+            "results.txt missing from workspace or task output folder. Files: \(fileListing)"
+        )
+        #expect(fm.fileExists(atPath: wordCounterPath), "word_counter.py missing from disk")
+        #expect(fm.fileExists(atPath: samplePath), "sample.txt missing from disk")
+        #expect(fm.fileExists(atPath: resultsPath), "results.txt missing from disk")
 
-        let results = try String(contentsOfFile: "\(testDir)/results.txt", encoding: .utf8)
+        let results = try String(contentsOfFile: resultsPath, encoding: .utf8)
         #expect(!results.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "results.txt should have content")
 
         // 10. Verify callback events match SwiftData events
