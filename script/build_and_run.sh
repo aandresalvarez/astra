@@ -58,6 +58,7 @@ APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+ENTITLEMENTS="$ROOT_DIR/script/ASTRA.entitlements"
 
 if [[ "$MODE" != "bundle" && "$MODE" != "--bundle" ]]; then
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
@@ -123,6 +124,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$MIN_SYSTEM_VERSION</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>ASTRA needs permission to control Apple Mail when the Stanford Mail via Apple Mail capability is enabled.</string>
 PLIST
 
 if [[ -n "$SPARKLE_FEED_URL" ]]; then
@@ -149,9 +152,9 @@ cat >>"$INFO_PLIST" <<PLIST
 PLIST
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
-  /usr/bin/codesign --force --deep --timestamp --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  /usr/bin/codesign --force --deep --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
-  /usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
+  /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 fi
 
 open_app() {

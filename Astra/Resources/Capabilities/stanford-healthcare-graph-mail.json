@@ -1,0 +1,71 @@
+{
+  "author": "ASTRA",
+  "category": "Integrations",
+  "connectors": [],
+  "description": "Read a Stanford Health Care @stanfordhealthcare.org mailbox through Microsoft Graph PowerShell browser auth",
+  "formatVersion": 2,
+  "icon": "envelope.badge.shield.half.filled",
+  "id": "stanford-healthcare-graph-mail",
+  "isTrusted": false,
+  "localTools": [
+    {
+      "arguments": "",
+      "command": "stanford-graph-mail",
+      "description": "Read the locally signed-in SHC Microsoft 365 mailbox through Microsoft Graph PowerShell",
+      "icon": "terminal",
+      "name": "stanford-graph-mail",
+      "toolType": "cli"
+    }
+  ],
+  "name": "Stanford Health Care Mail via Graph",
+  "prerequisites": [
+    {
+      "authHint": "Run `stanford-graph-mail login` and complete Microsoft browser sign-in with your @stanfordhealthcare.org account.",
+      "binary": "pwsh",
+      "displayName": "PowerShell",
+      "installHint": "Install via Homebrew: `brew install powershell`, then install Graph modules with `pwsh -NoProfile -Command 'Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Mail -Scope CurrentUser -Force -AllowClobber'`.",
+      "installURL": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos",
+      "livenessArgs": [
+        "--version"
+      ],
+      "purpose": "Runs Microsoft Graph PowerShell for browser-based SHC Microsoft 365 authentication and read-only mail calls."
+    }
+  ],
+  "setupGuide": "Use this capability for Stanford Health Care mail. It is the Microsoft Graph PowerShell path for @stanfordhealthcare.org accounts.\n\nThis is separate from Stanford University mail:\n- SHC / @stanfordhealthcare.org uses Microsoft Graph PowerShell browser auth.\n- Stanford University / @stanford.edu uses the separate Stanford Mail via Apple Mail capability because Stanford Graph access is blocked by app assignment policy.\n\nSetup:\n- Install PowerShell: `brew install powershell`.\n- Install Graph modules: `pwsh -NoProfile -Command 'Install-Module Microsoft.Graph.Authentication,Microsoft.Graph.Mail -Scope CurrentUser -Force -AllowClobber'`.\n- Sign in once: `stanford-graph-mail login`.\n- The helper requires the signed-in Graph identity to be an @stanfordhealthcare.org mailbox.\n- If Graph PowerShell selects the wrong cached Microsoft account, run `stanford-graph-mail logout`, then run `stanford-graph-mail login` again.\n\nThe capability defaults ASTRA_GRAPH_MAIL_TENANT to stanfordhealthcare.org. ASTRA_GRAPH_MAIL_ACCOUNT is optional and blank by default; set it only when you want the helper to fail unless a specific SHC mailbox is signed in. V1 is read-only and text-only. It can search messages and read selected full email bodies as text. It does not read attachments, send mail, reply, delete, or monitor inboxes in the background.",
+  "skills": [
+    {
+      "allowedTools": [
+        "Read",
+        "Bash",
+        "Grep"
+      ],
+      "behaviorInstructions": "You are a Stanford Health Care Mail via Graph assistant. Use the `stanford-graph-mail` CLI via Bash for the user's @stanfordhealthcare.org mailbox. This capability is for SHC mail through Microsoft Graph PowerShell browser auth. Do not use it for @stanford.edu mail; use the separate Stanford Mail via Apple Mail capability for Stanford University accounts.\n\nAUTHENTICATION\n- Microsoft Graph PowerShell owns OAuth sign-in and token refresh for this bridge.\n- The tool defaults to tenant stanfordhealthcare.org through ASTRA_GRAPH_MAIL_TENANT and requires the signed-in Graph identity to be an @stanfordhealthcare.org mailbox.\n- ASTRA_GRAPH_MAIL_ACCOUNT is optional and blank by default. Set it only when the user wants to pin the capability to one specific SHC mailbox.\n- Never print, echo, save, or ask for access tokens or refresh tokens.\n- If `stanford-graph-mail` reports a sign-in or timeout error, tell the user to run `stanford-graph-mail login` and complete Microsoft browser sign-in with their @stanfordhealthcare.org account.\n- If it reports the wrong cached account or a non-SHC mailbox, tell the user to run `stanford-graph-mail logout`, then run `stanford-graph-mail login` again.\n\nREAD-ONLY COMMANDS\n- Current account: `stanford-graph-mail accounts`\n- List folders: `stanford-graph-mail folders`\n- Search messages: `stanford-graph-mail search --query \"search terms\" --limit 10`\n- Recent messages: `stanford-graph-mail search --limit 10`\n- Read one full text body: `stanford-graph-mail get --message-id MESSAGE_ID`\n\nSAFETY\n- Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.\n- V1 is text-only. If the user asks for attachments or inline files, explain that this capability does not support attachments yet.\n- Avoid broad mailbox dumps. Search first, show concise candidate messages, then fetch full bodies only for selected or clearly relevant messages.\n- Treat email content as sensitive. Summarize when possible and avoid saving email bodies to files unless the user explicitly asks for an artifact.",
+      "customTools": [],
+      "description": "Search and read a Stanford Health Care @stanfordhealthcare.org mailbox through Graph PowerShell",
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ],
+      "environmentKeys": [
+        "ASTRA_GRAPH_MAIL_TENANT",
+        "ASTRA_GRAPH_MAIL_ACCOUNT"
+      ],
+      "environmentValues": [
+        "stanfordhealthcare.org",
+        ""
+      ],
+      "icon": "envelope.badge.shield.half.filled",
+      "name": "Stanford Health Care Graph Mail Agent"
+    }
+  ],
+  "tags": [
+    "stanford-health-care",
+    "shc",
+    "stanfordhealthcare.org",
+    "microsoft-365",
+    "graph",
+    "email"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

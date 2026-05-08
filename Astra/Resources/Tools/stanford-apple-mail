@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""
+stanford-apple-mail - read-only Apple Mail bridge for Stanford.edu mail.
+
+Commands:
+  stanford-apple-mail accounts
+  stanford-apple-mail folders [--account user@stanford.edu]
+  stanford-apple-mail latest [--account user@stanford.edu] [--mailbox INBOX] [--limit 1]
+  stanford-apple-mail today [--account user@stanford.edu] [--mailbox INBOX] [--limit 50]
+  stanford-apple-mail search [--account user@stanford.edu] [--mailbox INBOX] [--query "term"] [--limit 10]
+  stanford-apple-mail get [--account user@stanford.edu] [--mailbox INBOX] --message-id MESSAGE_ID
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+
+DEFAULT_ACCOUNT = os.environ.get("ASTRA_APPLE_MAIL_ACCOUNT", "").strip()
+DEFAULT_TIMEOUT = int(os.environ.get("ASTRA_APPLE_MAIL_TIMEOUT", "20"))
+MAX_BULK_BODY_READ = 1
+FIELD_SEPARATOR = "\x1f"
+RECORD_SEPARATOR = "\x1e"
+
+
+class MailToolError(Exception):
+    pass
+
+
+COMMON_APPLESCRIPT = r'''
+on replaceText(findText, replacementText, sourceText)
+  set previousDelimiters to AppleScript's text item delimiters
+  set AppleScript's text item delimiters to findText
+  set textParts to text items of sourceText
+  set AppleScript's text item delimiters to replacementText
+  set replacedText to textParts as text
+  set AppleScript's text item delimiters to previousDelimiters
+  return replacedText
+end replaceText
+
+on cleanText(valueText)
+  try
+    set normalizedText to valueText as text
+  on error
+    set normalizedText to ""
+  end try
+  set normalizedText to my replaceText(ASCII character 31, " ", normalizedText)
+  set normalizedText to my replaceText(ASCII character 30, " ", normalizedText)
+  set normalizedText to my replaceText(return, " ", normalizedText)
+  return normalizedText
+end cleanText
+
+on joinText(itemsList, delimiterText)
+  set previousDelimiters to AppleScript's text item delimiters
+  set AppleScript's text item delimiters to delimiterText
+  try
+    set joinedText to itemsList as text
+  on error
+    set joinedText to ""
+  end try
+  set AppleScript's text item delimiters to previousDelimiters
+  return joinedText
+end joinText
+
+on selectedAccount(selectorText)
+  set matchList to {}
+  tell application "Mail"
+    repeat with accountRef in accounts
+      set accountObject to contents of accountRef
+      set addressesText to ""
+      set userNameText to ""
+      set hasStanfordAddress to false
+      set selectorMatches to false
+      try
+        set addressesText to my joinText(email addresses of accountObject, ", ")
+      end try
+      try
+        set userNameText to user name of accountObject as text
+      end try
+      if addressesText contains "@stanford.edu" or userNameText ends with "@stanford.edu" then
+        set hasStanfordAddress to true
+        if selectorText is "" or addressesText contains selectorText or userNameText is selectorText or userNameText contains selectorText or selectorText contains userNameText then
+          set selectorMatches to true
+        end if
+      end if
+
+      if hasStanfordAddress is true then
+        if selectorText is "" or selectorMatches is true or userNameText is selectorText then
+          set end of matchList to accountObject
+        end if
+      end if
+    end repeat
+
+    if (count of matchList) is 1 then return item 1 of matchList
+    if (count of matchList) is 0 then
+      if selectorText is "" then
+        error "No @stanford.edu account was found in Apple Mail. Add a Stanford University account in Apple Mail and let it sync."
+      end if
+      error "No @stanford.edu Apple Mail account matches " & selectorText & ". Set ASTRA_APPLE_MAIL_ACCOUNT to the Stanford email address configured in Apple Mail."
+    end if
+  end tell
+  error "Multiple @stanford.edu accounts are configured in Apple Mail. Set ASTRA_APPLE_MAIL_ACCOUNT or pass --account with the intended Stanford email address."
+end selectedAccount
+
+on mailboxPath(targetMailbox)
+  tell application "Mail"
+    set pathParts to {my cleanText(name of targetMailbox)}
+    set cursorMailbox to targetMailbox
+    repeat
+      try
+        set cursorMailbox to container of cursorMailbox
+        set beginning of pathParts to my cleanText(name of cursorMailbox)
+      on error
+        exit repeat
+      end try
+    end repeat
+  end tell
+  return my joinText(pathParts, "/")
+end mailboxPath
+
+on mailboxRows(mailboxList)
+  set rowList to {}
+  tell application "Mail"
+    repeat with mailboxRef in mailboxList
+      set mailboxObject to contents of mailboxRef
+      set pathText to my mailboxPath(mailboxObject)
+      set unreadText to ""
+      try
+        set unreadText to unread count of mailboxObject as text
+      end try
+      set rowText to pathText & (ASCII character 31) & my cleanText(name of mailboxObject) & (ASCII character 31) & my cleanText(unreadText)
+      set end of rowList to rowText
+      set rowList to rowList & my mailboxRows(mailboxes of mailboxObject)
+    end repeat
+  end tell
+  return rowList
+end mailboxRows
+
+on matchingMailboxes(mailboxList, selectorText)
+  set matchList to {}
+  tell application "Mail"
+    repeat with mailboxRef in mailboxList
+      set mailboxObject to contents of mailboxRef
+      set pathText to my mailboxPath(mailboxObject)
+      set nameText to name of mailboxObject as text
+      if nameText is selectorText or pathText is selectorText or pathText ends with ("/" & selectorText) then
+        set end of matchList to mailboxObject
+      end if
+      set matchList to matchList & my matchingMailboxes(mailboxes of mailboxObject, selectorText)
+    end repeat
+  end tell
+  return matchList
+end matchingMailboxes
+
+on selectedMailbox(targetAccount, selectorText)
+  tell application "Mail"
+    if selectorText is "INBOX" or selectorText is "Inbox" or selectorText is "inbox" then
+      try
+        return mailbox "Inbox" of targetAccount
+      end try
+    end if
+    try
+      return mailbox selectorText of targetAccount
+    end try
+    set matchesList to my matchingMailboxes(mailboxes of targetAccount, selectorText)
+    if (count of matchesList) > 0 then return item 1 of matchesList
+  end tell
+  error "No Apple Mail mailbox named " & selectorText & " was found for the selected account."
+end selectedMailbox
+
+on previewText(sourceText, previewLength)
+  if (length of sourceText) > previewLength then
+    return (text 1 thru previewLength of sourceText) & "..."
+  end if
+  return sourceText
+end previewText
+
+on messageRow(targetMessage, includeBody)
+  tell application "Mail"
+    set idText to ""
+    set internetIDText to ""
+    set mailboxText to ""
+    set subjectText to ""
+    set senderText to ""
+    set receivedText to ""
+    set sentText to ""
+    set readText to ""
+    set bodyText to ""
+
+    try
+      set idText to id of targetMessage as text
+    end try
+    try
+      set mailboxText to my mailboxPath(mailbox of targetMessage)
+    end try
+    try
+      set subjectText to subject of targetMessage as text
+    end try
+    try
+      set senderText to sender of targetMessage as text
+    end try
+    try
+      set receivedText to date received of targetMessage as text
+    end try
+    try
+      set sentText to date sent of targetMessage as text
+    end try
+    try
+      set readText to read status of targetMessage as text
+    end try
+    if includeBody is true then
+      try
+        set bodyText to content of targetMessage as text
+      end try
+    end if
+
+    if includeBody is false then
+      set bodyText to my previewText(bodyText, 500)
+    end if
+
+    return my cleanText(idText) & (ASCII character 31) & my cleanText(internetIDText) & (ASCII character 31) & my cleanText(mailboxText) & (ASCII character 31) & my cleanText(subjectText) & (ASCII character 31) & my cleanText(senderText) & (ASCII character 31) & my cleanText(receivedText) & (ASCII character 31) & my cleanText(sentText) & (ASCII character 31) & my cleanText(readText) & (ASCII character 31) & my cleanText(bodyText)
+  end tell
+end messageRow
+
+on messageMatches(targetMessage, queryText)
+  if queryText is "" then return true
+  tell application "Mail"
+    try
+      if (subject of targetMessage as text) contains queryText then return true
+    end try
+    try
+      if (sender of targetMessage as text) contains queryText then return true
+    end try
+  end tell
+  return false
+end messageMatches
+
+on searchMailbox(targetMailbox, queryText, limitCount)
+  set rowList to {}
+  tell application "Mail"
+    try
+      repeat with messageRef in messages of targetMailbox
+        set messageObject to contents of messageRef
+        if my messageMatches(messageObject, queryText) then
+          set end of rowList to my messageRow(messageObject, false)
+          if (count of rowList) >= limitCount then return rowList
+        end if
+      end repeat
+    end try
+
+    repeat with childRef in mailboxes of targetMailbox
+      if (count of rowList) >= limitCount then exit repeat
+      set remainingCount to limitCount - (count of rowList)
+      set rowList to rowList & my searchMailbox(contents of childRef, queryText, remainingCount)
+    end repeat
+  end tell
+  return rowList
+end searchMailbox
+
+on recentMessages(targetMailbox, limitCount, includeBody)
+  set rowList to {}
+  tell application "Mail"
+    try
+      repeat with messageRef in messages 1 thru limitCount of targetMailbox
+        set end of rowList to my messageRow(contents of messageRef, includeBody)
+      end repeat
+    end try
+  end tell
+  return rowList
+end recentMessages
+
+on todayMessages(targetMailbox, limitCount)
+  set rowList to {}
+  set startDate to current date
+  set time of startDate to 0
+  tell application "Mail"
+    try
+      repeat with messageRef in messages 1 thru limitCount of targetMailbox
+        set messageObject to contents of messageRef
+        try
+          if date received of messageObject < startDate then return rowList
+        end try
+        set end of rowList to my messageRow(messageObject, false)
+      end repeat
+    end try
+  end tell
+  return rowList
+end todayMessages
+
+on findMessageInMailbox(targetMailbox, selectorText)
+  set numericID to missing value
+  try
+    set numericID to selectorText as integer
+  end try
+  tell application "Mail"
+    try
+      if numericID is not missing value then
+        set matchesList to messages of targetMailbox whose id is numericID
+      else
+        set matchesList to messages of targetMailbox whose message id is selectorText
+      end if
+      if (count of matchesList) > 0 then return item 1 of matchesList
+    end try
+
+    repeat with childRef in mailboxes of targetMailbox
+      set foundMessage to my findMessageInMailbox(contents of childRef, selectorText)
+      if foundMessage is not missing value then return foundMessage
+    end repeat
+  end tell
+  return missing value
+end findMessageInMailbox
+
+on findMessage(mailboxList, selectorText)
+  tell application "Mail"
+    repeat with mailboxRef in mailboxList
+      set foundMessage to my findMessageInMailbox(contents of mailboxRef, selectorText)
+      if foundMessage is not missing value then return foundMessage
+    end repeat
+  end tell
+  return missing value
+end findMessage
+'''
+
+
+def apple_literal(value):
+    safe = str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+    safe = safe.replace("\r", " ").replace("\n", " ")
+    return f'"{safe}"'
+
+
+def ensure_mail_launched():
+    subprocess.run(
+        ["/usr/bin/open", "-gj", "-a", "Mail"],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=5,
+        check=False,
+    )
+
+
+def run_osascript(script, timeout=DEFAULT_TIMEOUT, operation="metadata"):
+    try:
+        ensure_mail_launched()
+    except subprocess.TimeoutExpired:
+        raise MailToolError("Apple Mail did not launch within 5 seconds. Open Apple Mail manually, then retry.")
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if operation == "message_body":
+            raise MailToolError(
+                f"Apple Mail timed out after {timeout} seconds while reading a full message body. "
+                "If metadata commands such as `today` or `latest` work, automation permission is already OK; "
+                "Mail is likely still syncing or has not materialized that message body locally. "
+                "Open Mail and the selected message, or retry with a larger --timeout. "
+                "Do not use bulk body reads."
+            )
+        raise MailToolError(
+            f"Apple Mail automation timed out after {timeout} seconds. "
+            "This usually means Mail is waiting for macOS Automation permission, Mail is syncing, or Mail is not responding. "
+            "Open Apple Mail, approve any automation prompt, and check System Settings > Privacy & Security > Automation "
+            "for ASTRA, ASTRA Dev, Terminal, or osascript permission to control Mail."
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or f"osascript exit {result.returncode}"
+        if "-1743" in detail or "not authorized" in detail.lower() or "not permitted" in detail.lower():
+            raise MailToolError(
+                "macOS has not granted ASTRA permission to control Mail. "
+                "Open System Settings > Privacy & Security > Automation and allow ASTRA or ASTRA Dev to control Mail."
+            )
+        raise MailToolError(detail)
+    return result.stdout.rstrip("\n")
+
+
+def script_with(body):
+    return COMMON_APPLESCRIPT + "\n" + body
+
+
+def split_rows(output, fields):
+    if not output:
+        return []
+    rows = []
+    for row in output.split(RECORD_SEPARATOR):
+        values = row.split(FIELD_SEPARATOR)
+        if len(values) < len(fields):
+            values += [""] * (len(fields) - len(values))
+        rows.append(dict(zip(fields, values)))
+    return rows
+
+
+def parse_bool(value):
+    return str(value).strip().lower() == "true"
+
+
+def print_json(payload):
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def effective_account(args):
+    return getattr(args, "command_account", None) or args.account or DEFAULT_ACCOUNT
+
+
+def effective_timeout(args):
+    return getattr(args, "command_timeout", None) or args.timeout
+
+
+def guard_bulk_body_read(include_body, limit):
+    if include_body and limit > MAX_BULK_BODY_READ:
+        raise MailToolError(
+            f"Refusing to read {limit} full message bodies through Apple Mail automation. "
+            f"Bulk body reads are slow and capped at {MAX_BULK_BODY_READ}. "
+            "Run metadata first, for example `stanford-apple-mail today --limit 50` or "
+            "`stanford-apple-mail latest --limit 50`, then fetch selected messages with "
+            "`stanford-apple-mail get --message-id MESSAGE_ID`."
+        )
+
+
+def cmd_accounts(args):
+    script = script_with(
+        """
+set rowList to {}
+tell application "Mail"
+  repeat with accountRef in accounts
+    set idText to ""
+    set nameText to ""
+    set addressesText to ""
+    set fullNameText to ""
+    set userNameText to ""
+    set enabledText to ""
+    try
+      set idText to id of accountRef as text
+    end try
+    try
+      set nameText to name of accountRef as text
+    end try
+    try
+      set addressesText to my joinText(email addresses of accountRef, ", ")
+    end try
+    try
+      set fullNameText to full name of accountRef as text
+    end try
+    try
+      set userNameText to user name of accountRef as text
+    end try
+    try
+      set enabledText to enabled of accountRef as text
+    end try
+    set rowText to my cleanText(idText) & (ASCII character 31) & my cleanText(nameText) & (ASCII character 31) & my cleanText(addressesText) & (ASCII character 31) & my cleanText(fullNameText) & (ASCII character 31) & my cleanText(userNameText) & (ASCII character 31) & my cleanText(enabledText)
+    set end of rowList to rowText
+  end repeat
+end tell
+return my joinText(rowList, ASCII character 30)
+"""
+    )
+    rows = split_rows(run_osascript(script, effective_timeout(args)), ["id", "name", "emailAddresses", "fullName", "userName", "enabled"])
+    for row in rows:
+        row["emailAddresses"] = [item.strip() for item in row["emailAddresses"].split(",") if item.strip()]
+        row["enabled"] = parse_bool(row["enabled"])
+    print_json({"accounts": rows, "source": "Apple Mail"})
+
+
+def cmd_folders(args):
+    account = effective_account(args)
+    script = script_with(
+        f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+set rowList to my mailboxRows(mailboxes of accountRef)
+return my joinText(rowList, ASCII character 30)
+"""
+    )
+    rows = split_rows(run_osascript(script, effective_timeout(args)), ["path", "name", "unreadCount"])
+    for row in rows:
+        try:
+            row["unreadCount"] = int(row["unreadCount"])
+        except ValueError:
+            row["unreadCount"] = 0
+    print_json({"account": account, "folders": rows, "source": "Apple Mail"})
+
+
+def cmd_search(args):
+    account = effective_account(args)
+    limit = max(1, min(args.limit, 25))
+    mailbox = args.mailbox.strip() if args.mailbox else "INBOX"
+    query = args.query.strip()
+    if not query and mailbox.lower() != "all":
+        script = script_with(
+            f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+set targetMailbox to my selectedMailbox(accountRef, {apple_literal(mailbox)})
+set rowList to my recentMessages(targetMailbox, {limit}, false)
+return my joinText(rowList, ASCII character 30)
+"""
+        )
+    elif mailbox.lower() == "all":
+        mailbox_script = "set targetMailboxes to mailboxes of accountRef"
+        script = script_with(
+            f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+{mailbox_script}
+set rowList to {{}}
+repeat with mailboxRef in targetMailboxes
+  if (count of rowList) >= {limit} then exit repeat
+  set remainingCount to {limit} - (count of rowList)
+  set rowList to rowList & my searchMailbox(contents of mailboxRef, {apple_literal(query)}, remainingCount)
+end repeat
+return my joinText(rowList, ASCII character 30)
+"""
+        )
+    else:
+        mailbox_script = f"set targetMailboxes to {{my selectedMailbox(accountRef, {apple_literal(mailbox)})}}"
+        script = script_with(
+            f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+{mailbox_script}
+set rowList to {{}}
+repeat with mailboxRef in targetMailboxes
+  if (count of rowList) >= {limit} then exit repeat
+  set remainingCount to {limit} - (count of rowList)
+  set rowList to rowList & my searchMailbox(contents of mailboxRef, {apple_literal(query)}, remainingCount)
+end repeat
+return my joinText(rowList, ASCII character 30)
+"""
+        )
+    rows = split_rows(
+        run_osascript(script, effective_timeout(args)),
+        [
+            "id",
+            "internetMessageID",
+            "mailbox",
+            "subject",
+            "sender",
+            "dateReceived",
+            "dateSent",
+            "read",
+            "bodyPreview",
+        ],
+    )
+    for row in rows:
+        row["read"] = parse_bool(row["read"])
+    print_json({
+        "account": account,
+        "mailbox": mailbox,
+        "messages": rows,
+        "query": query,
+        "source": "Apple Mail",
+    })
+
+
+def cmd_latest(args):
+    account = effective_account(args)
+    requested_limit = max(1, args.limit)
+    guard_bulk_body_read(args.include_body, requested_limit)
+    limit = min(requested_limit, 100)
+    mailbox = args.mailbox.strip() if args.mailbox else "INBOX"
+    script = script_with(
+        f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+set targetMailbox to my selectedMailbox(accountRef, {apple_literal(mailbox)})
+set rowList to my recentMessages(targetMailbox, {limit}, {str(args.include_body).lower()})
+return my joinText(rowList, ASCII character 30)
+"""
+    )
+    rows = split_rows(
+        run_osascript(script, effective_timeout(args), "message_body" if args.include_body else "metadata"),
+        [
+            "id",
+            "internetMessageID",
+            "mailbox",
+            "subject",
+            "sender",
+            "dateReceived",
+            "dateSent",
+            "read",
+            "body" if args.include_body else "bodyPreview",
+        ],
+    )
+    for row in rows:
+        row["read"] = parse_bool(row["read"])
+    print_json({
+        "account": account,
+        "mailbox": mailbox,
+        "messages": rows,
+        "source": "Apple Mail",
+    })
+
+
+def cmd_today(args):
+    account = effective_account(args)
+    limit = max(1, min(args.limit, 100))
+    mailbox = args.mailbox.strip() if args.mailbox else "INBOX"
+    script = script_with(
+        f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+set targetMailbox to my selectedMailbox(accountRef, {apple_literal(mailbox)})
+set rowList to my todayMessages(targetMailbox, {limit})
+return my joinText(rowList, ASCII character 30)
+"""
+    )
+    rows = split_rows(
+        run_osascript(script, effective_timeout(args)),
+        [
+            "id",
+            "internetMessageID",
+            "mailbox",
+            "subject",
+            "sender",
+            "dateReceived",
+            "dateSent",
+            "read",
+            "bodyPreview",
+        ],
+    )
+    for row in rows:
+        row["read"] = parse_bool(row["read"])
+    print_json({
+        "account": account,
+        "mailbox": mailbox,
+        "messages": rows,
+        "source": "Apple Mail",
+    })
+
+
+def cmd_get(args):
+    account = effective_account(args)
+    mailbox = args.mailbox.strip() if args.mailbox else "INBOX"
+    if mailbox.lower() == "all":
+        lookup_script = f"set foundMessage to my findMessage(mailboxes of accountRef, {apple_literal(args.message_id)})"
+    else:
+        lookup_script = f"""
+set targetMailbox to my selectedMailbox(accountRef, {apple_literal(mailbox)})
+set foundMessage to my findMessageInMailbox(targetMailbox, {apple_literal(args.message_id)})
+"""
+    script = script_with(
+        f"""
+set accountRef to my selectedAccount({apple_literal(account)})
+{lookup_script}
+if foundMessage is missing value then error "No Apple Mail message matches message id {args.message_id}."
+return my messageRow(foundMessage, true)
+"""
+    )
+    rows = split_rows(
+        run_osascript(script, effective_timeout(args), "message_body"),
+        [
+            "id",
+            "internetMessageID",
+            "mailbox",
+            "subject",
+            "sender",
+            "dateReceived",
+            "dateSent",
+            "read",
+            "body",
+        ],
+    )
+    message = rows[0] if rows else {}
+    if message:
+        message["read"] = parse_bool(message["read"])
+    print_json({"account": account, "mailbox": mailbox, "message": message, "source": "Apple Mail"})
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Read Stanford.edu mail through local Apple Mail automation.")
+    parser.add_argument("--account", default=DEFAULT_ACCOUNT, help="Optional Apple Mail account/email to use. If omitted, the tool uses the unique @stanford.edu account configured in Apple Mail.")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Seconds to wait for Apple Mail automation before failing.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    accounts = subparsers.add_parser("accounts")
+    accounts.add_argument("--timeout", dest="command_timeout", type=int)
+    accounts.set_defaults(func=cmd_accounts)
+
+    folders = subparsers.add_parser("folders")
+    folders.add_argument("--account", dest="command_account")
+    folders.add_argument("--timeout", dest="command_timeout", type=int)
+    folders.set_defaults(func=cmd_folders)
+
+    latest = subparsers.add_parser("latest")
+    latest.add_argument("--account", dest="command_account")
+    latest.add_argument("--mailbox", default="INBOX", help="Mailbox name/path to read from.")
+    latest.add_argument("--limit", type=int, default=1)
+    latest.add_argument("--include-body", action="store_true", help="Include full message body instead of a preview.")
+    latest.add_argument("--timeout", dest="command_timeout", type=int)
+    latest.set_defaults(func=cmd_latest)
+
+    today = subparsers.add_parser("today")
+    today.add_argument("--account", dest="command_account")
+    today.add_argument("--mailbox", default="INBOX", help="Mailbox name/path to read from.")
+    today.add_argument("--limit", type=int, default=50)
+    today.add_argument("--timeout", dest="command_timeout", type=int)
+    today.set_defaults(func=cmd_today)
+
+    search = subparsers.add_parser("search")
+    search.add_argument("--account", dest="command_account")
+    search.add_argument("--mailbox", default="INBOX", help="Mailbox name/path to search, or 'all'.")
+    search.add_argument("--query", default="", help="Subject/sender query. Empty query returns recent messages from the mailbox order.")
+    search.add_argument("--limit", type=int, default=10)
+    search.add_argument("--timeout", dest="command_timeout", type=int)
+    search.set_defaults(func=cmd_search)
+
+    get = subparsers.add_parser("get")
+    get.add_argument("--account", dest="command_account")
+    get.add_argument("--mailbox", default="INBOX", help="Mailbox name/path to search for the message, or 'all'.")
+    get.add_argument("--message-id", required=True, help="Apple Mail numeric id or RFC Message-ID.")
+    get.add_argument("--timeout", dest="command_timeout", type=int)
+    get.set_defaults(func=cmd_get)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except MailToolError as error:
+        print(f"stanford-apple-mail: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

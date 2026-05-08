@@ -188,6 +188,7 @@ final class AgentRuntimeProcessRunner {
             let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
             let model = Self.model(task.model, for: .copilotCLI)
             let additionalPaths = Self.copilotAdditionalPaths(for: task)
+            let localToolCommands = Self.copilotLocalToolCommands(for: task)
             let plan = CopilotCLIRuntime.buildCommand(
                 executablePath: executable,
                 prompt: prompt,
@@ -200,7 +201,8 @@ final class AgentRuntimeProcessRunner {
                 capabilities: capabilities,
                 taskEnvironment: taskEnv,
                 copilotHome: copilotHome,
-                includeAstraToolsPath: Self.hasActiveCLITools(task)
+                includeAstraToolsPath: Self.hasActiveCLITools(task),
+                localToolCommands: localToolCommands
             )
 
             AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: task.id, fields: [
@@ -225,6 +227,7 @@ final class AgentRuntimeProcessRunner {
                 "permission_policy": permissionPolicy.rawValue,
                 "allowed_tools_count": String(allowed.count),
                 "allowed_tools_override": String(allowedToolsOverride != nil),
+                "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),
                 "task_env_count": String(taskEnv.count),
                 "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
@@ -375,6 +378,15 @@ final class AgentRuntimeProcessRunner {
             paths.append(task.taskFolder)
         }
         return Array(Set(paths.filter { !$0.isEmpty })).sorted()
+    }
+
+    @MainActor
+    private static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
+        Array(Set(task.allLocalTools.compactMap { tool in
+            guard tool.toolType != "mcp" else { return nil }
+            let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? nil : command
+        })).sorted()
     }
 
     @MainActor

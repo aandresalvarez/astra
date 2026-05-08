@@ -490,6 +490,7 @@ struct CopilotCLICommandPlanningTests {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
             allowedTools: ["Read", "Bash", "Edit"],
+            localToolCommands: ["stanford-graph-mail"],
             requiresAllowAllToolsForPrompt: false
         )
         let joined = args.joined(separator: " ")
@@ -498,6 +499,21 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("read"))
         #expect(joined.contains("write"))
         #expect(joined.contains("shell(git:*)"))
+        #expect(joined.contains("shell(stanford-graph-mail:*)"))
+    }
+
+    @Test("Local CLI commands map to Copilot shell permissions")
+    func localToolPermissions() {
+        let permissions = CopilotCLIRuntime.copilotShellPermissions(forLocalToolCommands: [
+            "stanford-graph-mail",
+            " /opt/homebrew/bin/gh ",
+            "bad)tool",
+            ""
+        ])
+
+        #expect(permissions.contains("shell(stanford-graph-mail:*)"))
+        #expect(permissions.contains("shell(/opt/homebrew/bin/gh:*)"))
+        #expect(!permissions.contains { $0.contains("bad)tool") })
     }
 }
 
