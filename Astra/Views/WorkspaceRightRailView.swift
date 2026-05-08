@@ -5,7 +5,6 @@ import SwiftUI
 
 private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
     case configure
-    case plan
     case usage
     case logs
 
@@ -14,7 +13,6 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .configure: "Configure"
-        case .plan: "Plan"
         case .usage: "Usage"
         case .logs: "Logs"
         }
@@ -23,7 +21,6 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .configure: "Skills, connectors, context, and settings"
-        case .plan: "Plan steps and execution progress"
         case .usage: "Tokens, costs, and task activity"
         case .logs: "Runtime diagnostics and log access"
         }
@@ -32,7 +29,6 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .configure: "slider.horizontal.3"
-        case .plan: "list.bullet.clipboard"
         case .usage: "chart.bar"
         case .logs: "doc.text.magnifyingglass"
         }
@@ -43,7 +39,6 @@ struct WorkspaceRightRailView: View {
     private static let maxRecentLogEntries = 64
 
     let workspace: Workspace
-    let selectedTask: AgentTask?
     let onConfigure: () -> Void
     let onEditWorkspace: () -> Void
     let onShowDashboard: () -> Void
@@ -153,27 +148,6 @@ struct WorkspaceRightRailView: View {
         workspace.tasks.filter { $0.status == .running || $0.status == .pendingUser || $0.status == .queued }
     }
 
-    private var selectedTaskPlanState: TaskPlanState {
-        guard let selectedTask else { return .empty }
-        return TaskPlanService.reconstruct(for: selectedTask)
-    }
-
-    private var selectedTaskPlanSignature: String {
-        guard let plan = selectedTaskPlanState.plan else { return "none" }
-        let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(plan.planID.uuidString)|\(selectedTaskPlanState.lifecycleStatus.rawValue)|\(stepSummary)"
-    }
-
-    private var shouldAutoSelectPlanTab: Bool {
-        selectedTaskPlanState.plan != nil
-    }
-
-    private var visibleTabs: [WorkspaceRightRailTab] {
-        WorkspaceRightRailTab.allCases.filter { tab in
-            tab != .plan || selectedTaskPlanState.plan != nil
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -205,23 +179,9 @@ struct WorkspaceRightRailView: View {
                 pendingLogEntries.removeAll(keepingCapacity: true)
             }
         }
-        .onChange(of: selectedTask?.id) { selectPlanTabIfNeeded() }
-        .onChange(of: selectedTaskPlanSignature) { selectPlanTabIfNeeded() }
-        .onAppear {
-            selectPlanTabIfNeeded()
-        }
         .onDisappear {
             pendingLogEntries.removeAll(keepingCapacity: true)
         }
-    }
-
-    private func selectPlanTabIfNeeded() {
-        if selectedTab == .plan, selectedTaskPlanState.plan == nil {
-            selectedTab = .configure
-            return
-        }
-        guard shouldAutoSelectPlanTab else { return }
-        selectedTab = .plan
     }
 
     private func refreshRecentLogEntries() {
@@ -274,7 +234,7 @@ struct WorkspaceRightRailView: View {
 
     private var tabStrip: some View {
         HStack(spacing: Stanford.railTabStripSpacing) {
-            ForEach(visibleTabs) { tab in
+            ForEach(WorkspaceRightRailTab.allCases) { tab in
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
                         selectedTab = tab
@@ -313,50 +273,11 @@ struct WorkspaceRightRailView: View {
         switch selectedTab {
         case .configure:
             configurePanel
-        case .plan:
-            planPanel
         case .usage:
             usagePanel
         case .logs:
             logsPanel
         }
-    }
-
-    private var planPanel: some View {
-        TaskPlanPanelView(
-            state: selectedTaskPlanState,
-            runtimeName: selectedTask?.resolvedRuntimeID.displayName ?? "Runtime",
-            permissionMode: UserDefaults.standard.bool(forKey: AppStorageKeys.skipPermissions) ? "Auto" : "Review",
-            pendingPermissionRequest: selectedTask?.status == .pendingUser ? "Waiting for your review." : nil,
-            isTaskRunning: selectedTask?.status == .running,
-            onSavePlan: { plan in
-                if let selectedTask {
-                    savePlan(plan, for: selectedTask)
-                }
-            },
-            onCancelPlan: { plan in
-                if let selectedTask {
-                    cancelPlan(plan, for: selectedTask)
-                }
-            }
-        )
-    }
-
-    private func savePlan(_ plan: TaskPlanPayload, for task: AgentTask) {
-        TaskPlanService.recordUpdated(plan, task: task, modelContext: modelContext)
-        try? modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-    }
-
-    private func cancelPlan(_ plan: TaskPlanPayload, for task: AgentTask) {
-        TaskPlanService.recordCancelled(
-            planID: plan.planID,
-            task: task,
-            modelContext: modelContext,
-            reason: "Cancelled by user."
-        )
-        try? modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     // MARK: - Unified Configure Panel

@@ -35,6 +35,30 @@ enum ContentDetailPresentation: Equatable {
     }
 }
 
+/// Layout-level artifacts shown in the docked Canvas column.
+/// Future cases can choose wider sizing for browser or file previews.
+private enum WorkspaceCanvasItem: Equatable {
+    case plan
+
+    var minWidth: CGFloat {
+        switch self {
+        case .plan: 460
+        }
+    }
+
+    var idealWidth: CGFloat {
+        switch self {
+        case .plan: 560
+        }
+    }
+
+    var maxWidth: CGFloat {
+        switch self {
+        case .plan: 920
+        }
+    }
+}
+
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
@@ -99,6 +123,7 @@ struct ContentView: View {
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
+    @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -153,6 +178,23 @@ struct ContentView: View {
         return "\(selectedTask.id.uuidString):\(unread)"
     }
 
+    private var selectedTaskCanvasSignature: String {
+        guard let selectedTask else { return "none" }
+        let state = TaskPlanService.reconstruct(for: selectedTask)
+        guard let plan = state.plan else { return "\(selectedTask.id.uuidString):none" }
+        let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
+        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary)"
+    }
+
+    private var hasWorkspaceCanvasContent: Bool {
+        guard let selectedTask else { return false }
+        return TaskPlanService.reconstruct(for: selectedTask).plan != nil
+    }
+
+    private var isWorkspaceCanvasPresented: Bool {
+        activeWorkspaceCanvasItem != nil
+    }
+
     private var rightRailInspectorBinding: Binding<Bool> {
         Binding(
             get: {
@@ -199,6 +241,7 @@ struct ContentView: View {
                 taskQueue: runtime.taskQueue,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
+                activeCanvasItem: $activeWorkspaceCanvasItem,
                 onQuickRun: handleQuickRunTask,
                 onTaskCreated: handleTaskCreated,
                 onAddSSHConnection: { showingSSHEditor = true },
@@ -241,8 +284,11 @@ struct ContentView: View {
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 hasWorkspace: effectiveWorkspace != nil,
+                hasCanvasContent: hasWorkspaceCanvasContent,
+                isCanvasVisible: isWorkspaceCanvasPresented,
                 isRightRailVisible: isWorkspaceRightRailVisible,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
+                onToggleCanvas: toggleWorkspaceCanvas,
                 onToggleRightRail: toggleRightRail
             )
         }
@@ -263,6 +309,11 @@ struct ContentView: View {
                 onDismissRecoveryNotice: { recoveryNotice = "" },
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
+        }
+        .onChange(of: selectedTaskCanvasSignature) {
+            if !hasWorkspaceCanvasContent {
+                activeWorkspaceCanvasItem = nil
+            }
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -491,6 +542,14 @@ struct ContentView: View {
 
     private func toggleRightRail() {
         isWorkspaceRightRailVisible.toggle()
+    }
+
+    private func toggleWorkspaceCanvas() {
+        guard hasWorkspaceCanvasContent else {
+            activeWorkspaceCanvasItem = nil
+            return
+        }
+        activeWorkspaceCanvasItem = activeWorkspaceCanvasItem == .plan ? nil : .plan
     }
 
     private func startComposingTask() {
@@ -1064,8 +1123,11 @@ private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
     let hasWorkspace: Bool
+    let hasCanvasContent: Bool
+    let isCanvasVisible: Bool
     let isRightRailVisible: Bool
     let onCheckForUpdates: () -> Void
+    let onToggleCanvas: () -> Void
     let onToggleRightRail: () -> Void
 
     var body: some ToolbarContent {
@@ -1080,6 +1142,19 @@ private struct ContentToolbar: ToolbarContent {
         }
 
         if hasWorkspace {
+            if hasCanvasContent {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onToggleCanvas) {
+                        Label(
+                            isCanvasVisible ? "Hide Canvas" : "Show Canvas",
+                            systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle"
+                        )
+                    }
+                    .help(isCanvasVisible ? "Hide canvas" : "Show canvas")
+                    .accessibilityIdentifier("WorkspaceCanvasToggleButton")
+                }
+            }
+
             ToolbarItem(placement: .primaryAction) {
                 Button(action: onToggleRightRail) {
                     Label(
@@ -1100,6 +1175,7 @@ private struct ContentDetailAreaView: View {
     let taskQueue: TaskQueue
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
+    @Binding var activeCanvasItem: WorkspaceCanvasItem?
 
     let onQuickRun: (AgentTask) -> Void
     let onTaskCreated: (AgentTask) -> Void
@@ -1132,6 +1208,52 @@ private struct ContentDetailAreaView: View {
     let onImportWorkspace: () -> Void
 
     var body: some View {
+        contentWithOptionalCanvas
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.18), value: activeCanvasItem)
+        .inspector(isPresented: $isRightRailPresented) {
+            if let workspace = effectiveWorkspace {
+                WorkspaceRightRailView(
+                    workspace: workspace,
+                    onConfigure: onConfigure,
+                    onEditWorkspace: onEditWorkspace,
+                    onShowDashboard: onShowDashboard,
+                    onShowLogs: onShowLogs,
+                    onNewSchedule: onNewSchedule,
+                    onEditSchedule: onEditSchedule,
+                    onManageCapabilities: onManageCapabilities,
+                    onOpenConfigureTab: onOpenConfigureTab,
+                    onNewSSHConnection: onNewSSHConnection,
+                    onEditSSHConnection: onEditSSHConnection,
+                    sshReloadTrigger: sshReloadTrigger
+                )
+                .id(workspace.id)
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 380)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contentWithOptionalCanvas: some View {
+        if let activeCanvasItem {
+            HSplitView {
+                detailContent
+                    .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+
+                canvasContent(for: activeCanvasItem)
+                    .frame(
+                        minWidth: activeCanvasItem.minWidth,
+                        idealWidth: activeCanvasItem.idealWidth,
+                        maxWidth: activeCanvasItem.maxWidth,
+                        maxHeight: .infinity
+                    )
+            }
+        } else {
+            detailContent
+        }
+    }
+
+    private var detailContent: some View {
         ContentDetailContentView(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
@@ -1165,27 +1287,30 @@ private struct ContentDetailAreaView: View {
             onImportWorkspace: onImportWorkspace
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .inspector(isPresented: $isRightRailPresented) {
-            if let workspace = effectiveWorkspace {
-                WorkspaceRightRailView(
-                    workspace: workspace,
-                    selectedTask: selectedTask,
-                    onConfigure: onConfigure,
-                    onEditWorkspace: onEditWorkspace,
-                    onShowDashboard: onShowDashboard,
-                    onShowLogs: onShowLogs,
-                    onNewSchedule: onNewSchedule,
-                    onEditSchedule: onEditSchedule,
-                    onManageCapabilities: onManageCapabilities,
-                    onOpenConfigureTab: onOpenConfigureTab,
-                    onNewSSHConnection: onNewSSHConnection,
-                    onEditSSHConnection: onEditSSHConnection,
-                    sshReloadTrigger: sshReloadTrigger
-                )
-                .id(workspace.id)
-                .inspectorColumnWidth(min: 300, ideal: 340, max: 380)
-            }
+    }
+
+    @ViewBuilder
+    private func canvasContent(for item: WorkspaceCanvasItem) -> some View {
+        switch item {
+        case .plan:
+            WorkspaceCanvasPanelView(
+                selectedTask: selectedTask,
+                isPresented: canvasPresentedBinding
+            )
         }
+    }
+
+    private var canvasPresentedBinding: Binding<Bool> {
+        Binding(
+            get: { activeCanvasItem != nil },
+            set: { isPresented in
+                if !isPresented {
+                    activeCanvasItem = nil
+                } else if activeCanvasItem == nil {
+                    activeCanvasItem = .plan
+                }
+            }
+        )
     }
 }
 
