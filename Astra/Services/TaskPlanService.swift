@@ -181,6 +181,33 @@ enum TaskPlanService {
         nextExecutableStep(in: plan) != nil
     }
 
+    static func isEditablePlanStep(_ step: TaskPlanPayloadStep) -> Bool {
+        switch step.status {
+        case .pending, .blocked:
+            true
+        case .running, .done, .skipped:
+            false
+        }
+    }
+
+    static func editableStepCount(in plan: TaskPlanPayload) -> Int {
+        plan.steps.filter(isEditablePlanStep).count
+    }
+
+    static func makeUniqueStepID(in plan: TaskPlanPayload, preferredTitle: String = "step") -> String {
+        let existingIDs = Set(plan.steps.map(\.id))
+        let base = slug(for: preferredTitle).isEmpty ? "step" : slug(for: preferredTitle)
+        if !existingIDs.contains(base) {
+            return base
+        }
+
+        var index = 2
+        while existingIDs.contains("\(base)-\(index)") {
+            index += 1
+        }
+        return "\(base)-\(index)"
+    }
+
     @MainActor
     @discardableResult
     static func recordCreated(_ plan: TaskPlanPayload, task: AgentTask, modelContext: ModelContext) -> TaskEvent {
@@ -292,6 +319,18 @@ extension TaskPlanService {
             return .medium
         }
         return .low
+    }
+
+    private static func slug(for text: String) -> String {
+        let lowercased = text.lowercased()
+        let scalars = lowercased.unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
+        }
+        let collapsed = String(scalars)
+            .split(separator: "-")
+            .prefix(4)
+            .joined(separator: "-")
+        return String(collapsed.prefix(48))
     }
 
     static func inferTools(from text: String) -> [String] {

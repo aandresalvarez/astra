@@ -40,6 +40,7 @@ struct TaskMainView: View {
     var onRetryTask: ((AgentTask) -> Void)?
     var onResumeTask: ((AgentTask) -> Void)?
     var onApproveTask: ((AgentTask) -> Void)?
+    var onOpenPlan: ((AgentTask) -> Void)?
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
@@ -1663,6 +1664,18 @@ struct TaskMainView: View {
             }
 
             Spacer(minLength: 12)
+
+            if let onOpenPlan {
+                Button {
+                    onOpenPlan(task)
+                } label: {
+                    Label("Open Plan", systemImage: "rectangle.inset.filled")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .controlSize(.small)
+                .accessibilityIdentifier("OpenPlanButton")
+            }
 
             Button {
                 runApprovedPlan(plan, mode: mode)

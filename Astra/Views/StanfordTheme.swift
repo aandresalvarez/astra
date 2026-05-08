@@ -291,21 +291,47 @@ struct StanfordCardStyle: ViewModifier {
 }
 
 struct StanfordButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     var isPrimary: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+
         configuration.label
             .font(Stanford.body(15).weight(.medium))
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
-            .background(isPrimary ? Stanford.cardinalRed : Stanford.cardBackground)
-            .foregroundStyle(isPrimary ? .white : Stanford.black)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(backgroundColor)
+            .foregroundStyle(foregroundColor)
+            .clipShape(shape)
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isPrimary ? Stanford.cardinalRed.opacity(0.0) : Color.secondary.opacity(0.25), lineWidth: 1)
+                shape
+                    .stroke(strokeColor, lineWidth: 1)
             )
-            .opacity(configuration.isPressed ? 0.8 : 1.0)
+            .contentShape(shape)
+            .opacity(configuration.isPressed && isEnabled ? 0.8 : 1.0)
+    }
+
+    private var backgroundColor: Color {
+        if !isEnabled {
+            return Stanford.fog.opacity(0.85)
+        }
+        return isPrimary ? Stanford.cardinalRed : Stanford.cardBackground
+    }
+
+    private var foregroundColor: Color {
+        if !isEnabled {
+            return Stanford.coolGrey.opacity(0.82)
+        }
+        return isPrimary ? .white : Stanford.black
+    }
+
+    private var strokeColor: Color {
+        if !isEnabled {
+            return Color.secondary.opacity(0.12)
+        }
+        return isPrimary ? Stanford.cardinalRed.opacity(0.0) : Color.secondary.opacity(0.25)
     }
 }
 

@@ -131,6 +131,39 @@ struct TaskPlanServiceTests {
         #expect(TaskPlanService.hasRemainingExecutableSteps(in: plan))
     }
 
+    @Test("Plan canvas editability is limited to non-run steps")
+    func editabilityIsLimitedToFutureSteps() {
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Edit remaining work",
+            steps: [
+                TaskPlanPayloadStep(id: "done", title: "Completed", status: .done),
+                TaskPlanPayloadStep(id: "running", title: "Running", status: .running),
+                TaskPlanPayloadStep(id: "pending", title: "Pending", status: .pending),
+                TaskPlanPayloadStep(id: "blocked", title: "Blocked", status: .blocked),
+                TaskPlanPayloadStep(id: "skipped", title: "Skipped", status: .skipped)
+            ]
+        )
+
+        #expect(plan.steps.map(TaskPlanService.isEditablePlanStep) == [false, false, true, true, false])
+        #expect(TaskPlanService.editableStepCount(in: plan) == 2)
+    }
+
+    @Test("Plan canvas creates stable unique step IDs")
+    func uniqueStepIDsUseReadableSlug() {
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Edit remaining work",
+            steps: [
+                TaskPlanPayloadStep(id: "fill-foundation-content", title: "Fill foundation content"),
+                TaskPlanPayloadStep(id: "fill-foundation-content-2", title: "Fill foundation content again")
+            ]
+        )
+
+        #expect(TaskPlanService.makeUniqueStepID(in: plan, preferredTitle: "Fill foundation content") == "fill-foundation-content-3")
+        #expect(TaskPlanService.makeUniqueStepID(in: plan, preferredTitle: "Style responsive polish") == "style-responsive-polish")
+    }
+
     @Test("Plan state recovers persisted protocol progress from run output")
     func reconstructsRecoveredProtocolProgressFromRunOutput() throws {
         let task = AgentTask(title: "Plan task", goal: "Do work")
