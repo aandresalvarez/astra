@@ -19,16 +19,21 @@ struct TaskRowView: View {
         return isSelected ? .medium : .regular
     }
 
+    private var displayTitle: String {
+        Formatters.shortenIdentifierTokens(task.title)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             statusDot
                 .frame(width: 8, height: 8)
 
-            Text(task.title)
+            Text(displayTitle)
                 .font(Stanford.ui(16, weight: titleWeight))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .help(task.title)
 
             if task.originScheduleID != nil {
                 Image(systemName: "clock.arrow.circlepath")
