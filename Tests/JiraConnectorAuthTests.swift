@@ -5,16 +5,10 @@ import Testing
 @Suite("Jira Connector Auth")
 struct JiraConnectorAuthTests {
 
-    @Test("Jira test authenticates with myself before trusting permissions")
-    func myselfAuthenticatesBeforePermissions() async throws {
+    @Test("Jira test authenticates with permission probe first")
+    func permissionProbeAuthenticatesBeforeMyself() async throws {
         let (connector, store) = makeConnector()
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
@@ -28,7 +22,6 @@ struct JiraConnectorAuthTests {
         #expect(result.0)
         #expect(result.1.contains("BROWSE_PROJECTS"))
         #expect(transport.requests.map { $0.url?.path } == [
-            "/rest/api/3/myself",
             "/rest/api/3/mypermissions"
         ])
     }
@@ -37,12 +30,6 @@ struct JiraConnectorAuthTests {
     func jiraServiceTypeIsCaseInsensitive() async throws {
         let (connector, store) = makeConnector(serviceType: "Jira")
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
@@ -55,7 +42,6 @@ struct JiraConnectorAuthTests {
 
         #expect(result.0)
         #expect(transport.requests.map { $0.url?.path } == [
-            "/rest/api/3/myself",
             "/rest/api/3/mypermissions"
         ])
     }
@@ -89,12 +75,6 @@ struct JiraConnectorAuthTests {
         let (connector, store) = makeConnector()
         let transport = MockConnectorHTTPTransport(stubs: [
             .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
-            .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
                 statusCode: 200,
@@ -118,43 +98,59 @@ struct JiraConnectorAuthTests {
         #expect(!outcome.fields.keys.contains("JIRA_API_TOKEN"))
     }
 
-    @Test("Jira test rejects anonymous permission responses when myself fails")
-    func anonymousPermissionsDoNotAuthenticateConnector() async throws {
-        let (connector, store) = makeConnector(projects: "SS")
+    @Test("Jira test accepts mypermissions success even when myself would fail")
+    func permissionsSuccessOverridesMyselfFailure() async throws {
+        let (connector, store) = makeConnector()
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 401,
-                body: #"{"errorMessages":["Unauthorized"]}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
                 statusCode: 200,
                 body: permissionsJSON(browse: true)
+            ),
+            .init(
+                path: "/rest/api/3/myself",
+                queryContains: [],
+                statusCode: 401,
+                body: #"{"errorMessages":["Unauthorized"]}"#
+            )
+        ])
+
+        let result = await connector.testConnection(store: store, transport: transport)
+
+        #expect(result.0)
+        #expect(result.1.contains("BROWSE_PROJECTS"))
+        #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/mypermissions"
+        ])
+    }
+
+    @Test("Jira test reports missing global Browse Projects permission")
+    func missingBrowseProjectsIsDistinctFromInvalidToken() async throws {
+        let (connector, store) = makeConnector()
+        let transport = MockConnectorHTTPTransport(stubs: [
+            .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["permissions=BROWSE_PROJECTS"],
+                statusCode: 200,
+                body: permissionsJSON(browse: false)
             )
         ])
 
         let result = await connector.testConnection(store: store, transport: transport)
 
         #expect(!result.0)
-        #expect(result.1.localizedCaseInsensitiveContains("rejected the credentials"))
-        #expect(result.1.localizedCaseInsensitiveContains("email"))
-        #expect(transport.requests.count == 1)
-        #expect(transport.requests.first?.url?.path == "/rest/api/3/myself")
+        #expect(result.1.contains("BROWSE_PROJECTS"))
+        #expect(!result.1.localizedCaseInsensitiveContains("invalid"))
+        #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/mypermissions"
+        ])
     }
 
     @Test("Jira test reports project visibility separately from invalid token")
     func projectNotVisibleIsDistinctFromInvalidToken() async throws {
         let (connector, store) = makeConnector(projects: "ENG")
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
@@ -180,12 +176,6 @@ struct JiraConnectorAuthTests {
     func missingCreateIssuesIsDistinctFromInvalidToken() async throws {
         let (connector, store) = makeConnector(projects: "ENG")
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
@@ -213,6 +203,12 @@ struct JiraConnectorAuthTests {
         let (connector, store) = makeConnector()
         let transport = MockConnectorHTTPTransport(stubs: [
             .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["permissions=BROWSE_PROJECTS"],
+                statusCode: 401,
+                body: #"{"errorMessages":["Unauthorized"]}"#
+            ),
+            .init(
                 path: "/rest/api/3/myself",
                 queryContains: [],
                 statusCode: 401,
@@ -225,26 +221,28 @@ struct JiraConnectorAuthTests {
 
         #expect(!result.0)
         #expect(result.1.contains("rejected the credentials"))
+        #expect(result.1.contains("both permission and account probes"))
         #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/mypermissions",
             "/rest/api/3/myself"
         ])
     }
 
-    @Test("Jira test treats permission endpoint 401 with successful myself as scope failure")
-    func myselfSuccessMakesPermissions401ScopeFailure() async throws {
+    @Test("Jira test treats permission endpoint 401 with successful myself fallback as scope failure")
+    func myselfFallbackSuccessMakesPermissions401ScopeFailure() async throws {
         let (connector, store) = makeConnector()
         let transport = MockConnectorHTTPTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
                 statusCode: 401,
                 body: #"{"errorMessages":["Unauthorized"]}"#
+            ),
+            .init(
+                path: "/rest/api/3/myself",
+                queryContains: [],
+                statusCode: 200,
+                body: #"{"accountId":"abc"}"#
             )
         ])
 
@@ -254,6 +252,10 @@ struct JiraConnectorAuthTests {
         #expect(result.1.contains("permission endpoint was rejected"))
         #expect(result.1.contains("scopes"))
         #expect(!result.1.localizedCaseInsensitiveContains("invalid"))
+        #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/mypermissions",
+            "/rest/api/3/myself"
+        ])
     }
 }
 

@@ -39,6 +39,12 @@ struct ConnectorPreflightServiceTests {
         let (connector, store) = makePreflightJiraConnector()
         let transport = PreflightMockTransport(stubs: [
             .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["permissions=BROWSE_PROJECTS"],
+                statusCode: 401,
+                body: #"{"errorMessages":["Client must be authenticated to access this resource."]}"#
+            ),
+            .init(
                 path: "/rest/api/3/myself",
                 queryContains: [],
                 statusCode: 401,
@@ -56,6 +62,7 @@ struct ConnectorPreflightServiceTests {
         #expect(unwrapped.serviceType == "jira")
         #expect(unwrapped.message.contains("rejected the credentials"))
         #expect(transport.requests.map { $0.url?.path } == [
+            "/rest/api/3/mypermissions",
             "/rest/api/3/myself"
         ])
     }
@@ -64,12 +71,6 @@ struct ConnectorPreflightServiceTests {
     func jiraProjectPermissionsPassPreflight() async throws {
         let (connector, store) = makePreflightJiraConnector(projects: "STAR")
         let transport = PreflightMockTransport(stubs: [
-            .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
             .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
@@ -98,12 +99,6 @@ struct ConnectorPreflightServiceTests {
         let (connector, store) = makePreflightJiraConnector(projects: "SS,STAR")
         let transport = PreflightMockTransport(stubs: [
             .init(
-                path: "/rest/api/3/myself",
-                queryContains: [],
-                statusCode: 200,
-                body: #"{"accountId":"abc"}"#
-            ),
-            .init(
                 path: "/rest/api/3/mypermissions",
                 queryContains: ["permissions=BROWSE_PROJECTS"],
                 statusCode: 200,
@@ -125,7 +120,7 @@ struct ConnectorPreflightServiceTests {
         )
 
         #expect(issue == nil)
-        #expect(transport.requests.count == 3)
+        #expect(transport.requests.count == 2)
         #expect(transport.requests.last?.url?.query?.contains("projectKey=STAR") == true)
         #expect(transport.requests.last?.url?.query?.contains("projectKey=SS") == false)
     }
