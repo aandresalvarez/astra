@@ -89,6 +89,41 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            headerWide
+            headerCompact
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(minHeight: Stanford.density(62), alignment: .center)
+        .background(.bar)
+    }
+
+    private var headerWide: some View {
+        HStack(spacing: 10) {
+            headerIdentity
+
+            Spacer(minLength: 8)
+
+            planHeaderChips
+            closeButton
+        }
+    }
+
+    private var headerCompact: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                headerIdentity
+                Spacer(minLength: 8)
+                closeButton
+            }
+
+            planHeaderChips
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var headerIdentity: some View {
         HStack(spacing: 10) {
             Image(systemName: "rectangle.inset.filled")
                 .font(Stanford.ui(14, weight: .semibold))
@@ -98,32 +133,37 @@ struct WorkspaceCanvasPanelView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Shelf")
                     .font(Stanford.heading(14))
+                    .lineLimit(1)
                 Text("Plan")
                     .font(Stanford.caption(10).weight(.medium))
                     .foregroundStyle(Stanford.lagunita)
+                    .lineLimit(1)
             }
+        }
+    }
 
-            Spacer(minLength: 8)
-
-            if let draft = currentDraft {
+    @ViewBuilder
+    private var planHeaderChips: some View {
+        if let draft = currentDraft {
+            HStack(spacing: 6) {
                 canvasChip("\(draft.steps.count) steps")
                 canvasChip("\(TaskPlanService.editableStepCount(in: draft)) editable")
             }
-
-            Button {
-                isPresented = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(Stanford.ui(12, weight: .semibold))
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Close shelf")
-            .accessibilityIdentifier("WorkspaceCanvasCloseButton")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+    }
+
+    private var closeButton: some View {
+        Button {
+            isPresented = false
+        } label: {
+            Image(systemName: "xmark")
+                .font(Stanford.ui(12, weight: .semibold))
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Close shelf")
+        .accessibilityIdentifier("WorkspaceCanvasCloseButton")
     }
 
     private func planCanvas(_ sourcePlan: TaskPlan) -> some View {
@@ -139,9 +179,9 @@ struct WorkspaceCanvasPanelView: View {
                         addStepButton
                     }
                 }
-                .padding(.leading, 16)
-                .padding(.trailing, 30)
-                .padding(.top, 10)
+                .padding(.leading, 18)
+                .padding(.trailing, 26)
+                .padding(.top, 14)
                 .padding(.bottom, 14)
             }
 
@@ -226,12 +266,12 @@ struct WorkspaceCanvasPanelView: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Stanford.paloAltoGreen.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Stanford.paloAltoGreen.opacity(0.18), lineWidth: 1)
+        .liquidSurface(
+            cornerRadius: 8,
+            fallbackFill: Stanford.paloAltoGreen.opacity(0.08),
+            fallbackStrokeOpacity: 0
         )
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Stanford.paloAltoGreen.opacity(0.18), lineWidth: 1))
     }
 
     private var stepList: some View {
@@ -271,12 +311,12 @@ struct WorkspaceCanvasPanelView: View {
             stepMetadataRow(step)
         }
         .padding(12)
-        .background(color(for: step.status).opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(color(for: step.status).opacity(0.18), lineWidth: 1)
+        .liquidSurface(
+            cornerRadius: 8,
+            fallbackFill: color(for: step.status).opacity(0.07),
+            fallbackStrokeOpacity: 0
         )
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(color(for: step.status).opacity(0.18), lineWidth: 1))
     }
 
     private func editableStepCard(index: Int, step: TaskPlanStep) -> some View {
@@ -346,8 +386,12 @@ struct WorkspaceCanvasPanelView: View {
             }
         }
         .padding(12)
-        .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .liquidSurface(
+            cornerRadius: 8,
+            interactive: true,
+            fallbackFill: Stanford.cardBackground,
+            fallbackStrokeOpacity: 0
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(step.status == .blocked ? Stanford.poppy.opacity(0.28) : Color.secondary.opacity(0.16), lineWidth: 1)
@@ -365,8 +409,12 @@ struct WorkspaceCanvasPanelView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Stanford.lagunita)
-        .background(Stanford.lagunita.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .liquidSurface(
+            cornerRadius: 8,
+            interactive: true,
+            fallbackFill: Stanford.lagunita.opacity(0.06),
+            fallbackStrokeOpacity: 0
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Stanford.lagunita.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -447,16 +495,32 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var emptyCanvas: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Nothing on the Shelf")
-                .font(Stanford.heading(16))
-            Text("Generate or select a plan to open it on the Shelf.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        ZStack {
+            Stanford.panelBackground
+            VStack(spacing: 12) {
+                Image(systemName: "rectangle.inset.filled")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("No Plan Open")
+                    .font(Stanford.heading(18))
+                    .lineLimit(1)
+                Text("Generate or select a plan to open it on the Shelf.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+            .frame(maxWidth: 300)
+            .liquidSurface(
+                cornerRadius: 10,
+                fallbackFill: Stanford.cardBackground,
+                fallbackStrokeOpacity: 0.08
+            )
+            .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
+            .padding(.horizontal, 16)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func labeledTextField(_ label: String, text: Binding<String>) -> some View {
@@ -470,7 +534,7 @@ struct WorkspaceCanvasPanelView: View {
                 .font(Stanford.caption(12))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Stanford.fog.opacity(0.55))
+                .background(Stanford.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -491,7 +555,7 @@ struct WorkspaceCanvasPanelView: View {
                 .frame(minHeight: 52)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 3)
-                .background(Stanford.fog.opacity(0.55))
+                .background(Stanford.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -539,7 +603,7 @@ struct WorkspaceCanvasPanelView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(role == .destructive ? Stanford.cardinalRed : .secondary)
-        .background(Stanford.fog.opacity(isDisabled ? 0 : 0.75))
+        .background(Stanford.cardBackground.opacity(isDisabled ? 0 : 1))
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .disabled(isDisabled)
     }
@@ -560,7 +624,7 @@ struct WorkspaceCanvasPanelView: View {
                 .font(Stanford.caption(10).weight(.semibold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(isSelected ? Stanford.lagunita.opacity(0.14) : Stanford.fog)
+                .background(isSelected ? Stanford.lagunita.opacity(0.14) : Stanford.cardBackground)
                 .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(

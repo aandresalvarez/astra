@@ -186,6 +186,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         switch event.type {
         case "task.started", "agent.response", "agent.thinking", "tool.use", "tool.result",
              "task.stats", "task.completed", "astra.todo.replace", "astra.complete",
+             "budget.warning",
              "plan.step.started", "plan.step.completed", "plan.step.blocked", "plan.step.skipped",
              "plan.execution.started", "plan.execution.completed", "plan.execution.failed":
             return true

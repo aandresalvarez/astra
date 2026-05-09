@@ -138,6 +138,7 @@ final class AgentRuntimeProcessRunner {
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     budgetExceeded: monitor.budgetExceeded,
+                    finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded
@@ -188,7 +189,10 @@ final class AgentRuntimeProcessRunner {
             let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
             let model = Self.model(task.model, for: .copilotCLI)
             let additionalPaths = Self.copilotAdditionalPaths(for: task)
-            let localToolCommands = Self.copilotLocalToolCommands(for: task)
+            var localToolCommands = Self.copilotLocalToolCommands(for: task)
+            if taskEnv["ASTRA_BROWSER_URL"] != nil {
+                localToolCommands.append("astra-browser")
+            }
             let plan = CopilotCLIRuntime.buildCommand(
                 executablePath: executable,
                 prompt: prompt,
@@ -201,7 +205,7 @@ final class AgentRuntimeProcessRunner {
                 capabilities: capabilities,
                 taskEnvironment: taskEnv,
                 copilotHome: copilotHome,
-                includeAstraToolsPath: Self.hasActiveCLITools(task),
+                includeAstraToolsPath: Self.hasActiveCLITools(task) || taskEnv["ASTRA_BROWSER_URL"] != nil,
                 localToolCommands: localToolCommands
             )
 
@@ -351,6 +355,7 @@ final class AgentRuntimeProcessRunner {
                     error: error.isEmpty ? nil : error,
                     providerVersion: providerVersion,
                     budgetExceeded: monitor.budgetExceeded,
+                    finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded
@@ -521,6 +526,7 @@ final class AgentRuntimeProcessRunner {
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     budgetExceeded: monitor.budgetExceeded,
+                    finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded
@@ -579,7 +585,7 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         var pathSuffix = RuntimePathResolver.shellPathSuffix
-        if hasActiveCLITools(task) {
+        if hasActiveCLITools(task) || taskEnv["ASTRA_BROWSER_URL"] != nil {
             pathSuffix += ":\(RuntimePathResolver.astraToolsPath)"
         }
         env["PATH"] = (env["PATH"] ?? "") + ":\(pathSuffix)"
@@ -604,6 +610,9 @@ final class AgentRuntimeProcessRunner {
         if hasStanfordOutlookMailAccess(task) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
+        }
+        for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
+            taskEnv[key] = value
         }
         return taskEnv
     }

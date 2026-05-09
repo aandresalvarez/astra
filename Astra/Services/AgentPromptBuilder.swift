@@ -48,6 +48,7 @@ enum AgentPromptBuilder {
         appendSkillInstructions(for: task, to: &parts)
         appendConnectorContext(for: task, to: &parts)
         appendToolContext(for: task, to: &parts)
+        appendShelfBrowserContext(for: task, to: &parts)
         appendDocumentReaderContext(to: &parts)
         if task.resolvedRuntimeID.supportsAstraRunProtocol {
             appendAstraRunProtocolInstructions(to: &parts)
@@ -267,6 +268,11 @@ enum AgentPromptBuilder {
         """)
     }
 
+    private static func appendShelfBrowserContext(for task: AgentTask, to parts: inout [String]) {
+        guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id) else { return }
+        parts.append(browserContext)
+    }
+
     static func buildFreshFollowUpPrompt(message: String, task: AgentTask) -> String {
         var parts: [String] = []
 
@@ -333,6 +339,8 @@ enum AgentPromptBuilder {
         if !connectorDescs.isEmpty {
             parts.append("Available Connectors (use these URLs, NOT any URLs from prior conversation):\n" + connectorDescs.joined(separator: "\n") + "\n\nIMPORTANT: Use Bash with curl to call APIs using env var credentials. Do NOT use WebFetch for authenticated APIs.")
         }
+
+        appendShelfBrowserContext(for: task, to: &parts)
 
         if let memories = task.workspace?.memories, !memories.isEmpty {
             let memoriesBlock = """

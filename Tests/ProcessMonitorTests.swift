@@ -84,6 +84,57 @@ struct ProcessMonitorTests {
         #expect(monitor.budgetExceeded == true)
     }
 
+    @Test("Final result budget overage after astra complete is warning only")
+    func finalBudgetOverageAfterAstraCompleteDoesNotKill() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1000)
+
+        let complete = ParsedEvent.astraProtocol(.valid(.complete(
+            summary: "Updated the slide.",
+            verifiedBy: "Snapshot confirmed"
+        )))
+        let completeKill = monitor.processEvent(complete, process: nil)
+
+        let result = ParsedEvent.result(
+            text: "done",
+            costUSD: 0.01,
+            totalInputTokens: 2_000,
+            totalOutputTokens: 100,
+            durationMs: 5000,
+            numTurns: 4,
+            isError: false
+        )
+        let resultKill = monitor.processEvent(result, process: nil)
+
+        #expect(completeKill == false)
+        #expect(resultKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.finalReportedBudgetExceededAfterCompletion == true)
+    }
+
+    @Test("Errored final result after astra complete still exceeds budget")
+    func erroredFinalBudgetOverageAfterAstraCompleteStillKills() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1000)
+        let _ = monitor.processEvent(.astraProtocol(.valid(.complete(
+            summary: "Done",
+            verifiedBy: nil
+        ))), process: nil)
+
+        let result = ParsedEvent.result(
+            text: "provider failed",
+            costUSD: 0.01,
+            totalInputTokens: 2_000,
+            totalOutputTokens: 100,
+            durationMs: 5000,
+            numTurns: 4,
+            isError: true
+        )
+        let shouldKill = monitor.processEvent(result, process: nil)
+
+        #expect(shouldKill == true)
+        #expect(monitor.budgetExceeded == true)
+        #expect(monitor.finalReportedBudgetExceededAfterCompletion == false)
+    }
+
     @Test("Unlimited budget never exceeds")
     func unlimitedBudget() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)

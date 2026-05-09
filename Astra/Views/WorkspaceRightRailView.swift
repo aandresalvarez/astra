@@ -150,17 +150,25 @@ struct WorkspaceRightRailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            tabStrip
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                tabStrip
+            }
+            .background(.bar)
+
+            Divider()
+
             ScrollView {
                 AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
                     selectedTabContent
                         .padding(.horizontal, Stanford.railContentPadding)
-                        .padding(.vertical, Stanford.railContentPadding)
+                        .padding(.top, 12)
+                        .padding(.bottom, Stanford.railContentPadding)
                 }
             }
         }
         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Stanford.panelBackground)
         .clipped()
         .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
             guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
@@ -204,18 +212,15 @@ struct WorkspaceRightRailView: View {
     // MARK: - Workspace Identity Anchor
 
     private var header: some View {
-        HStack(alignment: .center, spacing: Stanford.railSectionContentSpacing) {
-            // Bare folder icon. We used to wrap this in a tinted chip, but
-            // in the narrow right rail the chip read as a button and fought
-            // visually with the "Updated…" line below the workspace name.
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: "folder.fill")
-                .font(Stanford.ui(18, weight: .semibold))
+                .font(Stanford.ui(16, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
-                .frame(width: Stanford.railHeaderIconFrame, height: Stanford.railHeaderIconFrame)
+                .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(workspace.name)
-                    .font(Stanford.heading(16))
+                    .font(Stanford.heading(15))
                     .lineLimit(1)
                 Text("Updated \(Self.shortDateFormatter.string(from: workspace.updatedAt))")
                     .font(Stanford.caption(10))
@@ -225,9 +230,9 @@ struct WorkspaceRightRailView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.top, Stanford.railHeaderTopPadding)
-        .padding(.horizontal, Stanford.railContentPadding)
-        .padding(.bottom, Stanford.railHeaderBottomPadding)
+        .padding(.top, 12)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Compact Tab Strip
@@ -240,18 +245,19 @@ struct WorkspaceRightRailView: View {
                         selectedTab = tab
                     }
                 } label: {
-                    VStack(spacing: 3) {
+                    HStack(spacing: 5) {
                         Image(systemName: tab.icon)
-                            .font(Stanford.ui(13, weight: .medium))
+                            .font(Stanford.ui(12, weight: .semibold))
                         Text(tab.title)
-                            .font(Stanford.caption(11).weight(.medium))
+                            .font(Stanford.caption(11).weight(.semibold))
                             .lineLimit(1)
+                            .minimumScaleFactor(0.82)
                     }
                     .foregroundStyle(selectedTab == tab ? Stanford.lagunita : .secondary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, Stanford.railTabButtonVerticalPadding)
+                    .frame(height: 30)
                     .contentShape(Rectangle())
-                    .background(selectedTab == tab ? Stanford.lagunita.opacity(0.08) : .clear)
+                    .background(selectedTab == tab ? Stanford.lagunita.opacity(0.12) : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius - 1))
                 }
                 .buttonStyle(.plain)
@@ -264,8 +270,8 @@ struct WorkspaceRightRailView: View {
             fallbackFill: Color.primary.opacity(0.03),
             fallbackStrokeOpacity: 0
         )
-        .padding(.horizontal, Stanford.railTabOuterHorizontalPadding)
-        .padding(.bottom, Stanford.railTabBottomPadding)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
     }
 
     @ViewBuilder
@@ -389,8 +395,11 @@ struct WorkspaceRightRailView: View {
             }
         }
         .padding(Stanford.railInlineCardPadding)
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
+        .railCard(
+            cornerRadius: Stanford.railCompactCardCornerRadius,
+            fill: Color.primary.opacity(0.03),
+            strokeOpacity: 0.04
+        )
     }
 
     private func capabilityDetails(_ item: RailCapabilityItem) -> some View {
