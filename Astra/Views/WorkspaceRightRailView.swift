@@ -168,8 +168,14 @@ struct WorkspaceRightRailView: View {
             }
         }
         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Stanford.panelBackground)
-        .clipped()
+        // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Stanford.lagunita.opacity(0.55))
+                .frame(width: 2)
+                .ignoresSafeArea(.all, edges: .top)
+                .allowsHitTesting(false)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
             guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
             DispatchQueue.main.async {
@@ -815,17 +821,20 @@ struct WorkspaceRightRailView: View {
 
     private var contextSection: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
-            // Memories
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "brain")
-                        .font(Stanford.ui(11))
-                        .foregroundStyle(Stanford.plum)
-                    Text("\(workspace.memories.count) memories")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
+            // Memories — header hidden when there are none (the inline
+            // "Add memory" affordance below already explains the empty state).
+            if !workspace.memories.isEmpty {
+                HStack {
+                    HStack(spacing: 4) {
+                        Image(systemName: "brain")
+                            .font(Stanford.ui(11))
+                            .foregroundStyle(Stanford.plum)
+                        Text("\(workspace.memories.count) memories")
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer()
             }
 
             if workspace.memories.isEmpty && !isMemoryComposerVisible {
@@ -944,7 +953,7 @@ struct WorkspaceRightRailView: View {
             }
             .padding(8)
             .background(Color.primary.opacity(0.03))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
 
             ForEach(Array(workspace.additionalPaths.enumerated()), id: \.offset) { idx, path in
                 HStack(spacing: 6) {
@@ -1644,7 +1653,7 @@ private struct RailActionButton: View {
                     .foregroundStyle(color)
                     .frame(width: Stanford.railIconFrame, height: Stanford.railIconFrame)
                     .background(color.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)

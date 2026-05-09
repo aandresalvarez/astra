@@ -186,6 +186,22 @@ enum Stanford {
         (-10.0 / 1000.0) * fontSize
     }
 
+    // MARK: - Radii Scale
+    // Small (6) → controls; Medium (8) → cards/inputs; Large (12) → feature cards. Use nestedRadius() for inset shapes.
+    static let radiusSmall: CGFloat = 6
+    static let radiusMedium: CGFloat = 8
+    static let radiusLarge: CGFloat = 12
+
+    static func nestedRadius(outer: CGFloat, inset: CGFloat) -> CGFloat {
+        max(outer - inset, 2)
+    }
+
+    // MARK: - Stroke Scale
+    // Rest (0.12) → resting borders; Active (0.22) → state-tinted; Focus (0.36) → keyboard ring. Pair with Color.primary or a status tint.
+    static let strokeRest: Double = 0.12
+    static let strokeActive: Double = 0.22
+    static let strokeFocus: Double = 0.36
+
     // MARK: - Density Tokens
 
     static func density(_ value: CGFloat) -> CGFloat {
@@ -215,8 +231,8 @@ enum Stanford {
     static var railBadgeHorizontalPadding: CGFloat { density(6) }
     static var railBadgeVerticalPadding: CGFloat { density(2) }
     static var railBadgeCornerRadius: CGFloat { density(9) }
-    static var railCardCornerRadius: CGFloat { density(10) }
-    static var railCompactCardCornerRadius: CGFloat { density(8) }
+    static var railCardCornerRadius: CGFloat { density(radiusLarge) }
+    static var railCompactCardCornerRadius: CGFloat { density(radiusMedium) }
     static var railIconFrame: CGFloat { density(24) }
     static var railHeaderIconFrame: CGFloat { density(30) }
     static var railHeaderTopPadding: CGFloat { density(14) }
@@ -282,10 +298,10 @@ struct StanfordCardStyle: ViewModifier {
         content
             .padding()
             .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium)
+                    .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
             )
     }
 }
@@ -296,7 +312,7 @@ struct StanfordButtonStyle: ButtonStyle {
     var isPrimary: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
 
         configuration.label
             .font(Stanford.body(15).weight(.medium))

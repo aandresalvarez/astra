@@ -106,14 +106,14 @@ private struct ShelfBoundaryOverlay: View {
                 Spacer(minLength: 0)
                 HStack(spacing: 0) {
                     Rectangle()
-                        .fill(metrics.isResizing ? Stanford.lagunita.opacity(0.75) : Color.secondary.opacity(0.35))
-                        .frame(width: metrics.isResizing ? 2 : 1)
+                        .fill(Stanford.lagunita.opacity(metrics.isResizing ? 0.95 : 0.55))
+                        .frame(width: metrics.isResizing ? 3 : 2)
                     Spacer(minLength: 0)
                 }
                 .frame(width: metrics.width)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(.container, edges: .top)
+            .ignoresSafeArea(.all, edges: .top)
             .allowsHitTesting(false)
         }
     }
@@ -269,11 +269,11 @@ struct ContentView: View {
     }
 
     private var panelTransitionAnimation: Animation? {
-        reduceMotion ? nil : .interactiveSpring(response: 0.32, dampingFraction: 0.9, blendDuration: 0.08)
+        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
     }
 
     private var panelHandoffDelay: TimeInterval {
-        reduceMotion ? 0 : 0.16
+        reduceMotion ? 0 : 0.09
     }
 
     private var rightRailInspectorBinding: Binding<Bool> {
@@ -359,6 +359,7 @@ struct ContentView: View {
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
         .astraWindowChrome()
+        .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
         // inspector column — instead of at the inspector boundary
@@ -1489,7 +1490,7 @@ private struct ContentDetailAreaView: View {
     }
 
     private var panelAnimation: Animation? {
-        reduceMotion ? nil : .interactiveSpring(response: 0.32, dampingFraction: 0.9, blendDuration: 0.08)
+        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
     }
 
     private var canvasTransition: AnyTransition {
@@ -1523,7 +1524,8 @@ private struct ContentDetailAreaView: View {
 
                 canvasContent(for: item)
                 .frame(width: panelWidth, height: proxy.size.height)
-                .background(Stanford.panelBackground)
+                // .bar extends behind toolbar; Stanford.panelBackground would stop at the toolbar boundary.
+                .background(.bar, ignoresSafeAreaEdges: .top)
                 .overlay(alignment: .leading) {
                     shelfResizeHandle(for: item, availableWidth: proxy.size.width)
                 }

@@ -81,7 +81,7 @@ struct WorkspaceCanvasPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.panelBackground)
+        // No background — parent paints .bar material that extends behind toolbar.
         .onAppear { syncDraftIfNeeded(force: true) }
         .onChange(of: planSignature) {
             syncDraftIfNeeded(force: true)
@@ -145,9 +145,12 @@ struct WorkspaceCanvasPanelView: View {
     @ViewBuilder
     private var planHeaderChips: some View {
         if let draft = currentDraft {
+            let editableCount = TaskPlanService.editableStepCount(in: draft)
             HStack(spacing: 6) {
                 canvasChip("\(draft.steps.count) steps")
-                canvasChip("\(TaskPlanService.editableStepCount(in: draft)) editable")
+                if editableCount > 0 {
+                    canvasChip("\(editableCount) editable")
+                }
             }
         }
     }
@@ -206,10 +209,10 @@ struct WorkspaceCanvasPanelView: View {
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, 4)
                     .background(Stanford.cardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                            .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
                     )
             } else if let draft = currentDraft {
                 VStack(alignment: .leading, spacing: 5) {
@@ -267,11 +270,11 @@ struct WorkspaceCanvasPanelView: View {
         }
         .padding(10)
         .liquidSurface(
-            cornerRadius: 8,
+            cornerRadius: Stanford.radiusMedium,
             fallbackFill: Stanford.paloAltoGreen.opacity(0.08),
             fallbackStrokeOpacity: 0
         )
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Stanford.paloAltoGreen.opacity(0.18), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous).stroke(Stanford.paloAltoGreen.opacity(Stanford.strokeActive), lineWidth: 1))
     }
 
     private var stepList: some View {
@@ -297,7 +300,9 @@ struct WorkspaceCanvasPanelView: View {
                     .font(Stanford.caption(13).weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                canvasChip(step.status == .running ? "Running" : "Locked", color: color(for: step.status))
+                if step.status == .running {
+                    canvasChip("Running", color: color(for: step.status))
+                }
             }
 
             if !step.detail.isEmpty {
@@ -312,11 +317,11 @@ struct WorkspaceCanvasPanelView: View {
         }
         .padding(12)
         .liquidSurface(
-            cornerRadius: 8,
+            cornerRadius: Stanford.radiusMedium,
             fallbackFill: color(for: step.status).opacity(0.07),
             fallbackStrokeOpacity: 0
         )
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(color(for: step.status).opacity(0.18), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous).stroke(color(for: step.status).opacity(Stanford.strokeActive), lineWidth: 1))
     }
 
     private func editableStepCard(index: Int, step: TaskPlanStep) -> some View {
@@ -387,14 +392,14 @@ struct WorkspaceCanvasPanelView: View {
         }
         .padding(12)
         .liquidSurface(
-            cornerRadius: 8,
+            cornerRadius: Stanford.radiusMedium,
             interactive: true,
             fallbackFill: Stanford.cardBackground,
             fallbackStrokeOpacity: 0
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(step.status == .blocked ? Stanford.poppy.opacity(0.28) : Color.secondary.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(step.status == .blocked ? Stanford.poppy.opacity(Stanford.strokeActive) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -410,14 +415,14 @@ struct WorkspaceCanvasPanelView: View {
         .buttonStyle(.plain)
         .foregroundStyle(Stanford.lagunita)
         .liquidSurface(
-            cornerRadius: 8,
+            cornerRadius: Stanford.radiusMedium,
             interactive: true,
             fallbackFill: Stanford.lagunita.opacity(0.06),
             fallbackStrokeOpacity: 0
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Stanford.lagunita.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         )
         .disabled(!canEditPlan)
     }
@@ -513,9 +518,9 @@ struct WorkspaceCanvasPanelView: View {
             .padding(18)
             .frame(maxWidth: 300)
             .liquidSurface(
-                cornerRadius: 10,
+                cornerRadius: Stanford.radiusLarge,
                 fallbackFill: Stanford.cardBackground,
-                fallbackStrokeOpacity: 0.08
+                fallbackStrokeOpacity: Stanford.strokeRest
             )
             .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
             .padding(.horizontal, 16)
@@ -535,10 +540,10 @@ struct WorkspaceCanvasPanelView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
                 )
         }
     }
@@ -556,10 +561,10 @@ struct WorkspaceCanvasPanelView: View {
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 3)
                 .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
                 )
         }
     }
@@ -604,7 +609,7 @@ struct WorkspaceCanvasPanelView: View {
         .buttonStyle(.plain)
         .foregroundStyle(role == .destructive ? Stanford.cardinalRed : .secondary)
         .background(Stanford.cardBackground.opacity(isDisabled ? 0 : 1))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         .disabled(isDisabled)
     }
 
@@ -626,10 +631,10 @@ struct WorkspaceCanvasPanelView: View {
                 .padding(.vertical, 4)
                 .background(isSelected ? Stanford.lagunita.opacity(0.14) : Stanford.cardBackground)
                 .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(isSelected ? Stanford.lagunita.opacity(0.25) : Color.secondary.opacity(0.14), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(isSelected ? Stanford.lagunita.opacity(Stanford.strokeActive) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)

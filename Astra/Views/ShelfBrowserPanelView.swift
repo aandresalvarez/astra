@@ -18,7 +18,7 @@ struct ShelfBrowserPanelView: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Stanford.panelBackground)
+        // No background — parent paints .bar material that extends behind toolbar.
         .onAppear {
             addressText = session.currentURL
             session.setPresented(true)
@@ -53,7 +53,9 @@ struct ShelfBrowserPanelView: View {
 
             Spacer(minLength: 8)
 
-            browserStatusBadge
+            if shouldShowHeaderStatusBadge {
+                browserStatusBadge
+            }
             browserEnginePicker
             agentControlToggle(label: "Agent control")
             closeButton
@@ -65,7 +67,9 @@ struct ShelfBrowserPanelView: View {
             HStack(spacing: 10) {
                 headerIdentity
                 Spacer(minLength: 8)
-                browserStatusBadge
+                if shouldShowHeaderStatusBadge {
+                    browserStatusBadge
+                }
                 closeButton
             }
 
@@ -83,6 +87,12 @@ struct ShelfBrowserPanelView: View {
                 }
             }
         }
+    }
+
+    // Show only during controlled-mode lifecycle or while actively loading.
+    private var shouldShowHeaderStatusBadge: Bool {
+        if session.isUsingControlledBrowser { return true }
+        return session.isLoading
     }
 
     private var headerIdentity: some View {
@@ -229,10 +239,10 @@ struct ShelfBrowserPanelView: View {
             .focused($isAddressFocused)
             .onSubmit(go)
             .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(isAddressFocused ? Stanford.lagunita.opacity(0.36) : Color.secondary.opacity(0.16), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(isAddressFocused ? Stanford.lagunita.opacity(Stanford.strokeFocus) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
             )
     }
 
@@ -317,9 +327,9 @@ struct ShelfBrowserPanelView: View {
         .padding(18)
         .frame(maxWidth: 280)
         .liquidSurface(
-            cornerRadius: 10,
+            cornerRadius: Stanford.radiusLarge,
             fallbackFill: Stanford.cardBackground,
-            fallbackStrokeOpacity: 0.08
+            fallbackStrokeOpacity: Stanford.strokeRest
         )
         .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
         .padding(.horizontal, 16)
@@ -420,10 +430,10 @@ struct ShelfBrowserPanelView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Stanford.statusWarn.opacity(0.24), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Stanford.statusWarn.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 5)
     }
@@ -584,10 +594,10 @@ struct ShelfBrowserPanelView: View {
             )
         }
         .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -677,10 +687,10 @@ struct ShelfBrowserPanelView: View {
             )
         }
         .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -704,10 +714,10 @@ struct ShelfBrowserPanelView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -774,10 +784,10 @@ struct ShelfBrowserPanelView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(tint.opacity(Stanford.strokeActive), lineWidth: 1)
         )
     }
 
@@ -1100,10 +1110,10 @@ struct ShelfBrowserPanelView: View {
         .buttonStyle(.plain)
         .foregroundStyle(disabled ? .tertiary : .primary)
         .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
         .disabled(disabled)
         .help(help)
