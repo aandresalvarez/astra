@@ -35,6 +35,10 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         // items off the trailing edge. Setting title to empty keeps the
         // layout intact while removing the visible breadcrumb.
         window.title = ""
+
+        // Extend content behind toolbar (Finder/Mail pattern); astraHiddenToolbarBackground() covers full-screen.
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
     }
 }
 
@@ -44,5 +48,10 @@ extension View {
             WindowChromeConfigurator()
                 .frame(width: 0, height: 0)
         }
+    }
+
+    // Extracted: inlining this on ContentView's body chain exceeded the type-checker inference budget.
+    func astraHiddenToolbarBackground() -> some View {
+        toolbarBackground(.hidden, for: .windowToolbar)
     }
 }

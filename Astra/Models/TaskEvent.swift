@@ -43,7 +43,7 @@ final class TaskEvent {
              "plan.step.started", "plan.step.completed", "plan.step.blocked",
              "plan.step.skipped":
             return "tool"
-        case "error", "budget.exceeded", "task.stats", "task.chained":
+        case "error", "budget.exceeded", "budget.warning", "task.stats", "task.chained":
             return "system"
         case let t where t.hasPrefix("astra."):
             return "system"

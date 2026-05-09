@@ -35,27 +35,93 @@ enum ContentDetailPresentation: Equatable {
     }
 }
 
-/// Layout-level artifacts shown in the docked Canvas column.
+/// Layout-level artifacts shown in the docked Shelf column.
 /// Future cases can choose wider sizing for browser or file previews.
 private enum WorkspaceCanvasItem: Equatable {
     case plan
+    case browser
 
     var minWidth: CGFloat {
         switch self {
-        case .plan: 420
+        case .plan: 400
+        case .browser: 360
         }
     }
 
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
+        case .browser: 440
         }
     }
 
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
+        case .browser: 1120
         }
+    }
+
+    var title: String {
+        switch self {
+        case .plan: "Plan"
+        case .browser: "Browser"
+        }
+    }
+}
+
+private struct ShelfBoundaryMetrics: Equatable {
+    var width: CGFloat = 0
+    var isVisible = false
+    var isResizing = false
+
+    static let hidden = ShelfBoundaryMetrics()
+}
+
+private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
+    static var defaultValue = ShelfBoundaryMetrics.hidden
+
+    static func reduce(value: inout ShelfBoundaryMetrics, nextValue: () -> ShelfBoundaryMetrics) {
+        let next = nextValue()
+        if next.isVisible {
+            value = next
+        }
+    }
+}
+
+private struct ShelfBoundaryOverlayModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(ShelfBoundaryMetricsPreferenceKey.self) { metrics in
+            ShelfBoundaryOverlay(metrics: metrics)
+        }
+    }
+}
+
+private struct ShelfBoundaryOverlay: View {
+    let metrics: ShelfBoundaryMetrics
+
+    var body: some View {
+        if metrics.isVisible {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(Stanford.lagunita.opacity(metrics.isResizing ? 0.95 : 0.55))
+                        .frame(width: metrics.isResizing ? 3 : 2)
+                    Spacer(minLength: 0)
+                }
+                .frame(width: metrics.width)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.all, edges: .top)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private extension View {
+    func shelfBoundaryOverlay() -> some View {
+        modifier(ShelfBoundaryOverlayModifier())
     }
 }
 
@@ -103,6 +169,7 @@ struct ContentView: View {
     @State private var shouldApplyOnboardingCapabilitiesToNextWorkspace = false
     @State private var onboardingCapabilityConfiguration = OnboardingCapabilityConfiguration()
     @State private var runtime = AppRuntimeController()
+    @StateObject private var browserSession = ShelfBrowserSession()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -193,16 +260,20 @@ struct ContentView: View {
         return TaskPlanService.reconstruct(for: selectedTask).plan != nil
     }
 
+    private var hasOpenTaskThread: Bool {
+        selectedTask != nil || isComposingTask
+    }
+
     private var isWorkspaceCanvasPresented: Bool {
         activeWorkspaceCanvasItem != nil
     }
 
     private var panelTransitionAnimation: Animation? {
-        reduceMotion ? nil : .interactiveSpring(response: 0.32, dampingFraction: 0.9, blendDuration: 0.08)
+        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
     }
 
     private var panelHandoffDelay: TimeInterval {
-        reduceMotion ? 0 : 0.16
+        reduceMotion ? 0 : 0.09
     }
 
     private var rightRailInspectorBinding: Binding<Bool> {
@@ -247,6 +318,7 @@ struct ContentView: View {
                 effectiveWorkspace: effectiveWorkspace,
                 isComposingTask: isComposingTask,
                 taskQueue: runtime.taskQueue,
+                browserSession: browserSession,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -284,8 +356,10 @@ struct ContentView: View {
             )
         }
         .navigationSplitViewStyle(.balanced)
+        .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
         .astraWindowChrome()
+        .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
         // inspector column — instead of at the inspector boundary
@@ -294,14 +368,18 @@ struct ContentView: View {
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 hasWorkspace: effectiveWorkspace != nil,
+                hasTaskThread: hasOpenTaskThread,
                 hasCanvasContent: hasWorkspaceCanvasContent,
-                isCanvasVisible: isWorkspaceCanvasPresented,
+                isCanvasVisible: activeWorkspaceCanvasItem == .plan,
+                isBrowserVisible: activeWorkspaceCanvasItem == .browser,
                 isRightRailVisible: isWorkspaceRightRailVisible,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
                 onToggleCanvas: toggleWorkspaceCanvas,
+                onToggleBrowser: toggleBrowserCanvas,
                 onToggleRightRail: toggleRightRail
             )
         }
+        .shelfBoundaryOverlay()
         .overlay {
             if isSearchActive {
                 SearchPanelOverlayContainer(
@@ -321,9 +399,20 @@ struct ContentView: View {
             )
         }
         .onChange(of: selectedTaskCanvasSignature) {
-            if !hasWorkspaceCanvasContent {
+            if !hasWorkspaceCanvasContent, activeWorkspaceCanvasItem == .plan {
                 activeWorkspaceCanvasItem = nil
             }
+            if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
+                activeWorkspaceCanvasItem = nil
+            }
+        }
+        .onChange(of: hasOpenTaskThread) {
+            if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
+                activeWorkspaceCanvasItem = nil
+            }
+        }
+        .onChange(of: activeWorkspaceCanvasItem) {
+            browserSession.setPresented(activeWorkspaceCanvasItem == .browser)
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -627,7 +716,9 @@ struct ContentView: View {
         guard hasWorkspaceCanvasContent else {
             let _ = nextPanelTransitionGeneration()
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                if activeWorkspaceCanvasItem == .plan {
+                    activeWorkspaceCanvasItem = nil
+                }
             }
             return
         }
@@ -638,6 +729,27 @@ struct ContentView: View {
             }
         } else {
             presentCanvas(.plan)
+        }
+    }
+
+    private func toggleBrowserCanvas() {
+        guard selectedTask != nil || isComposingTask else {
+            if activeWorkspaceCanvasItem == .browser {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+            return
+        }
+        browserSession.bindToTask(selectedTask?.id)
+        if activeWorkspaceCanvasItem == .browser {
+            let _ = nextPanelTransitionGeneration()
+            animatePanelChange {
+                activeWorkspaceCanvasItem = nil
+            }
+        } else {
+            presentCanvas(.browser)
         }
     }
 
@@ -803,7 +915,7 @@ struct ContentView: View {
     private func restoreWorkspaceSelection() {
         guard !workspaces.isEmpty else {
             selectedWorkspace = nil
-            selectedTask = nil
+            setSelectedTask(nil)
             isComposingTask = false
             return
         }
@@ -964,11 +1076,24 @@ struct ContentView: View {
     // MARK: - Task Actions
 
     private func setSelectedTask(_ task: AgentTask?) {
+        let previousTaskID = selectedTask?.id
+        let shouldCloseBrowserForTaskChange = activeWorkspaceCanvasItem == .browser
+            && previousTaskID != nil
+            && previousTaskID != task?.id
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
         }
         selectedTask = task
+        if previousTaskID != task?.id {
+            browserSession.bindToTask(task?.id)
+            if shouldCloseBrowserForTaskChange {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+        }
         if task != nil {
             isComposingTask = false
         }
@@ -1101,10 +1226,10 @@ struct ContentView: View {
         let selectedWorkspaceID: UUID? = selectedWorkspace?.id
         let taskWorkspaceID: UUID? = selectedTask?.workspace?.id
         if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
-            selectedTask = nil
+            setSelectedTask(nil)
         }
         if isUITestingSeededLaunch {
-            selectedTask = nil
+            setSelectedTask(nil)
             isComposingTask = selectedWorkspace != nil
         } else {
             isComposingTask = false
@@ -1153,7 +1278,7 @@ struct ContentView: View {
     private func enterUITestComposerIfNeeded() {
         guard isUITestingSeededLaunch, selectedWorkspace != nil else { return }
 
-        selectedTask = nil
+        setSelectedTask(nil)
         isComposingTask = true
     }
 
@@ -1228,11 +1353,14 @@ private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
     let hasWorkspace: Bool
+    let hasTaskThread: Bool
     let hasCanvasContent: Bool
     let isCanvasVisible: Bool
+    let isBrowserVisible: Bool
     let isRightRailVisible: Bool
     let onCheckForUpdates: () -> Void
     let onToggleCanvas: () -> Void
+    let onToggleBrowser: () -> Void
     let onToggleRightRail: () -> Void
 
     var body: some ToolbarContent {
@@ -1251,12 +1379,25 @@ private struct ContentToolbar: ToolbarContent {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleCanvas) {
                         Label(
-                            isCanvasVisible ? "Hide Shelf" : "Show Shelf",
+                            isCanvasVisible ? "Hide Plan" : "Show Plan",
                             systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle"
                         )
                     }
-                    .help(isCanvasVisible ? "Hide shelf" : "Show shelf")
+                    .help(isCanvasVisible ? "Hide plan shelf" : "Show plan shelf")
                     .accessibilityIdentifier("WorkspaceCanvasToggleButton")
+                }
+            }
+
+            if hasTaskThread {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onToggleBrowser) {
+                        Label(
+                            isBrowserVisible ? "Hide Browser" : "Show Browser",
+                            systemImage: isBrowserVisible ? "globe.badge.chevron.backward" : "globe"
+                        )
+                    }
+                    .help(isBrowserVisible ? "Hide browser shelf" : "Show browser shelf")
+                    .accessibilityIdentifier("ShelfBrowserToggleButton")
                 }
             }
 
@@ -1278,11 +1419,17 @@ private struct ContentDetailAreaView: View {
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
+    @ObservedObject var browserSession: ShelfBrowserSession
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
     let isPlanCanvasVisible: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(AppStorageKeys.planShelfWidth) private var planShelfStoredWidth = Double(WorkspaceCanvasItem.plan.idealWidth)
+    @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
+    @State private var shelfDragStartWidth: CGFloat?
+    @State private var shelfTransientWidth: CGFloat?
+    @State private var resizingShelfItem: WorkspaceCanvasItem?
 
     let onQuickRun: (AgentTask) -> Void
     let onTaskCreated: (AgentTask) -> Void
@@ -1343,7 +1490,7 @@ private struct ContentDetailAreaView: View {
     }
 
     private var panelAnimation: Animation? {
-        reduceMotion ? nil : .interactiveSpring(response: 0.32, dampingFraction: 0.9, blendDuration: 0.08)
+        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
     }
 
     private var canvasTransition: AnyTransition {
@@ -1359,24 +1506,99 @@ private struct ContentDetailAreaView: View {
     @ViewBuilder
     private var contentWithOptionalCanvas: some View {
         if let activeCanvasItem {
-            HSplitView {
-                detailContent
-                    .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
-
-                canvasContent(for: activeCanvasItem)
-                    .frame(
-                        minWidth: activeCanvasItem.minWidth,
-                        idealWidth: activeCanvasItem.idealWidth,
-                        maxWidth: activeCanvasItem.maxWidth,
-                        maxHeight: .infinity
-                    )
-                    .transition(canvasTransition)
-                    .compositingGroup()
-                    .clipped()
-            }
+            shelfLayout(for: activeCanvasItem)
         } else {
             detailContent
         }
+    }
+
+    private func shelfLayout(for item: WorkspaceCanvasItem) -> some View {
+        GeometryReader { proxy in
+            let committedWidth = committedShelfWidth(for: item, availableWidth: proxy.size.width)
+            let panelWidth = shelfWidth(for: item, availableWidth: proxy.size.width)
+
+            ZStack(alignment: .trailing) {
+                detailContent
+                    .padding(.trailing, committedWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                canvasContent(for: item)
+                .frame(width: panelWidth, height: proxy.size.height)
+                // .bar extends behind toolbar; Stanford.panelBackground would stop at the toolbar boundary.
+                .background(.bar, ignoresSafeAreaEdges: .top)
+                .overlay(alignment: .leading) {
+                    shelfResizeHandle(for: item, availableWidth: proxy.size.width)
+                }
+                .transition(canvasTransition)
+                .shadow(color: .black.opacity(0.10), radius: 18, x: -5, y: 0)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .preference(
+                key: ShelfBoundaryMetricsPreferenceKey.self,
+                value: ShelfBoundaryMetrics(
+                    width: panelWidth,
+                    isVisible: true,
+                    isResizing: resizingShelfItem == item
+                )
+            )
+        }
+    }
+
+    private func committedShelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
+        let storedWidth = item == .plan ? CGFloat(planShelfStoredWidth) : CGFloat(browserShelfStoredWidth)
+        return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
+    }
+
+    private func shelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
+        let storedWidth = committedShelfWidth(for: item, availableWidth: availableWidth)
+        let candidate = resizingShelfItem == item ? (shelfTransientWidth ?? storedWidth) : storedWidth
+        return clampedShelfWidth(candidate, for: item, availableWidth: availableWidth)
+    }
+
+    private func clampedShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
+        let minimumDetailWidth: CGFloat = 380
+        let maximumUsableWidth = max(item.minWidth, availableWidth - minimumDetailWidth)
+        let maximumWidth = min(item.maxWidth, maximumUsableWidth)
+        return min(max(width, item.minWidth), maximumWidth)
+    }
+
+    private func storeShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) {
+        let clampedWidth = clampedShelfWidth(width, for: item, availableWidth: availableWidth)
+        switch item {
+        case .plan:
+            planShelfStoredWidth = Double(clampedWidth)
+        case .browser:
+            browserShelfStoredWidth = Double(clampedWidth)
+        }
+    }
+
+    private func shelfResizeHandle(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 14)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if shelfDragStartWidth == nil || resizingShelfItem != item {
+                            resizingShelfItem = item
+                            shelfDragStartWidth = shelfWidth(for: item, availableWidth: availableWidth)
+                        }
+                        guard let shelfDragStartWidth else { return }
+                        let proposedWidth = shelfDragStartWidth - value.translation.width
+                        shelfTransientWidth = clampedShelfWidth(proposedWidth, for: item, availableWidth: availableWidth)
+                    }
+                    .onEnded { _ in
+                        if let shelfTransientWidth {
+                            storeShelfWidth(shelfTransientWidth, for: item, availableWidth: availableWidth)
+                        }
+                        shelfDragStartWidth = nil
+                        shelfTransientWidth = nil
+                        resizingShelfItem = nil
+                    }
+            )
+            .help("Drag to resize the \(item.title) Shelf")
     }
 
     private var detailContent: some View {
@@ -1423,19 +1645,24 @@ private struct ContentDetailAreaView: View {
         case .plan:
             WorkspaceCanvasPanelView(
                 selectedTask: selectedTask,
-                isPresented: canvasPresentedBinding
+                isPresented: canvasPresentedBinding(for: .plan)
+            )
+        case .browser:
+            ShelfBrowserPanelView(
+                session: browserSession,
+                isPresented: canvasPresentedBinding(for: .browser)
             )
         }
     }
 
-    private var canvasPresentedBinding: Binding<Bool> {
+    private func canvasPresentedBinding(for item: WorkspaceCanvasItem) -> Binding<Bool> {
         Binding(
-            get: { activeCanvasItem != nil },
+            get: { activeCanvasItem == item },
             set: { isPresented in
                 if !isPresented {
                     activeCanvasItem = nil
                 } else if activeCanvasItem == nil {
-                    activeCanvasItem = .plan
+                    activeCanvasItem = item
                 }
             }
         )

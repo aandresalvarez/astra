@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 PRODUCT_NAME="ASTRA"
-TOOL_PRODUCTS=("stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
+TOOL_PRODUCTS=("astra-browser" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"

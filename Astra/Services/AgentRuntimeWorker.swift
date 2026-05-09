@@ -346,6 +346,13 @@ final class AgentRuntimeWorker {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
+            Self.recordFinalBudgetWarningIfNeeded(
+                result: result,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: "run"
+            )
 
             // Run validation based on strategy
             switch task.validationStrategy {
@@ -775,6 +782,13 @@ final class AgentRuntimeWorker {
             run.status = .completed
             run.stopReason = "completed"
             task.status = .completed
+            Self.recordFinalBudgetWarningIfNeeded(
+                result: result,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: "resume"
+            )
             let event = TaskEvent(task: task, type: "task.completed", payload: "Follow-up completed.", run: run)
             modelContext.insert(event)
         } else {
@@ -1094,6 +1108,13 @@ final class AgentRuntimeWorker {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
+            Self.recordFinalBudgetWarningIfNeeded(
+                result: result,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: auditPhase
+            )
             switch task.validationStrategy {
             case .manual:
                 task.status = .completed
@@ -1513,6 +1534,30 @@ final class AgentRuntimeWorker {
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
+    }
+
+    @MainActor
+    private static func recordFinalBudgetWarningIfNeeded(
+        result: AgentProcessResult,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) {
+        guard result.finalReportedBudgetExceededAfterCompletion else { return }
+        let message = "Completed after exceeding the reported provider token budget (\(task.tokensUsed)/\(task.tokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: "budget.warning",
+            payload: message,
+            run: run
+        ))
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
+            "phase": phase,
+            "reason": "final_reported_budget_exceeded_after_completion",
+            "tokens_used": String(task.tokensUsed),
+            "token_budget": String(task.tokenBudget)
+        ], level: .warning)
     }
 
     static func ensureSubAgentPermissions(at workspacePath: String, policy: PermissionPolicy, allowedTools: [String]) {

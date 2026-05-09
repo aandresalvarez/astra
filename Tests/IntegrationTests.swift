@@ -59,6 +59,50 @@ extension Tag {
     @Tag static var integration: Self
 }
 
+private func extractFirstJSONObject(from output: String) -> String {
+    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    var startIndex: String.Index?
+    var depth = 0
+    var isInString = false
+    var isEscaped = false
+
+    for index in trimmed.indices {
+        let character = trimmed[index]
+
+        if startIndex == nil {
+            if character == "{" {
+                startIndex = index
+                depth = 1
+            }
+            continue
+        }
+
+        if isInString {
+            if isEscaped {
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else if character == "\"" {
+                isInString = false
+            }
+            continue
+        }
+
+        if character == "\"" {
+            isInString = true
+        } else if character == "{" {
+            depth += 1
+        } else if character == "}" {
+            depth -= 1
+            if depth == 0, let startIndex {
+                return String(trimmed[startIndex...index])
+            }
+        }
+    }
+
+    return trimmed
+}
+
 @Suite("Claude CLI Integration", .tags(.integration))
 struct IntegrationTests {
 
@@ -158,15 +202,7 @@ struct IntegrationTests {
         #expect(p.terminationStatus == 0)
 
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        // Strip markdown fences if present
-        var cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.hasPrefix("```") {
-            if let start = cleaned.firstIndex(of: "\n") {
-                cleaned = String(cleaned[cleaned.index(after: start)...])
-            }
-            if cleaned.hasSuffix("```") { cleaned = String(cleaned.dropLast(3)) }
-            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let cleaned = extractFirstJSONObject(from: output)
 
         let spec = try JSONDecoder().decode(TaskSpec.self, from: cleaned.data(using: .utf8)!)
         #expect(!spec.title.isEmpty)

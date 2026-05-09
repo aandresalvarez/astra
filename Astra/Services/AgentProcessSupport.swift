@@ -225,6 +225,7 @@ struct AgentProcessResult {
     let error: String?
     let providerVersion: String?
     let budgetExceeded: Bool
+    let finalReportedBudgetExceededAfterCompletion: Bool
     let timedOut: Bool
     let repetitionKilled: Bool
     let maxTurnsExceeded: Bool
@@ -234,6 +235,7 @@ struct AgentProcessResult {
         error: String? = nil,
         providerVersion: String? = nil,
         budgetExceeded: Bool = false,
+        finalReportedBudgetExceededAfterCompletion: Bool = false,
         timedOut: Bool = false,
         repetitionKilled: Bool = false,
         maxTurnsExceeded: Bool = false
@@ -242,6 +244,7 @@ struct AgentProcessResult {
         self.error = error
         self.providerVersion = providerVersion
         self.budgetExceeded = budgetExceeded
+        self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
         self.timedOut = timedOut
         self.repetitionKilled = repetitionKilled
         self.maxTurnsExceeded = maxTurnsExceeded
@@ -262,9 +265,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _estimatedTokens: Int = 0
     private var _turnCount: Int = 0
     private var _budgetExceeded: Bool = false
+    private var _finalReportedBudgetExceededAfterCompletion: Bool = false
     private var _maxTurnsExceeded: Bool = false
     private var _timedOut: Bool = false
     private var _repetitionKilled: Bool = false
+    private var _sawAstraComplete: Bool = false
 
     private var lastEventSignature: String = ""
     private var repetitionCount: Int = 0
@@ -274,6 +279,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
     var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
     var budgetExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _budgetExceeded }
+    var finalReportedBudgetExceededAfterCompletion: Bool { lock.lock(); defer { lock.unlock() }; return _finalReportedBudgetExceededAfterCompletion }
     var maxTurnsExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _maxTurnsExceeded }
     var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return _timedOut }
     var repetitionKilled: Bool { lock.lock(); defer { lock.unlock() }; return _repetitionKilled }
@@ -297,6 +303,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         defer { lock.unlock() }
 
         lastActivityTime = Date()
+
+        if case .astraProtocol(.valid(.complete)) = parsed {
+            _sawAstraComplete = true
+            return false
+        }
 
         if case .astraProtocol = parsed {
             return false
@@ -334,9 +345,13 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             repetitionCount = 1
         }
 
-        if case .result(_, _, let totalInput, let totalOutput, _, _, _) = parsed {
+        if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
+                if _sawAstraComplete && !isError {
+                    _finalReportedBudgetExceededAfterCompletion = true
+                    return false
+                }
                 _budgetExceeded = true
                 process?.terminate()
                 return true

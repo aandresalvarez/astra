@@ -54,6 +54,24 @@ struct ComposerToolbar: View {
         HStack(spacing: 8) {
             plusMenu
 
+            ViewThatFits(in: .horizontal) {
+                wideControlsRow
+                mediumControlsRow
+                compactControlsRow
+            }
+
+            Spacer(minLength: 0)
+
+            submitArea
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: - Control Row Layouts
+
+    private var wideControlsRow: some View {
+        HStack(spacing: 8) {
             modelBudgetPill
 
             if showSecurityGate || showPermissionControls {
@@ -70,13 +88,52 @@ struct ComposerToolbar: View {
             if !sshConnections.isEmpty {
                 sshIndicator
             }
-
-            Spacer()
-
-            submitArea
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .fixedSize()
+    }
+
+    private var mediumControlsRow: some View {
+        HStack(spacing: 8) {
+            modelBudgetPill
+
+            if showSecurityGate || showPermissionControls {
+                permissionModeButton(compact: true)
+            }
+
+            if showPermissionControls {
+                teamModeButton(compact: true)
+                planModeToggle(compact: true)
+            }
+
+            skillChips
+
+            if !sshConnections.isEmpty {
+                sshIndicator
+            }
+        }
+        .fixedSize()
+    }
+
+    private var compactControlsRow: some View {
+        HStack(spacing: 6) {
+            modelBudgetPill(compact: true)
+
+            if showSecurityGate || showPermissionControls {
+                permissionModeButton(compact: true)
+            }
+
+            if showPermissionControls {
+                teamModeButton(compact: true)
+                planModeToggle(compact: true)
+            }
+
+            compactSkillChips
+
+            if !sshConnections.isEmpty {
+                sshIndicator(compact: true)
+            }
+        }
+        .fixedSize()
     }
 
     // MARK: - Plus Menu
@@ -140,6 +197,10 @@ struct ComposerToolbar: View {
     // MARK: - Model / Budget Pill
 
     private var modelBudgetPill: some View {
+        modelBudgetPill(compact: false)
+    }
+
+    private func modelBudgetPill(compact: Bool) -> some View {
         Menu {
             Menu {
                 ForEach(AgentRuntimeID.allCases) { runtime in
@@ -195,16 +256,19 @@ struct ComposerToolbar: View {
             HStack(spacing: 4) {
                 Image(systemName: "cpu")
                     .font(Stanford.ui(11, weight: .medium))
-                Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
-                    .font(Stanford.caption(12))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if !compact {
+                    Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
+                        .font(Stanford.caption(12))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             .foregroundStyle(Stanford.coolGrey)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
         }
         .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
         .menuStyle(.borderlessButton)
@@ -214,6 +278,10 @@ struct ComposerToolbar: View {
     // MARK: - Permission Controls
 
     private var permissionModeButton: some View {
+        permissionModeButton(compact: false)
+    }
+
+    private func permissionModeButton(compact: Bool) -> some View {
         Menu {
             Button {
                 skipPermissions = false
@@ -230,11 +298,14 @@ struct ComposerToolbar: View {
             HStack(spacing: 3) {
                 Image(systemName: skipPermissions ? "lock.open.fill" : "lock.fill")
                     .font(Stanford.ui(11))
-                Text(skipPermissions ? "Auto" : "Review")
-                    .font(Stanford.caption(13))
+                if !compact {
+                    Text(skipPermissions ? "Auto" : "Review")
+                        .font(Stanford.caption(13))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
-            .padding(.horizontal, 9)
+            .padding(.horizontal, compact ? 7 : 9)
             .padding(.vertical, 5)
             .background(skipPermissions ? Stanford.poppy.opacity(0.12) : Stanford.paloAltoGreen.opacity(0.12))
             .clipShape(Capsule())
@@ -248,20 +319,32 @@ struct ComposerToolbar: View {
     }
 
     private var teamModeButton: some View {
+        teamModeButton(compact: false)
+    }
+
+    private func teamModeButton(compact: Bool) -> some View {
         Button { useAgentTeam.toggle() } label: {
             HStack(spacing: 3) {
                 Image(systemName: useAgentTeam ? "person.3.fill" : "person")
                     .font(Stanford.ui(11))
-                Text(useAgentTeam ? "Team ×\(teamSize)" : "Solo")
-                    .font(Stanford.caption(13))
+                if !compact {
+                    Text(useAgentTeam ? "Team ×\(teamSize)" : "Solo")
+                        .font(Stanford.caption(13))
+                        .fixedSize(horizontal: true, vertical: false)
+                } else if useAgentTeam {
+                    Text("×\(teamSize)")
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             .foregroundStyle(useAgentTeam ? Stanford.plum : Stanford.coolGrey)
-            .padding(.horizontal, 9)
+            .padding(.horizontal, compact ? 7 : 9)
             .padding(.vertical, 5)
             .background(useAgentTeam ? Stanford.plum.opacity(0.12) : Stanford.fog)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .help(useAgentTeam ? "Agent team active (×\(teamSize)). Right-click to change size." : "Solo agent")
         .accessibilityIdentifier("TeamToggle")
         .accessibilityValue(useAgentTeam ? "Team" : "Solo")
         .contextMenu {
@@ -274,19 +357,27 @@ struct ComposerToolbar: View {
     }
 
     private var planModeToggle: some View {
+        planModeToggle(compact: false)
+    }
+
+    private func planModeToggle(compact: Bool) -> some View {
         Toggle(isOn: $isPlanMode) {
             HStack(spacing: 4) {
                 Image(systemName: "text.badge.checkmark")
                     .font(Stanford.ui(11, weight: .medium))
-                Text("Plan mode")
-                    .font(Stanford.caption(13))
+                if !compact {
+                    Text("Plan mode")
+                        .font(Stanford.caption(13))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             .foregroundStyle(isPlanMode ? Stanford.cardinalRed : Stanford.coolGrey)
+            .fixedSize()
         }
         .toggleStyle(.switch)
         .controlSize(.small)
         .disabled(isPlanModeDisabled)
-        .help(planModeHelp)
+        .help(compact ? "Plan mode — \(planModeHelp.lowercased())" : planModeHelp)
         .accessibilityIdentifier("PlanModeToggle")
     }
 
@@ -319,13 +410,50 @@ struct ComposerToolbar: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Stanford.lagunita.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var compactSkillChips: some View {
+        let sorted = skills.sorted { $0.name < $1.name }
+        if !sorted.isEmpty {
+            Menu {
+                ForEach(sorted) { skill in
+                    Button {
+                        onRemoveSkill?(skill)
+                    } label: {
+                        Label("Remove \(skill.name)", systemImage: "xmark")
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "puzzlepiece.fill")
+                        .font(Stanford.ui(10, weight: .medium))
+                    Text("\(sorted.count)")
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Stanford.lagunita.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help(skillsTooltip(sorted))
+        }
+    }
+
+    private func skillsTooltip(_ skills: [Skill]) -> String {
+        let names = skills.map(\.name).joined(separator: ", ")
+        return skills.count == 1 ? "Skill: \(names)" : "Skills (\(skills.count)): \(names)"
     }
 
     private func skillChip(_ skill: Skill) -> some View {
@@ -348,12 +476,16 @@ struct ComposerToolbar: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Stanford.lagunita.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
     }
 
     // MARK: - SSH Indicator
 
     private var sshIndicator: some View {
+        sshIndicator(compact: false)
+    }
+
+    private func sshIndicator(compact: Bool) -> some View {
         let connected = sshConnections.filter { $0.lastTestResult == true }
         let label = connected.isEmpty
             ? "SSH"
@@ -381,15 +513,25 @@ struct ComposerToolbar: View {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
                     .font(Stanford.ui(10, weight: .medium))
                     .foregroundStyle(statusColor)
-                Text(label)
-                    .font(Stanford.caption(11))
-                    .lineLimit(1)
-                    .foregroundStyle(statusColor)
+                if compact {
+                    if !connected.isEmpty && connected.count > 1 {
+                        Text("\(connected.count)")
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(statusColor)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                } else {
+                    Text(label)
+                        .font(Stanford.caption(11))
+                        .lineLimit(1)
+                        .foregroundStyle(statusColor)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
-            .padding(.horizontal, 7)
+            .padding(.horizontal, compact ? 6 : 7)
             .padding(.vertical, 3)
             .background(statusColor.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -429,10 +571,10 @@ struct ComposerToolbar: View {
                         .font(Stanford.body(15))
                         .fontWeight(.medium)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(hasInput ? .white : Color.primary.opacity(0.55))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
-                .background(hasInput ? submitColor : Stanford.sandstone)
+                .background(hasInput ? submitColor : Color.primary.opacity(0.10))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -445,7 +587,7 @@ struct ComposerToolbar: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(Stanford.ui(28))
-                    .foregroundStyle(hasInput ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.5))
+                    .foregroundStyle(hasInput ? Stanford.cardinalRed : Color.primary.opacity(0.25))
             }
             .buttonStyle(.plain)
             .disabled(!hasInput)

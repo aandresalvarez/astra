@@ -254,6 +254,7 @@ struct TimelineTabView: View {
         case "task.completed": return "checkmark.circle"
         case "task.stats": return "chart.bar"
         case "budget.exceeded": return "exclamationmark.triangle"
+        case "budget.warning": return "exclamationmark.triangle"
         case "error": return "xmark.circle"
         case "user.message": return "person.circle"
         default: return "circle"
@@ -272,6 +273,7 @@ struct TimelineTabView: View {
         case "task.completed": return Stanford.paloAltoGreen
         case "task.stats": return Stanford.sky
         case "budget.exceeded": return Stanford.cardinalRed
+        case "budget.warning": return Stanford.poppy
         case "error": return Stanford.cardinalRed
         case "user.message": return Stanford.bay
         default: return Stanford.coolGrey
@@ -290,6 +292,7 @@ struct TimelineTabView: View {
         case "task.completed": return "Completed"
         case "task.stats": return "Stats"
         case "budget.exceeded": return "Budget Exceeded"
+        case "budget.warning": return "Budget Warning"
         case "error": return "Error"
         case "user.message": return "You"
         default: return type

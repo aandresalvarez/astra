@@ -4,6 +4,7 @@ import Testing
 @Suite("App Bundle Packaging")
 struct AppBundlePackagingTests {
     private let swiftMailTools = [
+        "astra-browser": "AstraBrowserTool",
         "stanford-mail": "StanfordMailTool",
         "stanford-apple-mail": "StanfordAppleMailTool",
         "stanford-graph-mail": "StanfordGraphMailTool"
@@ -24,8 +25,8 @@ struct AppBundlePackagingTests {
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
-    @Test("Stanford mail tools are compiled Swift products, not bundled Python scripts")
-    func stanfordMailToolsAreCompiledSwiftProducts() throws {
+    @Test("Bundled agent tools are compiled Swift products, not resource scripts")
+    func bundledAgentToolsAreCompiledSwiftProducts() throws {
         let package = try String(contentsOf: repoRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
         let resourceToolsURL = repoRoot.appendingPathComponent("Astra/Resources/Tools", isDirectory: true)

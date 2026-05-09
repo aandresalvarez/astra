@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
+        .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
         .executable(name: "stanford-graph-mail", targets: ["StanfordGraphMailTool"])
@@ -21,6 +22,10 @@ let package = Package(
         .target(
             name: "MailToolSupport",
             path: "Tools/MailToolSupport"
+        ),
+        .executableTarget(
+            name: "AstraBrowserTool",
+            path: "Tools/AstraBrowserTool"
         ),
         .executableTarget(
             name: "StanfordMailTool",

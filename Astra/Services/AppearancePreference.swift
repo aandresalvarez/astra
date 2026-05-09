@@ -9,6 +9,8 @@ enum AppStorageKeys {
     static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
     static let diagnosticsScope = "astra.diagnostics.scope.v1"
+    static let planShelfWidth = "astra.planShelf.width.v1"
+    static let browserShelfWidth = "astra.browserShelf.width.v1"
 }
 
 /// User-controllable override for light/dark mode. Persisted in

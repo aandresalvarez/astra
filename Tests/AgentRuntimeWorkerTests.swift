@@ -360,4 +360,233 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
     }
+
+    @Test("Prompt includes Shelf browser bridge when visible and enabled")
+    func promptIncludesShelfBrowserBridge() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Draft a reply", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://outlook.office.com/mail/",
+            currentTitle: "Outlook",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("ASTRA_BROWSER_URL"))
+        #expect(prompt.contains(task.id.uuidString))
+        #expect(prompt.contains("https://outlook.office.com/mail/"))
+        #expect(prompt.contains("Do not send emails"))
+        #expect(prompt.contains("astra-browser snapshot --mode summary"))
+        #expect(prompt.contains("astra-browser batch"))
+        #expect(prompt.contains("astra-browser keypress"))
+        #expect(prompt.contains("astra-browser text"))
+        #expect(prompt.contains("Do not use osascript"))
+    }
+
+    @Test("Prompt hides Shelf browser bridge when disabled")
+    func promptHidesDisabledShelfBrowserBridge() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-disabled")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: false
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(!prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("ASTRA_BROWSER_URL"))
+    }
+
+    @Test("Prompt hides Shelf browser bridge for other task threads")
+    func promptHidesShelfBrowserBridgeForOtherTaskThreads() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-other-task")
+        ctx.insert(ws)
+        let attachedTask = AgentTask(title: "Attached", goal: "Use browser", workspace: ws)
+        let otherTask = AgentTask(title: "Other", goal: "No browser", workspace: ws)
+        ctx.insert(attachedTask)
+        ctx.insert(otherTask)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: attachedTask.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: attachedTask.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: otherTask.id).isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: otherTask)
+
+        #expect(!prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("ASTRA_BROWSER_URL"))
+    }
+}
+
+@Suite("Shelf Browser Address")
+struct ShelfBrowserAddressTests {
+    @Test("normalizes full URLs")
+    func normalizesFullURLs() {
+        #expect(ShelfBrowserAddress.normalizedURL(from: "https://example.com/path")?.absoluteString == "https://example.com/path")
+    }
+
+    @Test("normalizes hostnames to HTTPS")
+    func normalizesHostnames() {
+        #expect(ShelfBrowserAddress.normalizedURL(from: "outlook.office.com")?.absoluteString == "https://outlook.office.com")
+    }
+
+    @Test("normalizes search terms")
+    func normalizesSearchTerms() {
+        let url = ShelfBrowserAddress.normalizedURL(from: "service now incident form")?.absoluteString ?? ""
+        #expect(url.contains("https://www.google.com/search"))
+        #expect(url.contains("service%20now%20incident%20form") || url.contains("service+now+incident+form"))
+    }
+}
+
+@Suite("Controlled Browser")
+struct ControlledBrowserTests {
+    @Test("launch arguments isolate profile and bind DevTools to localhost")
+    func launchArgumentsIsolateProfileAndDevTools() throws {
+        let candidate = ControlledBrowserCandidate(name: "Test Chromium", executablePath: "/tmp/chromium")
+        let url = try #require(URL(string: "https://outlook.office.com/mail/"))
+
+        let arguments = candidate.launchArguments(
+            profilePath: "/tmp/astra-browser-profile",
+            debugPort: 49_123,
+            initialURL: url
+        )
+
+        #expect(arguments.contains("--remote-debugging-address=127.0.0.1"))
+        #expect(arguments.contains("--remote-debugging-port=49123"))
+        #expect(arguments.contains("--user-data-dir=/tmp/astra-browser-profile"))
+        #expect(arguments.contains("--no-first-run"))
+        #expect(arguments.contains("--new-window"))
+        #expect(arguments.last == "https://outlook.office.com/mail/")
+    }
+
+    @Test("default candidates cover common Chromium browsers")
+    func defaultCandidatesCoverCommonChromiumBrowsers() {
+        let names = Set(ControlledBrowserCandidate.defaultCandidates.map(\.name))
+
+        #expect(names.contains("Google Chrome"))
+        #expect(names.contains("Microsoft Edge"))
+        #expect(names.contains("Brave Browser"))
+        #expect(names.contains("Chromium"))
+    }
+
+    @Test("dangerous clicks require explicit override")
+    func dangerousClicksRequireOverride() {
+        let script = BrowserAutomationScripts.clickScript(
+            selector: "button[type=submit]",
+            x: nil,
+            y: nil,
+            allowDangerous: false
+        )
+
+        #expect(script.contains("confirmation_required"))
+        #expect(script.contains("allowDangerous = false"))
+    }
+
+    @Test("click script supports viewport coordinate targets")
+    func clickScriptSupportsViewportCoordinates() {
+        let script = BrowserAutomationScripts.clickScript(
+            selector: nil,
+            x: 0.5,
+            y: 0.5,
+            allowDangerous: false
+        )
+
+        #expect(script.contains("document.elementFromPoint"))
+        #expect(script.contains("normalized"))
+    }
+
+    @Test("snapshot reports focus and bounds metadata")
+    func snapshotReportsFocusAndBoundsMetadata() {
+        let script = BrowserAutomationScripts.snapshotScript
+
+        #expect(script.contains("focusedElement"))
+        #expect(script.contains("boundsFor"))
+        #expect(script.contains("viewport"))
+    }
+
+    @Test("existing controlled profile process parser finds DevTools port")
+    func existingControlledProfileProcessParserFindsDevToolsPort() {
+        let processList = """
+          99935 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=60007 --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --new-window
+          99942 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default
+        """
+
+        let target = ControlledBrowserController.runningDebugTarget(
+            profilePath: "/tmp/Astra Dev/ControlledBrowser/Default",
+            processList: processList
+        )
+
+        #expect(target == ControlledBrowserDebugTarget(processID: 99_935, debugPort: 60_007))
+    }
+
+    @Test("existing controlled profile parser prefers the primary browser process")
+    func existingControlledProfileParserPrefersPrimaryBrowserProcess() {
+        let processList = """
+          39917 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/147.0.7727.56/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --remote-debugging-port=60007
+          99935 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=60007 --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --no-first-run --new-window
+        """
+
+        let target = ControlledBrowserController.runningDebugTarget(
+            profilePath: "/tmp/Astra Dev/ControlledBrowser/Default",
+            processList: processList
+        )
+
+        #expect(target == ControlledBrowserDebugTarget(processID: 99_935, debugPort: 60_007))
+    }
+}
+
+@Suite("Cardinal Key Client Certificate")
+struct CardinalKeyClientCertificateTests {
+    @Test("limits automatic certificate use to Stanford hosts")
+    func limitsAutomaticCertificateUseToStanfordHosts() {
+        #expect(CardinalKeyClientCertificateProvider.isStanfordHost("login.stanford.edu"))
+        #expect(CardinalKeyClientCertificateProvider.isStanfordHost("cardinalkey-test.stanford.edu"))
+        #expect(CardinalKeyClientCertificateProvider.isStanfordHost("stanford.edu"))
+        #expect(!CardinalKeyClientCertificateProvider.isStanfordHost("evilstanford.edu"))
+        #expect(!CardinalKeyClientCertificateProvider.isStanfordHost("stanford.edu.example.com"))
+        #expect(!CardinalKeyClientCertificateProvider.isStanfordHost("google.com"))
+    }
+
+    @Test("recognizes Cardinal Key enrollment subjects")
+    func recognizesCardinalKeyEnrollmentSubjects() {
+        #expect(CardinalKeyClientCertificateProvider.isCardinalKeySubject("sunetid/Enrollment-12345"))
+        #expect(CardinalKeyClientCertificateProvider.isCardinalKeySubject("SUNETID/Enrollment"))
+        #expect(CardinalKeyClientCertificateProvider.isCardinalKeySubject("Stanford Cardinal Key"))
+        #expect(!CardinalKeyClientCertificateProvider.isCardinalKeySubject("Developer ID Application"))
+    }
 }

@@ -359,7 +359,6 @@ struct ChatPanelView: View {
         "What should we make real?",
         "Start with a question, goal, or problem.",
     ]
-    private static let promptRotationInterval: UInt64 = 7_000_000_000
 
     var taskQueue: TaskQueue?
     var workspace: Workspace?
@@ -398,7 +397,8 @@ struct ChatPanelView: View {
     @State private var pendingPlan: TaskPlanPayload?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
-    @State private var newTaskPromptIndex = 0
+    // Random per session; a live-cycling prompt mutated while the user was reading it.
+    @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
 
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
@@ -484,21 +484,6 @@ struct ChatPanelView: View {
 
     private var newTaskPrompt: String {
         Self.newTaskPrompts[newTaskPromptIndex % Self.newTaskPrompts.count]
-    }
-
-    private var promptAnimation: Animation {
-        reduceMotion ? .easeInOut(duration: 0.2) : .easeInOut(duration: 0.75)
-    }
-
-    private var promptTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
-        }
-
-        return .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: 3)),
-            removal: .opacity.combined(with: .offset(y: -3))
-        )
     }
 
     private var isPlanModeActive: Bool {
@@ -643,18 +628,13 @@ struct ChatPanelView: View {
                 .font(Stanford.ui(56))
                 .foregroundStyle(Stanford.cardinalRed)
 
-            ZStack {
-                Text(newTaskPrompt)
-                    .font(Stanford.heading(28))
-                    .foregroundStyle(Stanford.black)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(4)
-                    .lineLimit(2)
-                    .id(newTaskPromptIndex)
-                    .transition(promptTransition)
-            }
-            .frame(maxWidth: 720, minHeight: 84)
-            .animation(promptAnimation, value: newTaskPromptIndex)
+            Text(newTaskPrompt)
+                .font(Stanford.heading(28))
+                .foregroundStyle(Stanford.black)
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .lineLimit(2)
+                .frame(maxWidth: 720, minHeight: 84)
 
             if let ws = workspace {
                 HStack(spacing: 6) {
@@ -667,7 +647,7 @@ struct ChatPanelView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.04))
+                .background(Stanford.lagunita.opacity(0.10))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
@@ -686,14 +666,11 @@ struct ChatPanelView: View {
                     Text("Enable Plan mode to refine first")
                         .font(Stanford.body(15))
                 }
-                .foregroundStyle(Stanford.coolGrey)
+                .foregroundStyle(Color.primary.opacity(0.65))
             }
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task {
-            await rotateNewTaskPrompt()
-        }
     }
 
     // MARK: - Message Bubbles
@@ -1079,20 +1056,6 @@ struct ChatPanelView: View {
         }
     }
 
-    private func rotateNewTaskPrompt() async {
-        guard Self.newTaskPrompts.count > 1 else { return }
-
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: Self.promptRotationInterval)
-            guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                withAnimation(promptAnimation) {
-                    newTaskPromptIndex = (newTaskPromptIndex + 1) % Self.newTaskPrompts.count
-                }
-            }
-        }
-    }
 
     /// Send message → start or continue conversation with Claude
     private func sendMessage() {

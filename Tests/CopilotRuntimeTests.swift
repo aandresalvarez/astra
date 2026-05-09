@@ -490,7 +490,7 @@ struct CopilotCLICommandPlanningTests {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
             allowedTools: ["Read", "Bash", "Edit"],
-            localToolCommands: ["stanford-graph-mail"],
+            localToolCommands: ["stanford-graph-mail", "astra-browser"],
             requiresAllowAllToolsForPrompt: false
         )
         let joined = args.joined(separator: " ")
@@ -499,6 +499,7 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("read"))
         #expect(joined.contains("write"))
         #expect(joined.contains("shell(git:*)"))
+        #expect(joined.contains("shell(astra-browser:*)"))
         #expect(joined.contains("shell(stanford-graph-mail:*)"))
     }
 
