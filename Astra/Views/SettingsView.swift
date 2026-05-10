@@ -27,6 +27,9 @@ struct SettingsView: View {
 
     @State private var detectedPath = ""
     @State private var detectedCopilotPath = ""
+    @State private var readinessReport: RuntimeReadinessReport?
+    @State private var isCheckingReadiness = false
+    @State private var readinessCheckedAt: Date?
 
     @MainActor
     init(appUpdateController: AppUpdateController) {
@@ -34,6 +37,46 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        TabView {
+            runtimeSettingsTab
+                .tabItem {
+                    Label("Runtime", systemImage: "cpu")
+                }
+
+            defaultsSettingsTab
+                .tabItem {
+                    Label("Defaults", systemImage: "slider.horizontal.3")
+                }
+
+            appearanceSettingsTab
+                .tabItem {
+                    Label("Appearance", systemImage: "circle.lefthalf.filled")
+                }
+
+            updatesSettingsTab
+                .tabItem {
+                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+            dataSettingsTab
+                .tabItem {
+                    Label("Data", systemImage: "folder")
+                }
+        }
+        .frame(width: 680, height: 560)
+        .navigationTitle("Settings")
+        .onAppear {
+            detectClaudeCLI()
+            detectCopilotCLI()
+            Task { await refreshRuntimeReadiness() }
+        }
+        .onChange(of: readinessSignature) {
+            readinessReport = nil
+            readinessCheckedAt = nil
+        }
+    }
+
+    private var runtimeSettingsTab: some View {
         Form {
             Section("Agent Runtime") {
                 Picker("Default Provider", selection: $defaultRuntimeID) {
@@ -50,6 +93,38 @@ struct SettingsView: View {
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Technical Readiness") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
+                        readinessSummary
+                        Spacer()
+                        Button {
+                            Task { await refreshRuntimeReadiness() }
+                        } label: {
+                            if isCheckingReadiness {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Label("Check Now", systemImage: "checkmark.seal")
+                            }
+                        }
+                        .disabled(isCheckingReadiness)
+                    }
+
+                    if let readinessReport {
+                        LazyVGrid(columns: readinessColumns, alignment: .leading, spacing: 8) {
+                            ForEach(readinessReport.checks) { check in
+                                readinessTile(check)
+                            }
+                        }
+                    } else {
+                        Text("Run a readiness check to verify the selected runtime, authentication, provider route, and required local tools.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Section("Claude CLI") {
@@ -129,7 +204,12 @@ struct SettingsView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
 
+    private var defaultsSettingsTab: some View {
+        Form {
             Section("Defaults") {
                 Picker("Model", selection: $defaultModel) {
                     ForEach(runtimeModels, id: \.self) { m in
@@ -151,22 +231,6 @@ struct SettingsView: View {
                     }
                 }
                 Text("New workspaces auto-create a subfolder here.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Appearance") {
-                // Segmented picker so the three options are visible without
-                // a click — this is the kind of setting people scan for.
-                Picker("Theme", selection: $appearanceRaw) {
-                    ForEach(AppearancePreference.allCases) { option in
-                        Label(option.label, systemImage: option.symbolName)
-                            .tag(option.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text("“System” follows your macOS appearance. Choose Light or Dark to pin ASTRA regardless of the system setting.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -204,6 +268,25 @@ struct SettingsView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var appearanceSettingsTab: some View {
+        Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $appearanceRaw) {
+                    ForEach(AppearancePreference.allCases) { option in
+                        Label(option.label, systemImage: option.symbolName)
+                            .tag(option.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("“System” follows your macOS appearance. Choose Light or Dark to pin ASTRA regardless of the system setting.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
 
             Section("Privacy & Logging") {
                 Toggle("Sensitive Mode", isOn: $sensitiveMode)
@@ -229,7 +312,12 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
 
+    private var updatesSettingsTab: some View {
+        Form {
             Section("App Updates") {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -265,7 +353,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+        }
+        .formStyle(.grouped)
+    }
 
+    private var dataSettingsTab: some View {
+        Form {
             Section("Data Locations") {
                 dataLocationRow("App Channel", path: AppChannel.current.displayName, canOpen: false)
                 dataLocationRow("App Support", path: WorkspaceRecoveryService.applicationSupportDirectory.path)
@@ -284,12 +377,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 620)
-        .navigationTitle("Settings")
-        .onAppear {
-            detectClaudeCLI()
-            detectCopilotCLI()
-        }
     }
 
     private var resolvedWorkspacesRoot: String {
@@ -298,6 +385,139 @@ struct SettingsView: View {
 
     private var runtimeModels: [String] {
         (AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode).defaultModels
+    }
+
+    private var readinessConfiguration: RuntimeReadinessConfiguration {
+        RuntimeReadinessConfiguration(
+            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
+        )
+    }
+
+    private var readinessSignature: String {
+        [
+            defaultRuntimeID,
+            claudePath,
+            copilotPath,
+            claudeProviderRaw,
+            claudeVertexProjectID,
+            claudeVertexRegion,
+            claudeVertexOpusModel,
+            claudeVertexSonnetModel,
+            claudeVertexHaikuModel
+        ].joined(separator: "\u{1F}")
+    }
+
+    private var readinessSummary: some View {
+        HStack(spacing: 8) {
+            if isCheckingReadiness {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: readinessSummarySymbol)
+                    .foregroundStyle(readinessSummaryColor)
+                    .frame(width: 16)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(readinessReport?.summary ?? "Not checked")
+                    .font(Stanford.body(14).weight(.medium))
+                Text(readinessSubtitle)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var readinessSubtitle: String {
+        if isCheckingReadiness { return "Checking local tools and provider auth..." }
+        guard let readinessCheckedAt else { return "Checks are local and sanitized." }
+        return "Last checked \(readinessCheckedAt.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var readinessSummarySymbol: String {
+        switch readinessReport?.state {
+        case .ready: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        case .none: "circle.dotted"
+        }
+    }
+
+    private var readinessSummaryColor: Color {
+        switch readinessReport?.state {
+        case .ready: Stanford.statusHealthy
+        case .warning: Stanford.statusWarn
+        case .blocked: Stanford.statusError
+        case .none: Stanford.coolGrey
+        }
+    }
+
+    private var readinessColumns: [GridItem] {
+        [
+            GridItem(.flexible(minimum: 220), spacing: 8),
+            GridItem(.flexible(minimum: 220), spacing: 8)
+        ]
+    }
+
+    private func readinessTile(_ check: RuntimeReadinessCheck) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: readinessSymbol(for: check.state))
+                .foregroundStyle(readinessColor(for: check.state))
+                .font(Stanford.ui(13))
+                .frame(width: 16, height: 18)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(check.title)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .lineLimit(1)
+                Text(check.detail)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                if let remediation = check.remediation, !remediation.isEmpty {
+                    Text(remediation)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(readinessColor(for: check.state))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+        .background(readinessColor(for: check.state).opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(readinessColor(for: check.state).opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private func readinessSymbol(for state: RuntimeReadinessState) -> String {
+        switch state {
+        case .ready: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        }
+    }
+
+    private func readinessColor(for state: RuntimeReadinessState) -> Color {
+        switch state {
+        case .ready: Stanford.statusHealthy
+        case .warning: Stanford.statusWarn
+        case .blocked: Stanford.statusError
+        }
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
@@ -359,5 +579,14 @@ struct SettingsView: View {
                 NSWorkspace.shared.open(parent)
             }
         }
+    }
+
+    private func refreshRuntimeReadiness() async {
+        isCheckingReadiness = true
+        defer { isCheckingReadiness = false }
+
+        let service = RuntimeReadinessService()
+        readinessReport = await service.check(configuration: readinessConfiguration)
+        readinessCheckedAt = Date()
     }
 }

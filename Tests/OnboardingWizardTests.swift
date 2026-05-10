@@ -17,7 +17,6 @@ struct OnboardingWizardTests {
             .welcome,
             .requiredCLIs,
             .workspaceRoot,
-            .capabilitySetup,
             .ready
         ])
     }
@@ -30,13 +29,12 @@ struct OnboardingWizardTests {
         #expect(OnboardingWizardView.Step.welcome.rawValue == 0)
         #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 1)
         #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 2)
-        #expect(OnboardingWizardView.Step.capabilitySetup.rawValue == 3)
-        #expect(OnboardingWizardView.Step.ready.rawValue == 4)
+        #expect(OnboardingWizardView.Step.ready.rawValue == 3)
     }
 
     @Test("Progress labels are short enough for the bar")
     func progressLabelsAreShort() {
-        // Keep labels ≤ 8 chars so the 5 labels + connecting lines all fit
+        // Keep labels ≤ 8 chars so the labels + connecting lines all fit
         // in the 760pt-minimum progress strip without wrapping. We hit
         // this once with "Workspace" wrapping to "Work-space" on-screen;
         // the ceiling is deliberately tight to catch regressions early.
@@ -77,7 +75,7 @@ struct OnboardingWizardTests {
         #expect(AppStorageKeys.hasSeenNewTaskNudge == "astra.hasSeenNewTaskNudge.v1")
     }
 
-    @Test("Capability setup exposes the requested first-workspace choices")
+    @Test("Workspace capability setup exposes the requested choices")
     @MainActor
     func capabilitySetupIncludesRequestedChoices() {
         #expect(OnboardingCapabilitySetup.requiredRuntime.id == "claude-cli")
@@ -94,7 +92,7 @@ struct OnboardingWizardTests {
         #expect(OnboardingCapabilitySetup.installablePackageIDs.isSubset(of: builtInIDs))
     }
 
-    @Test("Capability setup persists only known package IDs in display order")
+    @Test("Workspace capability setup persists only known package IDs in display order")
     func capabilitySetupStorageRoundTripsKnownPackages() {
         let rawValue = "redcap-workflow,unknown,gcloud-workflow,jira-workflow"
         let selected = OnboardingCapabilitySetup.selectedPackageIDs(from: rawValue)
@@ -102,13 +100,13 @@ struct OnboardingWizardTests {
         #expect(selected == ["jira-workflow", "gcloud-workflow", "redcap-workflow"])
         #expect(OnboardingCapabilitySetup.encode(selected) == "jira-workflow,gcloud-workflow,redcap-workflow")
         #expect(OnboardingCapabilitySetup.selectedDisplayNames(from: selected) == [
-            "Jira Workflow",
+            "Jira",
             "Google Cloud",
-            "REDCap Workflow"
+            "REDCap"
         ])
     }
 
-    @Test("Capability setup resolves selected built-in packages")
+    @Test("Workspace capability setup resolves selected built-in packages")
     @MainActor
     func capabilitySetupResolvesSelectedPackages() {
         let packages = OnboardingCapabilitySetup.selectedPackages(
@@ -119,7 +117,7 @@ struct OnboardingWizardTests {
         #expect(packages.map(\.id) == ["github-workflow", "redcap-workflow"])
     }
 
-    @Test("Capability setup validates required configuration values")
+    @Test("Workspace capability setup validates required configuration values")
     func capabilitySetupValidatesRequiredConfigurationValues() {
         var configuration = OnboardingCapabilityConfiguration()
 
@@ -144,7 +142,31 @@ struct OnboardingWizardTests {
         #expect(configuration.missingRequirements(for: "github-workflow", githubCLIReady: true).isEmpty)
     }
 
-    @Test("Capability setup maps configuration to installer inputs")
+    @Test("Workspace capability setup applies environment defaults without overwriting user values")
+    func capabilitySetupAppliesEnvironmentDefaults() {
+        var configuration = OnboardingCapabilityConfiguration(redcapAPIURL: "")
+
+        let changed = configuration.applyEnvironmentDefaults(
+            gcpProject: " vertex-project ",
+            gcpRegion: " global "
+        )
+
+        #expect(changed)
+        #expect(configuration.gcpProject == "vertex-project")
+        #expect(configuration.gcpRegion == "global")
+        #expect(configuration.redcapAPIURL == OnboardingCapabilityConfiguration.defaultRedcapAPIURL)
+
+        let changedAgain = configuration.applyEnvironmentDefaults(
+            gcpProject: "other-project",
+            gcpRegion: "us-east5"
+        )
+
+        #expect(!changedAgain)
+        #expect(configuration.gcpProject == "vertex-project")
+        #expect(configuration.gcpRegion == "global")
+    }
+
+    @Test("Workspace capability setup maps configuration to installer inputs")
     func capabilitySetupMapsConfigurationToInstallerInputs() {
         let configuration = OnboardingCapabilityConfiguration(
             jiraBaseURL: " https://example.atlassian.net ",

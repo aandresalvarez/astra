@@ -141,6 +141,26 @@ struct NewWorkspaceDraftTests {
         #expect(draft.trimmedName == "GitHub PRs")
         #expect(draft.trimmedInstructions == "Use alvaro as my GitHub username.")
     }
+
+    @Test("Selected workspace capabilities contribute setup requirements")
+    func selectedCapabilitiesRequireConfiguration() {
+        var draft = NewWorkspaceDraft(name: "Research Ops")
+        draft.selectedCapabilityIDs = ["jira-workflow", "github-workflow"]
+
+        #expect(draft.capabilitySetupIssues(githubCLIReady: false) == [
+            "Jira: Jira base URL",
+            "Jira: Jira email",
+            "Jira: Jira API token",
+            "GitHub: Authenticated gh CLI"
+        ])
+
+        draft.capabilityConfiguration.jiraBaseURL = "https://example.atlassian.net"
+        draft.capabilityConfiguration.jiraEmail = "user@example.com"
+        draft.capabilityConfiguration.jiraAPIToken = "token"
+
+        #expect(draft.capabilitySetupIssues(githubCLIReady: true).isEmpty)
+        #expect(draft.canCreate)
+    }
 }
 
 // MARK: - MarkdownTextView

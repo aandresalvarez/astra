@@ -17,6 +17,7 @@ struct OnboardingCapabilityInstallationInputs: Equatable {
 
 struct OnboardingCapabilityConfiguration: Equatable {
     static let defaultRedcapAPIURL = "https://redcap.stanford.edu/api/"
+    static let defaultGCPRegion = "us-central1"
 
     var jiraBaseURL = ""
     var jiraEmail = ""
@@ -92,6 +93,26 @@ struct OnboardingCapabilityConfiguration: Equatable {
         redcapAPIToken = ""
     }
 
+    @discardableResult
+    mutating func applyEnvironmentDefaults(gcpProject: String, gcpRegion: String) -> Bool {
+        var changed = false
+        let trimmedProject = trimmed(gcpProject)
+        let trimmedRegion = trimmed(gcpRegion)
+        if trimmed(self.gcpProject).isEmpty, !trimmedProject.isEmpty {
+            self.gcpProject = trimmedProject
+            changed = true
+        }
+        if trimmed(self.gcpRegion).isEmpty {
+            self.gcpRegion = trimmedRegion.isEmpty ? Self.defaultGCPRegion : trimmedRegion
+            changed = true
+        }
+        if trimmed(redcapAPIURL).isEmpty {
+            redcapAPIURL = Self.defaultRedcapAPIURL
+            changed = true
+        }
+        return changed
+    }
+
     private func nonEmptyValues(_ values: [String: String]) -> [String: String] {
         values.reduce(into: [:]) { result, entry in
             let value = trimmed(entry.value)
@@ -125,14 +146,14 @@ enum OnboardingCapabilitySetup {
         OnboardingCapabilityOption(
             id: jiraPackageID,
             packageID: jiraPackageID,
-            title: "Jira Workflow",
+            title: "Jira",
             subtitle: "Query, create, and update Jira tickets",
             icon: "list.bullet.clipboard"
         ),
         OnboardingCapabilityOption(
             id: githubPackageID,
             packageID: githubPackageID,
-            title: "GitHub Workflow",
+            title: "GitHub",
             subtitle: "Manage issues, PRs, and CI with gh",
             icon: "chevron.left.forwardslash.chevron.right"
         ),
@@ -146,7 +167,7 @@ enum OnboardingCapabilitySetup {
         OnboardingCapabilityOption(
             id: redcapPackageID,
             packageID: redcapPackageID,
-            title: "REDCap Workflow",
+            title: "REDCap",
             subtitle: "Query and manage Stanford REDCap projects",
             icon: "tablecells"
         )
@@ -195,8 +216,7 @@ enum OnboardingCapabilitySetup {
 /// Multi-step first-run wizard. Owns its own step state and the
 /// completion flag in `@AppStorage`. Drives required CLI probes up
 /// front so the user knows whether their machine can run core agent and
-/// GitHub workflows, then walks them through workspace setup and first
-/// workspace capability choices.
+/// GitHub capabilities, then walks them through workspace setup.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
 /// the wizard matches the rest of the app — cardinal red for primary
@@ -208,8 +228,7 @@ enum OnboardingCapabilitySetup {
 ///   0. Welcome — what ASTRA is + what it needs
 ///   1. Required CLIs — Claude + GitHub CLI probes and install help
 ///   2. Workspace root — pick where projects live
-///   3. Capability setup — optional integrations to enable on first workspace
-///   4. Ready — "start your first workspace"
+///   3. Ready — "start your first workspace"
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
@@ -249,7 +268,6 @@ struct OnboardingWizardView: View {
         case welcome = 0
         case requiredCLIs
         case workspaceRoot
-        case capabilitySetup
         case ready
         var id: Int { rawValue }
 
@@ -258,7 +276,6 @@ struct OnboardingWizardView: View {
             case .welcome:        "Welcome to ASTRA"
             case .requiredCLIs:   "Required CLIs"
             case .workspaceRoot:  "Workspace Root"
-            case .capabilitySetup: "Configure Capabilities"
             case .ready:          "You're Ready"
             }
         }
@@ -271,7 +288,6 @@ struct OnboardingWizardView: View {
             case .welcome:        "Welcome"
             case .requiredCLIs:   "CLIs"
             case .workspaceRoot:  "Setup"
-            case .capabilitySetup: "Config"
             case .ready:          "Done"
             }
         }
@@ -294,6 +310,9 @@ struct OnboardingWizardView: View {
     @State private var githubStatus: HealthStatus?
     @State private var githubAuthStatus: HealthStatus?
     @State private var isProbingGitHub = false
+    @State private var runtimeReadinessReport: RuntimeReadinessReport?
+    @State private var isCheckingRuntimeReadiness = false
+    @State private var showCLITechnicalDetails = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -388,7 +407,6 @@ struct OnboardingWizardView: View {
         case .welcome:        welcomeStep
         case .requiredCLIs:   cliStep
         case .workspaceRoot:  workspaceStep
-        case .capabilitySetup: capabilitySetupStep
         case .ready:          readyStep
         }
     }
@@ -413,7 +431,7 @@ struct OnboardingWizardView: View {
             calloutBox(
                 icon: "info.circle.fill",
                 title: "What we'll check",
-                body: "This wizard probes Claude CLI, GitHub CLI, and GitHub login, picks a home folder for your workspaces, then lets you choose the first capabilities to enable.",
+                body: "This wizard checks Claude CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces.",
                 tint: Stanford.sky
             )
         }
@@ -423,20 +441,24 @@ struct OnboardingWizardView: View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "terminal.fill",
-                title: "Required CLIs",
-                subtitle: "ASTRA checks Claude for agents and gh for GitHub workflows.",
+                title: "Environment Check",
+                subtitle: "ASTRA checks the local tools it needs and shows fixes only when something is missing.",
                 tint: Stanford.lagunita
             )
 
-            claudeProbeCard
-            githubProbeCard
+            cliSummaryCard
 
-            calloutBox(
-                icon: "arrow.down.circle.fill",
-                title: "If anything is missing or not authenticated",
-                body: "Install Claude CLI with npm install -g @anthropic-ai/claude-code, then run claude /login. Install GitHub CLI with brew install gh, then run gh auth login. Hit Re-check when you're done.",
-                tint: Stanford.sky
-            )
+            if !runtimeBlockers.isEmpty {
+                calloutBox(
+                    icon: "wrench.and.screwdriver.fill",
+                    title: "Action needed",
+                    body: runtimeFixHint,
+                    tint: Stanford.poppy
+                )
+            }
+        }
+        .task {
+            await refreshCLIEnvironment(forceRefresh: false)
         }
     }
 
@@ -483,49 +505,6 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private var capabilitySetupStep: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            stepHeader(
-                icon: "slider.horizontal.3",
-                title: "Configure Capabilities",
-                subtitle: "Choose the integrations ASTRA should enable when it creates your first workspace.",
-                tint: Stanford.lagunita
-            )
-
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Required runtime", color: Stanford.paloAltoGreen)
-                requiredCapabilityRow(
-                    OnboardingCapabilitySetup.requiredRuntime,
-                    status: claudeStatusSummary,
-                    ready: isClaudeHealthy
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Enable for the first workspace", color: Stanford.lagunita)
-                ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
-                    configurableCapabilityRow(option)
-                }
-            }
-
-            calloutBox(
-                icon: "slider.horizontal.below.rectangle",
-                title: "Workspace-specific",
-                body: "Selected capabilities must include the setup values they need. Secrets are passed directly into Keychain when the first workspace is created.",
-                tint: Stanford.sky
-            )
-
-            if !selectedCapabilitySetupIssues.isEmpty {
-                calloutBox(
-                    icon: "exclamationmark.triangle.fill",
-                    title: "Setup required",
-                    body: selectedCapabilitySetupIssues.joined(separator: "\n"),
-                    tint: Stanford.poppy
-                )
-            }
-        }
-    }
-
     private var readyStep: some View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
@@ -551,11 +530,6 @@ struct OnboardingWizardView: View {
                     status: resolvedWorkspaceRoot,
                     ready: !resolvedWorkspaceRoot.isEmpty
                 )
-                readinessRow(
-                    title: "Capabilities",
-                    status: selectedOnboardingCapabilitySummary,
-                    ready: true
-                )
             }
             .padding(14)
             .background(Stanford.cardBackground)
@@ -577,6 +551,344 @@ struct OnboardingWizardView: View {
     }
 
     // MARK: - Claude Probe Card
+
+    private var cliSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                if isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 30, height: 30)
+                } else {
+                    Image(systemName: cliSummarySymbol)
+                        .font(Stanford.ui(24, weight: .semibold))
+                        .foregroundStyle(cliSummaryColor)
+                        .frame(width: 30, height: 30)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cliSummaryTitle)
+                        .font(Stanford.heading(18))
+                        .foregroundStyle(Stanford.black)
+                    Text(cliSummarySubtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Button {
+                    Task { await refreshCLIEnvironment(forceRefresh: true) }
+                } label: {
+                    Label("Check Again", systemImage: "arrow.clockwise")
+                        .font(Stanford.caption(12))
+                }
+                .disabled(isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub)
+            }
+
+            Divider().opacity(0.45)
+
+            VStack(spacing: 8) {
+                cliStatusRow(
+                    title: "Claude runtime",
+                    subtitle: claudeRuntimeSummary,
+                    symbol: cliClaudeSymbol,
+                    tint: cliClaudeColor
+                )
+                cliStatusRow(
+                    title: "GitHub capability",
+                    subtitle: githubCapabilitySummary,
+                    symbol: cliGitHubSymbol,
+                    tint: cliGitHubColor
+                )
+            }
+
+            DisclosureGroup(isExpanded: $showCLITechnicalDetails) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let runtimeReadinessReport {
+                        LazyVGrid(columns: runtimeReadinessColumns, alignment: .leading, spacing: 8) {
+                            ForEach(runtimeReadinessReport.checks) { check in
+                                runtimeReadinessTile(check)
+                            }
+                        }
+                    }
+
+                    technicalPathRow("Claude path", status: claudeStatus)
+                    technicalPathRow("GitHub path", status: githubStatus)
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("Technical details", systemImage: "chevron.right.circle")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+        }
+        .padding(16)
+        .background(cliSummaryColor.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(cliSummaryColor.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private func cliStatusRow(
+        title: String,
+        subtitle: String,
+        symbol: String,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(Stanford.ui(15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Stanford.body(13).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(subtitle)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Stanford.fog.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func technicalPathRow(_ title: String, status: HealthStatus?) -> some View {
+        if case .healthy(let path, _) = status {
+            return AnyView(
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .frame(width: 78, alignment: .leading)
+                    Text(path)
+                        .font(Stanford.mono(10))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            )
+        }
+        return AnyView(EmptyView())
+    }
+
+    private var cliSummaryTitle: String {
+        if isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub {
+            return "Checking this Mac"
+        }
+        if isCoreRuntimeReady {
+            return "Ready to run tasks"
+        }
+        return "Setup needed"
+    }
+
+    private var cliSummarySubtitle: String {
+        if isCoreRuntimeReady {
+            if isGitHubHealthy {
+                return "Claude is ready, and GitHub capabilities are available."
+            }
+            return "Claude is ready. GitHub can be connected later if you need repository capabilities."
+        }
+        return "Complete the suggested fix, then check again."
+    }
+
+    private var cliSummarySymbol: String {
+        isCoreRuntimeReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var cliSummaryColor: Color {
+        isCoreRuntimeReady ? Stanford.paloAltoGreen : Stanford.poppy
+    }
+
+    private var claudeRuntimeSummary: String {
+        if isCoreRuntimeReady { return "Ready" }
+        if let first = runtimeBlockers.first {
+            return first.remediation ?? first.detail
+        }
+        return claudeStatusSummary
+    }
+
+    private var githubCapabilitySummary: String {
+        if isGitHubHealthy { return "Ready" }
+        if case .missingBinary = githubStatus {
+            return "Optional unless you enable the GitHub capability."
+        }
+        return githubStatusSummary
+    }
+
+    private var cliClaudeSymbol: String {
+        isCoreRuntimeReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var cliClaudeColor: Color {
+        isCoreRuntimeReady ? Stanford.paloAltoGreen : Stanford.poppy
+    }
+
+    private var cliGitHubSymbol: String {
+        isGitHubHealthy ? "checkmark.circle.fill" : "circle.dashed"
+    }
+
+    private var cliGitHubColor: Color {
+        isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.coolGrey
+    }
+
+    private var runtimeReadinessPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                if isCheckingRuntimeReadiness {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: runtimeReadinessSymbol)
+                        .font(Stanford.ui(18, weight: .semibold))
+                        .foregroundStyle(runtimeReadinessColor)
+                        .frame(width: 20, height: 20)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(runtimeReadinessTitle)
+                        .font(Stanford.body(14).weight(.semibold))
+                        .foregroundStyle(Stanford.black)
+                    Text(runtimeReadinessSubtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+                Spacer()
+                Button {
+                    Task { await refreshRuntimeReadiness() }
+                } label: {
+                    Label("Full Check", systemImage: "checkmark.seal")
+                        .font(Stanford.caption(12))
+                }
+                .disabled(isCheckingRuntimeReadiness)
+            }
+
+            if let runtimeReadinessReport {
+                LazyVGrid(columns: runtimeReadinessColumns, alignment: .leading, spacing: 8) {
+                    ForEach(runtimeReadinessReport.checks) { check in
+                        runtimeReadinessTile(check)
+                    }
+                }
+            } else {
+                Text("Checking runtime readiness...")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+        }
+        .padding(14)
+        .background(runtimeReadinessColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(runtimeReadinessColor.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var runtimeReadinessColumns: [GridItem] {
+        [
+            GridItem(.flexible(minimum: 230), spacing: 8),
+            GridItem(.flexible(minimum: 230), spacing: 8)
+        ]
+    }
+
+    private func runtimeReadinessTile(_ check: RuntimeReadinessCheck) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: readinessSymbol(for: check.state))
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(readinessColor(for: check.state))
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(check.title)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .lineLimit(1)
+                Text(check.detail)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(2)
+                if let remediation = check.remediation, !remediation.isEmpty {
+                    Text(remediation)
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(readinessColor(for: check.state))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .background(readinessColor(for: check.state).opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var runtimeReadinessTitle: String {
+        if isCheckingRuntimeReadiness { return "Checking environment" }
+        return runtimeReadinessReport?.summary ?? "Environment not checked"
+    }
+
+    private var runtimeReadinessSubtitle: String {
+        switch runtimeReadinessReport?.state {
+        case .ready:
+            return "Claude can run with the selected provider."
+        case .warning:
+            return "Core runtime is usable, but one item needs follow-up."
+        case .blocked:
+            return "Resolve the blocking item before creating workspaces."
+        case .none:
+            return "ASTRA verifies more than CLI version: auth and provider setup are included."
+        }
+    }
+
+    private var runtimeReadinessSymbol: String {
+        switch runtimeReadinessReport?.state {
+        case .ready: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        case .none: "circle.dotted"
+        }
+    }
+
+    private var runtimeReadinessColor: Color {
+        switch runtimeReadinessReport?.state {
+        case .ready: Stanford.paloAltoGreen
+        case .warning: Stanford.poppy
+        case .blocked: Stanford.cardinalRed
+        case .none: Stanford.coolGrey
+        }
+    }
+
+    private var runtimeFixHint: String {
+        guard runtimeReadinessReport != nil else {
+            return "ASTRA is running the full check now. If it stalls, use Re-check after installing or logging in."
+        }
+        if runtimeBlockers.isEmpty {
+            return "Core runtime is ready. GitHub is only required if you enable the GitHub capability."
+        }
+        return runtimeBlockers
+            .prefix(2)
+            .map { check in
+                if let remediation = check.remediation, !remediation.isEmpty {
+                    return "\(check.title): \(remediation)"
+                }
+                return "\(check.title): \(check.detail)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private var runtimeBlockers: [RuntimeReadinessCheck] {
+        runtimeReadinessReport?.checks.filter { $0.state == .blocked } ?? []
+    }
 
     private var claudeProbeCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -997,11 +1309,13 @@ struct OnboardingWizardView: View {
     }
 
     private func configurableCapabilityRow(_ option: OnboardingCapabilityOption) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let packageID = option.packageID
+        let isSelected = packageID.map { selectedOnboardingCapabilityIDs.contains($0) } ?? false
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: option.icon)
                     .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(isSelected ? Stanford.lagunita : Stanford.coolGrey)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.title)
@@ -1013,24 +1327,77 @@ struct OnboardingWizardView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                if let packageID = option.packageID {
+                if let packageID {
+                    Text(capabilityStatusText(for: packageID))
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(capabilityStatusColor(for: packageID))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(capabilityStatusColor(for: packageID).opacity(0.1))
+                        .clipShape(Capsule())
                     Toggle("", isOn: onboardingCapabilityBinding(for: packageID))
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .tint(Stanford.lagunita)
                         .accessibilityLabel(option.title)
                 }
             }
 
-            if let packageID = option.packageID,
-               selectedOnboardingCapabilityIDs.contains(packageID) {
+            if let packageID, isSelected {
                 capabilitySetupFields(for: packageID)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(Stanford.fog.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(isSelected ? Stanford.lagunita.opacity(0.08) : Stanford.fog.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Stanford.sandstone.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func capabilityStatusText(for packageID: String) -> String {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            return isGitHubHealthy ? "Ready" : "Needs gh"
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !project.isEmpty { return "Ready" }
+            return hasVertexDefaults ? "Can fill" : "Needs project"
+        case OnboardingCapabilitySetup.jiraPackageID, OnboardingCapabilitySetup.redcapPackageID:
+            return "Needs setup"
+        default:
+            return "Optional"
+        }
+    }
+
+    private func capabilityStatusColor(for packageID: String) -> Color {
+        switch packageStatusLevel(for: packageID) {
+        case .ready: return Stanford.paloAltoGreen
+        case .available: return Stanford.lagunita
+        case .needsSetup: return Stanford.coolGrey
+        }
+    }
+
+    private enum CapabilityStatusLevel {
+        case ready
+        case available
+        case needsSetup
+    }
+
+    private func packageStatusLevel(for packageID: String) -> CapabilityStatusLevel {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            return isGitHubHealthy ? .ready : .needsSetup
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !project.isEmpty { return .ready }
+            return hasVertexDefaults ? .available : .needsSetup
+        default:
+            return .needsSetup
+        }
     }
 
     @ViewBuilder
@@ -1054,8 +1421,21 @@ struct OnboardingWizardView: View {
             }
         case OnboardingCapabilitySetup.gcloudPackageID:
             VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Project defaults")
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .textCase(.uppercase)
+                    Spacer()
+                    if hasVertexDefaults {
+                        Button("Use Vertex Settings") {
+                            applyCapabilityDefaults()
+                        }
+                        .font(Stanford.caption(11))
+                    }
+                }
                 onboardingTextField("GCP project", prompt: "my-gcp-project", text: $capabilityConfiguration.gcpProject)
-                onboardingTextField("Region", prompt: "us-central1", text: $capabilityConfiguration.gcpRegion)
+                onboardingTextField("Region", prompt: OnboardingCapabilityConfiguration.defaultGCPRegion, text: $capabilityConfiguration.gcpRegion)
                 Text("Uses your local gcloud login. Run gcloud auth login outside ASTRA if it is not already authenticated.")
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
@@ -1113,6 +1493,69 @@ struct OnboardingWizardView: View {
         }
     }
 
+    private func readinessSymbol(for state: RuntimeReadinessState) -> String {
+        switch state {
+        case .ready: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        }
+    }
+
+    private func readinessColor(for state: RuntimeReadinessState) -> Color {
+        switch state {
+        case .ready: Stanford.paloAltoGreen
+        case .warning: Stanford.poppy
+        case .blocked: Stanford.cardinalRed
+        }
+    }
+
+    private var setupAssistantCard: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 18)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recommended")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(setupAssistantSummary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Apply") {
+                enableReadyDefaults()
+            }
+            .font(Stanford.caption(11))
+            .tint(Stanford.lagunita)
+            .disabled(!hasReadyCapabilityDefaults)
+        }
+        .padding(10)
+        .background(Stanford.lagunita.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var setupAssistantSummary: String {
+        var suggestions: [String] = []
+        if isGitHubHealthy {
+            suggestions.append("GitHub is ready")
+        }
+        if hasVertexDefaults {
+            suggestions.append("GCP can use Vertex settings")
+        }
+        if suggestions.isEmpty {
+            return "No ready defaults found yet."
+        }
+        return suggestions.joined(separator: ". ") + "."
+    }
+
     // MARK: - Footer
 
     private var footerBar: some View {
@@ -1120,6 +1563,13 @@ struct OnboardingWizardView: View {
             if currentStep != .welcome {
                 Button("Back") { goBack() }
                     .font(Stanford.body(13))
+            }
+
+            if let continueBlocker {
+                Label(continueBlocker, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(2)
             }
 
             Spacer()
@@ -1166,6 +1616,12 @@ struct OnboardingWizardView: View {
         if let prev = Step(rawValue: currentStep.rawValue - 1) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { currentStep = prev }
         }
+    }
+
+    private func refreshCLIEnvironment(forceRefresh: Bool) async {
+        await probeClaude(forceRefresh: forceRefresh)
+        await probeGitHub(forceRefresh: forceRefresh)
+        await refreshRuntimeReadiness()
     }
 
     private func probeClaude(forceRefresh: Bool) async {
@@ -1225,8 +1681,36 @@ struct OnboardingWizardView: View {
         }
     }
 
+    private var isCoreRuntimeReady: Bool {
+        guard let report = runtimeReadinessReport else { return false }
+        return !report.checks.contains { $0.state == .blocked }
+    }
+
+    private var hasVertexDefaults: Bool {
+        !claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasReadyCapabilityDefaults: Bool {
+        isGitHubHealthy || hasVertexDefaults
+    }
+
     private var canContinueFromCurrentStep: Bool {
-        currentStep != .capabilitySetup || selectedCapabilitySetupIssues.isEmpty
+        switch currentStep {
+        case .requiredCLIs:
+            return isCoreRuntimeReady
+        default:
+            return true
+        }
+    }
+
+    private var continueBlocker: String? {
+        switch currentStep {
+        case .requiredCLIs:
+            return isCoreRuntimeReady ? nil : "Finish the runtime checks before continuing."
+        default:
+            return nil
+        }
     }
 
     private func onboardingCapabilityBinding(for packageID: String) -> Binding<Bool> {
@@ -1244,6 +1728,43 @@ struct OnboardingWizardView: View {
             ids.remove(packageID)
         }
         onboardingEnabledCapabilityIDsRaw = OnboardingCapabilitySetup.encode(ids)
+    }
+
+    private func applyCapabilityDefaults() {
+        _ = capabilityConfiguration.applyEnvironmentDefaults(
+            gcpProject: claudeVertexProjectID,
+            gcpRegion: claudeVertexRegion
+        )
+    }
+
+    private func enableReadyDefaults() {
+        applyCapabilityDefaults()
+        var ids = selectedOnboardingCapabilityIDs
+        if isGitHubHealthy {
+            ids.insert(OnboardingCapabilitySetup.githubPackageID)
+        }
+        if !capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ids.insert(OnboardingCapabilitySetup.gcloudPackageID)
+        }
+        onboardingEnabledCapabilityIDsRaw = OnboardingCapabilitySetup.encode(ids)
+    }
+
+    private func refreshRuntimeReadiness() async {
+        isCheckingRuntimeReadiness = true
+        defer { isCheckingRuntimeReadiness = false }
+
+        let service = RuntimeReadinessService()
+        runtimeReadinessReport = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .claudeCode,
+            claudePath: claudePath,
+            copilotPath: "",
+            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
+        ))
     }
 
     private func pickWorkspaceRoot() {

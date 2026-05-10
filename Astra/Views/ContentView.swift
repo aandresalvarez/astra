@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 
 enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
@@ -128,6 +129,8 @@ private extension View {
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
+    var selectedCapabilityIDs: Set<String> = []
+    var capabilityConfiguration = OnboardingCapabilityConfiguration()
 
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -138,12 +141,26 @@ struct NewWorkspaceDraft: Equatable {
     }
 
     var canCreate: Bool {
-        !trimmedName.isEmpty
+        !trimmedName.isEmpty && capabilitySetupIssues(githubCLIReady: true).isEmpty
+    }
+
+    func capabilitySetupIssues(githubCLIReady: Bool) -> [String] {
+        OnboardingCapabilitySetup.configurableOptions.flatMap { option -> [String] in
+            guard let packageID = option.packageID,
+                  selectedCapabilityIDs.contains(packageID) else {
+                return []
+            }
+            return capabilityConfiguration
+                .missingRequirements(for: packageID, githubCLIReady: githubCLIReady)
+                .map { "\(option.title): \($0)" }
+        }
     }
 
     mutating func clear() {
         name = ""
         instructions = ""
+        selectedCapabilityIDs = []
+        capabilityConfiguration = OnboardingCapabilityConfiguration()
     }
 }
 
@@ -166,8 +183,6 @@ struct ContentView: View {
     @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
-    @State private var shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-    @State private var onboardingCapabilityConfiguration = OnboardingCapabilityConfiguration()
     @State private var runtime = AppRuntimeController()
     @StateObject private var browserSession = ShelfBrowserSession()
     @State private var showingNewSchedule = false
@@ -186,7 +201,6 @@ struct ContentView: View {
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
-    @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -554,11 +568,8 @@ struct ContentView: View {
                 allowsDismiss: isReplayingOnboarding,
                 onDismiss: {
                     hasCompletedOnboarding = true
-                    onboardingCapabilityConfiguration.clearSecrets()
                 },
-                capabilityConfiguration: $onboardingCapabilityConfiguration,
                 onCreateWorkspace: {
-                    shouldApplyOnboardingCapabilitiesToNextWorkspace = true
                     createWorkspace()
                 }
             )
@@ -907,8 +918,6 @@ struct ContentView: View {
 
     private func resetNewWorkspaceDraft() {
         newWorkspaceDraft.clear()
-        shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-        onboardingCapabilityConfiguration.clearSecrets()
     }
 
     private func restoreWorkspaceSelection() {
@@ -951,24 +960,29 @@ struct ContentView: View {
         guard newWorkspaceDraft.canCreate else { return }
         let workspace = coordinator.createWorkspace(name: newWorkspaceDraft.trimmedName, rootPath: resolvedRoot)
         workspace.instructions = newWorkspaceDraft.trimmedInstructions
-        if shouldApplyOnboardingCapabilitiesToNextWorkspace {
-            applyOnboardingCapabilities(to: workspace)
-        }
+        applyNewWorkspaceCapabilities(to: workspace)
         selectedWorkspace = workspace
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }
 
-    private func applyOnboardingCapabilities(to workspace: Workspace) {
-        let packages = OnboardingCapabilitySetup.selectedPackages(
-            from: PluginCatalog.builtInPackages,
-            rawValue: onboardingEnabledCapabilityIDsRaw
-        )
+    private func applyNewWorkspaceCapabilities(to workspace: Workspace) {
+        let selectedIDs = newWorkspaceDraft.selectedCapabilityIDs
+        guard !selectedIDs.isEmpty else { return }
+
+        var packagesByID: [String: PluginPackage] = [:]
+        for package in PluginCatalog.builtInPackages {
+            packagesByID[package.id] = package
+        }
+        let packages = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> PluginPackage? in
+            guard let packageID = option.packageID, selectedIDs.contains(packageID) else { return nil }
+            return packagesByID[packageID]
+        }
         guard !packages.isEmpty else { return }
 
         let installer = CapabilityInstaller()
         for package in packages {
-            let inputs = onboardingCapabilityConfiguration.installationInputs(for: package.id)
+            let inputs = newWorkspaceDraft.capabilityConfiguration.installationInputs(for: package.id)
             do {
                 try installer.install(
                     package,
@@ -1812,12 +1826,19 @@ private struct ContentDetailContentView: View {
 }
 
 private struct NewWorkspaceSheet: View {
+    @Environment(\.preflightCache) private var preflightCache
     @Binding var draft: NewWorkspaceDraft
     let rootPath: String
     let onCancel: () -> Void
     let onCreate: () -> Void
 
     @FocusState private var focusedField: Field?
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @State private var isCapabilitiesExpanded = false
+    @State private var githubStatus: HealthStatus?
+    @State private var githubAuthStatus: HealthStatus?
+    @State private var isProbingGitHub = false
 
     private enum Field {
         case name
@@ -1831,14 +1852,20 @@ private struct NewWorkspaceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             header
-            formFields
+            ScrollView {
+                formFields
+            }
+            .scrollIndicators(.visible)
             footer
         }
         .padding(24)
-        .frame(width: 560)
+        .frame(width: 620)
+        .frame(maxHeight: 760)
         .background(Stanford.panelBackground)
         .onAppear {
             focusedField = .name
+            applyCapabilityDefaults()
+            Task { await probeGitHub(forceRefresh: false) }
         }
     }
 
@@ -1886,7 +1913,7 @@ private struct NewWorkspaceSheet: View {
                     )
                     .focused($focusedField, equals: .name)
                     .onSubmit {
-                        if draft.canCreate {
+                        if canCreate {
                             onCreate()
                         }
                     }
@@ -1935,6 +1962,8 @@ private struct NewWorkspaceSheet: View {
                 }
             }
 
+            capabilitiesSection
+
             HStack(spacing: 7) {
                 Image(systemName: "folder")
                     .font(Stanford.ui(11, weight: .medium))
@@ -1948,8 +1977,334 @@ private struct NewWorkspaceSheet: View {
         }
     }
 
+    private var capabilitiesSection: some View {
+        DisclosureGroup(isExpanded: $isCapabilitiesExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                if hasReadyCapabilityDefaults {
+                    workspaceSetupAssistant
+                }
+
+                ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
+                    workspaceCapabilityRow(option)
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Capabilities")
+                            .font(Stanford.caption(13).weight(.semibold))
+                            .foregroundStyle(Stanford.black)
+                        Text("Optional")
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.coolGrey)
+                    }
+                    Text(selectedCapabilitySummary)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Stanford.sandstone.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var workspaceSetupAssistant: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Ready defaults")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(setupAssistantSummary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Apply") {
+                enableReadyDefaults()
+            }
+            .font(Stanford.caption(11))
+            .tint(Stanford.lagunita)
+            .disabled(!hasReadyCapabilityDefaults)
+        }
+        .padding(10)
+        .background(Stanford.lagunita.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func workspaceCapabilityRow(_ option: OnboardingCapabilityOption) -> some View {
+        let packageID = option.packageID
+        let isSelected = packageID.map { draft.selectedCapabilityIDs.contains($0) } ?? false
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 10) {
+                Image(systemName: option.icon)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(isSelected ? Stanford.lagunita : Stanford.coolGrey)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.title)
+                        .font(Stanford.body(13).weight(.medium))
+                        .foregroundStyle(Stanford.black)
+                    Text(option.subtitle)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if let packageID {
+                    Text(capabilityStatusText(for: packageID))
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(capabilityStatusColor(for: packageID))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(capabilityStatusColor(for: packageID).opacity(0.1))
+                        .clipShape(Capsule())
+
+                    Toggle("", isOn: capabilityBinding(for: packageID))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                        .accessibilityLabel(option.title)
+                }
+            }
+
+            if let packageID, isSelected {
+                capabilitySetupFields(for: packageID)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(isSelected ? Stanford.lagunita.opacity(0.08) : Stanford.fog.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Stanford.sandstone.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func capabilitySetupFields(for packageID: String) -> some View {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                capabilityTextField("Base URL", prompt: "https://company.atlassian.net", text: $draft.capabilityConfiguration.jiraBaseURL)
+                capabilityTextField("Email", prompt: "you@example.com", text: $draft.capabilityConfiguration.jiraEmail)
+                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.jiraAPIToken)
+                capabilityTextField("Project keys", prompt: "ENG, OPS", text: $draft.capabilityConfiguration.jiraProjects)
+            }
+        case OnboardingCapabilitySetup.githubPackageID:
+            HStack(spacing: 8) {
+                Image(systemName: isGitHubHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.poppy)
+                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the environment check." : "Run gh auth login, then create this workspace.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Project defaults")
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .textCase(.uppercase)
+                    Spacer()
+                    if hasVertexDefaults {
+                        Button("Use Vertex Settings") {
+                            applyCapabilityDefaults()
+                        }
+                        .font(Stanford.caption(11))
+                    }
+                }
+                capabilityTextField("GCP project", prompt: "my-gcp-project", text: $draft.capabilityConfiguration.gcpProject)
+                capabilityTextField("Region", prompt: OnboardingCapabilityConfiguration.defaultGCPRegion, text: $draft.capabilityConfiguration.gcpRegion)
+            }
+        case OnboardingCapabilitySetup.redcapPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                capabilityTextField("API URL", prompt: OnboardingCapabilityConfiguration.defaultRedcapAPIURL, text: $draft.capabilityConfiguration.redcapAPIURL)
+                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.redcapAPIToken)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func capabilityTextField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
+    }
+
+    private func capabilitySecureField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            SecureField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
+    }
+
+    private var selectedCapabilitySummary: String {
+        let names = OnboardingCapabilitySetup.selectedDisplayNames(from: draft.selectedCapabilityIDs)
+        return names.isEmpty ? "Add Jira, GitHub, Google Cloud, or REDCap for this workspace." : names.joined(separator: ", ")
+    }
+
+    private var canCreate: Bool {
+        !draft.trimmedName.isEmpty && capabilityIssues.isEmpty
+    }
+
+    private var capabilityIssues: [String] {
+        draft.capabilitySetupIssues(githubCLIReady: isGitHubHealthy)
+    }
+
+    private var isGitHubHealthy: Bool {
+        if case .healthy = githubStatus, case .healthy = githubAuthStatus {
+            return true
+        }
+        return false
+    }
+
+    private var hasVertexDefaults: Bool {
+        !claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasReadyCapabilityDefaults: Bool {
+        isGitHubHealthy || hasVertexDefaults
+    }
+
+    private var setupAssistantSummary: String {
+        var suggestions: [String] = []
+        if isGitHubHealthy {
+            suggestions.append("GitHub is ready")
+        }
+        if hasVertexDefaults {
+            suggestions.append("Google Cloud can use Vertex settings")
+        }
+        return suggestions.joined(separator: ". ") + "."
+    }
+
+    private func capabilityStatusText(for packageID: String) -> String {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            if isProbingGitHub { return "Checking" }
+            return isGitHubHealthy ? "Ready" : "Needs gh"
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !project.isEmpty { return "Ready" }
+            return hasVertexDefaults ? "Can fill" : "Needs project"
+        case OnboardingCapabilitySetup.jiraPackageID, OnboardingCapabilitySetup.redcapPackageID:
+            return "Needs setup"
+        default:
+            return "Optional"
+        }
+    }
+
+    private func capabilityStatusColor(for packageID: String) -> Color {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            return isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.coolGrey
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (!project.isEmpty || hasVertexDefaults) ? Stanford.paloAltoGreen : Stanford.coolGrey
+        default:
+            return Stanford.coolGrey
+        }
+    }
+
+    private func capabilityBinding(for packageID: String) -> Binding<Bool> {
+        Binding(
+            get: { draft.selectedCapabilityIDs.contains(packageID) },
+            set: { enabled in
+                if enabled {
+                    draft.selectedCapabilityIDs.insert(packageID)
+                    if packageID == OnboardingCapabilitySetup.gcloudPackageID {
+                        applyCapabilityDefaults()
+                    }
+                } else {
+                    draft.selectedCapabilityIDs.remove(packageID)
+                }
+            }
+        )
+    }
+
+    private func applyCapabilityDefaults() {
+        _ = draft.capabilityConfiguration.applyEnvironmentDefaults(
+            gcpProject: claudeVertexProjectID,
+            gcpRegion: claudeVertexRegion
+        )
+    }
+
+    private func enableReadyDefaults() {
+        applyCapabilityDefaults()
+        if isGitHubHealthy {
+            draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.githubPackageID)
+        }
+        if !draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.gcloudPackageID)
+        }
+    }
+
+    private func probeGitHub(forceRefresh: Bool) async {
+        isProbingGitHub = true
+        defer { isProbingGitHub = false }
+
+        if forceRefresh {
+            await preflightCache.invalidate(binary: "gh")
+        }
+
+        githubStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubCLI)
+        guard case .healthy = githubStatus else {
+            githubAuthStatus = nil
+            return
+        }
+        githubAuthStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubAuth)
+    }
+
     private var footer: some View {
         HStack {
+            if let firstIssue = capabilityIssues.first {
+                Label(firstIssue, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
             Spacer()
 
             Button("Cancel", action: onCancel)
@@ -1959,8 +2314,8 @@ private struct NewWorkspaceSheet: View {
             Button("Create", action: onCreate)
                 .buttonStyle(StanfordButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.canCreate)
-                .opacity(draft.canCreate ? 1 : 0.45)
+                .disabled(!canCreate)
+                .opacity(canCreate ? 1 : 0.45)
         }
     }
 }
