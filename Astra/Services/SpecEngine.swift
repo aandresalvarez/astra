@@ -260,13 +260,16 @@ enum SpecEngine {
         process.executableURL = URL(fileURLWithPath: claudePath)
         process.arguments = [
             "-p", prompt,
-            "--model", model,
+            "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model),
             "--allowedTools", "Read", "Glob", "Grep"
         ]
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+            env[key] = value
+        }
 
         process.environment = env
 
@@ -358,7 +361,7 @@ enum SpecEngine {
         process.executableURL = URL(fileURLWithPath: claudePath)
         process.arguments = [
             "-p", prompt,
-            "--model", model,
+            "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model),
             "--allowedTools", "Read,Glob,Grep",
             "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
         ]
@@ -366,6 +369,9 @@ enum SpecEngine {
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+            env[key] = value
+        }
 
         process.environment = env
 
@@ -410,11 +416,14 @@ enum SpecEngine {
         for candidate in modelCandidates {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: claudePath)
-            process.arguments = ["-p", prompt, "--model", candidate]
+            process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(candidate)]
             process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+            for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+                env[key] = value
+            }
             process.environment = env
 
             let stdoutPipe = Pipe()
@@ -501,11 +510,14 @@ enum SpecEngine {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", model]
+        process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+            env[key] = value
+        }
 
         process.environment = env
 
@@ -566,11 +578,14 @@ enum SpecEngine {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: claudePath)
-            process.arguments = ["-p", retryPrompt, "--model", model]
+            process.arguments = ["-p", retryPrompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
             process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
 
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+            for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+                env[key] = value
+            }
 
             process.environment = env
 
@@ -666,11 +681,14 @@ enum SpecEngine {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", model]
+        process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+            env[key] = value
+        }
         process.environment = env
 
         let stdoutPipe = Pipe()

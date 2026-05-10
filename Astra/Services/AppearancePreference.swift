@@ -11,6 +11,42 @@ enum AppStorageKeys {
     static let diagnosticsScope = "astra.diagnostics.scope.v1"
     static let planShelfWidth = "astra.planShelf.width.v1"
     static let browserShelfWidth = "astra.browserShelf.width.v1"
+    static let claudeProvider = "astra.claudeProvider.v1"
+    static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
+    static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
+    static let claudeVertexOpusModel = "astra.claudeVertexOpusModel.v1"
+    static let claudeVertexSonnetModel = "astra.claudeVertexSonnetModel.v1"
+    static let claudeVertexHaikuModel = "astra.claudeVertexHaikuModel.v1"
+}
+
+/// Where the Claude Code CLI routes its API calls. Only matters for the
+/// `claude_code` runtime — the Copilot CLI is unaffected.
+///
+/// Anthropic is the default. When set to `vertex`, the spawned `claude`
+/// process gets `CLAUDE_CODE_USE_VERTEX=1` plus the configured project
+/// and region (read from `claudeVertexProjectID` / `claudeVertexRegion`).
+/// Authentication for Vertex piggybacks on `gcloud auth
+/// application-default login`; if those credentials are missing the CLI
+/// falls back to Anthropic auth and reports "Not logged in".
+enum ClaudeProvider: String, CaseIterable, Identifiable {
+    case anthropic
+    case vertex
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .anthropic: "Anthropic"
+        case .vertex:    "Google Vertex AI"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .anthropic: "a.circle"
+        case .vertex:    "cloud.fill"
+        }
+    }
 }
 
 /// User-controllable override for light/dark mode. Persisted in

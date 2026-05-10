@@ -16,6 +16,12 @@ struct SettingsView: View {
     @AppStorage(AppLogger.sensitiveModeKey) private var sensitiveMode = true
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
+    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
 
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
 
@@ -53,6 +59,57 @@ struct SettingsView: View {
                 }
                 if !detectedPath.isEmpty {
                     Text("Detected: \(detectedPath)")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Claude Provider") {
+                Picker("Route Through", selection: $claudeProviderRaw) {
+                    ForEach(ClaudeProvider.allCases) { provider in
+                        Label(provider.label, systemImage: provider.symbolName)
+                            .tag(provider.rawValue)
+                    }
+                }
+
+                if claudeProviderRaw == ClaudeProvider.vertex.rawValue {
+                    TextField(
+                        "GCP Project ID",
+                        text: $claudeVertexProjectID,
+                        prompt: Text("my-gcp-project")
+                    )
+                    TextField(
+                        "Region",
+                        text: $claudeVertexRegion,
+                        prompt: Text("us-east5 or global")
+                    )
+
+                    Text("Model aliases — Vertex names look like `claude-opus-4-6@default`, not the plain Anthropic IDs. Without these, the CLI tries names that don't exist on Vertex.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+
+                    TextField(
+                        "Opus alias",
+                        text: $claudeVertexOpusModel,
+                        prompt: Text("claude-opus-4-6@default")
+                    )
+                    TextField(
+                        "Sonnet alias",
+                        text: $claudeVertexSonnetModel,
+                        prompt: Text("claude-sonnet-4-6@default")
+                    )
+                    TextField(
+                        "Haiku alias",
+                        text: $claudeVertexHaikuModel,
+                        prompt: Text("claude-haiku-4-5@20251001")
+                    )
+
+                    Text("ASTRA injects CLAUDE_CODE_USE_VERTEX, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, the three ANTHROPIC_DEFAULT_*_MODEL aliases, plus ANTHROPIC_MODEL (= Opus) and ANTHROPIC_SMALL_FAST_MODEL (= Haiku) when spawning the Claude CLI. Vertex auth uses your `gcloud auth application-default login` credentials.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Anthropic routing uses `claude /login`. Pick Google Vertex AI to route through your GCP project instead.")
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
                 }

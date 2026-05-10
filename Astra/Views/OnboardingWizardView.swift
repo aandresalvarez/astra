@@ -282,6 +282,12 @@ struct OnboardingWizardView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
+    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @State private var currentStep: Step
     @State private var claudeStatus: HealthStatus?
     @State private var isProbingClaude = false
@@ -604,6 +610,8 @@ struct OnboardingWizardView: View {
                     .foregroundStyle(Stanford.coolGrey)
                     .textSelection(.enabled)
             }
+
+            providerRow
         }
         .padding(14)
         .background(claudeStatusColor.opacity(0.06))
@@ -614,6 +622,63 @@ struct OnboardingWizardView: View {
         )
         .task {
             await probeClaude(forceRefresh: false)
+        }
+    }
+
+    // Surfaces the configured Claude provider inline so a green "Ready" on the
+    // version probe doesn't masquerade as a green provider configuration. The
+    // wizard's `--version` probe alone can't catch the auth-fails-at-runtime
+    // case (Anthropic not logged in, or Vertex env missing project/region), so
+    // we display the provider state explicitly.
+    @ViewBuilder
+    private var providerRow: some View {
+        let provider = ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic
+        let trimmedProject = claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRegion = claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isVertexBaseConfigured = !trimmedProject.isEmpty && !trimmedRegion.isEmpty
+        let isAnyVertexModelMissing =
+            claudeVertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || claudeVertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || claudeVertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isVertexConfigured = isVertexBaseConfigured
+        let providerOK = provider == .anthropic || (isVertexBaseConfigured && !isAnyVertexModelMissing)
+
+        Divider()
+            .padding(.vertical, 2)
+
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: providerOK ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(providerOK ? Stanford.statusHealthy : Stanford.statusWarn)
+                .font(Stanford.ui(12, weight: .semibold))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Provider — \(provider.label)")
+                    .font(Stanford.body(13).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(providerHint(for: provider, configured: isVertexConfigured))
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func providerHint(for provider: ClaudeProvider, configured: Bool) -> String {
+        switch provider {
+        case .anthropic:
+            return "Routes via Anthropic. Run `claude /login` in a terminal if a task fails with “Not logged in”."
+        case .vertex:
+            if !configured {
+                return "Vertex AI is selected but the project ID or region is empty. Open Settings → Claude Provider to fill them in."
+            }
+            let opus = claudeVertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sonnet = claudeVertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let haiku = claudeVertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if opus.isEmpty || sonnet.isEmpty || haiku.isEmpty {
+                return "Routes via GCP project \(claudeVertexProjectID) in \(claudeVertexRegion), but one or more model aliases are empty — Vertex won't recognise plain Anthropic model IDs. Fill the Opus/Sonnet/Haiku aliases in Settings."
+            }
+            return "Routes via GCP project \(claudeVertexProjectID) in \(claudeVertexRegion) using your Vertex model aliases. Make sure `gcloud auth application-default login` is current."
         }
     }
 
