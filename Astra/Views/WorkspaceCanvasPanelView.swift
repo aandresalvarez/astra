@@ -11,7 +11,6 @@ struct WorkspaceCanvasPanelView: View {
     @State private var lastPlanSignature = ""
 
     private let knownTools = ["Read", "Grep", "Write", "Edit", "Bash"]
-    private let formLabelWidth: CGFloat = 70
 
     private var planState: TaskPlanState {
         guard let selectedTask else { return .empty }
@@ -89,57 +88,14 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            headerWide
-            headerCompact
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minHeight: Stanford.density(62), alignment: .center)
-        .background(.bar)
-    }
-
-    private var headerWide: some View {
-        HStack(spacing: 10) {
-            headerIdentity
-
+        HStack(spacing: 8) {
+            planHeaderChips
             Spacer(minLength: 8)
-
-            planHeaderChips
-            closeButton
         }
-    }
-
-    private var headerCompact: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                headerIdentity
-                Spacer(minLength: 8)
-                closeButton
-            }
-
-            planHeaderChips
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var headerIdentity: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "rectangle.inset.filled")
-                .font(Stanford.ui(14, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 20, height: 20)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Shelf")
-                    .font(Stanford.heading(14))
-                    .lineLimit(1)
-                Text("Plan")
-                    .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .lineLimit(1)
-            }
-        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: Stanford.density(36), alignment: .center)
+        .background(.bar)
     }
 
     @ViewBuilder
@@ -153,20 +109,6 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
         }
-    }
-
-    private var closeButton: some View {
-        Button {
-            isPresented = false
-        } label: {
-            Image(systemName: "xmark")
-                .font(Stanford.ui(12, weight: .semibold))
-                .frame(width: 26, height: 26)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Close shelf")
-        .accessibilityIdentifier("WorkspaceCanvasCloseButton")
     }
 
     private func planCanvas(_ sourcePlan: TaskPlan) -> some View {
@@ -188,8 +130,13 @@ struct WorkspaceCanvasPanelView: View {
                 .padding(.bottom, 14)
             }
 
-            Divider()
-            footer(sourcePlan)
+            // Footer only appears in edit mode where Cancel/Discard/Save are real
+            // primary actions. Read-only states inline their status text under the
+            // plan header chips so the bottom bar isn't just informational chrome.
+            if canEditPlan {
+                Divider()
+                footer(sourcePlan)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -227,13 +174,71 @@ struct WorkspaceCanvasPanelView: View {
             }
 
             HStack(spacing: 6) {
-                canvasChip(permissionMode, color: Stanford.lagunita)
+                permissionModePill
                 if isTaskRunning {
                     canvasChip("Running", color: Stanford.poppy)
                 } else {
                     canvasChip(planState.lifecycleStatus.rawValue.capitalized)
                 }
+                if isReadOnlyAndTerminal, !readOnlyFooterMessage.isEmpty {
+                    Text(readOnlyFooterMessage)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
+        }
+    }
+
+    // Clickable mode chooser. The decision (whether agent runs steps automatically or
+    // pauses for approval) is the most consequential setting on a plan, so we keep
+    // it visible in the plan header — not buried in a menu — with a chevron to make
+    // its tappable nature obvious.
+    private var permissionModePill: some View {
+        Menu {
+            Button {
+                skipPermissions = true
+            } label: {
+                Label("Auto mode — run steps without pausing", systemImage: "bolt.fill")
+            }
+            Button {
+                skipPermissions = false
+            } label: {
+                Label("Review mode — pause before each step", systemImage: "checkmark.shield")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: skipPermissions ? "bolt.fill" : "checkmark.shield")
+                    .font(Stanford.ui(10, weight: .semibold))
+                Text(permissionMode)
+                    .font(Stanford.caption(10).weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(Stanford.ui(8, weight: .bold))
+                    .opacity(0.7)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .foregroundStyle(Stanford.lagunita)
+            .background(Stanford.lagunita.opacity(0.12))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Stanford.lagunita.opacity(Stanford.strokeRest), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Choose whether the plan runs automatically or pauses for review.")
+    }
+
+    // True when the plan is in a state where the old footer's read-only message used to
+    // appear. Used to inline that message under the status chip instead of taking a
+    // dedicated footer row.
+    private var isReadOnlyAndTerminal: Bool {
+        if isTaskRunning { return true }
+        switch planState.lifecycleStatus {
+        case .completed, .cancelled:
+            return true
+        case .none, .draft, .approved, .executing, .failed:
+            return false
         }
     }
 
@@ -290,7 +295,7 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func lockedStepCard(index: Int, step: TaskPlanStep) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: icon(for: step.status))
                     .font(Stanford.ui(14, weight: .semibold))
@@ -306,16 +311,32 @@ struct WorkspaceCanvasPanelView: View {
             }
 
             if !step.detail.isEmpty {
-                fieldPreview(label: "Details", value: step.detail)
+                Text(step.detail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.primary.opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 28)
             }
 
             if !step.doneSignal.isEmpty {
-                fieldPreview(label: step.status == .done ? "Completed" : "Done signal", value: step.doneSignal)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: step.status == .done ? "checkmark.circle.fill" : "arrow.turn.down.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .foregroundStyle(step.status == .done ? Stanford.statusHealthy : .secondary)
+                        .frame(width: 14)
+                    Text(step.doneSignal)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, 22)
             }
 
             stepMetadataRow(step)
+                .padding(.top, 2)
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .liquidSurface(
             cornerRadius: Stanford.radiusMedium,
             fallbackFill: color(for: step.status).opacity(0.07),
@@ -358,39 +379,39 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
 
-            labeledTextEditor("Details", text: stepDetailBinding(index))
-            labeledTextField("Done signal", text: stepDoneSignalBinding(index))
+            placeholderEditor(
+                icon: "text.alignleft",
+                placeholder: "What this step does…",
+                text: stepDetailBinding(index)
+            )
+            placeholderField(
+                icon: "checkmark.circle",
+                placeholder: "Done when…",
+                text: stepDoneSignalBinding(index)
+            )
 
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Risk")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Picker("Risk", selection: stepRiskBinding(index)) {
-                        ForEach(TaskPlanRisk.allCases, id: \.self) { risk in
-                            Text(risk.rawValue.capitalized).tag(risk)
-                        }
+            HStack(alignment: .center, spacing: 10) {
+                Picker("Risk", selection: stepRiskBinding(index)) {
+                    ForEach(TaskPlanRisk.allCases, id: \.self) { risk in
+                        Text(risk.rawValue.capitalized).tag(risk)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 176)
-                    .labelsHidden()
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 168)
+                .labelsHidden()
+                .help("Risk level")
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Tools")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    FlowLayout(spacing: 6) {
-                        ForEach(knownTools, id: \.self) { tool in
-                            toolChip(tool, isSelected: step.likelyTools.contains(tool)) {
-                                toggleTool(tool, at: index)
-                            }
+                FlowLayout(spacing: 5) {
+                    ForEach(knownTools, id: \.self) { tool in
+                        toolChip(tool, isSelected: step.likelyTools.contains(tool)) {
+                            toggleTool(tool, at: index)
                         }
                     }
                 }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .liquidSurface(
             cornerRadius: Stanford.radiusMedium,
             interactive: true,
@@ -429,39 +450,28 @@ struct WorkspaceCanvasPanelView: View {
 
     private func footer(_ sourcePlan: TaskPlan) -> some View {
         HStack(spacing: 10) {
-            if canEditPlan {
-                Button("Cancel plan") {
-                    cancelPlan(sourcePlan)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                .foregroundStyle(Stanford.cardinalRed)
-                .help("Cancel this plan and stop using it for the task.")
-
-                Spacer(minLength: 8)
-
-                Button("Discard") {
-                    syncDraftIfNeeded(force: true)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                .disabled(currentDraft == sourcePlan)
-                .help(currentDraft == sourcePlan ? "There are no local plan edits to discard." : "Discard local plan edits.")
-
-                Button("Save changes") {
-                    saveDraft()
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: true))
-                .disabled(!canSave)
-                .help(saveButtonHelp)
-            } else {
-                Text(readOnlyFooterMessage)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Close") {
-                    isPresented = false
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+            Button("Cancel plan") {
+                cancelPlan(sourcePlan)
             }
+            .buttonStyle(StanfordButtonStyle(isPrimary: false))
+            .foregroundStyle(Stanford.cardinalRed)
+            .help("Cancel this plan and stop using it for the task.")
+
+            Spacer(minLength: 8)
+
+            Button("Discard") {
+                syncDraftIfNeeded(force: true)
+            }
+            .buttonStyle(StanfordButtonStyle(isPrimary: false))
+            .disabled(currentDraft == sourcePlan)
+            .help(currentDraft == sourcePlan ? "There are no local plan edits to discard." : "Discard local plan edits.")
+
+            Button("Save changes") {
+                saveDraft()
+            }
+            .buttonStyle(StanfordButtonStyle(isPrimary: true))
+            .disabled(!canSave)
+            .help(saveButtonHelp)
         }
         .controlSize(.small)
         .padding(.horizontal, 14)
@@ -528,66 +538,69 @@ struct WorkspaceCanvasPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func labeledTextField(_ label: String, text: Binding<String>) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label)
-                .font(Stanford.caption(11).weight(.semibold))
+    private func placeholderField(icon: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: formLabelWidth, alignment: .leading)
-            TextField(label, text: text)
+                .frame(width: 14, alignment: .center)
+            TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
                 .font(Stanford.caption(12))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-                )
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
     }
 
-    private func labeledTextEditor(_ label: String, text: Binding<String>) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(label)
-                .font(Stanford.caption(11).weight(.semibold))
+    private func placeholderEditor(icon: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: formLabelWidth, alignment: .leading)
-                .padding(.top, 7)
-            TextEditor(text: text)
-                .font(Stanford.caption(12))
-                .frame(minHeight: 52)
-                .scrollContentBackground(.hidden)
-                .padding(.horizontal, 3)
-                .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-                )
+                .frame(width: 14, alignment: .center)
+                .padding(.top, 6)
+            ZStack(alignment: .topLeading) {
+                if text.wrappedValue.isEmpty {
+                    Text(placeholder)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary.opacity(0.55))
+                        .padding(.top, 6)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: text)
+                    .font(Stanford.caption(12))
+                    .frame(minHeight: 44)
+                    .scrollContentBackground(.hidden)
+            }
         }
-    }
-
-    private func fieldPreview(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(Stanford.caption(10).weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.leading, 28)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
     }
 
     private func stepMetadataRow(_ step: TaskPlanStep) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(riskColor(step.risk))
+                .frame(width: 5, height: 5)
             Text(step.risk.rawValue.capitalized)
                 .foregroundStyle(riskColor(step.risk))
             if !step.likelyTools.isEmpty {
-                Text(step.likelyTools.joined(separator: ", "))
+                Text("·")
+                    .foregroundStyle(.secondary.opacity(0.5))
+                Text(step.likelyTools.joined(separator: " · "))
                     .foregroundStyle(.secondary)
             }
         }
