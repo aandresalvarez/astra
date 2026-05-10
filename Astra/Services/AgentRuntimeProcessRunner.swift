@@ -36,7 +36,7 @@ final class AgentRuntimeProcessRunner {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: claudePath)
 
-            var args = ["-p", prompt, "--model", task.model, "--output-format", "stream-json", "--verbose"]
+            var args = ["-p", prompt, "--model", Self.translatedModelForProvider(task.model), "--output-format", "stream-json", "--verbose"]
             args += permissionPolicy.cliArguments
             Self.ensureSubAgentPermissions(at: workspacePath, policy: permissionPolicy, allowedTools: allowed)
             if task.maxTurns > 0 {
@@ -592,6 +592,9 @@ final class AgentRuntimeProcessRunner {
         if includeClaudeTeamFlag {
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         }
+        for (key, value) in claudeProviderEnvironment() {
+            env[key] = value
+        }
         for (key, value) in taskEnv {
             env[key] = value
         }
@@ -602,6 +605,97 @@ final class AgentRuntimeProcessRunner {
             ])
         }
         return env
+    }
+
+    /// Resolves the Claude provider env vars from `@AppStorage` so the spawned
+    /// `claude` CLI inherits the user's chosen routing (Anthropic vs Vertex).
+    /// GUI apps don't pick up shell env from `.zshrc`, so this is the only
+    /// place Vertex routing reaches the runtime.
+    ///
+    /// For Vertex, model aliases matter just as much as the routing flag —
+    /// the Anthropic-format model IDs ASTRA passes via `--model` (e.g.
+    /// `claude-haiku-4-5-20251001`) don't exist as-is on Vertex. The
+    /// `ANTHROPIC_DEFAULT_*_MODEL` env vars remap them to Vertex aliases
+    /// (e.g. `claude-haiku-4-5@20251001`). `ANTHROPIC_MODEL` and
+    /// `ANTHROPIC_SMALL_FAST_MODEL` are auto-derived from the opus/haiku
+    /// fields to match common Vertex setups.
+    static func claudeProviderEnvironment() -> [String: String] {
+        let defaults = UserDefaults.standard
+        let raw = defaults.string(forKey: AppStorageKeys.claudeProvider) ?? ClaudeProvider.anthropic.rawValue
+        guard let provider = ClaudeProvider(rawValue: raw) else { return [:] }
+        switch provider {
+        case .anthropic:
+            return [:]
+        case .vertex:
+            let project = trimmedDefault(AppStorageKeys.claudeVertexProjectID)
+            let region = trimmedDefault(AppStorageKeys.claudeVertexRegion)
+            guard !project.isEmpty, !region.isEmpty else { return [:] }
+
+            var env: [String: String] = [
+                "CLAUDE_CODE_USE_VERTEX": "1",
+                "ANTHROPIC_VERTEX_PROJECT_ID": project,
+                "CLOUD_ML_REGION": region
+            ]
+
+            let opus = trimmedDefault(AppStorageKeys.claudeVertexOpusModel)
+            let sonnet = trimmedDefault(AppStorageKeys.claudeVertexSonnetModel)
+            let haiku = trimmedDefault(AppStorageKeys.claudeVertexHaikuModel)
+
+            if !opus.isEmpty {
+                env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus
+                // ANTHROPIC_MODEL is the CLI's selected model when no --model
+                // flag is passed. Mirror Anthropic's recommended setup where
+                // it equals the opus alias.
+                env["ANTHROPIC_MODEL"] = opus
+            }
+            if !sonnet.isEmpty {
+                env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet
+            }
+            if !haiku.isEmpty {
+                env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku
+                // The "small fast model" used internally by claude-code for
+                // helper calls (title gen, summarisation). Pair with haiku.
+                env["ANTHROPIC_SMALL_FAST_MODEL"] = haiku
+            }
+
+            return env
+        }
+    }
+
+    private static func trimmedDefault(_ key: String) -> String {
+        (UserDefaults.standard.string(forKey: key) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// When Vertex routing is on, translate an Anthropic-format model ID
+    /// (e.g. `claude-haiku-4-5-20251001`) into the Vertex alias the user
+    /// configured in Settings (e.g. `claude-haiku-4-5@20251001`).
+    /// Tier is detected by family prefix (`haiku` / `sonnet` / `opus`).
+    /// If Vertex is off, or no alias is set for that tier, the original
+    /// model ID is returned unchanged so non-Vertex flows are untouched.
+    ///
+    /// `ANTHROPIC_DEFAULT_*_MODEL` env vars only kick in when the CLI is
+    /// invoked with the bare tier name (`haiku`); ASTRA passes specific
+    /// dated IDs via `--model`, so we have to do the substitution here.
+    static func translatedModelForProvider(_ model: String) -> String {
+        let raw = UserDefaults.standard.string(forKey: AppStorageKeys.claudeProvider)
+            ?? ClaudeProvider.anthropic.rawValue
+        guard ClaudeProvider(rawValue: raw) == .vertex else { return model }
+
+        let lower = model.lowercased()
+        let key: String
+        if lower.hasPrefix("claude-haiku") {
+            key = AppStorageKeys.claudeVertexHaikuModel
+        } else if lower.hasPrefix("claude-sonnet") {
+            key = AppStorageKeys.claudeVertexSonnetModel
+        } else if lower.hasPrefix("claude-opus") {
+            key = AppStorageKeys.claudeVertexOpusModel
+        } else {
+            return model
+        }
+
+        let alias = trimmedDefault(key)
+        return alias.isEmpty ? model : alias
     }
 
     @MainActor
