@@ -42,8 +42,8 @@ struct ShelfBrowserPanelView: View {
             headerCompact
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minHeight: Stanford.density(78), alignment: .center)
+        .padding(.vertical, 6)
+        .frame(minHeight: Stanford.density(46), alignment: .center)
         .background(.bar)
     }
 
@@ -96,21 +96,15 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var headerIdentity: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "globe")
-                .font(Stanford.ui(14, weight: .semibold))
+                .font(Stanford.ui(13, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
-                .frame(width: 20, height: 20)
+                .frame(width: 18, height: 18)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Shelf")
-                    .font(Stanford.heading(14))
-                    .lineLimit(1)
-                Text("Browser")
-                    .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .lineLimit(1)
-            }
+            Text("Browser")
+                .font(Stanford.heading(14))
+                .lineLimit(1)
         }
     }
 
@@ -154,11 +148,10 @@ struct ShelfBrowserPanelView: View {
             isPresented = false
         } label: {
             Image(systemName: "xmark")
-                .font(Stanford.ui(12, weight: .semibold))
-                .frame(width: 26, height: 26)
+                .font(Stanford.ui(11, weight: .semibold))
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .buttonStyle(BrowserBarButtonStyle(size: 26))
         .help("Close shelf")
         .accessibilityIdentifier("ShelfBrowserCloseButton")
     }
@@ -172,13 +165,13 @@ struct ShelfBrowserPanelView: View {
 
             browserLocationSummary
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
         .background(.bar)
     }
 
     private var toolbarWideRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             navigationButtonGroup
             addressField
                 .frame(minWidth: 160)
@@ -190,13 +183,13 @@ struct ShelfBrowserPanelView: View {
 
     private var toolbarCompactRows: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 navigationButtonGroup
                 Spacer(minLength: 8)
                 externalBrowserButton
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 addressField
                     .frame(minWidth: 80)
                     .layoutPriority(1)
@@ -206,14 +199,19 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var navigationButtonGroup: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 1) {
             browserButton("chevron.left", help: session.canGoBack ? "Back" : "No previous page", disabled: !session.canGoBack) {
                 session.goBack()
             }
             browserButton("chevron.right", help: session.canGoForward ? "Forward" : "No next page", disabled: !session.canGoForward) {
                 session.goForward()
             }
-            browserButton(navigationControlIcon, help: navigationControlHelp, disabled: navigationControlDisabled) {
+            browserButton(
+                navigationControlIcon,
+                help: navigationControlHelp,
+                disabled: navigationControlDisabled,
+                accent: session.isLoading ? Stanford.statusError : nil
+            ) {
                 performNavigationControl()
             }
         }
@@ -231,19 +229,26 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var addressField: some View {
-        TextField("Search or enter website", text: $addressText)
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+        return TextField("Search or enter website", text: $addressText)
             .textFieldStyle(.plain)
-            .font(Stanford.caption(12))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .font(Stanford.ui(12, weight: .medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(minHeight: 30)
             .focused($isAddressFocused)
             .onSubmit(go)
-            .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+            .background(shape.fill(Stanford.cardBackground))
             .overlay(
-                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                    .stroke(isAddressFocused ? Stanford.lagunita.opacity(Stanford.strokeFocus) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                shape.stroke(
+                    isAddressFocused
+                        ? Stanford.lagunita.opacity(Stanford.strokeFocus)
+                        : Color.primary.opacity(Stanford.strokeRest),
+                    lineWidth: isAddressFocused ? 1.5 : 1
+                )
             )
+            .contentShape(shape)
+            .animation(.easeOut(duration: 0.16), value: isAddressFocused)
     }
 
     private func goButton(isCompact: Bool) -> some View {
@@ -252,19 +257,22 @@ struct ShelfBrowserPanelView: View {
                 if session.isLoading {
                     ProgressView()
                         .controlSize(.mini)
+                        .tint(.white)
                 } else {
                     Image(systemName: "arrow.right")
-                        .font(Stanford.ui(11, weight: .semibold))
+                        .font(Stanford.ui(11, weight: .bold))
                 }
-                Text(session.isLoading ? "Opening" : "Open")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                if !isCompact {
+                    Text(session.isLoading ? "Opening" : "Open")
+                        .font(Stanford.ui(12, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
             }
-            .frame(minWidth: isCompact ? 58 : 72)
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: true))
-        .controlSize(.small)
+        .buttonStyle(BrowserGoButtonStyle())
         .disabled(addressText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.controlledBrowser.isLaunching)
+        .help(session.isLoading ? "Opening…" : "Open address")
     }
 
     private var browserBody: some View {
@@ -303,29 +311,38 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var emptyBrowserStartView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "globe")
-                .font(.system(size: 34, weight: .semibold))
+                .font(.system(size: 32, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
-            Text("Open a Website")
-                .font(Stanford.heading(18))
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
+                .padding(.bottom, 2)
+
+            VStack(spacing: 4) {
+                Text("Open a Website")
+                    .font(Stanford.heading(18))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                Text("Type a URL above or jump to a quick link.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
 
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    quickLink("Outlook", url: "https://outlook.office.com/mail/")
-                    quickLink("Office", url: "https://www.office.com/")
+                    quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
+                    quickLink("Office", url: "https://www.office.com/", systemImage: "square.grid.2x2.fill", tint: Stanford.poppy)
                 }
 
                 VStack(spacing: 8) {
-                    quickLink("Outlook", url: "https://outlook.office.com/mail/")
-                    quickLink("Office", url: "https://www.office.com/")
+                    quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
+                    quickLink("Office", url: "https://www.office.com/", systemImage: "square.grid.2x2.fill", tint: Stanford.poppy)
                 }
             }
         }
-        .padding(18)
-        .frame(maxWidth: 280)
+        .padding(20)
+        .frame(maxWidth: 300)
         .liquidSurface(
             cornerRadius: Stanford.radiusLarge,
             fallbackFill: Stanford.cardBackground,
@@ -359,20 +376,21 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var browserLocationSummary: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             Image(systemName: locationSummaryIcon)
                 .font(Stanford.ui(10, weight: .semibold))
                 .foregroundStyle(browserStatusTint)
-                .frame(width: 14)
+                .frame(width: 12)
 
             Text(locationSummaryTitle)
-                .font(Stanford.caption(11).weight(.semibold))
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(.primary.opacity(0.85))
                 .lineLimit(1)
                 .layoutPriority(1)
 
             if !locationSummaryDetail.isEmpty {
                 Text(locationSummaryDetail)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.caption(10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -383,15 +401,19 @@ struct ShelfBrowserPanelView: View {
             if session.isLoading {
                 ProgressView(value: max(0.05, min(session.estimatedProgress, 1)))
                     .progressViewStyle(.linear)
-                    .frame(width: 110)
+                    .frame(width: 100)
             } else if session.isAgentBridgeEnabled {
-                Label(session.bridgeEndpoint == nil ? "Bridge starting" : "Agent ready", systemImage: session.bridgeEndpoint == nil ? "antenna.radiowaves.left.and.right" : "point.3.connected.trianglepath.dotted")
-                    .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(session.bridgeEndpoint == nil ? Stanford.statusInfo : Stanford.statusHealthy)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Image(systemName: session.bridgeEndpoint == nil ? "antenna.radiowaves.left.and.right" : "point.3.connected.trianglepath.dotted")
+                        .font(Stanford.ui(9, weight: .semibold))
+                    Text(session.bridgeEndpoint == nil ? "Bridge starting" : "Agent ready")
+                        .font(Stanford.caption(10).weight(.medium))
+                }
+                .foregroundStyle(session.bridgeEndpoint == nil ? Stanford.statusInfo : Stanford.statusHealthy)
+                .lineLimit(1)
             }
         }
-        .frame(height: 18)
+        .frame(height: 16)
     }
 
     private var engineTransition: AnyTransition {
@@ -1060,30 +1082,43 @@ struct ShelfBrowserPanelView: View {
                 copyBridgeButton(title: "Copy")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 32)
         .background(.bar)
     }
 
     private var bridgeStatusLabel: some View {
-        Label(bridgeStatusText, systemImage: session.isAgentBridgeEnabled ? bridgeStatusIcon : "lock")
-            .font(Stanford.caption(11))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .layoutPriority(1)
+        HStack(spacing: 6) {
+            Image(systemName: session.isAgentBridgeEnabled ? bridgeStatusIcon : "lock")
+                .font(Stanford.ui(10, weight: .semibold))
+                .foregroundStyle(session.bridgeEndpoint != nil && session.isAgentBridgeEnabled ? Stanford.statusHealthy : .secondary)
+                .frame(width: 12)
+            Text(bridgeStatusText)
+                .font(Stanford.caption(10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .layoutPriority(1)
     }
 
     private func copyBridgeButton(title: String) -> some View {
         Button {
             session.copyBridgeEndpointToPasteboard()
         } label: {
-            Label(title, systemImage: "doc.on.doc")
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Image(systemName: "doc.on.doc")
+                    .font(Stanford.ui(10, weight: .semibold))
+                Text(title)
+                    .font(Stanford.ui(11, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(session.bridgeEndpoint == nil ? Color.secondary.opacity(0.55) : .primary)
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: false))
-        .controlSize(.small)
+        .buttonStyle(BrowserFooterButtonStyle())
         .disabled(session.bridgeEndpoint == nil)
+        .help("Copy the bridge URL for the linked task")
     }
 
     private var bridgeStatusText: String {
@@ -1100,32 +1135,40 @@ struct ShelfBrowserPanelView: View {
         _ systemImage: String,
         help: String,
         disabled: Bool = false,
+        accent: Color? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(Stanford.ui(12, weight: .semibold))
-                .frame(width: 28, height: 28)
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(
+                    disabled
+                        ? Color.secondary.opacity(0.45)
+                        : (accent ?? Color.primary.opacity(0.82))
+                )
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(disabled ? .tertiary : .primary)
-        .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-        )
+        .buttonStyle(BrowserBarButtonStyle())
         .disabled(disabled)
         .help(help)
     }
 
-    private func quickLink(_ title: String, url: String) -> some View {
-        Button(title) {
+    private func quickLink(_ title: String, url: String, systemImage: String, tint: Color) -> some View {
+        Button {
             addressText = url
             session.load(url)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 16)
+                Text(title)
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: false))
-        .controlSize(.small)
+        .buttonStyle(BrowserQuickLinkButtonStyle(tint: tint))
     }
 
     private func go() {
@@ -1164,4 +1207,174 @@ private struct ShelfBrowserWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+
+// Ghost button used in the browser toolbar (back, forward, refresh, external link, close).
+// Transparent at rest, lightly tinted on hover, slightly tinted on press, with a small scale dip.
+private struct BrowserBarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    var size: CGFloat = 30
+    var cornerRadius: CGFloat = Stanford.radiusSmall
+
+    func makeBody(configuration: Configuration) -> some View {
+        BrowserBarButtonContent(
+            configuration: configuration,
+            isEnabled: isEnabled,
+            size: size,
+            cornerRadius: cornerRadius
+        )
+    }
+}
+
+private struct BrowserBarButtonContent: View {
+    let configuration: ButtonStyle.Configuration
+    let isEnabled: Bool
+    let size: CGFloat
+    let cornerRadius: CGFloat
+    @State private var isHovered = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        configuration.label
+            .frame(width: size, height: size)
+            .background(shape.fill(backgroundFill))
+            .contentShape(shape)
+            .opacity(isEnabled ? 1.0 : 0.4)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.92 : 1.0)
+            .onHover { hovering in
+                guard isEnabled else { return }
+                isHovered = hovering
+            }
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+
+    private var backgroundFill: Color {
+        guard isEnabled else { return .clear }
+        if configuration.isPressed { return Color.primary.opacity(0.14) }
+        if isHovered { return Color.primary.opacity(0.07) }
+        return .clear
+    }
+}
+
+// Compact primary button for the address bar's Go action. Tighter than StanfordButtonStyle,
+// tuned to sit alongside a 30pt-tall address field without overpowering it.
+private struct BrowserGoButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+        configuration.label
+            .padding(.horizontal, 12)
+            .frame(minHeight: 30)
+            .foregroundStyle(.white)
+            .background(shape.fill(backgroundFill(isPressed: configuration.isPressed)))
+            .contentShape(shape)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+
+    private func backgroundFill(isPressed: Bool) -> Color {
+        if !isEnabled { return Stanford.cardinalRed.opacity(0.42) }
+        if isPressed { return Stanford.cardinalRed.opacity(0.85) }
+        return Stanford.cardinalRed
+    }
+}
+
+// Subtle ghost button for the footer Copy action. Quieter than the brand
+// primary so the footer reads as background chrome.
+private struct BrowserFooterButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        BrowserFooterButtonContent(configuration: configuration, isEnabled: isEnabled)
+    }
+}
+
+private struct BrowserFooterButtonContent: View {
+    let configuration: ButtonStyle.Configuration
+    let isEnabled: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+        configuration.label
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(shape.fill(backgroundFill))
+            .overlay(shape.stroke(strokeColor, lineWidth: 1))
+            .contentShape(shape)
+            .opacity(isEnabled ? 1.0 : 0.6)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .onHover { hovering in
+                guard isEnabled else { return }
+                isHovered = hovering
+            }
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+
+    private var backgroundFill: Color {
+        guard isEnabled else { return .clear }
+        if configuration.isPressed { return Color.primary.opacity(0.10) }
+        if isHovered { return Color.primary.opacity(0.05) }
+        return .clear
+    }
+
+    private var strokeColor: Color {
+        if !isEnabled || (!isHovered && !configuration.isPressed) {
+            return Color.primary.opacity(Stanford.strokeRest)
+        }
+        return Color.primary.opacity(Stanford.strokeActive)
+    }
+}
+
+// Quick-link button for the empty-state suggestions. Soft card by default,
+// gains a tinted wash on hover that previews the destination's brand color.
+private struct BrowserQuickLinkButtonStyle: ButtonStyle {
+    let tint: Color
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        BrowserQuickLinkContent(
+            configuration: configuration,
+            tint: tint,
+            isEnabled: isEnabled
+        )
+    }
+}
+
+private struct BrowserQuickLinkContent: View {
+    let configuration: ButtonStyle.Configuration
+    let tint: Color
+    let isEnabled: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+        configuration.label
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(shape.fill(backgroundFill))
+            .overlay(shape.stroke(strokeColor, lineWidth: 1))
+            .contentShape(shape)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .onHover { hovering in
+                guard isEnabled else { return }
+                isHovered = hovering
+            }
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+
+    private var backgroundFill: Color {
+        if configuration.isPressed { return tint.opacity(0.18) }
+        if isHovered { return tint.opacity(0.10) }
+        return Stanford.cardBackground
+    }
+
+    private var strokeColor: Color {
+        if configuration.isPressed || isHovered { return tint.opacity(0.36) }
+        return Color.primary.opacity(Stanford.strokeRest)
+    }
 }
