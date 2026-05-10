@@ -1378,9 +1378,10 @@ private struct ContentToolbar: ToolbarContent {
             if hasCanvasContent {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleCanvas) {
-                        Label(
-                            isCanvasVisible ? "Hide Plan" : "Show Plan",
-                            systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle"
+                        toolbarToggleLabel(
+                            title: isCanvasVisible ? "Hide Plan" : "Show Plan",
+                            systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle",
+                            isActive: isCanvasVisible
                         )
                     }
                     .help(isCanvasVisible ? "Hide plan shelf" : "Show plan shelf")
@@ -1391,9 +1392,10 @@ private struct ContentToolbar: ToolbarContent {
             if hasTaskThread {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleBrowser) {
-                        Label(
-                            isBrowserVisible ? "Hide Browser" : "Show Browser",
-                            systemImage: isBrowserVisible ? "globe.badge.chevron.backward" : "globe"
+                        toolbarToggleLabel(
+                            title: isBrowserVisible ? "Hide Browser" : "Show Browser",
+                            systemImage: isBrowserVisible ? "globe.badge.chevron.backward" : "globe",
+                            isActive: isBrowserVisible
                         )
                     }
                     .help(isBrowserVisible ? "Hide browser shelf" : "Show browser shelf")
@@ -1403,13 +1405,30 @@ private struct ContentToolbar: ToolbarContent {
 
             ToolbarItem(placement: .primaryAction) {
                 Button(action: onToggleRightRail) {
-                    Label(
-                        isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                        systemImage: "sidebar.right"
+                    toolbarToggleLabel(
+                        title: isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                        systemImage: "sidebar.right",
+                        isActive: isRightRailVisible
                     )
                 }
                 .help(isRightRailVisible ? "Hide control panel" : "Show control panel")
             }
+        }
+    }
+
+    // The native macOS toolbar strips most custom styling, but it does respect
+    // foregroundStyle, fontWeight, and symbolEffect on the icon. We use all three
+    // together so the active panel toggle is unmistakable: cardinal-red tint,
+    // semibold weight, and a brief bounce when toggled.
+    private func toolbarToggleLabel(title: String, systemImage: String, isActive: Bool) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: systemImage)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isActive ? Stanford.cardinalRed : Color.primary)
+                .fontWeight(isActive ? .semibold : .regular)
+                .symbolEffect(.bounce, value: isActive)
         }
     }
 }
