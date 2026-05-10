@@ -50,6 +50,19 @@ struct TaskPlanServiceTests {
         #expect(visible == "I prepared a plan. Review it in the Plan panel, then run it when you're ready.")
     }
 
+    @Test("Structured plan enriches file creation steps with write tools")
+    func structuredPlanEnrichesMutationTools() throws {
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87","title":"Website","goal":"Create a static website","steps":[{"id":"home","title":"Create site structure and homepage","detail":"Build index.html with responsive sections.","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"index.html exists"}]}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+
+        #expect(plan.steps[0].likelyTools.contains("Read"))
+        #expect(plan.steps[0].likelyTools.contains("Write"))
+        #expect(!plan.steps[0].likelyTools.contains("Bash"))
+    }
+
     @Test("Unstructured planning text falls back to ordered steps")
     func fallbackPlanFromList() {
         let plan = TaskPlanService.parsePlan(
@@ -110,6 +123,40 @@ struct TaskPlanServiceTests {
         #expect(state.plan?.steps[0].status == .done)
         #expect(state.plan?.steps[0].doneSignal == "Inspected")
         #expect(state.plan?.steps[1].status == .pending)
+    }
+
+    @Test("Blocked permission reason enriches step tools for retry")
+    func blockedPermissionReasonEnrichesStepToolsForRetry() throws {
+        let task = AgentTask(title: "Plan task", goal: "Create HTML")
+        let plan = TaskPlanPayload(
+            planID: UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!,
+            title: "Website",
+            goal: "Create a website",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Create homepage", likelyTools: ["Read"])
+            ]
+        )
+        let blocked = TaskPlanProgressPayload(
+            version: 1,
+            type: TaskPlanEventTypes.stepBlocked,
+            planID: plan.planID,
+            stepID: "step-1",
+            status: .blocked,
+            title: nil,
+            detail: nil,
+            summary: nil,
+            reason: "Write permission needed to create .astra/tasks/97EF1FD6/index.html."
+        )
+
+        let created = TaskEvent(task: task, type: TaskPlanEventTypes.created, payload: TaskPlanService.encodePlanPayload(plan))
+        let approved = TaskEvent(task: task, type: TaskPlanEventTypes.approved, payload: TaskPlanService.encodePlanPayload(plan))
+        let progress = TaskEvent(task: task, type: TaskPlanEventTypes.stepBlocked, payload: TaskPlanService.encodeStepProgressPayload(blocked))
+
+        let state = TaskPlanService.reconstruct(from: [created, approved, progress])
+
+        #expect(state.plan?.steps[0].status == .blocked)
+        #expect(state.plan?.steps[0].detail.contains("Write permission needed") == true)
+        #expect(state.plan?.steps[0].likelyTools.contains("Write") == true)
     }
 
     @Test("Next executable step skips completed and skipped steps")

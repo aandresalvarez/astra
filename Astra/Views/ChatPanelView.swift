@@ -2141,7 +2141,7 @@ struct ChatPanelView: View {
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include likely tools and a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if you truly cannot propose a useful starting plan.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if you truly cannot propose a useful starting plan.
         """
     }
 

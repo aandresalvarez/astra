@@ -2457,7 +2457,7 @@ struct TaskMainView: View {
         Return concise planning prose, then include exactly one structured plan line using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include likely tools and a done signal for each step. The user must confirm from the Plan panel before execution starts.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. The user must confirm from the Plan panel before execution starts.
         """
     }
 

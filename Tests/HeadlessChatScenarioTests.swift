@@ -586,6 +586,74 @@ struct HeadlessChatScenarioTests {
         #expect(allow.contains("Write(*)"))
     }
 
+    @Test("Blocked write permission enriches the next approved retry")
+    func blockedWritePermissionEnrichesNextApprovedRetry() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("claude-retry-args.txt")
+        let blockedFlagURL = harness.rootURL.appendingPathComponent("blocked-once")
+        let plan = TaskPlanPayload(
+            title: "Retry write plan",
+            goal: "Create an HTML file after permission repair",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Create homepage", likelyTools: ["Read"])
+            ]
+        )
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if [ ! -f \(Self.shQuote(blockedFlagURL.path)) ]; then
+                  touch \(Self.shQuote(blockedFlagURL.path))
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-retry-session-1","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Write permission needed to create .astra/tasks/97EF1FD6/index.html.\\"}\\n"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"blocked","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-retry-session-2","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Created index.html\\"}\\n"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"wrote artifact","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: plan.goal, model: "claude-sonnet-4-6")
+        let restrictedSkill = Skill(
+            name: "Read-only",
+            allowedTools: ["Read", "Grep"],
+            disallowedTools: ["Write", "Edit", "Bash"],
+            behaviorInstructions: ""
+        )
+        harness.context.insert(restrictedSkill)
+        task.skills = [restrictedSkill]
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+        var state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .pendingUser)
+        #expect(state.plan?.steps.first?.status == .blocked)
+        #expect(state.plan?.steps.first?.likelyTools.contains("Write") == true)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(args.contains("--allowedTools"))
+        #expect(args.contains("Write"))
+        state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+        #expect(state.lifecycleStatus == .completed)
+    }
+
     @Test("Plan mode can be approved and executed after an existing chat turn")
     func planModeCanExecuteAfterExistingChatTurn() async throws {
         let harness = try HeadlessChatHarness()

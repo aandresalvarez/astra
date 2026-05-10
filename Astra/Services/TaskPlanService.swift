@@ -371,23 +371,61 @@ extension TaskPlanService {
 
     static func inferTools(from text: String) -> [String] {
         let lower = text.lowercased()
-        var tools: [String] = []
-        if lower.contains("inspect") || lower.contains("read") || lower.contains("open") {
-            tools.append("Read")
+        var tools = Set<String>()
+        if lower.contains("inspect") ||
+            lower.contains("read") ||
+            lower.contains("review") ||
+            lower.contains("open") ||
+            lower.contains("check") ||
+            lower.contains("verify") ||
+            lower.contains("list") {
+            tools.insert("Read")
         }
         if lower.contains("search") || lower.contains("find") || lower.contains("grep") {
-            tools.append("Grep")
+            tools.insert("Grep")
         }
-        if lower.contains("edit") || lower.contains("modify") || lower.contains("fix") {
-            tools.append("Edit")
+        if lower.contains("edit") ||
+            lower.contains("modify") ||
+            lower.contains("update") ||
+            lower.contains("fix") ||
+            lower.contains("refactor") ||
+            lower.contains("polish") ||
+            lower.contains("adjust") ||
+            lower.contains("replace") ||
+            lower.contains("revise") {
+            tools.insert("Edit")
         }
-        if lower.contains("write") || lower.contains("create") {
-            tools.append("Write")
+        if lower.contains("write") ||
+            lower.contains("create") ||
+            lower.contains("scaffold") ||
+            lower.contains("generate") ||
+            lower.contains("add ") ||
+            lower.contains("build ") ||
+            lower.contains("implement") ||
+            lower.contains("populate") ||
+            lower.contains("draft") ||
+            lower.contains("author") ||
+            lower.contains("compose") ||
+            lower.contains("save") ||
+            lower.contains("touch ") ||
+            lower.contains("mkdir") ||
+            lower.contains("permission needed") ||
+            lower.range(of: #"\.(html|css|js|ts|tsx|jsx|swift|json|md|txt|py|rb|go|rs|java|kt|yml|yaml)\b"#, options: .regularExpression) != nil {
+            tools.insert("Write")
         }
-        if lower.contains("test") || lower.contains("build") || lower.contains("run") || lower.contains("install") {
-            tools.append("Bash")
+        if lower.contains("test") ||
+            lower.contains("run test") ||
+            lower.contains("run the test") ||
+            lower.contains("execute") ||
+            lower.contains("install") ||
+            lower.contains("compile") ||
+            lower.contains("npm ") ||
+            lower.contains("swift test") ||
+            lower.contains("xcodebuild") ||
+            lower.contains("playwright") {
+            tools.insert("Bash")
         }
-        return tools.isEmpty ? ["Read"] : Array(Set(tools)).sorted()
+        return sortedLikelyTools(tools.isEmpty ? ["Read"] : Array(tools))
     }
 
     private static func normalize(_ plan: TaskPlanPayload) -> TaskPlanPayload? {
@@ -407,22 +445,61 @@ extension TaskPlanService {
             guard !id.isEmpty, !stepTitle.isEmpty, !seenStepIDs.contains(id) else { return nil }
             seenStepIDs.insert(id)
 
-            let likelyTools = step.likelyTools
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+            let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            let doneSignal = step.doneSignal.trimmingCharacters(in: .whitespacesAndNewlines)
+            let likelyTools = enrichedLikelyTools(
+                existing: step.likelyTools,
+                textParts: [stepTitle, detail, doneSignal]
+            )
 
             steps.append(TaskPlanPayloadStep(
                 id: id,
                 title: stepTitle,
-                detail: step.detail.trimmingCharacters(in: .whitespacesAndNewlines),
+                detail: detail,
                 status: step.status,
                 risk: step.risk,
-                likelyTools: Array(Set(likelyTools)).sorted(),
-                doneSignal: step.doneSignal.trimmingCharacters(in: .whitespacesAndNewlines)
+                likelyTools: likelyTools,
+                doneSignal: doneSignal
             ))
         }
 
         return TaskPlanPayload(version: 1, planID: plan.planID, title: title, goal: goal, steps: steps)
+    }
+
+    private static func enrichedLikelyTools(existing: [String], textParts: [String]) -> [String] {
+        var tools = Set(existing.compactMap(normalizedToolName))
+        let text = textParts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        tools.formUnion(inferTools(from: text))
+        return sortedLikelyTools(Array(tools))
+    }
+
+    private static func normalizedToolName(_ tool: String) -> String? {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return switch trimmed.lowercased() {
+        case "read": "Read"
+        case "grep", "glob", "search": "Grep"
+        case "write": "Write"
+        case "edit": "Edit"
+        case "bash", "shell", "terminal": "Bash"
+        case "webfetch", "web fetch": "WebFetch"
+        case "websearch", "web search": "WebSearch"
+        default: trimmed
+        }
+    }
+
+    private static func sortedLikelyTools(_ tools: [String]) -> [String] {
+        let priority = ["Read", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch"]
+        let order = Dictionary(uniqueKeysWithValues: priority.enumerated().map { ($0.element, $0.offset) })
+        return Array(Set(tools.compactMap(normalizedToolName))).sorted { lhs, rhs in
+            let lhsOrder = order[lhs] ?? Int.max
+            let rhsOrder = order[rhs] ?? Int.max
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
     }
 
     private static func fallbackPlan(from responseText: String, fallbackGoal: String) -> TaskPlanPayload {
@@ -604,6 +681,16 @@ extension TaskPlanService {
                   !summary.isEmpty {
             plan.steps[index].doneSignal = summary
         }
+        plan.steps[index].likelyTools = enrichedLikelyTools(
+            existing: plan.steps[index].likelyTools,
+            textParts: [
+                plan.steps[index].title,
+                plan.steps[index].detail,
+                plan.steps[index].doneSignal,
+                progress.reason ?? "",
+                progress.summary ?? ""
+            ]
+        )
 
         state.plan = plan
     }
@@ -636,11 +723,12 @@ extension TaskPlanService {
         let previousStepsByID = Dictionary(uniqueKeysWithValues: previous.steps.map { ($0.id, $0) })
         var merged = next
         for index in merged.steps.indices {
-            guard let previousStep = previousStepsByID[merged.steps[index].id],
-                  previousStep.status.isHistoricalTerminalStatus,
-                  merged.steps[index].status == .pending else {
+            guard let previousStep = previousStepsByID[merged.steps[index].id] else {
                 continue
             }
+            merged.steps[index].likelyTools = sortedLikelyTools(merged.steps[index].likelyTools + previousStep.likelyTools)
+            guard previousStep.status.isHistoricalTerminalStatus,
+                  merged.steps[index].status == .pending else { continue }
             merged.steps[index].status = previousStep.status
         }
         return merged
