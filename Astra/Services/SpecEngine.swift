@@ -47,7 +47,7 @@ enum AsyncProcessRunner {
 // MARK: - Task Spec
 
 /// AI-assisted task spec extraction from natural language.
-/// Uses Claude CLI to extract a structured task spec from user input.
+/// Uses the configured utility runtime to extract a structured task spec from user input.
 struct TaskSpec: Codable {
     var title: String
     var goal: String
@@ -207,7 +207,7 @@ private enum LooseJSONValue: Decodable {
 enum SpecEngine {
     static let maxRetries = 2
 
-    /// Auto-detect the Claude CLI path, checking common install locations.
+    /// Auto-detect the default utility CLI path, checking common install locations.
     static var detectedClaudePath: String {
         RuntimePathResolver.detectClaudePath()
     }
@@ -240,13 +240,15 @@ enum SpecEngine {
     Keep all fields concise. Return ONLY the JSON object.
     """
 
-    /// Extract a task spec from natural language using Claude CLI.
+    /// Extract a task spec from natural language using the configured utility runtime.
     static func extract(
         userInput: String,
         workspacePath: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6"
+        model: String = "claude-sonnet-4-6",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<TaskSpec, SpecEngineError> {
+        let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         let prompt = extractionPrompt
             .replacingOccurrences(of: "{USER_INPUT}", with: userInput)
             .replacingOccurrences(of: "{WORKSPACE}", with: workspacePath)
@@ -256,44 +258,27 @@ enum SpecEngine {
             "input_length": String(userInput.count)
         ])
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = [
-            "-p", prompt,
-            "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model),
-            "--allowedTools", "Read", "Glob", "Grep"
-        ]
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: workspacePath,
+            configuration: utilityRuntime,
+            toolMode: .readOnly
+        )
 
         guard result.exitCode == 0 else {
             AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
                 "exit_code": String(result.exitCode),
-                "source": "single_input"
+                "source": "single_input",
+                "runtime": utilityRuntime.runtime.rawValue
             ], level: .error)
-            return .failure(.claudeError("Exit code \(result.exitCode): \(result.stderr.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
         }
 
         return await parseSpecWithRetry(
-            output: result.stdout,
+            output: result.output,
             retryPromptBase: prompt,
             workspacePath: workspacePath,
-            claudePath: claudePath,
-            model: model
+            utilityRuntime: utilityRuntime
         )
     }
 
@@ -313,14 +298,16 @@ enum SpecEngine {
         return cleaned
     }
 
-    /// Multi-turn chat for task refinement. Takes conversation history, returns Claude's response.
+    /// Multi-turn chat for task refinement. Takes conversation history and returns the utility runtime's response.
     static func chat(
         messages: [(role: String, content: String)],
         workspacePath: String,
         skillContext: String = "",
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6"
+        model: String = "claude-sonnet-4-6",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<String, SpecEngineError> {
+        let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         var systemContext = """
         You are helping the user define a task for an AI agent. The task could be anything — writing code, \
         analyzing data, reviewing documents, research, writing, or other work. \
@@ -357,36 +344,18 @@ enum SpecEngine {
             "message_count": String(messages.count)
         ], level: .debug)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = [
-            "-p", prompt,
-            "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model),
-            "--allowedTools", "Read,Glob,Grep",
-            "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
-        ]
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: workspacePath,
+            configuration: utilityRuntime,
+            toolMode: .readOnly
+        )
 
         guard result.exitCode == 0 else {
-            return .failure(.claudeError("Exit code \(result.exitCode): \(result.stderr.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
         }
 
-        return .success(result.stdout)
+        return .success(result.output)
     }
 
     /// Generate a short, meaningful title (3-6 words) from a task goal.
@@ -394,8 +363,10 @@ enum SpecEngine {
         goal: String,
         workspacePath: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-haiku-4-5-20251001"
+        model: String = "claude-haiku-4-5-20251001",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> String? {
+        let baseRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         let prompt = """
         Generate a short title (3-6 words) for this task. Return ONLY the title, nothing else. \
         Use sentence case. Be specific about the action and subject. Examples:
@@ -406,7 +377,7 @@ enum SpecEngine {
         Task: \(String(goal.prefix(500)))
         """
 
-        let modelCandidates = [model, "claude-sonnet-4-6"].reduce(into: [String]()) { result, candidate in
+        let modelCandidates = [baseRuntime.model, baseRuntime.runtime.defaultModel].reduce(into: [String]()) { result, candidate in
             if !result.contains(candidate) {
                 result.append(candidate)
             }
@@ -414,30 +385,20 @@ enum SpecEngine {
 
         var lastFailureFields: [String: String] = [:]
         for candidate in modelCandidates {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: claudePath)
-            process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(candidate)]
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-                env[key] = value
-            }
-            process.environment = env
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+            var candidateRuntime = baseRuntime
+            candidateRuntime.model = candidate
+            let result = await AgentUtilityRuntimeRunner.runPrompt(
+                prompt,
+                workspacePath: workspacePath,
+                configuration: candidateRuntime
+            )
 
             guard result.exitCode == 0 else {
                 lastFailureFields = titleGenerationFailureFields(result: result, model: candidate)
                 AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
                     "operation": "title_generation",
                     "model": candidate,
+                    "runtime": candidateRuntime.runtime.rawValue,
                     "result": "candidate_failed",
                     "exit_code": String(result.exitCode),
                     "error_summary": lastFailureFields["error_summary"] ?? "none"
@@ -445,7 +406,7 @@ enum SpecEngine {
                 continue
             }
 
-            let title = result.stdout
+            let title = result.output
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "\"", with: "")
             guard !title.isEmpty, title.count <= 80 else { continue }
@@ -460,16 +421,16 @@ enum SpecEngine {
         return nil
     }
 
-    private static func titleGenerationFailureFields(result: AsyncProcessRunner.Output, model: String) -> [String: String] {
-        let rawSummary = !result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? result.stderr
-            : result.stdout
+    private static func titleGenerationFailureFields(result: AgentUtilityRunResult, model: String) -> [String: String] {
+        let rawSummary = !result.error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.error
+            : result.output
         let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         return [
             "model": model,
             "exit_code": String(result.exitCode),
-            "stderr_chars": String(result.stderr.count),
-            "stdout_chars": String(result.stdout.count),
+            "stderr_chars": String(result.error.count),
+            "stdout_chars": String(result.output.count),
             "error_summary": summary.isEmpty ? "empty_process_output" : String(summary.prefix(240))
         ]
     }
@@ -479,8 +440,10 @@ enum SpecEngine {
         messages: [(role: String, content: String)],
         workspacePath: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6"
+        model: String = "claude-sonnet-4-6",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<TaskSpec, SpecEngineError> {
+        let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         var conversationText = ""
         for msg in messages {
             let label = msg.role == "user" ? "User" : "Assistant"
@@ -508,48 +471,33 @@ enum SpecEngine {
             "message_count": String(messages.count)
         ])
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: workspacePath,
+            configuration: utilityRuntime,
+            toolMode: .readOnly
+        )
 
         guard result.exitCode == 0 else {
-            return .failure(.claudeError("Exit code \(result.exitCode): \(result.stderr.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
         }
 
         return await parseSpecWithRetry(
-            output: result.stdout,
+            output: result.output,
             retryPromptBase: prompt,
             workspacePath: workspacePath,
-            claudePath: claudePath,
-            model: model
+            utilityRuntime: utilityRuntime
         )
     }
 
     // MARK: - Retry Logic
 
-    /// Parse JSON spec from Claude output, retrying up to `maxRetries` times on failure.
+    /// Parse JSON spec from utility runtime output, retrying up to `maxRetries` times on failure.
     private static func parseSpecWithRetry(
         output: String,
         retryPromptBase: String,
         workspacePath: String,
-        claudePath: String,
-        model: String
+        utilityRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Result<TaskSpec, SpecEngineError> {
         let jsonString = extractJSON(from: output)
 
@@ -576,28 +524,16 @@ enum SpecEngine {
             \(retryPromptBase)
             """
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: claudePath)
-            process.arguments = ["-p", retryPrompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-                env[key] = value
-            }
-
-            process.environment = env
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-
-            let retryResult = await AsyncProcessRunner.run(process, stdout: pipe, stderr: nil)
+            let retryResult = await AgentUtilityRuntimeRunner.runPrompt(
+                retryPrompt,
+                workspacePath: workspacePath,
+                configuration: utilityRuntime,
+                toolMode: .readOnly
+            )
 
             guard retryResult.exitCode == 0 else { continue }
 
-            let retryJSON = extractJSON(from: retryResult.stdout)
+            let retryJSON = extractJSON(from: retryResult.output)
 
             if let data = retryJSON.data(using: .utf8),
                let spec = try? JSONDecoder().decode(TaskSpec.self, from: data) {
@@ -637,8 +573,10 @@ enum SpecEngine {
     static func generateSkill(
         userIntent: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6"
+        model: String = "claude-sonnet-4-6",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<GeneratedSkill, SpecEngineError> {
+        let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         let prompt = """
         The user wants to create a "skill" for an AI coding agent. A skill defines what tools the agent can use, behavioral constraints, and environment variables it needs.
 
@@ -679,30 +617,18 @@ enum SpecEngine {
         - Choose an icon that matches the skill's purpose
         """
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", AgentRuntimeProcessRunner.translatedModelForProvider(model)]
-        process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: NSHomeDirectory(),
+            configuration: utilityRuntime,
+            toolMode: .readOnly
+        )
 
         guard result.exitCode == 0 else {
-            return .failure(.claudeError("Exit code \(result.exitCode): \(result.stderr.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
         }
 
-        let jsonString = extractJSON(from: result.stdout)
+        let jsonString = extractJSON(from: result.output)
 
         guard let data = jsonString.data(using: .utf8) else {
             return .failure(.parseError("Could not encode response as data"))
@@ -727,13 +653,13 @@ enum SpecEngine {
 
 enum SpecEngineError: Error, LocalizedError {
     case processError(String)
-    case claudeError(String)
+    case providerError(String)
     case parseError(String)
 
     var errorDescription: String? {
         switch self {
         case .processError(let msg): return "Process error: \(msg)"
-        case .claudeError(let msg): return "Claude error: \(msg)"
+        case .providerError(let msg): return "Provider error: \(msg)"
         case .parseError(let msg): return "Parse error: \(msg)"
         }
     }

@@ -97,7 +97,8 @@ final class AgentRuntimeWorker {
     init() {
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
-            "claude_path_configured": String(!claudePath.isEmpty)
+            "default_runtime": defaultRuntimeID.rawValue,
+            "provider_path_configured": String(!runtimeConfiguration.executablePath(for: defaultRuntimeID).isEmpty)
         ], level: .debug)
     }
 
@@ -108,23 +109,24 @@ final class AgentRuntimeWorker {
         modelContext: ModelContext,
         promptOverride: String? = nil,
         startEventPayload: String? = nil,
-        copilotPermissionPolicyOverride: PermissionPolicy? = nil,
-        copilotAllowedToolsOverride: [String]? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
-        if selectedRuntime == .copilotCLI {
+        switch selectedRuntime {
+        case .copilotCLI:
             await executeCopilot(
                 task: task,
                 modelContext: modelContext,
                 onEvent: onEvent,
                 promptOverride: promptOverride,
                 startEventPayload: startEventPayload,
-                permissionPolicyOverride: copilotPermissionPolicyOverride,
-                allowedToolsOverride: copilotAllowedToolsOverride
+                executionPolicy: executionPolicy
             )
             return
+        case .claudeCode:
+            break
         }
 
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
@@ -172,7 +174,8 @@ final class AgentRuntimeWorker {
         // Verify CLI exists
         guard FileManager.default.isExecutableFile(atPath: claudePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": "claude_cli_not_found"
+                "reason": "provider_cli_not_found",
+                "runtime": selectedRuntime.rawValue
             ], level: .error)
             run.status = .failed
             run.completedAt = Date()
@@ -180,7 +183,7 @@ final class AgentRuntimeWorker {
             task.updatedAt = Date()
             task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
-                payload: "Claude CLI not found at '\(claudePath)'. Check Settings.", run: run)
+                payload: "\(selectedRuntime.displayName) CLI not found at '\(claudePath)'. Check Settings.", run: run)
             modelContext.insert(event)
             isRunning = false
             return
@@ -266,6 +269,7 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             claudePath: claudePath,
             permissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy,
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
                 // Parse each JSON line into structured events
@@ -385,7 +389,15 @@ final class AgentRuntimeWorker {
                 let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
                 modelContext.insert(checkEvent)
 
-                let aiResult = await ValidationService.aiCheck(task: task, claudePath: claudePath, model: validationModel)
+                let aiResult = await ValidationService.aiCheck(
+                    task: task,
+                    claudePath: claudePath,
+                    model: validationModel,
+                    utilityRuntime: utilityRuntimeConfiguration(
+                        for: selectedRuntime,
+                        preferredModel: validationModel
+                    )
+                )
                 switch aiResult {
                 case .passed(let details):
                     task.status = .completed
@@ -468,13 +480,16 @@ final class AgentRuntimeWorker {
            let ws = task.workspace {
             let goalText = task.goal
             let wsPath = ws.primaryPath
-            let cPath = claudePath
+            let titleRuntime = utilityRuntimeConfiguration(
+                for: selectedRuntime,
+                preferredModel: validationModel
+            )
             let taskRef = task
             Task.detached {
                 if let generated = await SpecEngine.generateTitle(
                     goal: goalText,
                     workspacePath: wsPath,
-                    claudePath: cPath
+                    utilityRuntime: titleRuntime
                 ) {
                     await MainActor.run {
                         taskRef.title = generated
@@ -533,20 +548,20 @@ final class AgentRuntimeWorker {
             AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: currentPlan)
         }
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
-        let copilotPolicyOverride = selectedRuntime == .copilotCLI
-            ? Self.approvedPlanCopilotPermissionPolicy(current: permissionPolicy)
-            : nil
-        let copilotAllowedToolsOverride = selectedRuntime == .copilotCLI
-            ? Self.approvedPlanAllowedTools(for: task, plan: currentPlan, step: approvedStep)
-            : nil
+        let executionPolicy = Self.approvedPlanExecutionPolicy(
+            runtime: selectedRuntime,
+            currentPermissionPolicy: permissionPolicy,
+            task: task,
+            plan: currentPlan,
+            step: approvedStep
+        )
         await execute(
             task: task,
             modelContext: modelContext,
             promptOverride: prompt,
             startEventPayload: approvedStep.map { "Agent started approved plan step: \($0.title)" }
                 ?? "Agent started executing approved plan: \(currentPlan.title)",
-            copilotPermissionPolicyOverride: copilotPolicyOverride,
-            copilotAllowedToolsOverride: copilotAllowedToolsOverride,
+            executionPolicy: executionPolicy,
             onEvent: onEvent
         )
         if task.status == .completed {
@@ -558,7 +573,11 @@ final class AgentRuntimeWorker {
                     modelContext: modelContext
                 )
             } else {
-                TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
+                finalizeApprovedFullPlan(
+                    currentPlan,
+                    task: task,
+                    modelContext: modelContext
+                )
             }
         } else if task.isTerminal {
             TaskPlanService.recordExecutionFailed(
@@ -602,22 +621,71 @@ final class AgentRuntimeWorker {
         }
 
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
-        if TaskPlanService.hasRemainingExecutableSteps(in: refreshedPlan) {
-            let notice = TaskEvent(
+        if let blockedStep = refreshedPlan.steps.first(where: { $0.id == step.id && $0.status == .blocked }) {
+            pauseApprovedPlanForUser(
                 task: task,
-                type: "system.info",
-                payload: "Plan step complete. Review the next step, then approve it when you're ready.",
+                modelContext: modelContext,
+                message: blockedStep.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Plan step blocked. Fix the blocker, then approve this step again to retry."
+                    : "Plan step blocked: \(blockedStep.detail)",
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
-            modelContext.insert(notice)
-            task.status = .pendingUser
-            task.completedAt = nil
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            return
+        }
+
+        if TaskPlanService.hasRemainingExecutableSteps(in: refreshedPlan) {
+            pauseApprovedPlanForUser(
+                task: task,
+                modelContext: modelContext,
+                message: "Plan step complete. Review the next step, then approve it when you're ready.",
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
         } else {
             TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
         }
+    }
+
+    @MainActor
+    private func finalizeApprovedFullPlan(
+        _ plan: TaskPlanPayload,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
+            pauseApprovedPlanForUser(
+                task: task,
+                modelContext: modelContext,
+                message: blockedStep.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Plan blocked. Fix the blocker, then approve the plan again to retry."
+                    : "Plan blocked at \(blockedStep.title): \(blockedStep.detail)",
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
+            return
+        }
+
+        TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
+    }
+
+    @MainActor
+    private func pauseApprovedPlanForUser(
+        task: AgentTask,
+        modelContext: ModelContext,
+        message: String,
+        run: TaskRun?
+    ) {
+        let notice = TaskEvent(
+            task: task,
+            type: "system.info",
+            payload: message,
+            run: run
+        )
+        modelContext.insert(notice)
+        task.status = .pendingUser
+        task.completedAt = nil
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     /// Continue an existing session with a follow-up message (HITL flow).
@@ -630,7 +698,8 @@ final class AgentRuntimeWorker {
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
-        if selectedRuntime == .copilotCLI {
+        switch selectedRuntime {
+        case .copilotCLI:
             let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": "fresh_follow_up",
@@ -652,6 +721,8 @@ final class AgentRuntimeWorker {
                 auditPhase: "resume"
             )
             return
+        case .claudeCode:
+            break
         }
 
         guard !isRunning else {
@@ -861,8 +932,7 @@ final class AgentRuntimeWorker {
         startEventType: String = "task.started",
         startEventPayload: String? = nil,
         auditPhase: String = "run",
-        permissionPolicyOverride: PermissionPolicy? = nil,
-        allowedToolsOverride: [String]? = nil
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async {
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
@@ -995,8 +1065,8 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             copilotPath: copilotPath,
             copilotHome: copilotHome,
-            permissionPolicy: permissionPolicyOverride ?? permissionPolicy,
-            allowedToolsOverride: allowedToolsOverride,
+            permissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy,
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
                 streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -1141,7 +1211,15 @@ final class AgentRuntimeWorker {
             case .aiCheck:
                 let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
                 modelContext.insert(checkEvent)
-                let aiResult = await ValidationService.aiCheck(task: task, claudePath: claudePath, model: validationModel)
+                let aiResult = await ValidationService.aiCheck(
+                    task: task,
+                    claudePath: claudePath,
+                    model: validationModel,
+                    utilityRuntime: utilityRuntimeConfiguration(
+                        for: .copilotCLI,
+                        preferredModel: validationModel
+                    )
+                )
                 switch aiResult {
                 case .passed(let details):
                     task.status = .completed
@@ -1210,6 +1288,22 @@ final class AgentRuntimeWorker {
     }
 
     // MARK: - Private
+
+    private func utilityRuntimeConfiguration(
+        for runtime: AgentRuntimeID,
+        preferredModel: String
+    ) -> AgentUtilityRuntimeConfiguration {
+        let model = runtime.defaultModels.contains(preferredModel)
+            ? preferredModel
+            : runtime.defaultModel
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: model,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: copilotHome
+        )
+    }
 
     @MainActor
     private func prepareTaskFolderForLaunch(
@@ -1464,16 +1558,18 @@ final class AgentRuntimeWorker {
         return visible.isEmpty ? "+\(remaining)_more" : "\(visible),+\(remaining)_more"
     }
 
-    private static func approvedPlanCopilotPermissionPolicy(current: PermissionPolicy) -> PermissionPolicy {
-        switch current {
-        case .restricted:
-            // The user has explicitly approved the plan in ASTRA. For Copilot,
-            // use a non-interactive run so hidden provider approval prompts do
-            // not strand the task after execution starts.
-            return .autonomous
-        case .autonomous, .interactive:
-            return current
-        }
+    private static func approvedPlanExecutionPolicy(
+        runtime: AgentRuntimeID,
+        currentPermissionPolicy: PermissionPolicy,
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        step approvedStep: TaskPlanPayloadStep? = nil
+    ) -> AgentRuntimeExecutionPolicy {
+        AgentRuntimeExecutionPolicy.approvedPlan(
+            runtime: runtime,
+            currentPermissionPolicy: currentPermissionPolicy,
+            allowedTools: approvedPlanAllowedTools(for: task, plan: plan, step: approvedStep)
+        )
     }
 
     private static func approvedPlanAllowedTools(
@@ -1481,7 +1577,7 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         step approvedStep: TaskPlanPayloadStep? = nil
     ) -> [String] {
-        var tools = Set(task.resolvedClaudeAllowedTools)
+        var tools = Set(task.resolvedProviderAllowedTools)
         let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
         for step in scopedSteps {
             for tool in step.likelyTools {

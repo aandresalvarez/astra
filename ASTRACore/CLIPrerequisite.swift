@@ -71,16 +71,14 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
 
 // MARK: - Common built-ins
 
-/// Ready-made specs for the CLIs the app is opinionated about. Defined
-/// here (not next to the plugin packages) because the Claude CLI itself
-/// is a prereq of *every* task, not just one package — onboarding
-/// consumes the same spec.
+    /// Ready-made specs for the CLIs the app can use as runtime providers.
+    /// Onboarding and readiness checks consume these specs.
 public enum CommonCLIPrerequisites {
     public static let claude = CLIPrerequisite(
         binary: "claude",
         livenessArgs: ["--version"],
         displayName: "Claude Code CLI",
-        purpose: "Runs every task. ASTRA is a front-end for claude-code.",
+        purpose: "Runs tasks when Claude Code is the selected provider.",
         installURL: URL(string: "https://docs.claude.com/en/docs/claude-code/setup"),
         installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`."

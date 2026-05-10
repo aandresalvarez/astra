@@ -52,17 +52,25 @@ struct OnboardingWizardTests {
         }
     }
 
-    @Test("Required CLI checks include Claude and GitHub")
-    func requiredCLIChecksIncludeClaudeAndGitHub() {
-        let prerequisites = OnboardingWizardView.requiredCLIPrerequisites
-        #expect(prerequisites.map(\.binary) == ["claude", "gh", "gh"])
-        #expect(prerequisites.map(\.livenessArgs) == [
+    @Test("Required CLI checks follow the selected runtime")
+    func requiredCLIChecksFollowSelectedRuntime() {
+        let claudePrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .claudeCode)
+        #expect(claudePrerequisites.map(\.binary) == ["claude", "gh", "gh"])
+        #expect(claudePrerequisites.map(\.livenessArgs) == [
             ["--version"],
             ["--version"],
             ["auth", "status"]
         ])
-        #expect(prerequisites[1] == CommonCLIPrerequisites.githubCLI)
-        #expect(prerequisites[2] == CommonCLIPrerequisites.githubAuth)
+
+        let copilotPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .copilotCLI)
+        #expect(copilotPrerequisites.map(\.binary) == ["copilot", "gh", "gh"])
+        #expect(copilotPrerequisites.map(\.livenessArgs) == [
+            ["--version"],
+            ["--version"],
+            ["auth", "status"]
+        ])
+        #expect(copilotPrerequisites[1] == CommonCLIPrerequisites.githubCLI)
+        #expect(copilotPrerequisites[2] == CommonCLIPrerequisites.githubAuth)
     }
 
     @Test("Onboarding completion uses the Astra-specific storage key")
@@ -78,7 +86,7 @@ struct OnboardingWizardTests {
     @Test("Workspace capability setup exposes the requested choices")
     @MainActor
     func capabilitySetupIncludesRequestedChoices() {
-        #expect(OnboardingCapabilitySetup.requiredRuntime.id == "claude-cli")
+        #expect(OnboardingCapabilitySetup.requiredRuntime.id == "agent-runtime")
         #expect(OnboardingCapabilitySetup.requiredRuntime.packageID == nil)
 
         #expect(OnboardingCapabilitySetup.configurableOptions.compactMap(\.packageID) == [

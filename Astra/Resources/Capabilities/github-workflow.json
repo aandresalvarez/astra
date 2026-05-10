@@ -19,7 +19,7 @@
       "toolType" : "cli"
     }
   ],
-  "name" : "GitHub Workflow",
+  "name" : "GitHub",
   "prerequisites" : [
     {
       "authHint" : "Run `gh auth login`.",

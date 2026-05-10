@@ -27,7 +27,6 @@ enum ValidationService {
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         process.environment = env
 
         let stdoutPipe = Pipe()
@@ -51,8 +50,14 @@ enum ValidationService {
         }
     }
 
-    /// AI self-check: ask Claude to review the changes for correctness.
-    static func aiCheck(task: AgentTask, claudePath: String, model: String = "claude-haiku-4-5-20251001") async -> ValidationResult {
+    /// AI self-check: ask the configured utility runtime to review the changes for correctness.
+    static func aiCheck(
+        task: AgentTask,
+        claudePath: String,
+        model: String = "claude-haiku-4-5-20251001",
+        utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
+    ) async -> ValidationResult {
+        let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         guard let latestRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first else {
             return .error("No run to validate")
         }
@@ -87,22 +92,15 @@ enum ValidationService {
             "changes_count": String(changes.count)
         ])
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = ["-p", prompt, "--model", model]
-        process.currentDirectoryURL = URL(fileURLWithPath: task.effectiveWorkspacePath)
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
-        process.environment = env
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        let result = await AsyncProcessRunner.run(process, stdout: pipe, stderr: nil)
-        let trimmed = result.stdout
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: task.effectiveWorkspacePath,
+            configuration: utilityRuntime
+        )
+        guard result.exitCode == 0 else {
+            return .error("AI check provider failed: \(String(result.error.prefix(300)))")
+        }
+        let trimmed = result.output
 
         if trimmed.uppercased().hasPrefix("PASS") {
             AppLogger.audit(.validationPassed, category: "Validation", taskID: task.id, fields: [

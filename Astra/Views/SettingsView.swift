@@ -89,6 +89,9 @@ struct SettingsView: View {
                     if !runtime.defaultModels.contains(defaultModel) {
                         defaultModel = runtime.defaultModel
                     }
+                    if !runtime.defaultModels.contains(validationModel) {
+                        validationModel = runtime.defaultModel
+                    }
                 }
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
                     .font(Stanford.caption(12))
@@ -246,8 +249,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Picker("Validation Model", selection: $validationModel) {
-                    ForEach(AgentRuntimeID.claudeCode.defaultModels, id: \.self) { m in
+                Picker("Utility Model", selection: $validationModel) {
+                    ForEach(runtimeModels, id: \.self) { m in
                         Text(m).tag(m)
                     }
                 }
@@ -366,12 +369,12 @@ struct SettingsView: View {
                 dataLocationRow("Workspaces", path: resolvedWorkspacesRoot)
                 dataLocationRow("Workspace Support", path: "<workspace>/.astra", canOpen: false)
                 dataLocationRow("Logs", path: AppLogger.mainLogFile.deletingLastPathComponent().path)
-                dataLocationRow("Claude Sessions", path: NSHomeDirectory() + "/.claude/projects")
+                dataLocationRow("Provider Sessions", path: NSHomeDirectory() + "/.claude/projects")
                 dataLocationRow("ASTRA Tools", path: NSHomeDirectory() + "/.astra")
                 if FileManager.default.fileExists(atPath: WorkspaceRecoveryService.legacyStoreURL.path) {
                     dataLocationRow("Legacy Store", path: WorkspaceRecoveryService.legacyStoreURL.path)
                 }
-                Text("App state, workspace artifacts, logs, secrets, and Claude sessions intentionally live in separate macOS-standard locations.")
+                Text("App state, workspace artifacts, logs, secrets, and provider session data intentionally live in separate macOS-standard locations.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }

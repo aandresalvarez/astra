@@ -217,7 +217,7 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.hasPresentedOnboarding) private var hasPresentedOnboarding = false
     @State private var isReplayingOnboarding = false
     /// Shared preflight cache — one instance for the whole app run so the
-    /// wizard's probe of `claude` warms the cache for the catalog badges
+    /// wizard's provider probe warms the cache for the catalog badges
     /// (and vice versa).
 
     @MainActor
@@ -1230,6 +1230,8 @@ struct ContentView: View {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
             claudePath: claudePath,
+            copilotPath: copilotPath,
+            defaultRuntimeID: defaultRuntimeID,
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
         )

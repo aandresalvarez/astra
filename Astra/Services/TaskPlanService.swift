@@ -89,7 +89,7 @@ enum TaskPlanService {
     static func reconstruct(from events: [TaskEvent]) -> TaskPlanState {
         var state = TaskPlanState.empty
 
-        for event in events.sorted(by: { $0.timestamp < $1.timestamp }) {
+        for event in sortedEventsForReconstruction(events) {
             state.latestEventAt = event.timestamp
 
             switch event.type {
@@ -154,6 +154,42 @@ enum TaskPlanService {
         }
 
         return state
+    }
+
+    private static func sortedEventsForReconstruction(_ events: [TaskEvent]) -> [TaskEvent] {
+        events.enumerated()
+            .sorted { lhs, rhs in
+                let timestampOrder = lhs.element.timestamp.compare(rhs.element.timestamp)
+                if timestampOrder != .orderedSame {
+                    return timestampOrder == .orderedAscending
+                }
+
+                let lhsPriority = reconstructionPriority(for: lhs.element.type)
+                let rhsPriority = reconstructionPriority(for: rhs.element.type)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    private static func reconstructionPriority(for eventType: String) -> Int {
+        switch eventType {
+        case TaskPlanEventTypes.created: 0
+        case TaskPlanEventTypes.updated: 1
+        case TaskPlanEventTypes.approved: 2
+        case TaskPlanEventTypes.executionStarted: 3
+        case TaskPlanEventTypes.stepStarted: 4
+        case TaskPlanEventTypes.stepCompleted: 5
+        case TaskPlanEventTypes.stepBlocked: 6
+        case TaskPlanEventTypes.stepSkipped: 7
+        case TaskPlanEventTypes.executionCompleted: 8
+        case TaskPlanEventTypes.executionFailed: 9
+        case TaskPlanEventTypes.cancelled: 10
+        default: 20
+        }
     }
 
     static func approvedPlan(for task: AgentTask) -> TaskPlanPayload? {

@@ -128,17 +128,17 @@ struct OnboardingCapabilityConfiguration: Equatable {
 }
 
 enum OnboardingCapabilitySetup {
-    static let claudeRuntimeID = "claude-cli"
+    static let requiredRuntimeID = "agent-runtime"
     static let jiraPackageID = "jira-workflow"
     static let githubPackageID = "github-workflow"
     static let gcloudPackageID = "gcloud-workflow"
     static let redcapPackageID = "redcap-workflow"
 
     static let requiredRuntime = OnboardingCapabilityOption(
-        id: claudeRuntimeID,
+        id: requiredRuntimeID,
         packageID: nil,
-        title: "Claude CLI",
-        subtitle: "Required agent runtime",
+        title: "Agent runtime",
+        subtitle: "Selected provider CLI",
         icon: "sparkles"
     )
 
@@ -214,8 +214,8 @@ enum OnboardingCapabilitySetup {
 }
 
 /// Multi-step first-run wizard. Owns its own step state and the
-/// completion flag in `@AppStorage`. Drives required CLI probes up
-/// front so the user knows whether their machine can run core agent and
+/// completion flag in `@AppStorage`. Drives runtime CLI probes up
+/// front so the user knows whether their machine can run the selected agent and
 /// GitHub capabilities, then walks them through workspace setup.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
@@ -226,7 +226,7 @@ enum OnboardingCapabilitySetup {
 ///
 /// Steps:
 ///   0. Welcome — what ASTRA is + what it needs
-///   1. Required CLIs — Claude + GitHub CLI probes and install help
+///   1. Required CLIs — selected provider + GitHub CLI probes and install help
 ///   2. Workspace root — pick where projects live
 ///   3. Ready — "start your first workspace"
 struct OnboardingWizardView: View {
@@ -241,11 +241,22 @@ struct OnboardingWizardView: View {
     var onDismiss: () -> Void
     @Binding var capabilityConfiguration: OnboardingCapabilityConfiguration
 
-    static let requiredCLIPrerequisites: [CLIPrerequisite] = [
-        CommonCLIPrerequisites.claude,
-        CommonCLIPrerequisites.githubCLI,
-        CommonCLIPrerequisites.githubAuth
-    ]
+    static func requiredCLIPrerequisites(for runtime: AgentRuntimeID) -> [CLIPrerequisite] {
+        [
+            runtimePrerequisite(for: runtime),
+            CommonCLIPrerequisites.githubCLI,
+            CommonCLIPrerequisites.githubAuth
+        ]
+    }
+
+    static func runtimePrerequisite(for runtime: AgentRuntimeID) -> CLIPrerequisite {
+        switch runtime {
+        case .claudeCode:
+            CommonCLIPrerequisites.claude
+        case .copilotCLI:
+            CommonCLIPrerequisites.copilot
+        }
+    }
 
     /// Optional hook for testing — force a step on init.
     init(
@@ -295,7 +306,9 @@ struct OnboardingWizardView: View {
 
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
@@ -307,6 +320,8 @@ struct OnboardingWizardView: View {
     @State private var currentStep: Step
     @State private var claudeStatus: HealthStatus?
     @State private var isProbingClaude = false
+    @State private var copilotStatus: HealthStatus?
+    @State private var isProbingCopilot = false
     @State private var githubStatus: HealthStatus?
     @State private var githubAuthStatus: HealthStatus?
     @State private var isProbingGitHub = false
@@ -425,13 +440,13 @@ struct OnboardingWizardView: View {
             bulletList([
                 ("square.stack.3d.up.fill", "Queue AI tasks across multiple workspaces"),
                 ("puzzlepiece.extension.fill", "Pick skills, connectors, and tools from a catalog"),
-                ("checkmark.shield.fill", "We'll verify Claude and GitHub CLI before anything runs")
+                ("checkmark.shield.fill", "We'll verify your selected provider and GitHub CLI before anything runs")
             ])
 
             calloutBox(
                 icon: "info.circle.fill",
                 title: "What we'll check",
-                body: "This wizard checks Claude CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces.",
+                body: "This wizard checks the selected provider CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces.",
                 tint: Stanford.sky
             )
         }
@@ -516,9 +531,9 @@ struct OnboardingWizardView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 readinessRow(
-                    title: "Claude CLI",
-                    status: claudeStatusSummary,
-                    ready: isClaudeHealthy
+                    title: "\(selectedRuntime.displayName) CLI",
+                    status: selectedRuntimeStatusSummary,
+                    ready: isSelectedRuntimeHealthy
                 )
                 readinessRow(
                     title: "GitHub CLI",
@@ -550,12 +565,12 @@ struct OnboardingWizardView: View {
         }
     }
 
-    // MARK: - Claude Probe Card
+    // MARK: - CLI Probe Card
 
     private var cliSummaryCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 12) {
-                if isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub {
+                if isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 30, height: 30)
@@ -584,17 +599,17 @@ struct OnboardingWizardView: View {
                     Label("Check Again", systemImage: "arrow.clockwise")
                         .font(Stanford.caption(12))
                 }
-                .disabled(isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub)
+                .disabled(isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub)
             }
 
             Divider().opacity(0.45)
 
             VStack(spacing: 8) {
                 cliStatusRow(
-                    title: "Claude runtime",
-                    subtitle: claudeRuntimeSummary,
-                    symbol: cliClaudeSymbol,
-                    tint: cliClaudeColor
+                    title: "\(selectedRuntime.displayName) runtime",
+                    subtitle: selectedRuntimeSummary,
+                    symbol: selectedRuntimeSymbol,
+                    tint: selectedRuntimeColor
                 )
                 cliStatusRow(
                     title: "GitHub capability",
@@ -614,7 +629,7 @@ struct OnboardingWizardView: View {
                         }
                     }
 
-                    technicalPathRow("Claude path", status: claudeStatus)
+                    technicalPathRow("\(selectedRuntime.displayName) path", status: selectedRuntimeStatus)
                     technicalPathRow("GitHub path", status: githubStatus)
                 }
                 .padding(.top, 8)
@@ -682,7 +697,7 @@ struct OnboardingWizardView: View {
     }
 
     private var cliSummaryTitle: String {
-        if isCheckingRuntimeReadiness || isProbingClaude || isProbingGitHub {
+        if isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub {
             return "Checking this Mac"
         }
         if isCoreRuntimeReady {
@@ -694,9 +709,9 @@ struct OnboardingWizardView: View {
     private var cliSummarySubtitle: String {
         if isCoreRuntimeReady {
             if isGitHubHealthy {
-                return "Claude is ready, and GitHub capabilities are available."
+                return "\(selectedRuntime.displayName) is ready, and GitHub capabilities are available."
             }
-            return "Claude is ready. GitHub can be connected later if you need repository capabilities."
+            return "\(selectedRuntime.displayName) is ready. GitHub can be connected later if you need repository capabilities."
         }
         return "Complete the suggested fix, then check again."
     }
@@ -709,12 +724,12 @@ struct OnboardingWizardView: View {
         isCoreRuntimeReady ? Stanford.paloAltoGreen : Stanford.poppy
     }
 
-    private var claudeRuntimeSummary: String {
+    private var selectedRuntimeSummary: String {
         if isCoreRuntimeReady { return "Ready" }
         if let first = runtimeBlockers.first {
             return first.remediation ?? first.detail
         }
-        return claudeStatusSummary
+        return selectedRuntimeStatusSummary
     }
 
     private var githubCapabilitySummary: String {
@@ -725,11 +740,29 @@ struct OnboardingWizardView: View {
         return githubStatusSummary
     }
 
-    private var cliClaudeSymbol: String {
+    private var selectedRuntime: AgentRuntimeID {
+        AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+    }
+
+    private var selectedRuntimeStatus: HealthStatus? {
+        switch selectedRuntime {
+        case .claudeCode: claudeStatus
+        case .copilotCLI: copilotStatus
+        }
+    }
+
+    private var isProbingSelectedRuntime: Bool {
+        switch selectedRuntime {
+        case .claudeCode: isProbingClaude
+        case .copilotCLI: isProbingCopilot
+        }
+    }
+
+    private var selectedRuntimeSymbol: String {
         isCoreRuntimeReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
     }
 
-    private var cliClaudeColor: Color {
+    private var selectedRuntimeColor: Color {
         isCoreRuntimeReady ? Stanford.paloAltoGreen : Stanford.poppy
     }
 
@@ -840,7 +873,7 @@ struct OnboardingWizardView: View {
     private var runtimeReadinessSubtitle: String {
         switch runtimeReadinessReport?.state {
         case .ready:
-            return "Claude can run with the selected provider."
+            return "\(selectedRuntime.displayName) can run with the selected provider."
         case .warning:
             return "Core runtime is usable, but one item needs follow-up."
         case .blocked:
@@ -888,110 +921,6 @@ struct OnboardingWizardView: View {
 
     private var runtimeBlockers: [RuntimeReadinessCheck] {
         runtimeReadinessReport?.checks.filter { $0.state == .blocked } ?? []
-    }
-
-    private var claudeProbeCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                claudeStatusIcon
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("claude CLI")
-                        .font(Stanford.body(14).weight(.semibold))
-                        .foregroundStyle(Stanford.black)
-                    Text(claudeStatusSummary)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(claudeStatusColor)
-                }
-                Spacer()
-                Button {
-                    Task { await probeClaude(forceRefresh: true) }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(Stanford.ui(11))
-                        Text("Re-check")
-                            .font(Stanford.caption(12))
-                    }
-                }
-                .disabled(isProbingClaude)
-            }
-
-            if case .healthy(let path, _) = claudeStatus {
-                Text("Path: \(path)")
-                    .font(Stanford.mono(11))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .textSelection(.enabled)
-            }
-
-            providerRow
-        }
-        .padding(14)
-        .background(claudeStatusColor.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(claudeStatusColor.opacity(0.25), lineWidth: 1)
-        )
-        .task {
-            await probeClaude(forceRefresh: false)
-        }
-    }
-
-    // Surfaces the configured Claude provider inline so a green "Ready" on the
-    // version probe doesn't masquerade as a green provider configuration. The
-    // wizard's `--version` probe alone can't catch the auth-fails-at-runtime
-    // case (Anthropic not logged in, or Vertex env missing project/region), so
-    // we display the provider state explicitly.
-    @ViewBuilder
-    private var providerRow: some View {
-        let provider = ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic
-        let trimmedProject = claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRegion = claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isVertexBaseConfigured = !trimmedProject.isEmpty && !trimmedRegion.isEmpty
-        let isAnyVertexModelMissing =
-            claudeVertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || claudeVertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || claudeVertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let isVertexConfigured = isVertexBaseConfigured
-        let providerOK = provider == .anthropic || (isVertexBaseConfigured && !isAnyVertexModelMissing)
-
-        Divider()
-            .padding(.vertical, 2)
-
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: providerOK ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(providerOK ? Stanford.statusHealthy : Stanford.statusWarn)
-                .font(Stanford.ui(12, weight: .semibold))
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Provider — \(provider.label)")
-                    .font(Stanford.body(13).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(providerHint(for: provider, configured: isVertexConfigured))
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func providerHint(for provider: ClaudeProvider, configured: Bool) -> String {
-        switch provider {
-        case .anthropic:
-            return "Routes via Anthropic. Run `claude /login` in a terminal if a task fails with “Not logged in”."
-        case .vertex:
-            if !configured {
-                return "Vertex AI is selected but the project ID or region is empty. Open Settings → Claude Provider to fill them in."
-            }
-            let opus = claudeVertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            let sonnet = claudeVertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            let haiku = claudeVertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            if opus.isEmpty || sonnet.isEmpty || haiku.isEmpty {
-                return "Routes via GCP project \(claudeVertexProjectID) in \(claudeVertexRegion), but one or more model aliases are empty — Vertex won't recognise plain Anthropic model IDs. Fill the Opus/Sonnet/Haiku aliases in Settings."
-            }
-            return "Routes via GCP project \(claudeVertexProjectID) in \(claudeVertexRegion) using your Vertex model aliases. Make sure `gcloud auth application-default login` is current."
-        }
     }
 
     private var githubProbeCard: some View {
@@ -1056,51 +985,18 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private var claudeStatusIcon: some View {
-        Group {
-            if isProbingClaude {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: claudeStatusSymbol)
-                    .font(Stanford.ui(20))
-                    .foregroundStyle(claudeStatusColor)
-            }
-        }
-        .frame(width: 30, height: 30)
-    }
-
-    private var claudeStatusSymbol: String {
-        switch claudeStatus {
-        case .healthy: "checkmark.circle.fill"
-        case .unauthenticated: "exclamationmark.triangle.fill"
-        case .unresponsive: "exclamationmark.octagon.fill"
-        case .missingBinary: "xmark.octagon.fill"
-        case .none: "circle.dotted"
-        }
-    }
-
-    private var claudeStatusColor: Color {
-        switch claudeStatus {
-        case .healthy:         Stanford.paloAltoGreen
-        case .unauthenticated: Stanford.poppy
-        case .unresponsive:    Stanford.cardinalRed
-        case .missingBinary:   Stanford.cardinalRed
-        case .none:            Stanford.coolGrey
-        }
-    }
-
-    private var claudeStatusSummary: String {
-        switch claudeStatus {
+    private var selectedRuntimeStatusSummary: String {
+        switch selectedRuntimeStatus {
         case .healthy(_, let version): "Ready — \(version)"
         case .unauthenticated(let detail): detail
         case .unresponsive(let detail): detail
         case .missingBinary: "Not installed on this Mac"
-        case .none: isProbingClaude ? "Checking…" : "Not yet checked"
+        case .none: isProbingSelectedRuntime ? "Checking…" : "Not yet checked"
         }
     }
 
-    private var isClaudeHealthy: Bool {
-        if case .healthy = claudeStatus { return true }
+    private var isSelectedRuntimeHealthy: Bool {
+        if case .healthy = selectedRuntimeStatus { return true }
         return false
     }
 
@@ -1619,9 +1515,18 @@ struct OnboardingWizardView: View {
     }
 
     private func refreshCLIEnvironment(forceRefresh: Bool) async {
-        await probeClaude(forceRefresh: forceRefresh)
+        await probeSelectedRuntime(forceRefresh: forceRefresh)
         await probeGitHub(forceRefresh: forceRefresh)
         await refreshRuntimeReadiness()
+    }
+
+    private func probeSelectedRuntime(forceRefresh: Bool) async {
+        switch selectedRuntime {
+        case .claudeCode:
+            await probeClaude(forceRefresh: forceRefresh)
+        case .copilotCLI:
+            await probeCopilot(forceRefresh: forceRefresh)
+        }
     }
 
     private func probeClaude(forceRefresh: Bool) async {
@@ -1636,6 +1541,20 @@ struct OnboardingWizardView: View {
         // Opportunistically persist a resolved path so the worker benefits.
         if case .healthy(let path, _) = claudeStatus, claudePath.isEmpty {
             claudePath = path
+        }
+    }
+
+    private func probeCopilot(forceRefresh: Bool) async {
+        isProbingCopilot = true
+        defer { isProbingCopilot = false }
+
+        if forceRefresh {
+            await preflightCache.invalidate(binary: "copilot")
+        }
+        copilotStatus = await preflightCache.status(for: CommonCLIPrerequisites.copilot)
+
+        if case .healthy(let path, _) = copilotStatus, copilotPath.isEmpty {
+            copilotPath = path
         }
     }
 
@@ -1755,9 +1674,9 @@ struct OnboardingWizardView: View {
 
         let service = RuntimeReadinessService()
         runtimeReadinessReport = await service.check(configuration: RuntimeReadinessConfiguration(
-            runtime: .claudeCode,
+            runtime: selectedRuntime,
             claudePath: claudePath,
-            copilotPath: "",
+            copilotPath: copilotPath,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,

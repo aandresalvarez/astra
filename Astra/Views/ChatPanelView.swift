@@ -85,7 +85,7 @@ struct SlashWizard {
                 return "Enter **\(varLabel)**\(defaultHint):"
             }
         case .schedule:
-            return "" // Routine uses Claude-driven conversation, not wizard steps
+            return "" // Routine uses provider-assisted conversation, not wizard steps
         case .recap:
             return "" // Recap is one-shot, bypasses the wizard
         }
@@ -384,6 +384,8 @@ struct ChatPanelView: View {
     @State private var sshConnections: [SSHConnection] = []
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var chainedGoal = ""
@@ -417,9 +419,16 @@ struct ChatPanelView: View {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var planningModel: String {
+    private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
         let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
-        return runtime == .claudeCode ? defaultModel : AgentRuntimeID.claudeCode.defaultModel
+        let model = runtime.defaultModels.contains(defaultModel) ? defaultModel : runtime.defaultModel
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: model,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
     }
 
     private var showSlashMenu: Bool {
@@ -1057,16 +1066,16 @@ struct ChatPanelView: View {
     }
 
 
-    /// Send message → start or continue conversation with Claude
+    /// Send message → start or continue the provider-assisted conversation
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         isPlanMode = true
 
-        // Check for slash commands — route through Claude conversation with context
+        // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()
 
-        // /remember — direct action, no Claude needed
+        // /remember — direct action, no provider call needed
         if lower == "/remember" || lower.hasPrefix("/remember ") {
             let memoryText = String(input.dropFirst("/remember".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             messages.append(ChatMessage(role: "user", content: input))
@@ -1101,7 +1110,7 @@ struct ChatPanelView: View {
                 return
             }
 
-            // Fall through to normal Claude conversation — the slash context
+            // Fall through to the normal provider conversation — the slash context
             // will be injected into the system prompt
         }
 
@@ -1135,7 +1144,7 @@ struct ChatPanelView: View {
             return desc
         }.joined(separator: "\n\n")
 
-        // Include workspace additional paths so Claude knows about them
+        // Include workspace additional paths so the provider has them as context
         if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
             let pathList = wsObj.additionalPaths.map { path -> String in
                 let name = (path as NSString).lastPathComponent
@@ -1144,7 +1153,7 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Additional workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
         }
 
-        // Include attached file/folder paths so Claude knows about them
+        // Include attached file/folder paths so the provider has them as context
         if !attachedFiles.isEmpty {
             let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Attached files/folders (dragged by user):\n\(fileList)\n\nThe user has attached these paths. When they refer to \"this folder\" or \"this file\", they mean these paths."
@@ -1169,7 +1178,7 @@ struct ChatPanelView: View {
                 messages: conversationHistory,
                 workspacePath: ws,
                 skillContext: skillCtx,
-                model: planningModel
+                utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
                 isThinking = false
@@ -1250,7 +1259,7 @@ struct ChatPanelView: View {
                 messages: conversationHistory,
                 workspacePath: ws,
                 skillContext: newTaskPlanInstructions(),
-                model: planningModel
+                utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
                 isThinking = false
@@ -1564,7 +1573,7 @@ struct ChatPanelView: View {
             onTaskCreated?(creation.mainTask)
 
         case .schedule:
-            break // Routine uses Claude-driven conversation, not wizard steps
+            break // Routine uses provider-assisted conversation, not wizard steps
         case .recap:
             break // Recap is one-shot, bypasses the wizard
         }
@@ -1721,7 +1730,7 @@ struct ChatPanelView: View {
         return result ? Stanford.paloAltoGreen.opacity(0.08) : Stanford.cardinalRed.opacity(0.08)
     }
 
-    // MARK: - Slash Context (Claude-driven resource creation)
+    // MARK: - Slash Context (provider-assisted resource creation)
 
     private func buildSlashContext(for command: String) -> String? {
         guard let ws = workspace else { return nil }
@@ -1841,7 +1850,7 @@ struct ChatPanelView: View {
     }
 
     /// Instructions for /recap — one-shot prose summary so the user can pause and resume later.
-    /// No JSON action; Claude's markdown response is shown directly in the chat.
+    /// No JSON action; the provider's markdown response is shown directly in the chat.
     private func buildRecapContext() -> String {
         return """
         The user typed /recap. They are the sole reader and will use this to resume their own work after a context switch.
@@ -1870,7 +1879,7 @@ struct ChatPanelView: View {
         """
     }
 
-    /// Parse Claude's response for JSON action blocks and execute them
+    /// Parse provider responses for JSON action blocks and execute them
     private func handleSlashAction(in response: String) {
         guard activeSlashContext != nil else { return }
 

@@ -55,6 +55,8 @@ final class AppRuntimeController {
     func backfillThreadTitlesIfNeeded(
         coordinator: TaskLifecycleCoordinator,
         claudePath: String,
+        copilotPath: String,
+        defaultRuntimeID: String,
         validationModel: String,
         isUITestingSeededLaunch: Bool
     ) {
@@ -62,6 +64,8 @@ final class AppRuntimeController {
         hasStartedThreadTitleBackfill = true
         coordinator.backfillGeneratedThreadTitles(
             claudePath: claudePath,
+            copilotPath: copilotPath,
+            defaultRuntimeID: defaultRuntimeID,
             model: validationModel
         )
     }

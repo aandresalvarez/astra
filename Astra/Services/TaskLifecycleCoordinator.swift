@@ -317,15 +317,26 @@ final class TaskLifecycleCoordinator {
 
     func backfillGeneratedThreadTitles(
         claudePath: String,
+        copilotPath: String = "",
+        defaultRuntimeID: String = AgentRuntimeID.claudeCode.rawValue,
         model: String = "claude-haiku-4-5-20251001",
         limit: Int = 40
     ) {
-        let resolvedClaudePath = claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath
-        guard FileManager.default.isExecutableFile(atPath: resolvedClaudePath) else {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let utilityRuntime = AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: runtime.defaultModels.contains(model) ? model : runtime.defaultModel,
+            claudePath: claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
+            copilotPath: copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
+        let executablePath = runtime == .copilotCLI ? utilityRuntime.copilotPath : utilityRuntime.claudePath
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
             AppLogger.audit(.taskStats, category: "UI", fields: [
                 "operation": "thread_title_backfill",
-                "result": "missing_claude",
-                "claude_path": resolvedClaudePath
+                "result": "missing_utility_runtime",
+                "runtime": runtime.rawValue,
+                "executable_path": executablePath
             ], level: .warning)
             return
         }
@@ -352,8 +363,7 @@ final class TaskLifecycleCoordinator {
                 guard let generated = await SpecEngine.generateTitle(
                     goal: task.goal,
                     workspacePath: workspace.primaryPath,
-                    claudePath: resolvedClaudePath,
-                    model: model
+                    utilityRuntime: utilityRuntime
                 ),
                 Self.isUsableGeneratedTitle(generated),
                 generated.caseInsensitiveCompare(originalTitle) != .orderedSame else {

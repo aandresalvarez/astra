@@ -436,6 +436,8 @@ struct HeadlessChatScenarioTests {
         #expect(state.plan?.steps.first(where: { $0.id == "step-2" })?.status == .pending)
         #expect(!task.events.contains { $0.type == "plan.step.completed" && $0.payload.contains("step-1") })
         #expect(!task.events.contains { $0.type == "plan.execution.completed" })
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Plan step blocked") })
+        #expect(!task.events.contains { $0.type == "system.info" && $0.payload.contains("Plan step complete") })
     }
 
     @Test("Approved plan execution keeps Auto mode autonomous for Copilot")
@@ -523,6 +525,65 @@ struct HeadlessChatScenarioTests {
         #expect(state.plan?.steps.first?.status == .done)
         #expect(task.events.contains { $0.type == "plan.step.started" })
         #expect(task.events.contains { $0.type == "plan.step.completed" })
+    }
+
+    @Test("Claude review mode grants approved step tools")
+    func claudeReviewModeGrantsApprovedStepTools() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("claude-review-args.txt")
+        let plan = TaskPlanPayload(
+            title: "Claude write plan",
+            goal: "Create an artifact with Claude",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"])
+            ]
+        )
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-review-session","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude wrote artifact","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: plan.goal, model: "claude-sonnet-4-6")
+        let restrictedSkill = Skill(
+            name: "Read-only",
+            allowedTools: ["Read", "Grep"],
+            disallowedTools: ["Write", "Edit", "Bash"],
+            behaviorInstructions: ""
+        )
+        harness.context.insert(restrictedSkill)
+        task.skills = [restrictedSkill]
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(args.contains("--allowedTools"))
+        #expect(args.contains("Write"))
+
+        let settingsURL = harness.workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let data = try Data(contentsOf: settingsURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let permissions = try #require(json["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Write(*)"))
     }
 
     @Test("Plan mode can be approved and executed after an existing chat turn")

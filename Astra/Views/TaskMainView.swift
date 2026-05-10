@@ -71,6 +71,8 @@ struct TaskMainView: View {
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
     @State private var isPlanning = false
+    @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -126,10 +128,16 @@ struct TaskMainView: View {
         }
     }
 
-    private var planningModel: String {
-        task.resolvedRuntimeID == .claudeCode && AgentRuntimeID.claudeCode.defaultModels.contains(task.model)
-            ? task.model
-            : AgentRuntimeID.claudeCode.defaultModel
+    private var taskUtilityRuntime: AgentUtilityRuntimeConfiguration {
+        let runtime = task.resolvedRuntimeID
+        let model = runtime.defaultModels.contains(task.model) ? task.model : runtime.defaultModel
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: model,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
     }
 
     private var threadScrollSignature: String {
@@ -1487,7 +1495,7 @@ struct TaskMainView: View {
                 return "Agent went idle — no output for the timeout period."
             }
             if payload.contains("CLI not found") {
-                return "Claude CLI not found. Check Settings."
+                return "Provider CLI not found. Check Settings."
             }
             if payload.contains("not found") || payload.contains("Workspace") {
                 return "Workspace directory not found."
@@ -1973,8 +1981,8 @@ struct TaskMainView: View {
         options: []
     )
 
-    /// Use Claude to analyze the conversation context + user instruction and create a routine.
-    /// Ask Claude to summarize the task conversation so the user can resume later.
+    /// Use the selected utility runtime to analyze the conversation context + user instruction and create a routine.
+    /// Ask the selected utility runtime to summarize the task conversation so the user can resume later.
     /// Response is plain markdown (no JSON), inserted as a recap.result event.
     private func generateRecapAgentically() {
         let conversationSnapshot = scheduleConversationContext
@@ -2030,7 +2038,7 @@ struct TaskMainView: View {
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                model: task.model
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
@@ -2129,7 +2137,7 @@ struct TaskMainView: View {
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                model: source.model
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
@@ -2147,12 +2155,12 @@ struct TaskMainView: View {
         }
     }
 
-    /// Parse Claude's JSON response and create the routine schedule.
+    /// Parse the provider's JSON response and create the routine schedule.
     private func parseAndCreateSchedule(from response: String, workspace: Workspace, source: ScheduleSourceContext) {
         guard let regex = Self.jsonBlockRegex,
               let match = regex.firstMatch(in: response, range: NSRange(response.startIndex..., in: response)),
               let jsonRange = Range(match.range(at: 1), in: response) else {
-            // Try parsing the whole response as JSON (Claude sometimes skips the fences)
+            // Try parsing the whole response as JSON (providers sometimes skip the fences)
             if let data = response.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 createScheduleFromJSON(json, workspace: workspace, source: source)
@@ -2268,7 +2276,7 @@ struct TaskMainView: View {
 
         shouldScrollAfterUserMessage = true
 
-        // Intercept /remember command — direct action, no Claude call needed
+        // Intercept /remember command — direct action, no provider call needed
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.hasPrefix("/remember ") {
@@ -2282,7 +2290,7 @@ struct TaskMainView: View {
             return
         }
 
-        // Intercept /recap command — agentic summary, no Claude session needed
+        // Intercept /recap command — agentic summary, no provider session needed
         if lower == "/recap" || lower.hasPrefix("/recap ") {
             messageText = ""
             generateRecapAgentically()
@@ -2375,7 +2383,7 @@ struct TaskMainView: View {
                 messages: history,
                 workspacePath: workspacePath,
                 skillContext: skillContext,
-                model: planningModel
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
