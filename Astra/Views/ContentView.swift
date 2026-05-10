@@ -193,6 +193,7 @@ struct ContentView: View {
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var panelTransitionGeneration = 0
+    @State private var cachedHasCanvasContent = false
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -255,10 +256,7 @@ struct ContentView: View {
         return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary)"
     }
 
-    private var hasWorkspaceCanvasContent: Bool {
-        guard let selectedTask else { return false }
-        return TaskPlanService.reconstruct(for: selectedTask).plan != nil
-    }
+    private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }
 
     private var hasOpenTaskThread: Bool {
         selectedTask != nil || isComposingTask
@@ -399,7 +397,8 @@ struct ContentView: View {
             )
         }
         .onChange(of: selectedTaskCanvasSignature) {
-            if !hasWorkspaceCanvasContent, activeWorkspaceCanvasItem == .plan {
+            cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
+            if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
                 activeWorkspaceCanvasItem = nil
             }
             if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
@@ -1243,6 +1242,7 @@ struct ContentView: View {
     }
 
     private func handleAppear() {
+        cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
         if hasCompletedOnboarding, !hasPresentedOnboarding {
             hasPresentedOnboarding = true
         }

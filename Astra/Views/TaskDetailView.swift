@@ -193,53 +193,58 @@ struct StatusBadge: View {
 
 struct TimelineTabView: View {
     let task: AgentTask
+    @State private var sortedEvents: [TaskEvent] = []
 
-    var sortedEvents: [TaskEvent] {
-        task.events.sorted { $0.timestamp < $1.timestamp }
+    private func rebuildSortedEvents() {
+        sortedEvents = task.events.sorted { $0.timestamp < $1.timestamp }
     }
 
     var body: some View {
-        if sortedEvents.isEmpty {
-            ContentUnavailableView("No Events", systemImage: "clock", description: Text("Events will appear here when the task runs."))
-        } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(sortedEvents) { event in
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: eventIcon(event.type))
-                                    .foregroundStyle(eventColor(event.type))
-                                    .font(Stanford.ui(13))
-                                    .frame(width: 16)
-                                    .padding(.top, 3)
+        Group {
+            if sortedEvents.isEmpty {
+                ContentUnavailableView("No Events", systemImage: "clock", description: Text("Events will appear here when the task runs."))
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(sortedEvents) { event in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: eventIcon(event.type))
+                                        .foregroundStyle(eventColor(event.type))
+                                        .font(Stanford.ui(13))
+                                        .frame(width: 16)
+                                        .padding(.top, 3)
 
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(eventLabel(event.type))
-                                        .font(Stanford.caption(12))
-                                        .fontWeight(.medium)
-                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(eventLabel(event.type))
+                                            .font(Stanford.caption(12))
+                                            .fontWeight(.medium)
+                                            .foregroundStyle(.secondary)
 
-                                    Text(event.payload)
-                                        .font(Stanford.body(15))
-                                        .textSelection(.enabled)
+                                        Text(event.payload)
+                                            .font(Stanford.body(15))
+                                            .textSelection(.enabled)
 
-                                    Text(event.timestamp, style: .time)
-                                        .font(Stanford.caption(11))
-                                        .foregroundStyle(.tertiary)
+                                        Text(event.timestamp, style: .time)
+                                            .font(Stanford.caption(11))
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
+                                .id(event.id)
                             }
-                            .id(event.id)
                         }
+                        .padding()
                     }
-                    .padding()
-                }
-                .onChange(of: sortedEvents.count) {
-                    if let last = sortedEvents.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                    .onChange(of: sortedEvents.count) {
+                        if let last = sortedEvents.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
                     }
                 }
             }
         }
+        .onAppear { rebuildSortedEvents() }
+        .onChange(of: task.events.count) { rebuildSortedEvents() }
     }
 
     private func eventIcon(_ type: String) -> String {
@@ -302,23 +307,28 @@ struct TimelineTabView: View {
 
 struct OutputTabView: View {
     let task: AgentTask
+    @State private var latestRun: TaskRun?
 
-    var latestRun: TaskRun? {
-        task.runs.sorted { $0.startedAt > $1.startedAt }.first
+    private func rebuildLatestRun() {
+        latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
     var body: some View {
-        if let run = latestRun, !run.output.isEmpty {
-            ScrollView {
-                Text(run.output)
-                    .font(Stanford.ui(15, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+        Group {
+            if let run = latestRun, !run.output.isEmpty {
+                ScrollView {
+                    Text(run.output)
+                        .font(Stanford.ui(15, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+            } else {
+                ContentUnavailableView("No Output", systemImage: "terminal", description: Text("Output will appear here when the task runs."))
             }
-        } else {
-            ContentUnavailableView("No Output", systemImage: "terminal", description: Text("Output will appear here when the task runs."))
         }
+        .onAppear { rebuildLatestRun() }
+        .onChange(of: task.runs.count) { rebuildLatestRun() }
     }
 }
 
@@ -341,8 +351,10 @@ struct ArtifactsTabView: View {
         static func == (lhs: ArtifactFile, rhs: ArtifactFile) -> Bool { lhs.path == rhs.path }
     }
 
-    private var latestRun: TaskRun? {
-        task.runs.sorted { $0.startedAt > $1.startedAt }.first
+    @State private var latestRun: TaskRun?
+
+    private func rebuildLatestRun() {
+        latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
     /// Recompute cachedAllFiles off the main render path. Called from onAppear/onChange.
@@ -515,7 +527,13 @@ struct ArtifactsTabView: View {
             }
         }
         .onAppear {
+            rebuildLatestRun()
             scanTaskFolder()
+            extractPathsFromOutput()
+            refreshAllFiles()
+        }
+        .onChange(of: task.runs.count) {
+            rebuildLatestRun()
             extractPathsFromOutput()
             refreshAllFiles()
         }
@@ -531,77 +549,60 @@ struct ArtifactsTabView: View {
 
     private func scanTaskFolder() {
         let folder = task.taskFolder
-        guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return }
-        guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return }
+        Task {
+            let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
+                guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
+                guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
 
-        var files: [ArtifactFile] = []
-        while let relativePath = enumerator.nextObject() as? String {
-            let fullPath = (folder as NSString).appendingPathComponent(relativePath)
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
-            if isDir.boolValue { continue }
-            let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
-            files.append(ArtifactFile(
-                path: fullPath,
-                name: URL(fileURLWithPath: fullPath).lastPathComponent,
-                isDirectory: false,
-                size: size,
-                source: "output"
-            ))
+                var files: [ArtifactFile] = []
+                while let relativePath = enumerator.nextObject() as? String {
+                    let fullPath = (folder as NSString).appendingPathComponent(relativePath)
+                    var isDir: ObjCBool = false
+                    FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                    if isDir.boolValue { continue }
+                    let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
+                    files.append(ArtifactFile(path: fullPath, name: URL(fileURLWithPath: fullPath).lastPathComponent, isDirectory: false, size: size, source: "output"))
+                }
+                return files
+            }.value
+            taskFolderFiles = scanned
         }
-        taskFolderFiles = files
     }
 
     /// Extract file paths from run output and event payloads
     private func extractPathsFromOutput() {
         var texts: [String] = []
-        // Collect text from run output
-        if let run = latestRun {
-            texts.append(run.output)
+        if let run = latestRun { texts.append(run.output) }
+        for event in task.events where ["tool.use", "agent.response"].contains(event.type) {
+            texts.append(event.payload)
         }
-        // Collect text from tool.use and agent.response events
-        for event in task.events {
-            if ["tool.use", "agent.response"].contains(event.type) {
-                texts.append(event.payload)
-            }
-        }
-
         let combined = texts.joined(separator: "\n")
-        guard let regex = Self.filePathRegex else { return }
-        let nsText = combined as NSString
-        let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
-
-        var seen = Set<String>()
-        var files: [ArtifactFile] = []
-        let fm = FileManager.default
-
-        for match in matches {
-            let path = nsText.substring(with: match.range)
-            guard !seen.contains(path) else { continue }
-            seen.insert(path)
-
-            // Only include paths that actually exist on disk
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
-
-            // Skip common system/tool paths
-            if path.hasPrefix("/usr/") || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/") ||
-               path.hasPrefix("/System/") || path.hasPrefix("/Library/") ||
-               path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/private/") { continue }
-            // Skip .claude internals
-            if path.contains("/.claude/") { continue }
-
-            let size: Int64 = isDir.boolValue ? 0 : ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
-            files.append(ArtifactFile(
-                path: path,
-                name: URL(fileURLWithPath: path).lastPathComponent,
-                isDirectory: isDir.boolValue,
-                size: size,
-                source: isDir.boolValue ? "folder" : "referenced"
-            ))
+        guard !combined.isEmpty else { return }
+        Task {
+            let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
+                guard let regex = ArtifactsTabView.filePathRegex else { return [] }
+                let nsText = combined as NSString
+                let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
+                var seen = Set<String>()
+                var files: [ArtifactFile] = []
+                let fm = FileManager.default
+                for match in matches {
+                    let path = nsText.substring(with: match.range)
+                    guard !seen.contains(path) else { continue }
+                    seen.insert(path)
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
+                    if path.hasPrefix("/usr/") || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/") ||
+                       path.hasPrefix("/System/") || path.hasPrefix("/Library/") ||
+                       path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/private/") { continue }
+                    if path.contains("/.claude/") { continue }
+                    let size: Int64 = isDir.boolValue ? 0 : ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
+                    files.append(ArtifactFile(path: path, name: URL(fileURLWithPath: path).lastPathComponent, isDirectory: isDir.boolValue, size: size, source: isDir.boolValue ? "folder" : "referenced"))
+                }
+                return files
+            }.value
+            outputPathFiles = found
         }
-
-        outputPathFiles = files
     }
 
     private func fileIcon(for file: ArtifactFile) -> String {
@@ -657,9 +658,10 @@ struct ArtifactsTabView: View {
 struct DiffsTabView: View {
     let task: AgentTask
     @State private var selectedChange: StoredFileChange?
+    @State private var latestRun: TaskRun?
 
-    var latestRun: TaskRun? {
-        task.runs.sorted { $0.startedAt > $1.startedAt }.first
+    private func rebuildLatestRun() {
+        latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
     var changes: [StoredFileChange] {
@@ -667,6 +669,7 @@ struct DiffsTabView: View {
     }
 
     var body: some View {
+        Group {
         if changes.isEmpty {
             ContentUnavailableView("No File Changes", systemImage: "doc.text.magnifyingglass",
                                    description: Text("File changes will appear here when the agent writes or edits files."))
@@ -757,6 +760,9 @@ struct DiffsTabView: View {
                 }
             }
         }
+        } // Group
+        .onAppear { rebuildLatestRun() }
+        .onChange(of: task.runs.count) { rebuildLatestRun() }
     }
 }
 
@@ -801,9 +807,11 @@ struct FilesTabView: View {
     }
 
     @State private var showInternalFiles = false
+    @State private var latestRun: TaskRun?
+    @State private var parsedMarkdownBlocks: [String: [MarkdownBlock]] = [:]
 
-    private var latestRun: TaskRun? {
-        task.runs.sorted { $0.startedAt > $1.startedAt }.first
+    private func rebuildLatestRun() {
+        latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
     private static let internalPatterns: Set<String> = ["session_history.md"]
@@ -913,7 +921,13 @@ struct FilesTabView: View {
             }
         }
         .onAppear {
+            rebuildLatestRun()
             scanTaskFolder()
+            extractPathsFromOutput()
+            refreshAllFiles()
+        }
+        .onChange(of: task.runs.count) {
+            rebuildLatestRun()
             extractPathsFromOutput()
             refreshAllFiles()
         }
@@ -945,15 +959,23 @@ struct FilesTabView: View {
     private func loadFileContent(_ file: ArtifactFile) {
         guard fileContents[file.path] == nil,
               FileManager.default.fileExists(atPath: file.path) else { return }
-        // Limit to 200KB for preview
-        let url = URL(fileURLWithPath: file.path)
-        guard let data = try? Data(contentsOf: url),
-              data.count < 200_000,
-              let text = String(data: data, encoding: .utf8) else {
-            fileContents[file.path] = "[Binary or file too large to preview]"
-            return
+        let path = file.path
+        let isMd = isMarkdown(file)
+        Task {
+            let text: String = await Task.detached(priority: .userInitiated) {
+                let url = URL(fileURLWithPath: path)
+                guard let data = try? Data(contentsOf: url),
+                      data.count < 200_000,
+                      let str = String(data: data, encoding: .utf8) else {
+                    return "[Binary or file too large to preview]"
+                }
+                return str
+            }.value
+            fileContents[path] = text
+            if isMd, text != "[Binary or file too large to preview]" {
+                parsedMarkdownBlocks[path] = markdownBlocks(from: text.components(separatedBy: "\n"))
+            }
         }
-        fileContents[file.path] = text
     }
 
     private func fileRow(_ file: ArtifactFile) -> some View {
@@ -1100,7 +1122,7 @@ struct FilesTabView: View {
                 }
                 .padding(16)
             } else if isMarkdown(file) {
-                renderedMarkdown(content)
+                renderedMarkdown(content, path: file.path)
                     .padding(16)
             } else {
                 ScrollView(.horizontal, showsIndicators: true) {
@@ -1127,9 +1149,9 @@ struct FilesTabView: View {
         }
     }
 
-    private func renderedMarkdown(_ text: String) -> some View {
+    private func renderedMarkdown(_ text: String, path: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            let blocks = markdownBlocks(from: text.components(separatedBy: "\n"))
+            let blocks = parsedMarkdownBlocks[path] ?? markdownBlocks(from: text.components(separatedBy: "\n"))
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .heading(let level, let text):
@@ -1487,18 +1509,23 @@ struct FilesTabView: View {
 
     private func scanTaskFolder() {
         let folder = task.taskFolder
-        guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return }
-        guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return }
-        var files: [ArtifactFile] = []
-        while let relativePath = enumerator.nextObject() as? String {
-            let fullPath = (folder as NSString).appendingPathComponent(relativePath)
-            var isDir: ObjCBool = false
-            FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
-            if isDir.boolValue { continue }
-            let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
-            files.append(ArtifactFile(path: fullPath, name: URL(fileURLWithPath: fullPath).lastPathComponent, isDirectory: false, size: size, source: "output"))
+        Task {
+            let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
+                guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
+                guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
+                var files: [ArtifactFile] = []
+                while let relativePath = enumerator.nextObject() as? String {
+                    let fullPath = (folder as NSString).appendingPathComponent(relativePath)
+                    var isDir: ObjCBool = false
+                    FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
+                    if isDir.boolValue { continue }
+                    let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
+                    files.append(ArtifactFile(path: fullPath, name: URL(fileURLWithPath: fullPath).lastPathComponent, isDirectory: false, size: size, source: "output"))
+                }
+                return files
+            }.value
+            taskFolderFiles = scanned
         }
-        taskFolderFiles = files
     }
 
     private func extractPathsFromOutput() {
@@ -1508,26 +1535,32 @@ struct FilesTabView: View {
             texts.append(event.payload)
         }
         let combined = texts.joined(separator: "\n")
-        guard let regex = Self.filePathRegex else { return }
-        let nsText = combined as NSString
-        let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
-        var seen = Set<String>()
-        var files: [ArtifactFile] = []
-        let fm = FileManager.default
-        for match in matches {
-            let path = nsText.substring(with: match.range)
-            guard !seen.contains(path) else { continue }
-            seen.insert(path)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
-            if path.hasPrefix("/usr/") || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/") ||
-               path.hasPrefix("/System/") || path.hasPrefix("/Library/") ||
-               path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/private/") { continue }
-            if path.contains("/.claude/") { continue }
-            let size: Int64 = isDir.boolValue ? 0 : ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
-            files.append(ArtifactFile(path: path, name: URL(fileURLWithPath: path).lastPathComponent, isDirectory: isDir.boolValue, size: size, source: isDir.boolValue ? "folder" : "referenced"))
+        guard !combined.isEmpty else { return }
+        Task {
+            let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
+                guard let regex = FilesTabView.filePathRegex else { return [] }
+                let nsText = combined as NSString
+                let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
+                var seen = Set<String>()
+                var files: [ArtifactFile] = []
+                let fm = FileManager.default
+                for match in matches {
+                    let path = nsText.substring(with: match.range)
+                    guard !seen.contains(path) else { continue }
+                    seen.insert(path)
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
+                    if path.hasPrefix("/usr/") || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/") ||
+                       path.hasPrefix("/System/") || path.hasPrefix("/Library/") ||
+                       path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/private/") { continue }
+                    if path.contains("/.claude/") { continue }
+                    let size: Int64 = isDir.boolValue ? 0 : ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
+                    files.append(ArtifactFile(path: path, name: URL(fileURLWithPath: path).lastPathComponent, isDirectory: isDir.boolValue, size: size, source: isDir.boolValue ? "folder" : "referenced"))
+                }
+                return files
+            }.value
+            outputPathFiles = found
         }
-        outputPathFiles = files
     }
 
     // MARK: - Helpers
