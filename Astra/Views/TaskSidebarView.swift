@@ -121,8 +121,34 @@ struct TaskSidebarView: View {
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
-    private var allSchedules: [TaskSchedule] {
-        workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
+    @State private var taskIndex = SidebarTaskIndex(tasks: [], searchText: "")
+    @State private var allSchedules: [TaskSchedule] = []
+
+    private func rebuildTaskIndex() {
+        taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
+    }
+
+    private func rebuildSchedules() {
+        allSchedules = workspaces.flatMap(\.schedules).sorted { $0.name < $1.name }
+    }
+
+    // Lightweight fingerprint of task fields that the sidebar index cares about.
+    // Avoids rebuilding the index when unrelated fields (output, tokens) change.
+    private var sidebarTasksVersion: Int {
+        tasks.reduce(into: 0) { acc, task in
+            acc ^= task.id.hashValue
+            acc ^= task.status.rawValue.hashValue
+            acc ^= task.isPinned ? 1 : 0
+            acc ^= task.isDone ? 2 : 0
+            acc ^= task.shouldShowUnread ? 4 : 0
+            acc &+= Int(task.updatedAt.timeIntervalSince1970)
+        }
+    }
+
+    private var schedulesVersion: Int {
+        workspaces.reduce(into: 0) { acc, ws in
+            acc &+= ws.schedules.count
+        }
     }
 
     private var selectedWorkspaceHasNoTasks: Bool {
@@ -148,8 +174,6 @@ struct TaskSidebarView: View {
     }
 
     var body: some View {
-        let taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
-
         VStack(spacing: 0) {
             // Top new task button
             if selectedWorkspace != nil {
@@ -211,7 +235,14 @@ struct TaskSidebarView: View {
             }
             .listStyle(.sidebar)
         }
-        .onAppear(perform: updateNewTaskNudge)
+        .onAppear {
+            rebuildTaskIndex()
+            rebuildSchedules()
+            updateNewTaskNudge()
+        }
+        .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
+        .onChange(of: searchText) { rebuildTaskIndex() }
+        .onChange(of: schedulesVersion) { rebuildSchedules() }
         .onChange(of: selectedWorkspace?.id) { updateNewTaskNudge() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
@@ -546,16 +577,6 @@ struct TaskSidebarView: View {
                 .font(Stanford.ui(11))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func relativeTime(_ date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "now" }
-        if interval < 3600 { return "\(Int(interval / 60))m" }
-        if interval < 86400 { return "\(Int(interval / 3600))h" }
-        if interval < 604800 { return "\(Int(interval / 86400))d" }
-        if interval < 2592000 { return "\(Int(interval / 604800))w" }
-        return "\(Int(interval / 2592000))mo"
     }
 
     // MARK: - Routines Section
