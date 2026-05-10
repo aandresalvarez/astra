@@ -112,7 +112,9 @@ struct TaskSidebarView: View {
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesAddHovered = false
     @State private var isWorkspacesFilterHovered = false
+    @State private var isWorkspacesHeaderHovered = false
     @State private var isSchedulesAddHovered = false
+    @State private var isSchedulesHeaderHovered = false
     @State private var renamingTask: AgentTask?
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
@@ -177,41 +179,12 @@ struct TaskSidebarView: View {
         VStack(spacing: 0) {
             // Top new task button
             if selectedWorkspace != nil {
-                Button(action: handleNewTaskButton) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.and.pencil")
-                            .font(Stanford.ui(15, weight: .medium))
-                        Text("New task")
-                            .font(Stanford.ui(16, weight: .medium))
-                        Spacer()
-                    }
-                    .foregroundStyle(Stanford.lagunita)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Stanford.lagunita.opacity(0.10))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Stanford.lagunita.opacity(0.20), lineWidth: 1)
-                    )
-                    .overlay {
-                        if isShowingNewTaskNudge {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Stanford.lagunita.opacity(0.36), lineWidth: 2)
-                                .scaleEffect(isNewTaskNudgePulsing ? 1.05 : 1.0)
-                                .opacity(isNewTaskNudgePulsing ? 0.15 : 0.70)
-                                .animation(
-                                    reduceMotion ? nil : .easeInOut(duration: 0.95).repeatForever(autoreverses: true),
-                                    value: isNewTaskNudgePulsing
-                                )
-                        }
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                NewTaskButton(
+                    isShowingNudge: isShowingNewTaskNudge,
+                    isNudgePulsing: isNewTaskNudgePulsing,
+                    reduceMotion: reduceMotion,
+                    action: handleNewTaskButton
+                )
                 .keyboardShortcut("n", modifiers: .command)
                 .padding(.horizontal, 12)
                 .padding(.top, 16)
@@ -224,16 +197,34 @@ struct TaskSidebarView: View {
             pinnedDock(using: taskIndex)
             unreadDock(using: taskIndex)
 
-            Divider()
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
-                .padding(.bottom, 6)
+            // Hairline split between the docks (Pinned / Unread) and the
+            // List below. A standard Divider() ships at NSColor.separator,
+            // which renders heavy under our soft sidebar background — the
+            // 0.5pt rule at strokeRest reads as a quiet boundary instead
+            // of a hard line.
+            Rectangle()
+                .fill(Color.primary.opacity(Stanford.strokeRest))
+                .frame(height: 0.5)
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
 
-            List {
-                workspaceSection(using: taskIndex)
-                schedulesSection
+            // Was `List { ... }.listStyle(.sidebar)`. Switched to a
+            // ScrollView + LazyVStack because List on macOS is backed by
+            // NSTableView, which manages its own row insertion/removal
+            // animations and ignores SwiftUI `.transition` modifiers on
+            // its rows. That made the workspace expand/collapse animation
+            // impossible to drive through SwiftUI — tasks snapped in even
+            // inside `withAnimation`. With a plain LazyVStack the tasks
+            // are regular SwiftUI views again, transitions fire, and the
+            // workspace row stays put while children animate.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    workspaceSection(using: taskIndex)
+                    schedulesSection
+                }
+                .padding(.bottom, 12)
             }
-            .listStyle(.sidebar)
         }
         .onAppear {
             rebuildTaskIndex()
@@ -372,42 +363,60 @@ struct TaskSidebarView: View {
     }
 
     private var pinnedEmptyDropTarget: some View {
-        HStack(spacing: 6) {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+        let dashStyle = StrokeStyle(
+            lineWidth: isPinnedDropTargeted ? 1.25 : 1,
+            lineCap: .round,
+            dash: [3, 3]
+        )
+
+        return HStack(spacing: 7) {
             Image(systemName: isPinnedDropTargeted ? "pin.fill" : "arrow.down.doc")
-                .font(Stanford.ui(11))
-                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.4))
+                .font(Stanford.ui(11, weight: .medium))
+                .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : Color.secondary.opacity(0.5))
+                .frame(width: 14)
             Text(isPinnedDropTargeted ? "Drop to pin" : "Drag tasks here to pin")
                 .font(Stanford.caption(12))
                 .foregroundStyle(isPinnedDropTargeted ? Stanford.poppy : .secondary)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isPinnedDropTargeted ? Stanford.poppy.opacity(0.08) : .clear)
+            shape.fill(
+                isPinnedDropTargeted
+                    ? Stanford.poppy.opacity(0.08)
+                    : Color.primary.opacity(0.025)
+            )
         )
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(isPinnedDropTargeted ? Stanford.poppy.opacity(0.5) : Color.primary.opacity(0.06), style: StrokeStyle(lineWidth: isPinnedDropTargeted ? 1.5 : 1, dash: [5, 3]))
+        .overlay(
+            shape.strokeBorder(
+                isPinnedDropTargeted
+                    ? Stanford.poppy.opacity(0.55)
+                    : Color.primary.opacity(Stanford.strokeRest),
+                style: dashStyle
+            )
         )
-        .animation(.easeInOut(duration: 0.15), value: isPinnedDropTargeted)
+        .animation(.easeInOut(duration: 0.18), value: isPinnedDropTargeted)
     }
 
     private var pinnedInlineDropTarget: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Image(systemName: "pin.fill")
-                .font(Stanford.ui(10))
+                .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(Stanford.poppy)
+                .frame(width: 14)
             Text("Drop to pin")
                 .font(Stanford.caption(11))
                 .foregroundStyle(Stanford.poppy)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Stanford.poppy.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
     }
 
     private func pinnedContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
@@ -422,37 +431,52 @@ struct TaskSidebarView: View {
 
     private func pinnedTaskRow(for task: AgentTask) -> some View {
         let isSelected = selectedTask?.id == task.id
-        return Button {
-            selectedTask = task
-        } label: {
-            SidebarThreadRow(
-                task: task,
-                isSelected: isSelected,
-                isHovered: hoveredTaskID == task.id,
-                subtitle: task.workspace?.name
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
-        .overlay(alignment: .trailing) {
-            if hoveredTaskID == task.id {
-                Button {
-                    withAnimation {
-                        setPinned(false, for: task)
-                    }
-                } label: {
-                    Image(systemName: "pin.slash.fill")
-                        .font(Stanford.ui(10))
-                        .foregroundStyle(Stanford.poppy.opacity(0.6))
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Unpin")
-                .padding(.trailing, 4)
-                .transition(.opacity)
+        let isHovered = hoveredTaskID == task.id
+
+        // Was a `Button { } .overlay { unpinButton }` with `.onHover` on
+        // the outer button. When the cursor crossed onto the overlay,
+        // the outer button's `.onHover` would fire `false` and then
+        // `true` again as SwiftUI re-resolved the hit area, causing
+        // `hoveredTaskID` to flap. The unpin button's opacity is bound
+        // to that flap, so it blinked. ZStack siblings with `.onHover`
+        // on the ZStack — the same shape used by `compactTaskRow` —
+        // sees a single hover region across both children, so moving
+        // between them no longer toggles the state.
+        return ZStack(alignment: .trailing) {
+            Button {
+                selectedTask = task
+            } label: {
+                SidebarThreadRow(
+                    task: task,
+                    isSelected: isSelected,
+                    isHovered: isHovered,
+                    subtitle: task.workspace?.name,
+                    showsPinIndicator: false,
+                    showsTimestamp: false
+                )
             }
+            .buttonStyle(.plain)
+
+            Button {
+                withAnimation {
+                    setPinned(false, for: task)
+                }
+            } label: {
+                Image(systemName: "pin.slash.fill")
+                    .font(Stanford.ui(10, weight: .medium))
+                    .foregroundStyle(Stanford.poppy.opacity(0.7))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Unpin")
+            .padding(.trailing, 8)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isHovered)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .contextMenu {
             Button {
                 withAnimation {
@@ -466,8 +490,6 @@ struct TaskSidebarView: View {
 
             taskContextMenu(for: task)
         }
-        .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
     }
 
     // MARK: - Unreads Section
@@ -536,7 +558,7 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
 
             taskOptionsMenu(for: task, isHovered: isHovered)
-                .padding(.trailing, 6)
+                .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
@@ -604,8 +626,9 @@ struct TaskSidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Create a routine")
-                    .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                    .listRowBackground(Color.clear)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 1)
                 } else {
                     ForEach(allSchedules) { schedule in
                         Button {
@@ -650,8 +673,9 @@ struct TaskSidebarView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 10))
-                        .listRowBackground(Color.clear)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 1)
                     }
                 }
             }
@@ -662,17 +686,22 @@ struct TaskSidebarView: View {
                         isSchedulesExpanded.toggle()
                     }
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "calendar.badge.clock")
-                            .font(Stanford.ui(12, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                    HStack(spacing: 5) {
                         Text("Routines")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(Stanford.ui(9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isSchedulesExpanded ? 90 : 0))
+                            .opacity(isSchedulesHeaderHovered ? 1 : 0)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isSchedulesExpanded)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSchedulesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { isSchedulesHeaderHovered = $0 }
 
                 Spacer()
 
@@ -688,7 +717,7 @@ struct TaskSidebarView: View {
                 .onHover { isSchedulesAddHovered = $0 }
                 .help("New Routine")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             // Extra top padding creates breathing room between the three
             // top-level sections (Pinned / Workspaces / Routines). Cheaper
             // than a divider and lets the eye find the section boundaries.
@@ -730,10 +759,7 @@ struct TaskSidebarView: View {
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
                 ForEach(visibleWorkspaces) { workspace in
-                    workspaceRow(for: workspace, using: taskIndex)
-                    if isWorkspaceExpanded(workspace, using: taskIndex) {
-                        workspaceTaskGroups(for: workspace, using: taskIndex)
-                    }
+                    workspaceListRow(for: workspace, using: taskIndex)
                 }
             }
         } header: {
@@ -743,17 +769,29 @@ struct TaskSidebarView: View {
                         isWorkspacesExpanded.toggle()
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Text("Workspaces")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
-                        Image(systemName: isWorkspacesExpanded ? "chevron.down" : "chevron.right")
+                        // Hover-only disclosure cue. Lives next to the
+                        // label rather than at the right edge so the
+                        // chevron clearly belongs to the section name.
+                        // Rotation tracks expansion state; opacity
+                        // tracks header hover so the section reads as
+                        // pure typography at rest but signals
+                        // "collapsible" the moment the cursor lands.
+                        Image(systemName: "chevron.right")
                             .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(.quaternary)
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isWorkspacesExpanded ? 90 : 0))
+                            .opacity(isWorkspacesHeaderHovered ? 1 : 0)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isWorkspacesExpanded)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isWorkspacesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { isWorkspacesHeaderHovered = $0 }
 
                 Spacer()
 
@@ -795,13 +833,101 @@ struct TaskSidebarView: View {
                 .onHover { isWorkspacesAddHovered = $0 }
                 .help("New Workspace")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             // See Routines section — 20pt top creates visual rhythm
             // between top-level sections (Pinned / Workspaces / Routines).
             .padding(.top, 20)
             .padding(.bottom, 4)
             .textCase(nil)
         }
+    }
+
+    /// One List row per workspace that bundles the folder header and
+    /// (when expanded) its task children. Putting the children inside a
+    /// single List row — instead of as sibling rows — lets SwiftUI's
+    /// `.transition` modifier actually fire: List on macOS is backed by
+    /// NSTableView which animates its own row insertions and ignores
+    /// SwiftUI transitions on row-level children. By collapsing the
+    /// workspace + tasks into one row, the conditional that toggles
+    /// the tasks lives inside the row's view tree, where transitions
+    /// behave like they do everywhere else.
+    ///
+    /// The leading inset (12pt) on the tasks VStack restores the visual
+    /// indent the old `.listRowInsets(leading: 14)` provided — the
+    /// outer row already pays 2pt of leading inset, so 12pt extra
+    /// reaches the same 14pt total.
+    @ViewBuilder
+    private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
+        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
+        let hasTasks = !workspaceTasks.isEmpty
+        let hasAny = hasAnyTask(in: workspace, using: taskIndex)
+        let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
+        let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
+
+        VStack(spacing: 0) {
+            workspaceRow(for: workspace, using: taskIndex)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !hasTasks && !hasAny {
+                        emptyWorkspaceRow(for: workspace)
+                    } else if hasTasks {
+                        ForEach(visibleTasks) { task in
+                            compactTaskRow(for: task)
+                        }
+                        if workspaceTasks.count > visibleTasks.count {
+                            Button {
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                                    _ = expandedWorkspaceTaskLists.insert(workspace.id)
+                                }
+                            } label: {
+                                Text("Show \(workspaceTasks.count - visibleTasks.count) more")
+                                    .font(Stanford.caption(12))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            // Show More sat at leading 24 in old listRowInsets
+                            // (vs tasks at 14). Keep that 10pt extra indent so
+                            // the link reads as a tertiary affordance under
+                            // the task list, not as another task.
+                            .padding(.leading, 10)
+                        }
+                    }
+                }
+                .padding(.leading, 12)
+                .padding(.top, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Pure opacity in both directions. Earlier `.move(edge:
+                // .top)` slid tasks vertically as the container's height
+                // changed, so the rows visually crossed through the
+                // workspace row above them — distracting both on expand
+                // and collapse. With opacity-only the tasks fade in
+                // place and the row's height does the heavy lifting,
+                // giving the cleanest "drawer opens / drawer closes"
+                // read without the layered motion.
+                .transition(.opacity)
+            }
+        }
+        // Clips children that briefly extend past the row's natural
+        // bounds during the collapse animation — without this, tasks
+        // can render outside the row's footprint while the container
+        // height shrinks, making them appear to bleed into the
+        // workspace row below.
+        .clipped()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Symmetric 10pt horizontal margin gives the row's selection
+        // background equal breathing room on both sides instead of
+        // the previous 2/8 asymmetry, which made the right edge of
+        // the rounded bg almost touch the sidebar's right border.
+        // Matches the inset modern macOS sidebars (Notes, Reminders)
+        // use for selection chrome.
+        .padding(.horizontal, 10)
+        .padding(.vertical, 1)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: isExpanded)
     }
 
     @State private var hoveredWorkspaceID: UUID?
@@ -826,7 +952,14 @@ struct TaskSidebarView: View {
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
-        return HStack(alignment: .center, spacing: 6) {
+        return HStack(alignment: .center, spacing: 7) {
+            // Folder icon doubles as the expand/collapse affordance —
+            // the `folder` ↔ `folder.fill` swap carries the state, and
+            // clicking it toggles expansion. Dropped the leading
+            // chevron entirely to match the simplified header style
+            // (no glyphs, no disclosure indicators); the folder fill
+            // change + the row's task children below are the only
+            // expansion cues now.
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                     toggleWorkspaceExpansion(workspace, using: taskIndex)
@@ -835,10 +968,11 @@ struct TaskSidebarView: View {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
                     .font(Stanford.ui(13, weight: .medium))
                     .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                    .frame(width: 18, height: 24)
+                    .frame(width: 17, height: 22)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
             // Name: smart select + expand
             Button {
@@ -864,6 +998,7 @@ struct TaskSidebarView: View {
                         .font(Stanford.body(15))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     if workspace.isStarred {
                         Image(systemName: "star.fill")
                             .font(Stanford.ui(10, weight: .semibold))
@@ -876,10 +1011,11 @@ struct TaskSidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(workspace.name)
 
             workspaceRowActions(for: workspace, isHovered: isHovered)
         }
-        .padding(.leading, 6)
+        .padding(.leading, 4)
         .padding(.trailing, 4)
         .padding(.vertical, 6)
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
@@ -887,11 +1023,11 @@ struct TaskSidebarView: View {
         .contentShape(Rectangle())
         .onHover { hovering in hoveredWorkspaceID = hovering ? workspace.id : nil }
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(selectedWorkspace?.id == workspace.id && selectedTask == nil ? Color.primary.opacity(0.10) : .clear)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .fill(workspaceRowFill(isSelected: isSelected, isHovered: isHovered))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
         )
-        .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
         .contextMenu {
             Button {
                 startNewTask(in: workspace)
@@ -930,72 +1066,31 @@ struct TaskSidebarView: View {
         }
     }
 
+    /// Resolves the workspace row's background tint. Selection takes
+    /// precedence over hover. Selection uses `Stanford.selectionFill`
+    /// (lagunita @ 12%) so the active row reads as on-brand instead of a
+    /// neutral gray; hover is a quiet primary tint at 7% — visible
+    /// enough to read as "armed" against the soft sidebar background
+    /// without crowding the selected row's teal.
+    private func workspaceRowFill(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected { return Stanford.selectionFill }
+        if isHovered { return Color.primary.opacity(0.07) }
+        return .clear
+    }
+
     private func workspaceRowActions(for workspace: Workspace, isHovered: Bool) -> some View {
-        HStack(spacing: 2) {
-            Menu {
-                Button {
-                    toggleStarred(for: workspace)
-                } label: {
-                    Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
-                }
-
-                Divider()
-
-                Button {
-                    selectedWorkspace = workspace
-                    onEditWorkspace?(workspace)
-                } label: {
-                    Label("Workspace Details", systemImage: "info.circle")
-                }
-
-                Button {
-                    onRenameWorkspace?(workspace)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    onDeleteWorkspace?(workspace)
-                } label: {
-                    Label("Remove", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(Stanford.ui(18, weight: .bold))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 28, height: 24)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Stanford.lagunita.opacity(isHovered ? 0.12 : 0.07))
-                    )
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .tint(Stanford.lagunita)
-            .fixedSize()
-            .help("Workspace options")
-            .accessibilityLabel("Options for \(workspace.name)")
-
-            Button {
-                startNewTask(in: workspace)
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Start new chat in Astra")
-            .accessibilityLabel("Start new chat in \(workspace.name)")
-        }
-        .frame(width: 50, alignment: .trailing)
-        .opacity(isHovered ? 1 : 0)
-        .allowsHitTesting(isHovered)
-        .accessibilityHidden(!isHovered)
+        WorkspaceRowActions(
+            workspace: workspace,
+            isRowHovered: isHovered,
+            onNewTask: { startNewTask(in: workspace) },
+            onToggleStarred: { toggleStarred(for: workspace) },
+            onEdit: {
+                selectedWorkspace = workspace
+                onEditWorkspace?(workspace)
+            },
+            onRename: { onRenameWorkspace?(workspace) },
+            onDelete: { onDeleteWorkspace?(workspace) }
+        )
     }
 
     private func startNewTask(in workspace: Workspace) {
@@ -1004,39 +1099,6 @@ struct TaskSidebarView: View {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
         onNewTask()
-    }
-
-    @ViewBuilder
-    private func workspaceTaskGroups(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
-        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
-        let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
-        let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
-
-        if workspaceTasks.isEmpty && !hasAnyTask(in: workspace, using: taskIndex) {
-            emptyWorkspaceRow(for: workspace)
-        } else if !workspaceTasks.isEmpty {
-            ForEach(visibleTasks) { task in
-                compactTaskRow(for: task)
-            }
-
-            if workspaceTasks.count > visibleTasks.count {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                        _ = expandedWorkspaceTaskLists.insert(workspace.id)
-                    }
-                } label: {
-                    Text("Show \(workspaceTasks.count - visibleTasks.count) more")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 1, leading: 24, bottom: 3, trailing: 8))
-                .listRowBackground(Color.clear)
-            }
-        }
     }
 
     private func emptyWorkspaceRow(for workspace: Workspace) -> some View {
@@ -1056,8 +1118,6 @@ struct TaskSidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
     }
 
     private func compactTaskRow(for task: AgentTask) -> some View {
@@ -1076,26 +1136,32 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
 
             taskOptionsMenu(for: task, includePinToggle: true, isHovered: isHovered)
-                .padding(.trailing, 6)
+                .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .onDrag {
             NSItemProvider(object: task.id.uuidString as NSString)
         } preview: {
-            HStack(spacing: 6) {
+            // Drag chip — was a thin material rectangle. Now sits on
+            // `cardBackground` with a hairline border + soft shadow so
+            // it reads as a proper "card lifted off the surface" rather
+            // than a translucent overlay.
+            let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+            HStack(spacing: 7) {
                 Image(systemName: "pin.fill")
-                    .font(Stanford.ui(11))
+                    .font(Stanford.ui(11, weight: .medium))
                     .foregroundStyle(Stanford.poppy)
                 Text(task.title)
                     .font(Stanford.ui(12, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(shape.fill(Stanford.cardBackground))
+            .overlay(shape.strokeBorder(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1))
+            .shadow(color: Color.black.opacity(0.18), radius: 8, y: 4)
         }
         .contextMenu {
             Button {
@@ -1110,8 +1176,6 @@ struct TaskSidebarView: View {
 
             taskContextMenu(for: task)
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 8))
-        .listRowBackground(Color.clear)
     }
 
     private func taskOptionsMenu(
@@ -1147,25 +1211,8 @@ struct TaskSidebarView: View {
         .opacity(isHovered ? 1 : 0)
         .allowsHitTesting(isHovered)
         .accessibilityHidden(!isHovered)
+        .animation(.easeOut(duration: 0.14), value: isHovered)
         .help("Task options")
-    }
-
-    private func taskRow(for task: AgentTask) -> some View {
-        Button {
-            selectedTask = task
-        } label: {
-            TaskRowView(task: task, isSelected: selectedTask?.id == task.id)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(selectedTask?.id == task.id ? Color.primary.opacity(0.05) : .clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-        .contextMenu {
-            taskContextMenu(for: task)
-        }
-        .listRowBackground(Color.clear)
     }
 
     private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
@@ -1315,6 +1362,167 @@ struct TaskSidebarView: View {
     }
 }
 
+/// Sidebar's primary CTA. Stays quiet at rest (lagunita ink on a soft
+/// tinted ground), warms on hover, and inherits the nudge ring when the
+/// workspace is empty. Was inline in `body` — pulled out so the styling
+/// rationale lives in one place and the body reads as layout, not paint.
+private struct NewTaskButton: View {
+    let isShowingNudge: Bool
+    let isNudgePulsing: Bool
+    let reduceMotion: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @State private var isPressed = false
+
+    private let cornerRadius: CGFloat = Stanford.radiusMedium
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: "square.and.pencil")
+                    .font(Stanford.ui(14, weight: .semibold))
+                Text("New task")
+                    .font(Stanford.ui(15, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(shape.fill(fillColor))
+            .overlay(shape.strokeBorder(strokeColor, lineWidth: 1))
+            .overlay(nudgeRing(shape: shape))
+            .contentShape(shape)
+            .scaleEffect(isPressed ? 0.985 : 1.0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: isPressed)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .pressEvents(onPress: { isPressed = true }, onRelease: { isPressed = false })
+    }
+
+    private var fillColor: Color {
+        Stanford.lagunita.opacity(isHovered ? 0.11 : 0.075)
+    }
+
+    private var strokeColor: Color {
+        Stanford.lagunita.opacity(isHovered ? 0.22 : 0.14)
+    }
+
+    @ViewBuilder
+    private func nudgeRing(shape: RoundedRectangle) -> some View {
+        if isShowingNudge {
+            shape
+                .stroke(Stanford.lagunita.opacity(0.36), lineWidth: 2)
+                .scaleEffect(isNudgePulsing ? 1.05 : 1.0)
+                .opacity(isNudgePulsing ? 0.15 : 0.70)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 0.95).repeatForever(autoreverses: true),
+                    value: isNudgePulsing
+                )
+        }
+    }
+}
+
+private extension View {
+    /// Lightweight press tracker for plain buttons. SwiftUI's `.plain`
+    /// `ButtonStyle` strips the press configuration, so we read it back
+    /// via a drag gesture with zero distance.
+    func pressEvents(onPress: @escaping () -> Void, onRelease: @escaping () -> Void) -> some View {
+        simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in onPress() }
+                .onEnded { _ in onRelease() }
+        )
+    }
+}
+
+/// Trailing accessory cluster on each workspace row: ellipsis menu +
+/// quick "new task" button. Was inlined and used a permanent
+/// `lagunita.opacity(0.07)` pill on the ellipsis, which read as an
+/// always-armed control. New treatment matches `SectionAddIcon` —
+/// transparent at rest, lagunita tint on individual hover — so the row
+/// feels calm until you move the cursor over a specific affordance.
+private struct WorkspaceRowActions: View {
+    let workspace: Workspace
+    let isRowHovered: Bool
+    let onNewTask: () -> Void
+    let onToggleStarred: () -> Void
+    let onEdit: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isEllipsisHovered = false
+    @State private var isNewTaskHovered = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button(action: onToggleStarred) {
+                    Label(
+                        workspace.isStarred ? "Unstar Workspace" : "Star Workspace",
+                        systemImage: workspace.isStarred ? "star.slash" : "star"
+                    )
+                }
+
+                Divider()
+
+                Button(action: onEdit) {
+                    Label("Workspace Details", systemImage: "info.circle")
+                }
+                Button(action: onRename) {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Divider()
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("Remove", systemImage: "trash")
+                }
+            } label: {
+                accessoryGlyph("ellipsis", size: 14, weight: .semibold, isHovered: isEllipsisHovered)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .tint(Stanford.lagunita)
+            .fixedSize()
+            .onHover { isEllipsisHovered = $0 }
+            .help("Workspace options")
+            .accessibilityLabel("Options for \(workspace.name)")
+
+            Button(action: onNewTask) {
+                accessoryGlyph("square.and.pencil", size: 13, weight: .medium, isHovered: isNewTaskHovered)
+            }
+            .buttonStyle(.plain)
+            .onHover { isNewTaskHovered = $0 }
+            .help("Start new chat in Astra")
+            .accessibilityLabel("Start new chat in \(workspace.name)")
+        }
+        .frame(width: 52, alignment: .trailing)
+        .opacity(isRowHovered ? 1 : 0)
+        .allowsHitTesting(isRowHovered)
+        .accessibilityHidden(!isRowHovered)
+    }
+
+    @ViewBuilder
+    private func accessoryGlyph(_ symbol: String, size: CGFloat, weight: Font.Weight, isHovered: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(Stanford.ui(size, weight: weight))
+            .foregroundStyle(Stanford.lagunita)
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: Stanford.radiusSmall - 1, style: .continuous)
+                    .fill(Stanford.lagunita.opacity(isHovered ? 0.14 : 0))
+            )
+            .contentShape(Rectangle())
+            .animation(.easeOut(duration: 0.10), value: isHovered)
+    }
+}
+
 private struct NewTaskNudgePopover: View {
     let onDismiss: () -> Void
 
@@ -1376,12 +1584,15 @@ private struct SectionAddIcon: View {
 
     var body: some View {
         Image(systemName: "plus")
-            .font(Stanford.ui(11, weight: .medium))
+            .font(Stanford.ui(12, weight: .medium))
             .foregroundStyle(isHovered ? Color.white : Color.secondary)
-            .frame(width: 20, height: 20)
-            .background(isHovered ? Stanford.lagunita : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .frame(width: 22, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: Stanford.radiusSmall - 1, style: .continuous)
+                    .fill(isHovered ? Stanford.lagunita : Color.clear)
+            )
             .contentShape(Rectangle())
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 
@@ -1396,6 +1607,17 @@ private struct SidebarThreadRow: View {
     /// source of truth fixes the race.
     let isHovered: Bool
     var subtitle: String?
+    /// Hidden when the row is rendered inside the Pinned section — the
+    /// section already implies "pinned" and the unpin overlay button
+    /// covers the same gutter on hover, so showing the glyph there
+    /// would just add noise.
+    var showsPinIndicator: Bool = true
+    /// Hidden inside the Pinned section: the same task already shows
+    /// its timestamp in its workspace row, and dropping it here keeps
+    /// the right gutter clear for the unpin overlay (which previously
+    /// had to fight the timestamp for the same x-position) and gives
+    /// pinned titles more room before they truncate.
+    var showsTimestamp: Bool = true
 
     private var titleWeight: Font.Weight {
         if task.shouldShowUnread { return .semibold }
@@ -1467,13 +1689,34 @@ private struct SidebarThreadRow: View {
             // `compactTaskRow`) can render without overlapping text.
             // Keep the layout in place (no width shift) by using opacity,
             // not conditional removal.
-            Text(relativeTime(task.updatedAt))
-                .font(Stanford.caption(11).weight(metadataWeight))
-                .foregroundStyle(task.shouldShowUnread ? .primary : .secondary)
-                .lineLimit(1)
-                .fixedSize()
-                .frame(minWidth: 24, alignment: .trailing)
-            .opacity(isHovered ? 0 : 1)
+            if showsTimestamp {
+                HStack(spacing: 5) {
+                    if task.isPinned && showsPinIndicator {
+                        // Tells the user "this row is also up top in the
+                        // Pinned dock" — pinned tasks render twice (once
+                        // in Pinned, once under their workspace), and
+                        // without this glyph the workspace appearance
+                        // looks like a duplicate.
+                        Image(systemName: "pin.fill")
+                            .font(Stanford.ui(9, weight: .medium))
+                            .foregroundStyle(Stanford.lagunita.opacity(0.55))
+                            .help("Pinned")
+                            .accessibilityLabel("Pinned")
+                    }
+                    Text(relativeTime(task.updatedAt))
+                        .font(Stanford.caption(11).weight(metadataWeight))
+                        .foregroundStyle(task.shouldShowUnread ? .primary : .secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(minWidth: 24, alignment: .trailing)
+                }
+                .opacity(isHovered ? 0 : 1)
+                // Fades the timestamp out at the same rate as the
+                // hover-only overlay buttons (`unpin`, `taskOptionsMenu`)
+                // fade in, so the right gutter swaps smoothly instead of
+                // one element snapping while the other animates.
+                .animation(.easeOut(duration: 0.14), value: isHovered)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -1481,11 +1724,19 @@ private struct SidebarThreadRow: View {
         .help(task.title)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 7)
-                .fill(isSelected ? Color.primary.opacity(0.10) : .clear)
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
+                .fill(rowFill)
+                .animation(.easeOut(duration: 0.12), value: isSelected)
+                .animation(.easeOut(duration: 0.10), value: isHovered)
         )
         .contentShape(Rectangle())
         .accessibilityIdentifier("TaskRow_\(task.title)")
+    }
+
+    private var rowFill: Color {
+        if isSelected { return Stanford.selectionFill }
+        if isHovered { return Color.primary.opacity(0.07) }
+        return .clear
     }
 
     private var secondaryText: String? {
