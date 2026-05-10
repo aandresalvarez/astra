@@ -112,7 +112,9 @@ struct TaskSidebarView: View {
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesAddHovered = false
     @State private var isWorkspacesFilterHovered = false
+    @State private var isWorkspacesHeaderHovered = false
     @State private var isSchedulesAddHovered = false
+    @State private var isSchedulesHeaderHovered = false
     @State private var renamingTask: AgentTask?
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
@@ -314,15 +316,6 @@ struct TaskSidebarView: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    // Sized + toned to match the Workspaces (folder) and
-                    // Routines (calendar) header glyphs: 12pt medium,
-                    // brand color carried at low opacity so Pinned reads
-                    // as on-brand without out-shouting the other section
-                    // headers. Was 10pt semibold @ 0.85, which made it
-                    // the loudest non-CTA element in the sidebar.
-                    Image(systemName: "pin.fill")
-                        .font(Stanford.ui(12, weight: .medium))
-                        .foregroundStyle(Stanford.lagunita.opacity(0.65))
                     Text("Pinned")
                         .font(Stanford.caption(14))
                         .foregroundStyle(.secondary)
@@ -466,8 +459,6 @@ struct TaskSidebarView: View {
 
             taskContextMenu(for: task)
         }
-        .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
     }
 
     // MARK: - Unreads Section
@@ -615,8 +606,7 @@ struct TaskSidebarView: View {
                     .buttonStyle(.plain)
                     .help("Create a routine")
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 16)
-                    .padding(.trailing, 10)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 1)
                 } else {
                     ForEach(allSchedules) { schedule in
@@ -663,8 +653,7 @@ struct TaskSidebarView: View {
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 16)
-                        .padding(.trailing, 10)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 1)
                     }
                 }
@@ -676,17 +665,22 @@ struct TaskSidebarView: View {
                         isSchedulesExpanded.toggle()
                     }
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "calendar.badge.clock")
-                            .font(Stanford.ui(12, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                    HStack(spacing: 5) {
                         Text("Routines")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(Stanford.ui(9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isSchedulesExpanded ? 90 : 0))
+                            .opacity(isSchedulesHeaderHovered ? 1 : 0)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isSchedulesExpanded)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSchedulesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { isSchedulesHeaderHovered = $0 }
 
                 Spacer()
 
@@ -702,7 +696,7 @@ struct TaskSidebarView: View {
                 .onHover { isSchedulesAddHovered = $0 }
                 .help("New Routine")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             // Extra top padding creates breathing room between the three
             // top-level sections (Pinned / Workspaces / Routines). Cheaper
             // than a divider and lets the eye find the section boundaries.
@@ -754,26 +748,29 @@ struct TaskSidebarView: View {
                         isWorkspacesExpanded.toggle()
                     }
                 } label: {
-                    HStack(spacing: 6) {
-                        // Leading glyph completes the section-header
-                        // pattern shared with Pinned (pin) and Routines
-                        // (calendar). Tertiary so it reads as a section
-                        // marker, not a content icon.
-                        Image(systemName: "folder")
-                            .font(Stanford.ui(12, weight: .medium))
-                            .foregroundStyle(.tertiary)
+                    HStack(spacing: 5) {
                         Text("Workspaces")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
+                        // Hover-only disclosure cue. Lives next to the
+                        // label rather than at the right edge so the
+                        // chevron clearly belongs to the section name.
+                        // Rotation tracks expansion state; opacity
+                        // tracks header hover so the section reads as
+                        // pure typography at rest but signals
+                        // "collapsible" the moment the cursor lands.
                         Image(systemName: "chevron.right")
                             .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(.quaternary)
+                            .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(isWorkspacesExpanded ? 90 : 0))
+                            .opacity(isWorkspacesHeaderHovered ? 1 : 0)
                             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isWorkspacesExpanded)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isWorkspacesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { isWorkspacesHeaderHovered = $0 }
 
                 Spacer()
 
@@ -815,7 +812,7 @@ struct TaskSidebarView: View {
                 .onHover { isWorkspacesAddHovered = $0 }
                 .help("New Workspace")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             // See Routines section — 20pt top creates visual rhythm
             // between top-level sections (Pinned / Workspaces / Routines).
             .padding(.top, 20)
@@ -901,8 +898,13 @@ struct TaskSidebarView: View {
         // workspace row below.
         .clipped()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, 2)
-        .padding(.trailing, 8)
+        // Symmetric 10pt horizontal margin gives the row's selection
+        // background equal breathing room on both sides instead of
+        // the previous 2/8 asymmetry, which made the right edge of
+        // the rounded bg almost touch the sidebar's right border.
+        // Matches the inset modern macOS sidebars (Notes, Reminders)
+        // use for selection chrome.
+        .padding(.horizontal, 10)
         .padding(.vertical, 1)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: isExpanded)
     }
@@ -929,28 +931,14 @@ struct TaskSidebarView: View {
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
-        return HStack(alignment: .center, spacing: 5) {
-            // Disclosure chevron — always visible at low contrast (Finder
-            // pattern), brightens on row hover. Shares the toggle action
-            // with the folder icon so the two leading hit targets stay
-            // behaviorally aligned.
-            Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    toggleWorkspaceExpansion(workspace, using: taskIndex)
-                }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(9, weight: .semibold))
-                    .foregroundStyle(isHovered || isSelected ? Color.secondary : Color.secondary.opacity(0.55))
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isExpanded)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
-                    .frame(width: 9, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
-
+        return HStack(alignment: .center, spacing: 7) {
+            // Folder icon doubles as the expand/collapse affordance —
+            // the `folder` ↔ `folder.fill` swap carries the state, and
+            // clicking it toggles expansion. Dropped the leading
+            // chevron entirely to match the simplified header style
+            // (no glyphs, no disclosure indicators); the folder fill
+            // change + the row's task children below are the only
+            // expansion cues now.
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                     toggleWorkspaceExpansion(workspace, using: taskIndex)
@@ -963,6 +951,7 @@ struct TaskSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
             // Name: smart select + expand
             Button {
@@ -1203,24 +1192,6 @@ struct TaskSidebarView: View {
         .accessibilityHidden(!isHovered)
         .animation(.easeOut(duration: 0.14), value: isHovered)
         .help("Task options")
-    }
-
-    private func taskRow(for task: AgentTask) -> some View {
-        Button {
-            selectedTask = task
-        } label: {
-            TaskRowView(task: task, isSelected: selectedTask?.id == task.id)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(selectedTask?.id == task.id ? Color.primary.opacity(0.05) : .clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-        .contextMenu {
-            taskContextMenu(for: task)
-        }
-        .listRowBackground(Color.clear)
     }
 
     private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
