@@ -5,6 +5,9 @@ struct ShelfMarkdownPanelView: View {
     @ObservedObject var session: ShelfMarkdownSession
     @Binding var isPresented: Bool
     @Binding var isPinnedToTask: Bool
+    @State private var viewMode: ShelfTextViewMode = .preview
+    @State private var isEditing = false
+    @State private var wrapLines = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,15 +16,24 @@ struct ShelfMarkdownPanelView: View {
                 tabStrip
             }
             Divider()
-            markdownBody
+            documentBody
+            if session.hasFile {
+                Divider()
+                statusBar
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(ObjectIdentifier(session))
+        .onAppear(perform: normalizeViewMode)
+        .onChange(of: session.selectedDocumentID) {
+            isEditing = false
+            normalizeViewMode()
+        }
     }
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "doc.richtext")
+            Image(systemName: session.selectedDocumentKind?.systemImage ?? "doc.text")
                 .font(Stanford.ui(15, weight: .semibold))
                 .foregroundStyle(Stanford.cardinalRed)
                 .frame(width: 24, height: 24)
@@ -44,13 +56,37 @@ struct ShelfMarkdownPanelView: View {
 
             Spacer(minLength: 0)
 
+            modePicker
+
+            Button {
+                if isEditing {
+                    isEditing = false
+                } else {
+                    viewMode = .source
+                    isEditing = true
+                }
+            } label: {
+                Image(systemName: isEditing ? "pencil.slash" : "pencil")
+            }
+            .disabled(!session.hasFile)
+            .help(isEditing ? "Stop editing" : "Edit text")
+
+            Button {
+                session.saveSelectedDocument()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .disabled(!session.canSaveSelectedDocument || !session.isSelectedDocumentDirty)
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Save changes")
+
             Button {
                 session.reload()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .disabled(!session.hasFile)
-            .help("Reload Markdown")
+            .help("Reload text")
 
             Button {
                 session.copyContentToPasteboard()
@@ -58,7 +94,7 @@ struct ShelfMarkdownPanelView: View {
                 Image(systemName: "doc.on.doc")
             }
             .disabled(!session.hasFile)
-            .help("Copy Markdown")
+            .help("Copy text")
 
             Button {
                 session.openExternal()
@@ -75,19 +111,35 @@ struct ShelfMarkdownPanelView: View {
             } label: {
                 Image(systemName: "xmark")
             }
-            .help("Close Markdown shelf")
+            .help("Close text shelf")
         }
-        .buttonStyle(MarkdownShelfToolbarButtonStyle())
+        .buttonStyle(TextShelfToolbarButtonStyle())
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private var modePicker: some View {
+        if session.selectedDocumentKind == .markdown {
+            Picker("", selection: $viewMode) {
+                Label("Preview", systemImage: "doc.richtext")
+                    .tag(ShelfTextViewMode.preview)
+                Label("Source", systemImage: "curlybraces")
+                    .tag(ShelfTextViewMode.source)
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .frame(width: 154)
+            .help("Switch between rendered Markdown and source")
+        }
     }
 
     private var tabStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
                 ForEach(session.documents) { document in
-                    markdownTab(document)
+                    textTab(document)
                 }
             }
             .padding(.horizontal, 10)
@@ -97,19 +149,25 @@ struct ShelfMarkdownPanelView: View {
         .background(Stanford.cardBackground.opacity(0.55))
     }
 
-    private func markdownTab(_ document: ShelfMarkdownDocument) -> some View {
+    private func textTab(_ document: ShelfMarkdownDocument) -> some View {
         let isSelected = session.selectedDocumentID == document.id
         return HStack(spacing: 6) {
             Button {
                 session.selectDocument(document.id)
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "doc.richtext")
+                    Image(systemName: document.kind.systemImage)
                         .font(Stanford.ui(11, weight: .semibold))
                     Text(document.title)
                         .font(Stanford.ui(12, weight: isSelected ? .semibold : .medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if document.isDirty {
+                        Circle()
+                            .fill(Stanford.cardinalRed)
+                            .frame(width: 6, height: 6)
+                            .help("Unsaved changes")
+                    }
                 }
                 .foregroundStyle(isSelected ? Stanford.black : Stanford.coolGrey)
                 .contentShape(Rectangle())
@@ -155,6 +213,10 @@ struct ShelfMarkdownPanelView: View {
 
             Divider()
 
+            Toggle("Wrap lines", isOn: $wrapLines)
+
+            Divider()
+
             Button {
                 session.revealInFinder()
             } label: {
@@ -173,14 +235,14 @@ struct ShelfMarkdownPanelView: View {
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
-        .help("Markdown options")
+        .help("Text shelf options")
     }
 
     @ViewBuilder
-    private var markdownBody: some View {
+    private var documentBody: some View {
         if let errorMessage = session.errorMessage {
             ContentUnavailableView {
-                Label("Markdown unavailable", systemImage: "exclamationmark.triangle")
+                Label("Text unavailable", systemImage: "exclamationmark.triangle")
             } description: {
                 Text(errorMessage)
             } actions: {
@@ -189,24 +251,100 @@ struct ShelfMarkdownPanelView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if session.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        } else if !session.hasFile {
             ContentUnavailableView {
-                Label("No Markdown file", systemImage: "doc.richtext")
+                Label("No text file", systemImage: "doc.text")
             } description: {
-                Text("Generated .md files from the selected task will appear here.")
+                Text("Generated Markdown and text files from the selected task will appear here.")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if effectiveViewMode == .preview, session.selectedDocumentKind == .markdown {
+            if session.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ContentUnavailableView {
+                    Label("Empty Markdown file", systemImage: "doc.richtext")
+                } description: {
+                    Text("Switch to Source to edit this file.")
+                } actions: {
+                    Button("Edit Source") {
+                        viewMode = .source
+                        isEditing = true
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                SelectableMarkdownDocumentView(
+                    text: session.content,
+                    signature: session.contentSignature
+                )
+                .background(Stanford.cardBackground.opacity(0.45))
+            }
         } else {
-            SelectableMarkdownDocumentView(
-                text: session.content,
-                signature: session.contentSignature
+            ShelfTextEditorView(
+                text: Binding(
+                    get: { session.content },
+                    set: { session.updateSelectedContent($0) }
+                ),
+                isEditable: isEditing,
+                wrapLines: wrapLines
             )
             .background(Stanford.cardBackground.opacity(0.45))
         }
     }
+
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if let document = session.selectedDocument {
+                Label(document.kind.displayName, systemImage: document.kind.systemImage)
+                Text("\(lineCount) \(lineCount == 1 ? "line" : "lines")")
+                Text("\(session.content.count) characters")
+                if document.isDirty {
+                    Label("Unsaved changes", systemImage: "circle.fill")
+                        .foregroundStyle(Stanford.cardinalRed)
+                }
+                if let saveErrorMessage = session.saveErrorMessage {
+                    Label(saveErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Stanford.poppy)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                Label(isEditing ? "Editing" : "Read-only", systemImage: isEditing ? "pencil" : "lock")
+            }
+        }
+        .font(Stanford.caption(11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Stanford.cardBackground.opacity(0.65))
+    }
+
+    private var effectiveViewMode: ShelfTextViewMode {
+        guard session.selectedDocumentKind == .markdown else { return .source }
+        return viewMode
+    }
+
+    private var lineCount: Int {
+        guard !session.content.isEmpty else { return 0 }
+        return session.content.split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+
+    private func normalizeViewMode() {
+        if session.selectedDocumentKind == .markdown {
+            if !isEditing {
+                viewMode = .preview
+            }
+        } else {
+            viewMode = .source
+        }
+    }
 }
 
-private struct MarkdownShelfToolbarButtonStyle: ButtonStyle {
+private enum ShelfTextViewMode: String, Hashable {
+    case preview
+    case source
+}
+
+private struct TextShelfToolbarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Stanford.ui(13, weight: .semibold))
@@ -217,6 +355,107 @@ private struct MarkdownShelfToolbarButtonStyle: ButtonStyle {
                     .fill(configuration.isPressed ? Color.primary.opacity(0.12) : Color.clear)
             )
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+private struct ShelfTextEditorView: NSViewRepresentable {
+    @Binding var text: String
+    let isEditable: Bool
+    let wrapLines: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.allowsUndo = true
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        textView.textContainerInset = NSSize(width: 18, height: 16)
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isVerticallyResizable = true
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.textColor = .labelColor
+        textView.insertionPointColor = .labelColor
+        textView.backgroundColor = .clear
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+        updateNSView(scrollView, context: context)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = context.coordinator.textView else { return }
+
+        context.coordinator.text = $text
+        context.coordinator.isApplyingExternalChange = true
+        if textView.string != text {
+            let selectedRange = textView.selectedRange()
+            textView.string = text
+            textView.setSelectedRange(NSRange(
+                location: min(selectedRange.location, (text as NSString).length),
+                length: 0
+            ))
+        }
+
+        textView.isEditable = isEditable
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.typingAttributes = [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor.labelColor
+        ]
+        configureWrapping(for: textView, in: scrollView)
+        context.coordinator.isApplyingExternalChange = false
+    }
+
+    private func configureWrapping(for textView: NSTextView, in scrollView: NSScrollView) {
+        scrollView.hasHorizontalScroller = !wrapLines
+        textView.isHorizontallyResizable = !wrapLines
+        textView.autoresizingMask = wrapLines ? [.width] : [.width, .height]
+        textView.textContainer?.widthTracksTextView = wrapLines
+        textView.textContainer?.containerSize = NSSize(
+            width: wrapLines ? scrollView.contentSize.width : CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        weak var textView: NSTextView?
+        var isApplyingExternalChange = false
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !isApplyingExternalChange,
+                  let textView = notification.object as? NSTextView else {
+                return
+            }
+            text.wrappedValue = textView.string
+        }
     }
 }
 

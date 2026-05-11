@@ -77,7 +77,7 @@ enum Formatters {
         case "py": return "chevron.left.forwardslash.chevron.right"
         case "js", "ts", "jsx", "tsx": return "curlybraces"
         case "json": return "doc.text"
-        case "md", "txt": return "doc.plaintext"
+        case "md", "markdown", "qmd", "txt": return "doc.plaintext"
         case "html", "css": return "globe"
         case "sh", "zsh", "bash": return "terminal"
         case "yml", "yaml", "toml": return "gearshape"

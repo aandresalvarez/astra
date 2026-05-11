@@ -1567,9 +1567,7 @@ final class AgentRuntimeWorker {
         for runtime: AgentRuntimeID,
         preferredModel: String
     ) -> AgentUtilityRuntimeConfiguration {
-        let model = runtime.defaultModels.contains(preferredModel)
-            ? preferredModel
-            : runtime.defaultModel
+        let model = RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime)
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: model,

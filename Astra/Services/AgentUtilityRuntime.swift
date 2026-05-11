@@ -16,7 +16,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
         copilotHome: String = CopilotCLIRuntime.channelHome()
     ) {
         self.runtime = runtime
-        self.model = model ?? runtime.defaultModel
+        self.model = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
         self.claudePath = claudePath
         self.copilotPath = copilotPath
         self.copilotHome = copilotHome

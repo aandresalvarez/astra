@@ -250,12 +250,7 @@ struct OnboardingWizardView: View {
     }
 
     static func runtimePrerequisite(for runtime: AgentRuntimeID) -> CLIPrerequisite {
-        switch runtime {
-        case .claudeCode:
-            CommonCLIPrerequisites.claude
-        case .copilotCLI:
-            CommonCLIPrerequisites.copilot
-        }
+        AgentRuntimeRegistry.descriptor(for: runtime).prerequisite
     }
 
     /// Optional hook for testing — force a step on init.

@@ -39,7 +39,9 @@
       "installHint" : "Run `gh auth login`.",
       "livenessArgs" : [
         "auth",
-        "status"
+        "status",
+        "--hostname",
+        "github.com"
       ],
       "purpose" : "An authenticated GitHub CLI session is required for issues, pull requests, and Actions."
     }

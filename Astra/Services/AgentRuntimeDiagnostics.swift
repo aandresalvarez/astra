@@ -52,15 +52,16 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             maxTurnsExceeded: maxTurnsExceeded
         )
         let summary = redacted.isEmpty ? fallbackSummary(for: category, runtime: runtime) : redacted
+        let resolvedModel = RuntimeModelAvailability.normalizedModel(model, for: runtime)
         return AgentRuntimeFailureDiagnostic(
             runtime: runtime,
-            model: model.isEmpty ? runtime.defaultModel : model,
+            model: resolvedModel,
             exitCode: exitCode,
             providerVersion: providerVersion,
             category: category,
             redactedSummary: summary,
             rawErrorCharacterCount: raw.count,
-            userMessage: userMessage(for: category, runtime: runtime, model: model.isEmpty ? runtime.defaultModel : model)
+            userMessage: userMessage(for: category, runtime: runtime, model: resolvedModel)
         )
     }
 

@@ -27,6 +27,8 @@ struct ScheduleEditorView: View {
 
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("defaultModel") private var defaultModel = AgentRuntimeID.claudeCode.defaultModel
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
 
     @State private var name = ""
     @State private var routineDescription = ""
@@ -324,9 +326,12 @@ struct ScheduleEditorView: View {
                                 .frame(width: 180)
                                 .onChange(of: runtimeID) {
                                     let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                                    if !runtime.defaultModels.contains(model) {
-                                        model = runtime.defaultModel
-                                    }
+                                    model = RuntimeModelAvailability.normalizedModel(
+                                        model,
+                                        for: runtime,
+                                        cachedClaudeModelsJSON: claudeAvailableModels,
+                                        cachedCopilotModelsJSON: copilotAvailableModels
+                                    )
                                 }
                             }
                             Divider().padding(.leading, 16)
@@ -492,7 +497,12 @@ struct ScheduleEditorView: View {
                     model = m
                 } else {
                     let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                    model = runtime.defaultModels.contains(defaultModel) ? defaultModel : runtime.defaultModel
+                    model = RuntimeModelAvailability.normalizedModel(
+                        defaultModel,
+                        for: runtime,
+                        cachedClaudeModelsJSON: claudeAvailableModels,
+                        cachedCopilotModelsJSON: copilotAvailableModels
+                    )
                 }
                 if let b = prefillBudget { tokenBudget = b }
                 if let t = prefillScheduleType { scheduleType = t }
@@ -502,6 +512,12 @@ struct ScheduleEditorView: View {
                 if let i = prefillIntervalSeconds { intervalSeconds = i }
                 if let ids = prefillSkillIDs { selectedSkillIDs = ids }
             }
+            alignModelWithRuntime()
+        }
+        .onChange(of: claudeAvailableModels) {
+            alignModelWithRuntime()
+        }
+        .onChange(of: copilotAvailableModels) {
             alignModelWithRuntime()
         }
     }
@@ -527,14 +543,21 @@ struct ScheduleEditorView: View {
     }
 
     private var runtimeModels: [String] {
-        (AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode).defaultModels
+        RuntimeModelAvailability.models(
+            for: AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private func alignModelWithRuntime() {
         let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-        if !runtime.defaultModels.contains(model) {
-            model = runtime.defaultModel
-        }
+        model = RuntimeModelAvailability.normalizedModel(
+            model,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private var timePicker: some View {

@@ -580,7 +580,50 @@ struct TaskThreadSnapshot: Sendable {
     }
 }
 
+enum TaskGeneratedFileShelfDestination: Equatable {
+    case browser
+    case text
+
+    var title: String {
+        switch self {
+        case .browser: "Open in Browser Shelf"
+        case .text: "Open in Text Shelf"
+        }
+    }
+
+    var compactTitle: String {
+        switch self {
+        case .browser: "Browser"
+        case .text: "Text"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .browser: "globe"
+        case .text: "doc.text"
+        }
+    }
+}
+
 enum TaskGeneratedFiles {
+    private static let markdownExtensions: Set<String> = ["md", "markdown", "qmd"]
+
+    private static let textShelfExtensions: Set<String> = [
+        "md", "markdown", "qmd", "txt", "text", "log",
+        "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml", "plist",
+        "swift", "py", "js", "jsx", "ts", "tsx", "css", "scss", "html", "htm",
+        "sh", "bash", "zsh", "fish", "sql", "r", "rb", "go", "rs",
+        "java", "kt", "kts", "c", "cc", "cpp", "cxx", "h", "hpp", "m", "mm",
+        "php", "pl", "lua", "env", "ini", "cfg", "conf"
+    ]
+
+    private static let textShelfFileNames: Set<String> = [
+        ".env", ".gitignore", ".npmrc", ".zshrc", ".bashrc",
+        "dockerfile", "makefile", "rakefile", "gemfile", "podfile",
+        "readme", "license", "changelog"
+    ]
+
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         guard !folder.isEmpty, fileManager.fileExists(atPath: folder) else { return [] }
         guard let enumerator = fileManager.enumerator(atPath: folder) else { return [] }
@@ -654,7 +697,22 @@ enum TaskGeneratedFiles {
     }
 
     static func isMarkdownFile(_ path: String) -> Bool {
-        ["md", "markdown"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        markdownExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    static func isTextShelfFile(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        let name = url.lastPathComponent.lowercased()
+        return textShelfExtensions.contains(ext)
+            || textShelfFileNames.contains(name)
+            || name.hasPrefix(".env.")
+    }
+
+    static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination? {
+        if isHTMLFile(path) { return .browser }
+        if isTextShelfFile(path) { return .text }
+        return nil
     }
 
     static func htmlPreviewSignature(

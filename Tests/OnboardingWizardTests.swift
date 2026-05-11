@@ -59,7 +59,7 @@ struct OnboardingWizardTests {
         #expect(claudePrerequisites.map(\.livenessArgs) == [
             ["--version"],
             ["--version"],
-            ["auth", "status"]
+            ["auth", "status", "--hostname", "github.com"]
         ])
 
         let copilotPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .copilotCLI)
@@ -67,7 +67,7 @@ struct OnboardingWizardTests {
         #expect(copilotPrerequisites.map(\.livenessArgs) == [
             ["--version"],
             ["--version"],
-            ["auth", "status"]
+            ["auth", "status", "--hostname", "github.com"]
         ])
         #expect(copilotPrerequisites[1] == CommonCLIPrerequisites.githubCLI)
         #expect(copilotPrerequisites[2] == CommonCLIPrerequisites.githubAuth)

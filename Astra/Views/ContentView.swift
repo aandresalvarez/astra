@@ -71,7 +71,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var title: String {
         switch self {
         case .plan: "Plan"
-        case .markdown: "Markdown"
+        case .markdown: "Text"
         case .browser: "Browser"
         }
     }
@@ -258,6 +258,10 @@ struct ContentView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
+    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
@@ -276,6 +280,10 @@ struct ContentView: View {
     @State private var generatedHTMLPreviewTask: Task<Void, Never>?
     @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
+    @State private var claudeModelRefreshTask: Task<Void, Never>?
+    @State private var copilotModelRefreshTask: Task<Void, Never>?
+    @State private var lastClaudeModelRefreshSignature = ""
+    @State private var lastCopilotModelRefreshSignature = ""
     @State private var lastGeneratedHTMLPreviewSignature = ""
     @State private var lastGeneratedMarkdownPreviewSignature = ""
     @State private var selectedTaskHasMarkdownShelfContent = false
@@ -315,6 +323,10 @@ struct ContentView: View {
             claudePath,
             copilotPath,
             defaultRuntimeID,
+            claudeProviderRaw,
+            claudeVertexOpusModel,
+            claudeVertexSonnetModel,
+            claudeVertexHaikuModel,
             String(timeoutSeconds),
             validationModel,
             String(skipPermissions)
@@ -1058,7 +1070,8 @@ struct ContentView: View {
 
     private func openGeneratedFile(_ path: String) {
         let url = URL(fileURLWithPath: path)
-        if TaskGeneratedFiles.isHTMLFile(path) {
+        switch TaskGeneratedFiles.shelfDestination(for: path) {
+        case .browser?:
             let taskID = selectedTask?.id
             let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
             session.load(url)
@@ -1068,9 +1081,8 @@ struct ContentView: View {
             presentCanvas(.browser)
             syncBrowserPresentation()
             return
-        }
 
-        if TaskGeneratedFiles.isMarkdownFile(path) {
+        case .text?:
             let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
@@ -1081,9 +1093,10 @@ struct ContentView: View {
             }
             presentCanvas(.markdown)
             return
-        }
 
-        NSWorkspace.shared.open(url)
+        case nil:
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func syncBrowserPresentation() {
@@ -1655,6 +1668,7 @@ struct ContentView: View {
         migrateSkillSecrets()
         restoreWorkspaceSelection()
         backfillThreadTitlesIfNeeded()
+        refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
@@ -1748,6 +1762,60 @@ struct ContentView: View {
             validationModel: validationModel,
             skipPermissions: skipPermissions
         )
+        refreshProviderModelsInBackground()
+    }
+
+    private func refreshProviderModelsInBackground() {
+        refreshClaudeModelsInBackground()
+        refreshCopilotModelsInBackground()
+    }
+
+    private func refreshClaudeModelsInBackground() {
+        guard !isUITestingSeededLaunch else { return }
+        let resolvedClaudePath = claudePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? RuntimePathResolver.detectClaudePath()
+            : claudePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard FileManager.default.isExecutableFile(atPath: resolvedClaudePath) else { return }
+
+        let configuration = ClaudeModelAvailabilityConfiguration(
+            provider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
+        )
+        let signature = [
+            resolvedClaudePath,
+            configuration.provider.rawValue,
+            configuration.vertexOpusModel,
+            configuration.vertexSonnetModel,
+            configuration.vertexHaikuModel
+        ].joined(separator: "|")
+        guard claudeModelRefreshTask == nil, lastClaudeModelRefreshSignature != signature else { return }
+        lastClaudeModelRefreshSignature = signature
+        claudeModelRefreshTask = Task {
+            _ = await ClaudeModelAvailabilityService().refreshAndPersist(configuration: configuration)
+            await MainActor.run {
+                claudeModelRefreshTask = nil
+            }
+        }
+    }
+
+    private func refreshCopilotModelsInBackground() {
+        guard !isUITestingSeededLaunch else { return }
+        let resolvedCopilotPath = copilotPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? CopilotCLIRuntime.detectPath()
+            : copilotPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard FileManager.default.isExecutableFile(atPath: resolvedCopilotPath) else { return }
+
+        let signature = resolvedCopilotPath
+        guard copilotModelRefreshTask == nil, lastCopilotModelRefreshSignature != signature else { return }
+        lastCopilotModelRefreshSignature = signature
+        copilotModelRefreshTask = Task {
+            _ = await CopilotModelAvailabilityService().refreshAndPersist()
+            await MainActor.run {
+                copilotModelRefreshTask = nil
+            }
+        }
     }
 }
 
@@ -1798,12 +1866,12 @@ private struct ContentToolbar: ToolbarContent {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleMarkdown) {
                         toolbarToggleLabel(
-                            title: isMarkdownVisible ? "Hide Markdown" : "Show Markdown",
-                            systemImage: "doc.richtext",
+                            title: isMarkdownVisible ? "Hide Text" : "Show Text",
+                            systemImage: "doc.text",
                             isActive: isMarkdownVisible
                         )
                     }
-                    .help(isMarkdownVisible ? "Hide Markdown shelf" : "Show Markdown shelf")
+                    .help(isMarkdownVisible ? "Hide text shelf" : "Show text shelf")
                     .accessibilityIdentifier("ShelfMarkdownToggleButton")
                 }
 
@@ -2255,6 +2323,7 @@ private struct ContentDetailContentView: View {
 
 private struct NewWorkspaceSheet: View {
     @Environment(\.preflightCache) private var preflightCache
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var draft: NewWorkspaceDraft
     let rootPath: String
     let onCancel: () -> Void
@@ -2264,9 +2333,8 @@ private struct NewWorkspaceSheet: View {
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
     @State private var isCapabilitiesExpanded = false
-    @State private var githubStatus: HealthStatus?
-    @State private var githubAuthStatus: HealthStatus?
-    @State private var isProbingGitHub = false
+    @State private var capabilityPreflightStatuses: [String: [String: HealthStatus]] = [:]
+    @State private var probingCapabilityPackageIDs: Set<String> = []
 
     private enum Field {
         case name
@@ -2293,7 +2361,11 @@ private struct NewWorkspaceSheet: View {
         .onAppear {
             focusedField = .name
             applyCapabilityDefaults()
-            Task { await probeGitHub(forceRefresh: false) }
+            Task { await probeCapabilityPrerequisites(forceRefresh: false) }
+        }
+        .onChange(of: scenePhase) {
+            guard scenePhase == .active else { return }
+            Task { await probeCapabilityPrerequisites(forceRefresh: true) }
         }
     }
 
@@ -2546,16 +2618,17 @@ private struct NewWorkspaceSheet: View {
                 capabilityTextField("Project keys", prompt: "ENG, OPS", text: $draft.capabilityConfiguration.jiraProjects)
             }
         case OnboardingCapabilitySetup.githubPackageID:
-            HStack(spacing: 8) {
-                Image(systemName: isGitHubHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(Stanford.ui(12))
-                    .foregroundStyle(isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.poppy)
-                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the environment check." : "Run gh auth login, then create this workspace.")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.coolGrey)
-            }
+            capabilityPrerequisitesView(
+                for: packageID,
+                readyMessage: "Uses the authenticated gh CLI from the environment check."
+            )
         case OnboardingCapabilitySetup.gcloudPackageID:
             VStack(alignment: .leading, spacing: 8) {
+                capabilityPrerequisitesView(
+                    for: packageID,
+                    readyMessage: "gcloud is installed and authenticated."
+                )
+
                 HStack {
                     Text("Project defaults")
                         .font(Stanford.caption(10).weight(.semibold))
@@ -2616,14 +2689,20 @@ private struct NewWorkspaceSheet: View {
     }
 
     private var capabilityIssues: [String] {
-        draft.capabilitySetupIssues(githubCLIReady: isGitHubHealthy)
+        let configurationIssues = draft.capabilitySetupIssues(githubCLIReady: true)
+        let prerequisiteIssues = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> String? in
+            guard let packageID = option.packageID,
+                  draft.selectedCapabilityIDs.contains(packageID),
+                  let issue = capabilityPrerequisiteIssue(for: packageID) else {
+                return nil
+            }
+            return "\(option.title): \(issue)"
+        }
+        return configurationIssues + prerequisiteIssues
     }
 
     private var isGitHubHealthy: Bool {
-        if case .healthy = githubStatus, case .healthy = githubAuthStatus {
-            return true
-        }
-        return false
+        capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.githubPackageID)
     }
 
     private var hasVertexDefaults: Bool {
@@ -2632,7 +2711,8 @@ private struct NewWorkspaceSheet: View {
     }
 
     private var hasReadyCapabilityDefaults: Bool {
-        isGitHubHealthy || hasVertexDefaults
+        isGitHubHealthy ||
+            (hasVertexDefaults && capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID))
     }
 
     private var setupAssistantSummary: String {
@@ -2640,17 +2720,21 @@ private struct NewWorkspaceSheet: View {
         if isGitHubHealthy {
             suggestions.append("GitHub is ready")
         }
-        if hasVertexDefaults {
+        if hasVertexDefaults && capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID) {
             suggestions.append("Google Cloud can use Vertex settings")
         }
         return suggestions.joined(separator: ". ") + "."
     }
 
     private func capabilityStatusText(for packageID: String) -> String {
+        if isProbingCapability(packageID) { return "Checking" }
+        if let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) {
+            return prerequisiteStatusLabel(prerequisite, status: status)
+        }
+
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
-            if isProbingGitHub { return "Checking" }
-            return isGitHubHealthy ? "Ready" : "Needs gh"
+            return "Ready"
         case OnboardingCapabilitySetup.gcloudPackageID:
             let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
             if !project.isEmpty { return "Ready" }
@@ -2663,9 +2747,12 @@ private struct NewWorkspaceSheet: View {
     }
 
     private func capabilityStatusColor(for packageID: String) -> Color {
+        if isProbingCapability(packageID) { return Stanford.coolGrey }
+        if firstUnreadyPrerequisite(for: packageID) != nil { return Stanford.coolGrey }
+
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
-            return isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.coolGrey
+            return Stanford.paloAltoGreen
         case OnboardingCapabilitySetup.gcloudPackageID:
             let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
             return (!project.isEmpty || hasVertexDefaults) ? Stanford.paloAltoGreen : Stanford.coolGrey
@@ -2683,6 +2770,7 @@ private struct NewWorkspaceSheet: View {
                     if packageID == OnboardingCapabilitySetup.gcloudPackageID {
                         applyCapabilityDefaults()
                     }
+                    Task { await probeCapabilityPrerequisites(for: packageID, forceRefresh: false) }
                 } else {
                     draft.selectedCapabilityIDs.remove(packageID)
                 }
@@ -2702,25 +2790,189 @@ private struct NewWorkspaceSheet: View {
         if isGitHubHealthy {
             draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.githubPackageID)
         }
-        if !draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID) {
             draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.gcloudPackageID)
         }
     }
 
-    private func probeGitHub(forceRefresh: Bool) async {
-        isProbingGitHub = true
-        defer { isProbingGitHub = false }
+    @ViewBuilder
+    private func capabilityPrerequisitesView(for packageID: String, readyMessage: String) -> some View {
+        let prerequisites = prerequisites(for: packageID)
+        if !prerequisites.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: capabilityPrerequisiteSymbol(for: packageID))
+                        .font(Stanford.ui(12))
+                        .foregroundStyle(capabilityPrerequisiteColor(for: packageID))
+                    Text(capabilityPrerequisiteMessage(for: packageID, readyMessage: readyMessage))
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                    Spacer(minLength: 8)
+                    Button {
+                        Task { await probeCapabilityPrerequisites(for: packageID, forceRefresh: true) }
+                    } label: {
+                        if isProbingCapability(packageID) {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Re-check", systemImage: "arrow.clockwise")
+                                .labelStyle(.titleAndIcon)
+                        }
+                    }
+                    .font(Stanford.caption(11))
+                    .disabled(isProbingCapability(packageID))
+                }
+
+                ForEach(prerequisites, id: \.id) { prerequisite in
+                    if let status = prerequisiteStatus(for: prerequisite, packageID: packageID),
+                       case .healthy(let path, _) = status {
+                        Text("\(prerequisite.displayName): \(path)")
+                            .font(Stanford.mono(10))
+                            .foregroundStyle(Stanford.coolGrey)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+
+    private func probeCapabilityPrerequisites(forceRefresh: Bool) async {
+        for option in OnboardingCapabilitySetup.configurableOptions {
+            guard let packageID = option.packageID else { continue }
+            await probeCapabilityPrerequisites(for: packageID, forceRefresh: forceRefresh)
+        }
+    }
+
+    private func probeCapabilityPrerequisites(for packageID: String, forceRefresh: Bool) async {
+        let prerequisites = prerequisites(for: packageID)
+        guard !prerequisites.isEmpty else { return }
+        probingCapabilityPackageIDs.insert(packageID)
+        defer { probingCapabilityPackageIDs.remove(packageID) }
 
         if forceRefresh {
-            await preflightCache.invalidate(binary: "gh")
+            for binary in Set(prerequisites.map(\.binary)) {
+                await preflightCache.invalidate(binary: binary)
+            }
         }
 
-        githubStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubCLI)
-        guard case .healthy = githubStatus else {
-            githubAuthStatus = nil
-            return
+        var statuses = capabilityPreflightStatuses[packageID] ?? [:]
+        for prerequisite in prerequisites {
+            statuses[prerequisite.id] = await preflightCache.status(for: prerequisite)
         }
-        githubAuthStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubAuth)
+        capabilityPreflightStatuses[packageID] = statuses
+    }
+
+    private func prerequisites(for packageID: String) -> [CLIPrerequisite] {
+        PluginCatalog.builtInPackages.first { $0.id == packageID }?.prerequisites ?? []
+    }
+
+    private func isProbingCapability(_ packageID: String) -> Bool {
+        probingCapabilityPackageIDs.contains(packageID)
+    }
+
+    private func capabilityPrerequisitesReady(for packageID: String) -> Bool {
+        let prerequisites = prerequisites(for: packageID)
+        guard !prerequisites.isEmpty else { return true }
+        return prerequisites.allSatisfy { prerequisite in
+            guard let status = prerequisiteStatus(for: prerequisite, packageID: packageID),
+                  case .healthy = status else {
+                return false
+            }
+            return true
+        }
+    }
+
+    private func firstUnreadyPrerequisite(for packageID: String) -> (CLIPrerequisite, HealthStatus?)? {
+        for prerequisite in prerequisites(for: packageID) {
+            guard let status = prerequisiteStatus(for: prerequisite, packageID: packageID) else {
+                return (prerequisite, nil)
+            }
+            if case .healthy = status {
+                continue
+            }
+            return (prerequisite, status)
+        }
+        return nil
+    }
+
+    private func prerequisiteStatus(
+        for prerequisite: CLIPrerequisite,
+        packageID: String
+    ) -> HealthStatus? {
+        capabilityPreflightStatuses[packageID]?[prerequisite.id]
+    }
+
+    private func capabilityPrerequisiteIssue(for packageID: String) -> String? {
+        guard let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) else {
+            return nil
+        }
+        switch status {
+        case .healthy:
+            return nil
+        case .missingBinary:
+            return "\(prerequisite.displayName) is not installed"
+        case .unauthenticated(let detail):
+            return "\(prerequisite.displayName) needs login (\(detail))"
+        case .unresponsive(let detail):
+            return "\(prerequisite.displayName) failed (\(detail))"
+        case .none:
+            return isProbingCapability(packageID)
+                ? "Checking \(prerequisite.displayName)"
+                : "\(prerequisite.displayName) not checked"
+        }
+    }
+
+    private func prerequisiteStatusLabel(
+        _ prerequisite: CLIPrerequisite,
+        status: HealthStatus?
+    ) -> String {
+        switch status {
+        case .healthy:
+            return "Ready"
+        case .missingBinary:
+            return "Needs \(prerequisite.binary)"
+        case .unauthenticated:
+            return "Needs login"
+        case .unresponsive:
+            return "Check CLI"
+        case .none:
+            return "Check"
+        }
+    }
+
+    private func capabilityPrerequisiteMessage(for packageID: String, readyMessage: String) -> String {
+        if isProbingCapability(packageID) {
+            return "Checking CLI prerequisites..."
+        }
+        guard let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) else {
+            return readyMessage
+        }
+        switch status {
+        case .healthy:
+            return readyMessage
+        case .missingBinary:
+            return "\(prerequisite.displayName) is not installed. \(prerequisite.installHint)"
+        case .unauthenticated(let detail):
+            return "\(prerequisite.displayName) needs authentication: \(detail). \(prerequisite.authHint ?? "")"
+        case .unresponsive(let detail):
+            return "\(prerequisite.displayName) did not respond: \(detail)"
+        case .none:
+            return "Re-check \(prerequisite.displayName)."
+        }
+    }
+
+    private func capabilityPrerequisiteSymbol(for packageID: String) -> String {
+        if capabilityPrerequisitesReady(for: packageID) {
+            return "checkmark.circle.fill"
+        }
+        return "exclamationmark.triangle.fill"
+    }
+
+    private func capabilityPrerequisiteColor(for packageID: String) -> Color {
+        capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
     }
 
     private var footer: some View {

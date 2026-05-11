@@ -8,6 +8,8 @@ struct NewTaskView: View {
 
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     var workspace: Workspace?
 
@@ -79,9 +81,12 @@ struct NewTaskView: View {
                     }
                     .onChange(of: runtimeID) {
                         let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                        if !runtime.defaultModels.contains(model) {
-                            model = runtime.defaultModel
-                        }
+                        model = RuntimeModelAvailability.normalizedModel(
+                            model,
+                            for: runtime,
+                            cachedClaudeModelsJSON: claudeAvailableModels,
+                            cachedCopilotModelsJSON: copilotAvailableModels
+                        )
                     }
 
                     Picker("Model", selection: $model) {
@@ -172,15 +177,40 @@ struct NewTaskView: View {
             runtimeID = defaultRuntimeID
             model = defaultModel
             let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-            if !runtime.defaultModels.contains(model) {
-                model = runtime.defaultModel
-            }
+            model = RuntimeModelAvailability.normalizedModel(
+                model,
+                for: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
             tokenBudget = defaultBudget
+        }
+        .onChange(of: claudeAvailableModels) {
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            model = RuntimeModelAvailability.normalizedModel(
+                model,
+                for: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
+        }
+        .onChange(of: copilotAvailableModels) {
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            model = RuntimeModelAvailability.normalizedModel(
+                model,
+                for: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
         }
     }
 
     private var runtimeModels: [String] {
-        (AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode).defaultModels
+        RuntimeModelAvailability.models(
+            for: AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private func addInputFile() {
