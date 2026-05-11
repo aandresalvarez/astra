@@ -1,5 +1,251 @@
+import Darwin
 import Foundation
 import ASTRACore
+
+protocol AgentRuntimeProcessControl: AnyObject {
+    var isRunning: Bool { get }
+    var terminationStatus: Int32 { get }
+    func terminate()
+}
+
+extension Process: AgentRuntimeProcessControl {}
+
+final class AgentRuntimeProcessControlBox: @unchecked Sendable {
+    private let process: AgentRuntimeProcessControl
+
+    init(_ process: AgentRuntimeProcessControl) {
+        self.process = process
+    }
+
+    var isRunning: Bool { process.isRunning }
+
+    func terminate() {
+        process.terminate()
+    }
+}
+
+struct AgentExecutionScopedProcessError: LocalizedError {
+    let operation: String
+    let code: Int32
+
+    var errorDescription: String? {
+        "\(operation) failed: \(String(cString: strerror(code)))"
+    }
+}
+
+/// Launches a provider in its own process group so cancellation can clean up
+/// tool subprocesses that the provider starts or backgrounds.
+final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
+    private let executablePath: String
+    private let arguments: [String]
+    private let currentDirectory: String
+    private let environment: [String: String]
+    private let lock = NSLock()
+
+    private var processID: pid_t = 0
+    private var processGroupID: pid_t = 0
+    private var running = false
+    private var status: Int32 = 0
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
+
+    var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
+    var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var terminationStatus: Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return status
+    }
+
+    init(
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String]
+    ) {
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+    }
+
+    func run() throws {
+        var actions: posix_spawn_file_actions_t? = nil
+        var attr: posix_spawnattr_t? = nil
+        var childPID = pid_t(0)
+
+        guard posix_spawn_file_actions_init(&actions) == 0 else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawn_file_actions_init", code: errno)
+        }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+
+        guard posix_spawnattr_init(&attr) == 0 else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_init", code: errno)
+        }
+        defer { posix_spawnattr_destroy(&attr) }
+
+        try check(posix_spawn_file_actions_adddup2(&actions, stdoutPipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO),
+                  operation: "posix_spawn_file_actions_adddup2(stdout)")
+        try check(posix_spawn_file_actions_adddup2(&actions, stderrPipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO),
+                  operation: "posix_spawn_file_actions_adddup2(stderr)")
+        try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe.fileHandleForReading.fileDescriptor),
+                  operation: "posix_spawn_file_actions_addclose(stdout_read)")
+        try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
+                  operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        try addWorkingDirectory(to: &actions)
+
+        let flags = Int16(POSIX_SPAWN_SETPGROUP)
+        try check(posix_spawnattr_setflags(&attr, flags), operation: "posix_spawnattr_setflags")
+        try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+
+        var argv = makeCStringArray([executablePath] + arguments)
+        var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
+        defer {
+            freeCStringArray(argv)
+            freeCStringArray(envp)
+        }
+
+        let spawnResult = executablePath.withCString { executable in
+            argv.withUnsafeMutableBufferPointer { argvBuffer in
+                envp.withUnsafeMutableBufferPointer { envBuffer in
+                    posix_spawn(
+                        &childPID,
+                        executable,
+                        &actions,
+                        &attr,
+                        argvBuffer.baseAddress,
+                        envBuffer.baseAddress
+                    )
+                }
+            }
+        }
+        try check(spawnResult, operation: "posix_spawn")
+
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+
+        lock.lock()
+        processID = childPID
+        processGroupID = childPID
+        running = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.reapProcess(pid: childPID)
+        }
+    }
+
+    func terminate() {
+        let ids = currentIDs()
+        guard ids.isRunning else { return }
+
+        if ids.processGroupID > 0 && ids.processGroupID != getpgrp() {
+            kill(-ids.processGroupID, SIGTERM)
+        } else if ids.processID > 0 {
+            kill(ids.processID, SIGTERM)
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
+            guard let self else { return }
+            let latest = self.currentIDs()
+            guard latest.isRunning else { return }
+            if latest.processGroupID > 0 && latest.processGroupID != getpgrp() {
+                kill(-latest.processGroupID, SIGKILL)
+            } else if latest.processID > 0 {
+                kill(latest.processID, SIGKILL)
+            }
+        }
+    }
+
+    private func addWorkingDirectory(to actions: inout posix_spawn_file_actions_t?) throws {
+        let result = currentDirectory.withCString { path in
+            if #available(macOS 26.0, *) {
+                return posix_spawn_file_actions_addchdir(&actions, path)
+            } else {
+                return posix_spawn_file_actions_addchdir_np(&actions, path)
+            }
+        }
+        try check(result, operation: "posix_spawn_file_actions_addchdir")
+    }
+
+    private func reapProcess(pid: pid_t) {
+        var waitStatus: Int32 = 0
+        var result: pid_t
+        repeat {
+            result = waitpid(pid, &waitStatus, 0)
+        } while result == -1 && errno == EINTR
+
+        let exitStatus: Int32
+        if result == pid {
+            exitStatus = Self.exitCode(from: waitStatus)
+        } else {
+            exitStatus = -1
+        }
+
+        cleanupResidualProcessGroup()
+
+        lock.lock()
+        status = exitStatus
+        running = false
+        lock.unlock()
+
+        terminationHandler?(self)
+    }
+
+    private func cleanupResidualProcessGroup() {
+        let ids = currentIDs()
+        guard ids.processGroupID > 0,
+              ids.processGroupID != getpgrp() else {
+            return
+        }
+
+        if kill(-ids.processGroupID, SIGTERM) == 0 {
+            usleep(200_000)
+        }
+        kill(-ids.processGroupID, SIGKILL)
+    }
+
+    private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (processID, processGroupID, running)
+    }
+
+    private func check(_ result: Int32, operation: String) throws {
+        guard result == 0 else {
+            throw AgentExecutionScopedProcessError(operation: operation, code: result)
+        }
+    }
+
+    private static func exitCode(from waitStatus: Int32) -> Int32 {
+        let signal = waitStatus & 0x7f
+        if signal == 0 {
+            return (waitStatus >> 8) & 0xff
+        }
+        return 128 + signal
+    }
+
+    private func makeCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
+        strings.map { strdup($0) } + [nil]
+    }
+
+    private func freeCStringArray(_ array: [UnsafeMutablePointer<CChar>?]) {
+        for pointer in array {
+            if let pointer {
+                free(pointer)
+            }
+        }
+    }
+}
 
 final class AgentLockedBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -598,7 +844,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return max(1, text.count / 4)
     }
 
-    func processEvent(_ parsed: ParsedEvent, process: Process?) -> Bool {
+    func processEvent(_ parsed: ParsedEvent, process: AgentRuntimeProcessControl?) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
@@ -741,7 +987,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return false
     }
 
-    private func recordBudgetOverage(reason: String, fields: [String: String], process: Process?) -> Bool {
+    private func recordBudgetOverage(reason: String, fields: [String: String], process: AgentRuntimeProcessControl?) -> Bool {
         var auditFields = fields
         auditFields["reason"] = reason
         auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
@@ -751,7 +997,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return true
     }
 
-    private func recordBudgetWarning(reason: String, fields: [String: String], process _: Process?) -> Bool {
+    private func recordBudgetWarning(reason: String, fields: [String: String], process _: AgentRuntimeProcessControl?) -> Bool {
         guard !_budgetWarning else { return false }
         var auditFields = fields
         auditFields["reason"] = reason
@@ -767,17 +1013,18 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lock.unlock()
     }
 
-    func startWatchdog(process: Process) {
+    func startWatchdog(process: AgentRuntimeProcessControl) {
         lock.lock()
         guard !watchdogRunning else { lock.unlock(); return }
         watchdogRunning = true
         lock.unlock()
 
+        let processBox = AgentRuntimeProcessControlBox(process)
         let checkInterval: TimeInterval = 30
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: checkInterval)
-                guard let self, process.isRunning else { return }
+                guard let self, processBox.isRunning else { return }
 
                 self.lock.lock()
                 let idleDuration = Date().timeIntervalSince(self.lastActivityTime)
@@ -791,7 +1038,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     self.lock.lock()
                     self._timedOut = true
                     self.lock.unlock()
-                    process.terminate()
+                    processBox.terminate()
                     return
                 }
             }

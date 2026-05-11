@@ -66,4 +66,72 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
         #expect(prompt.contains("JIRA_PROJECTS: STAR"))
     }
+
+    @Test("Runtime connector resolution ignores stale duplicate when a configured connector exists")
+    func runtimeConnectorResolutionIgnoresStaleDuplicateWhenConfiguredConnectorExists() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "StarrDocs", primaryPath: "/tmp/starrdocs")
+        context.insert(workspace)
+
+        let staleConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Placeholder Jira",
+            baseURL: "https://yourcompany.atlassian.net",
+            authMethod: "basic"
+        )
+        staleConnector.workspace = workspace
+        staleConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        staleConnector.configKeys = ["JIRA_PROJECTS"]
+        staleConnector.configValues = [""]
+        context.insert(staleConnector)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API for requested Jira work."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let configuredConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "none"
+        )
+        configuredConnector.isGlobal = true
+        configuredConnector.skill = jiraSkill
+        configuredConnector.configKeys = ["JIRA_PROJECTS"]
+        configuredConnector.configValues = ["SS,STAR"]
+        context.insert(configuredConnector)
+        workspace.enabledGlobalConnectorIDs = [configuredConnector.id.uuidString]
+
+        let safeSkill = Skill(
+            name: "Safe Bash",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use safe shell commands."
+        )
+        safeSkill.workspace = workspace
+        context.insert(safeSkill)
+
+        let task = AgentTask(
+            title: "Use Jira story STAR-11892",
+            goal: "Propose a plan for Jira story STAR-11892",
+            workspace: workspace
+        )
+        task.skills = [safeSkill]
+        context.insert(task)
+        try context.save()
+
+        #expect(task.allConnectors.map(\.id) == [configuredConnector.id])
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("https://stanfordmed.atlassian.net"))
+        #expect(!prompt.contains("https://yourcompany.atlassian.net"))
+        #expect(prompt.contains("[Jira Agent]:"))
+    }
 }

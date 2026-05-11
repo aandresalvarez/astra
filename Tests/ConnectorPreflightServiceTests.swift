@@ -94,6 +94,75 @@ struct ConnectorPreflightServiceTests {
         #expect(issue == nil)
     }
 
+    @Test("Valid Jira connector can satisfy preflight when a stale connector fails first")
+    func validJiraConnectorSatisfiesPreflightWhenStaleConnectorFailsFirst() async throws {
+        let staleConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://yourcompany.atlassian.net",
+            authMethod: "basic"
+        )
+        staleConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let (validConnector, store) = makePreflightJiraConnector(projects: "STAR")
+        validConnector.name = "Jira-new"
+        validConnector.baseURL = "https://stanfordmed.atlassian.net"
+
+        let transport = PreflightMockTransport(stubs: [
+            .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["permissions=BROWSE_PROJECTS"],
+                statusCode: 200,
+                body: preflightPermissionsJSON(browse: true)
+            ),
+            .init(
+                path: "/rest/api/3/mypermissions",
+                queryContains: ["projectKey=STAR", "BROWSE_PROJECTS"],
+                statusCode: 200,
+                body: preflightPermissionsJSON(browse: true, create: true)
+            )
+        ])
+
+        let candidates = ConnectorPreflightService.connectorsRequiringPreflight(
+            from: [staleConnector, validConnector],
+            contextText: "Plan work for Jira story STAR-11892",
+            store: store
+        )
+        #expect(candidates.map(\.id) == [validConnector.id])
+
+        let issue = await ConnectorPreflightService.firstBlockingIssue(
+            connectors: candidates,
+            store: store,
+            transport: transport,
+            contextText: "Plan work for Jira story STAR-11892"
+        )
+
+        #expect(issue == nil)
+        #expect(transport.requests.count == 2)
+    }
+
+    @Test("Jira preflight ranks the connector scoped to the requested project")
+    func jiraPreflightRanksRequestedProjectConnector() async throws {
+        let (ssConnector, store) = makePreflightJiraConnector(projects: "SS")
+        ssConnector.name = "Jira SS"
+        ssConnector.baseURL = "https://stanfordmed.atlassian.net"
+
+        let (starConnector, _) = makePreflightJiraConnector(projects: "STAR")
+        starConnector.name = "Jira STAR"
+        starConnector.baseURL = "https://stanfordmed.atlassian.net"
+        let starEntityID = KeychainSecretStore.connectorEntityID(for: starConnector.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: starEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "token", entityID: starEntityID, label: nil)
+
+        let candidates = ConnectorPreflightService.connectorsRequiringPreflight(
+            from: [ssConnector, starConnector],
+            contextText: "Plan work for Jira story STAR-11892",
+            store: store
+        )
+
+        #expect(candidates.map(\.id) == [starConnector.id, ssConnector.id])
+    }
+
     @Test("Jira task preflight narrows configured projects to the requested project")
     func jiraTaskPreflightNarrowsToRequestedProject() async throws {
         let (connector, store) = makePreflightJiraConnector(projects: "SS,STAR")
