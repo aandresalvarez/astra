@@ -23,7 +23,7 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
 }
 
 final class AgentRuntimeProcessRunner {
-    private var currentProcess: Process?
+    private var currentProcess: AgentRuntimeProcessControl?
 
     func cancel() {
         currentProcess?.terminate()
@@ -57,9 +57,6 @@ final class AgentRuntimeProcessRunner {
                 resumeLock.unlock()
                 continuation.resume(returning: result)
             }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: claudePath)
-
             var args = ["-p", prompt, "--model", Self.translatedModelForProvider(task.model), "--output-format", "stream-json", "--verbose"]
             args += effectivePermissionPolicy.cliArguments
             Self.ensureSubAgentPermissions(at: workspacePath, policy: effectivePermissionPolicy, allowedTools: allowed)
@@ -69,19 +66,19 @@ final class AgentRuntimeProcessRunner {
             if !allowed.isEmpty {
                 args += ["--allowedTools"] + allowed
             }
-            process.arguments = args
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-            process.environment = Self.environment(
+            let processEnvironment = Self.environment(
                 phase: "run",
                 task: task,
                 taskEnv: taskEnv,
                 includeClaudeTeamFlag: true
             )
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
+            let process = AgentExecutionScopedProcess(
+                executablePath: claudePath,
+                arguments: args,
+                currentDirectory: workspacePath,
+                environment: processEnvironment
+            )
 
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
@@ -97,7 +94,7 @@ final class AgentRuntimeProcessRunner {
                 taskID: task.id
             )
 
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            process.stdoutFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
@@ -114,7 +111,7 @@ final class AgentRuntimeProcessRunner {
                 }
             }
 
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            process.stderrFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
                 if let string = String(data: data, encoding: .utf8) {
@@ -123,10 +120,10 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                proc.stdoutFileHandle.readabilityHandler = nil
+                proc.stderrFileHandle.readabilityHandler = nil
                 if let chunk = String(
-                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                    data: proc.stdoutFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !chunk.isEmpty {
                     for line in lineBuffer.appendAndDrainLines(chunk) {
@@ -141,7 +138,7 @@ final class AgentRuntimeProcessRunner {
                     }
                 }
                 if let string = String(
-                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                    data: proc.stderrFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !string.isEmpty {
                     errorOutput.append(string)
@@ -171,7 +168,6 @@ final class AgentRuntimeProcessRunner {
                 ))
             }
 
-            currentProcess = process
             do {
                 try process.run()
             } catch {
@@ -179,6 +175,7 @@ final class AgentRuntimeProcessRunner {
                 return
             }
 
+            currentProcess = process
             monitor.startWatchdog(process: process)
         }
     }
@@ -273,16 +270,12 @@ final class AgentRuntimeProcessRunner {
 
             try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: plan.executablePath)
-            process.arguments = plan.arguments
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-            process.environment = plan.environment
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
+            let process = AgentExecutionScopedProcess(
+                executablePath: plan.executablePath,
+                arguments: plan.arguments,
+                currentDirectory: workspacePath,
+                environment: plan.environment
+            )
 
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
@@ -298,7 +291,7 @@ final class AgentRuntimeProcessRunner {
                 taskID: task.id
             )
 
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            process.stdoutFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
@@ -321,7 +314,7 @@ final class AgentRuntimeProcessRunner {
                 }
             }
 
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            process.stderrFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
                 if let string = String(data: data, encoding: .utf8) {
@@ -330,10 +323,10 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                proc.stdoutFileHandle.readabilityHandler = nil
+                proc.stderrFileHandle.readabilityHandler = nil
                 if let chunk = String(
-                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                    data: proc.stdoutFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !chunk.isEmpty {
                     for line in lineBuffer.appendAndDrainLines(chunk) {
@@ -354,7 +347,7 @@ final class AgentRuntimeProcessRunner {
                     }
                 }
                 if let string = String(
-                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                    data: proc.stderrFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !string.isEmpty {
                     errorOutput.append(string)
@@ -392,7 +385,6 @@ final class AgentRuntimeProcessRunner {
                 ))
             }
 
-            currentProcess = process
             do {
                 try process.run()
             } catch {
@@ -400,6 +392,7 @@ final class AgentRuntimeProcessRunner {
                 return
             }
 
+            currentProcess = process
             monitor.startWatchdog(process: process)
         }
     }

@@ -81,7 +81,11 @@ struct TaskCapabilityResolver {
         }
 
         var seen = Set<UUID>()
-        return all.filter { seen.insert($0.id).inserted }
+        let unique = all.filter { seen.insert($0.id).inserted }
+        return ConnectorPreflightService.preferredRuntimeConnectors(
+            from: unique,
+            contextText: [task.title, task.goal].joined(separator: "\n")
+        )
     }
 
     var allLocalTools: [LocalTool] {

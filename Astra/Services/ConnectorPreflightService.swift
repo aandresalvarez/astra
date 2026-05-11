@@ -22,22 +22,49 @@ enum ConnectorPreflightService {
         "jira": ["jira", "atlassian"]
     ]
 
+    static func preferredRuntimeConnectors(
+        from connectors: [Connector],
+        contextText: String,
+        store: SecretStore = KeychainSecretStore()
+    ) -> [Connector] {
+        var grouped: [String: [Connector]] = [:]
+        var serviceOrder: [String] = []
+        for connector in connectors {
+            let serviceType = normalizedServiceType(connector.serviceType)
+            if grouped[serviceType] == nil {
+                grouped[serviceType] = []
+                serviceOrder.append(serviceType)
+            }
+            grouped[serviceType]?.append(connector)
+        }
+
+        return serviceOrder.flatMap { serviceType -> [Connector] in
+            let connectors = grouped[serviceType] ?? []
+            guard triggerKeywordsByServiceType[serviceType] != nil else {
+                return connectors
+            }
+            return rankedConnectorsForService(connectors, contextText: contextText, store: store)
+        }
+    }
+
     static func requiresPreflight(_ connector: Connector) -> Bool {
         triggerKeywordsByServiceType.keys.contains(connector.serviceType.lowercased())
     }
 
     static func connectorsRequiringPreflight(
         from connectors: [Connector],
-        contextText: String
+        contextText: String,
+        store: SecretStore = KeychainSecretStore()
     ) -> [Connector] {
         let normalizedText = contextText.lowercased()
-        return connectors.filter { connector in
+        let matches = connectors.filter { connector in
             let serviceType = connector.serviceType.lowercased()
             guard let keywords = triggerKeywordsByServiceType[serviceType] else { return false }
             let connectorName = connector.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             return keywords.contains { normalizedText.contains($0) }
                 || (!connectorName.isEmpty && normalizedText.contains(connectorName))
         }
+        return rankedPreflightConnectors(matches, contextText: contextText, store: store)
     }
 
     static func firstBlockingIssue(
@@ -46,18 +73,112 @@ enum ConnectorPreflightService {
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
         contextText: String = ""
     ) async -> ConnectorPreflightIssue? {
-        for connector in connectors where requiresPreflight(connector) {
+        let candidates = rankedPreflightConnectors(
+            connectors.filter(requiresPreflight),
+            contextText: contextText,
+            store: store
+        )
+        var firstIssue: ConnectorPreflightIssue?
+        for connector in candidates {
             let scopedConnector = connector.scopedForPreflight(contextText: contextText)
             let result = await scopedConnector.testConnection(store: store, transport: transport)
-            guard !result.0 else { continue }
-            return ConnectorPreflightIssue(
-                connectorID: connector.id,
-                connectorName: connector.name,
-                serviceType: connector.serviceType,
-                message: result.1
-            )
+            if result.0 {
+                return nil
+            }
+            if firstIssue == nil {
+                firstIssue = ConnectorPreflightIssue(
+                    connectorID: connector.id,
+                    connectorName: connector.name,
+                    serviceType: connector.serviceType,
+                    message: result.1
+                )
+            }
         }
-        return nil
+        return firstIssue
+    }
+
+    private static func rankedPreflightConnectors(
+        _ connectors: [Connector],
+        contextText: String,
+        store: SecretStore
+    ) -> [Connector] {
+        preferredRuntimeConnectors(
+            from: connectors,
+            contextText: contextText,
+            store: store
+        ).filter(requiresPreflight)
+    }
+
+    private static func rankedConnectorsForService(
+        _ connectors: [Connector],
+        contextText: String,
+        store: SecretStore
+    ) -> [Connector] {
+        let ranked = connectors.sorted { lhs, rhs in
+            preflightScore(lhs, contextText: contextText, store: store)
+                > preflightScore(rhs, contextText: contextText, store: store)
+        }
+        let runnable = ranked.filter { isRunnableCandidate($0, store: store) }
+        return runnable.isEmpty ? ranked : runnable
+    }
+
+    private static func preflightScore(
+        _ connector: Connector,
+        contextText: String,
+        store: SecretStore
+    ) -> Int {
+        var score = 0
+
+        if isRunnableCandidate(connector, store: store) {
+            score += 1_000
+        }
+        if connector.isGlobal {
+            score += 25
+        }
+        if !isPlaceholderBaseURL(connector.baseURL) {
+            score += 20
+        }
+
+        if normalizedServiceType(connector.serviceType) == "jira" {
+            let configuredProjects = Connector.projectKeys(from: connector.config["JIRA_PROJECTS"] ?? "")
+            let requestedProjects = Connector.projectKeysMentioned(in: contextText, configuredProjects: configuredProjects)
+            if !requestedProjects.isEmpty {
+                score += 500
+            } else if !configuredProjects.isEmpty {
+                score += 50
+            }
+        }
+
+        return score
+    }
+
+    private static func isRunnableCandidate(_ connector: Connector, store: SecretStore) -> Bool {
+        if connector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if isPlaceholderBaseURL(connector.baseURL) {
+            return false
+        }
+        if connector.authMethod != "none" {
+            if connector.credentialKeys.isEmpty {
+                return false
+            }
+            if !connector.missingCredentialKeys(store: store).isEmpty {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isPlaceholderBaseURL(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty
+            || normalized.contains("yourcompany.")
+            || normalized.contains("example.")
+    }
+
+    private static func normalizedServiceType(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -100,7 +221,7 @@ private extension Connector {
     static func projectKeysMentioned(in text: String, configuredProjects: [String]) -> [String] {
         let words = Set(text
             .uppercased()
-            .split { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "-" }
+            .split { !$0.isLetter && !$0.isNumber && $0 != "_" }
             .map(String.init))
         return configuredProjects.filter { words.contains($0) }
     }
