@@ -262,7 +262,13 @@ final class TaskQueue {
 
     /// Continue a session on the worker that originally ran the task
     @MainActor
-    func continueSession(task: AgentTask, message: String, modelContext: ModelContext, onEvent: @escaping (ParsedEvent) -> Void = { _ in }) async {
+    func continueSession(
+        task: AgentTask,
+        message: String,
+        modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async {
         // Try to find the original worker, or use any available one
         let worker = taskWorkerMap[task.id] ?? nextAvailableWorker()
         guard let worker else {
@@ -277,7 +283,13 @@ final class TaskQueue {
         }
 
         taskWorkerMap[task.id] = worker
-        await worker.continueSession(task: task, message: message, modelContext: modelContext, onEvent: onEvent)
+        await worker.continueSession(
+            task: task,
+            message: message,
+            modelContext: modelContext,
+            executionPolicy: executionPolicy,
+            onEvent: onEvent
+        )
         taskWorkerMap.removeValue(forKey: task.id)
     }
 

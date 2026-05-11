@@ -8,7 +8,7 @@ struct NewTaskView: View {
 
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
-    @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     var workspace: Workspace?
 
     @State private var title = ""

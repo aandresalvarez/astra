@@ -2,6 +2,14 @@ import Testing
 import Foundation
 @testable import ASTRA
 
+private let liveProviderIntegrationEnabled =
+    ProcessInfo.processInfo.environment["RUN_REAL_PROVIDERS"] != nil ||
+    ProcessInfo.processInfo.environment["RUN_PROVIDER_INTEGRATION"] != nil ||
+    ProcessInfo.processInfo.environment["RUN_CLAUDE_INTEGRATION"] != nil
+
+private let liveProviderIntegrationHint: Comment =
+    "Set RUN_PROVIDER_INTEGRATION=1 or RUN_REAL_PROVIDERS=1 to run live provider CLI integration tests"
+
 private struct BaseEvent: Decodable { let type: String }
 private struct ContentBlock: Decodable { let type: String; let text: String?; let name: String? }
 private struct Message: Decodable { let content: [ContentBlock]? }
@@ -103,10 +111,16 @@ private func extractFirstJSONObject(from output: String) -> String {
     return trimmed
 }
 
-@Suite("Claude CLI Integration", .tags(.integration))
+@Suite("Provider CLI Integration", .tags(.integration))
 struct IntegrationTests {
 
-    @Test("Simple prompt returns system + assistant + result events")
+    @Test(
+        "Claude stream returns system + assistant + result events",
+        .enabled(
+            if: liveProviderIntegrationEnabled,
+            liveProviderIntegrationHint
+        )
+    )
     func simplePrompt() throws {
         let (lines, exitCode) = try runClaude(prompt: "Reply with only the word 'pong'.")
         #expect(exitCode == 0)
@@ -141,7 +155,13 @@ struct IntegrationTests {
         #expect(tokens > 0)
     }
 
-    @Test("Prompt with tool use produces multiple turns")
+    @Test(
+        "Claude prompt with tool use produces multiple turns",
+        .enabled(
+            if: liveProviderIntegrationEnabled,
+            liveProviderIntegrationHint
+        )
+    )
     func toolUsePrompt() throws {
         let (lines, exitCode) = try runClaude(prompt: "What files are in /tmp? Just list 3.")
         #expect(exitCode == 0)
@@ -173,7 +193,13 @@ struct IntegrationTests {
         #expect(numTurns != nil && numTurns! >= 2)
     }
 
-    @Test("Spec extraction via Claude CLI")
+    @Test(
+        "Claude CLI can return provider-generated task spec JSON",
+        .enabled(
+            if: liveProviderIntegrationEnabled,
+            liveProviderIntegrationHint
+        )
+    )
     func specExtraction() throws {
         guard let claudePath = findClaude() else {
             throw CLIError.notFound

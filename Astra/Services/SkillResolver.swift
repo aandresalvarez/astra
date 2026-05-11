@@ -78,13 +78,17 @@ struct SkillResolver {
         }
     }
 
-    var resolvedClaudeAllowedTools: [String] {
+    var resolvedProviderAllowedTools: [String] {
         let snapshotCLICommands = effectiveSnapshots
             .flatMap { $0.localToolSnapshots ?? [] }
             .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
             .map(\.command)
         let cliLocalCommands = liveLocalToolCommands.union(snapshotCLICommands)
         return resolvedAllowedTools.filter { !cliLocalCommands.contains($0) }
+    }
+
+    var resolvedClaudeAllowedTools: [String] {
+        resolvedProviderAllowedTools
     }
 
     var resolvedBehaviorInstructions: String {

@@ -35,14 +35,7 @@ final class TaskLifecycleCoordinator {
             "source": "manual_run"
         ])
         Task {
-            await taskQueue.executeTask(task, modelContext: modelContext) { event in
-                if case .text(let text) = event {
-                    AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-                        "event": "stream_text_received",
-                        "character_count": String(text.count)
-                    ], level: .debug)
-                }
-            }
+            await taskQueue.executeTask(task, modelContext: modelContext)
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
@@ -106,14 +99,7 @@ final class TaskLifecycleCoordinator {
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         Task {
-            await taskQueue.continueSession(task: task, message: "Continue where you left off. Complete the original goal.", modelContext: modelContext) { event in
-                if case .text(let text) = event {
-                    AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-                        "event": "resume_stream_text_received",
-                        "character_count": String(text.count)
-                    ], level: .debug)
-                }
-            }
+            await taskQueue.continueSession(task: task, message: "Continue where you left off. Complete the original goal.", modelContext: modelContext)
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
                 "source": "resume"
@@ -122,6 +108,12 @@ final class TaskLifecycleCoordinator {
     }
 
     func approveTask(_ task: AgentTask) {
+        if task.status == .pendingUser,
+           hasOpenRuntimePermissionApprovalRequest(task) {
+            approveRuntimePermissionAndContinue(task)
+            return
+        }
+
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id)
         task.status = .completed
         task.updatedAt = Date()
@@ -130,6 +122,54 @@ final class TaskLifecycleCoordinator {
         let event = TaskEvent(task: task, type: "task.approved", payload: "Task approved by user.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func approveRuntimePermissionAndContinue(_ task: AgentTask) {
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "runtime_permission",
+            "runtime": task.resolvedRuntimeID.rawValue
+        ])
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            type: "task.approved",
+            payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+
+        let runtime = task.resolvedRuntimeID
+        Task {
+            await taskQueue.continueSession(
+                task: task,
+                message: Self.runtimePermissionApprovalResumeMessage,
+                modelContext: modelContext,
+                executionPolicy: .approvedRuntimePermission(runtime: runtime)
+            )
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_approval"
+            ])
+        }
+    }
+
+    private static let runtimePermissionApprovalResumeMessage = """
+    The user approved the blocked runtime permission in ASTRA. Continue the original task from where it stopped. Do not ask for another interactive CLI approval for the same operation; use the approved provider permissions for this run.
+    """
+
+    private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
+        let latestRequest = task.events
+            .filter { $0.type == "permission.approval.requested" }
+            .max { $0.timestamp < $1.timestamp }
+        guard let latestRequest else { return false }
+
+        let latestApproval = task.events
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
     }
 
     func deleteTask(_ task: AgentTask) -> Workspace? {
@@ -317,15 +357,26 @@ final class TaskLifecycleCoordinator {
 
     func backfillGeneratedThreadTitles(
         claudePath: String,
+        copilotPath: String = "",
+        defaultRuntimeID: String = AgentRuntimeID.claudeCode.rawValue,
         model: String = "claude-haiku-4-5-20251001",
         limit: Int = 40
     ) {
-        let resolvedClaudePath = claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath
-        guard FileManager.default.isExecutableFile(atPath: resolvedClaudePath) else {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let utilityRuntime = AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: runtime.defaultModels.contains(model) ? model : runtime.defaultModel,
+            claudePath: claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
+            copilotPath: copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
+        let executablePath = runtime == .copilotCLI ? utilityRuntime.copilotPath : utilityRuntime.claudePath
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
             AppLogger.audit(.taskStats, category: "UI", fields: [
                 "operation": "thread_title_backfill",
-                "result": "missing_claude",
-                "claude_path": resolvedClaudePath
+                "result": "missing_utility_runtime",
+                "runtime": runtime.rawValue,
+                "executable_path": executablePath
             ], level: .warning)
             return
         }
@@ -352,8 +403,7 @@ final class TaskLifecycleCoordinator {
                 guard let generated = await SpecEngine.generateTitle(
                     goal: task.goal,
                     workspacePath: workspace.primaryPath,
-                    claudePath: resolvedClaudePath,
-                    model: model
+                    utilityRuntime: utilityRuntime
                 ),
                 Self.isUsableGeneratedTitle(generated),
                 generated.caseInsensitiveCompare(originalTitle) != .orderedSame else {

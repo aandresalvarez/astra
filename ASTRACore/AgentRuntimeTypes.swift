@@ -85,6 +85,25 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     )
 }
 
+public enum AgentRuntimeRegistry {
+    public static let builtInDescriptors: [AgentRuntimeDescriptor] = [
+        .claudeCode,
+        .copilotCLI
+    ]
+
+    public static func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
+        builtInDescriptors.first { $0.id == runtime } ?? AgentRuntimeDescriptor(
+            id: runtime,
+            displayName: runtime.displayName,
+            executableName: runtime.rawValue,
+            installHint: "",
+            authHint: "",
+            defaultModels: runtime.defaultModels,
+            supportsAstraRunProtocol: runtime.supportsAstraRunProtocol
+        )
+    }
+}
+
 public enum AgentEvent: Sendable, Equatable {
     case started(sessionID: String?, model: String?)
     case thinking(text: String)

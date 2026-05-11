@@ -36,11 +36,11 @@
       "toolType" : "cli"
     }
   ],
-  "name" : "REDCap Workflow",
+  "name" : "REDCap",
   "prerequisites" : [
 
   ],
-  "setupGuide" : "Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https:\/\/redcap.stanford.edu\/api\/.\n\nWhat you can do:\n- Export project metadata, instruments, events, arms, DAGs, reports, and records\n- Inspect longitudinal event and instrument-event mappings\n- Import records, metadata, arms, events, DAGs, and instrument-event mappings after explicit confirmation\n- Download or upload REDCap files when the user asks for that workflow\n\nSetup:\n- Add the project API token as REDCAP_API_TOKEN\n- Keep tokens out of prompts, logs, files, commits, and shell history\n- Use the task output folder for exports and summaries, especially when data may include PHI",
+  "setupGuide" : "Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https:\/\/redcap.stanford.edu\/api\/.\n\nWhat you can do:\n- Export project metadata, instruments, events, arms, DAGs, reports, and records\n- Inspect longitudinal event and instrument-event mappings\n- Import records, metadata, arms, events, DAGs, and instrument-event mappings after explicit confirmation\n- Download or upload REDCap files when the user asks for that capability\n\nSetup:\n- Add the project API token as REDCAP_API_TOKEN\n- Keep tokens out of prompts, logs, files, commits, and shell history\n- Use the task output folder for exports and summaries, especially when data may include PHI",
   "skills" : [
     {
       "allowedTools" : [

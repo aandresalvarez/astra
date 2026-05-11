@@ -1,6 +1,10 @@
 import SwiftUI
 import ASTRACore
 
+private enum TaskDetailFilePathMatcher {
+    static let regex = try? NSRegularExpression(pattern: #"(?:/[\w.@\-]+){2,}(?:\.\w+)?"#)
+}
+
 struct TaskDetailView: View {
     let task: AgentTask
     var onRunTask: ((AgentTask) -> Void)?
@@ -337,8 +341,6 @@ struct ArtifactsTabView: View {
     @State private var taskFolderFiles: [ArtifactFile] = []
     @State private var cachedAllFiles: [ArtifactFile] = []
 
-    private static let filePathRegex = try? NSRegularExpression(pattern: #"(?:/[\w.@\-]+){2,}(?:\.\w+)?"#)
-
     struct ArtifactFile: Identifiable, Hashable {
         let id = UUID()
         let path: String
@@ -580,7 +582,7 @@ struct ArtifactsTabView: View {
         guard !combined.isEmpty else { return }
         Task {
             let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard let regex = ArtifactsTabView.filePathRegex else { return [] }
+                guard let regex = TaskDetailFilePathMatcher.regex else { return [] }
                 let nsText = combined as NSString
                 let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
                 var seen = Set<String>()
@@ -781,8 +783,6 @@ struct FilesTabView: View {
     enum FileViewMode: String {
         case content, diff
     }
-
-    private static let filePathRegex = try? NSRegularExpression(pattern: #"(?:/[\w.@\-]+){2,}(?:\.\w+)?"#)
 
     struct ArtifactFile: Identifiable, Hashable {
         let id = UUID()
@@ -1538,7 +1538,7 @@ struct FilesTabView: View {
         guard !combined.isEmpty else { return }
         Task {
             let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard let regex = FilesTabView.filePathRegex else { return [] }
+                guard let regex = TaskDetailFilePathMatcher.regex else { return [] }
                 let nsText = combined as NSString
                 let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
                 var seen = Set<String>()

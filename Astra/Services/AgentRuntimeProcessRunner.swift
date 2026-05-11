@@ -1,6 +1,27 @@
 import Foundation
 import ASTRACore
 
+struct AgentRuntimeBudgetProfile: Sendable, Equatable {
+    let runtime: AgentRuntimeID
+    let launchOverheadTokens: Int
+
+    func estimatedLaunchInputTokens(prompt: String) -> Int {
+        AgentProcessMonitor.estimatedTokenCount(for: prompt) + launchOverheadTokens
+    }
+
+    static func profile(for runtime: AgentRuntimeID) -> AgentRuntimeBudgetProfile {
+        switch runtime {
+        case .claudeCode:
+            // Claude Code includes its system prompt, tool schemas, and runtime context
+            // in billed input. Recent local runs report roughly 120k input tokens before
+            // user-visible output, so low budgets must be rejected before launch.
+            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 120_000)
+        case .copilotCLI:
+            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 0)
+        }
+    }
+}
+
 final class AgentRuntimeProcessRunner {
     private var currentProcess: Process?
 
@@ -16,12 +37,15 @@ final class AgentRuntimeProcessRunner {
         workspacePath: String,
         claudePath: String,
         permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
-        let allowed = task.resolvedClaudeAllowedTools
-        let tokenBudget = Self.tokenBudget(for: task)
+        let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
+        let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
+        let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -37,8 +61,8 @@ final class AgentRuntimeProcessRunner {
             process.executableURL = URL(fileURLWithPath: claudePath)
 
             var args = ["-p", prompt, "--model", Self.translatedModelForProvider(task.model), "--output-format", "stream-json", "--verbose"]
-            args += permissionPolicy.cliArguments
-            Self.ensureSubAgentPermissions(at: workspacePath, policy: permissionPolicy, allowedTools: allowed)
+            args += effectivePermissionPolicy.cliArguments
+            Self.ensureSubAgentPermissions(at: workspacePath, policy: effectivePermissionPolicy, allowedTools: allowed)
             if task.maxTurns > 0 {
                 args += ["--max-turns", String(task.maxTurns)]
             }
@@ -66,6 +90,7 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                budgetEnforcementMode: budgetEnforcementMode,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -138,6 +163,7 @@ final class AgentRuntimeProcessRunner {
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     budgetExceeded: monitor.budgetExceeded,
+                    budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
@@ -165,13 +191,15 @@ final class AgentRuntimeProcessRunner {
         copilotPath: String,
         copilotHome: String,
         permissionPolicy: PermissionPolicy,
-        allowedToolsOverride: [String]? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
-        let allowed = allowedToolsOverride ?? task.resolvedClaudeAllowedTools
-        let tokenBudget = task.tokenBudget == 0 ? Int.max : task.tokenBudget
+        let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
+        let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
+        let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -199,7 +227,7 @@ final class AgentRuntimeProcessRunner {
                 model: model,
                 workspacePath: workspacePath,
                 additionalPaths: additionalPaths,
-                permissionPolicy: permissionPolicy,
+                permissionPolicy: effectivePermissionPolicy,
                 allowedTools: allowed,
                 timeoutSeconds: timeoutSeconds,
                 capabilities: capabilities,
@@ -228,9 +256,9 @@ final class AgentRuntimeProcessRunner {
                 "supports_silent": String(capabilities.supportsSilent),
                 "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
-                "permission_policy": permissionPolicy.rawValue,
+                "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(allowed.count),
-                "allowed_tools_override": String(allowedToolsOverride != nil),
+                "allowed_tools_override": String(executionPolicy.allowedToolsOverride != nil),
                 "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),
                 "task_env_count": String(taskEnv.count),
@@ -263,6 +291,7 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                budgetEnforcementMode: budgetEnforcementMode,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -355,6 +384,7 @@ final class AgentRuntimeProcessRunner {
                     error: error.isEmpty ? nil : error,
                     providerVersion: providerVersion,
                     budgetExceeded: monitor.budgetExceeded,
+                    budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
@@ -395,157 +425,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    func runClaudeResume(
-        sessionId: String,
-        message: String,
-        task: AgentTask,
-        workspacePath: String,
-        claudePath: String,
-        permissionPolicy: PermissionPolicy,
-        timeoutSeconds: TimeInterval,
-        onLine: @escaping (String) -> Void
-    ) async -> AgentProcessResult {
-        let taskEnv = Self.scopedEnvironmentVariables(for: task)
-        let allowed = task.resolvedClaudeAllowedTools
-        let baseBudget = task.tokenBudget
-        let remainingBudget = baseBudget == 0 ? Int.max : max(1000, baseBudget - task.tokensUsed)
-
-        return await withCheckedContinuation { continuation in
-            let resumeLock = NSLock()
-            var hasResumed = false
-            let resumeOnce: (AgentProcessResult) -> Void = { result in
-                resumeLock.lock()
-                guard !hasResumed else { resumeLock.unlock(); return }
-                hasResumed = true
-                resumeLock.unlock()
-                continuation.resume(returning: result)
-            }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: claudePath)
-
-            var args = ["-p", message, "--resume", sessionId, "--output-format", "stream-json", "--verbose"]
-            args += permissionPolicy.cliArguments
-            Self.ensureSubAgentPermissions(at: workspacePath, policy: permissionPolicy, allowedTools: allowed)
-            if task.maxTurns > 0 {
-                args += ["--max-turns", String(task.maxTurns)]
-            }
-            if !allowed.isEmpty {
-                args += ["--allowedTools"] + allowed
-            }
-            process.arguments = args
-            process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-            process.environment = Self.environment(
-                phase: "resume",
-                task: task,
-                taskEnv: taskEnv,
-                includeClaudeTeamFlag: true
-            )
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            let errorOutput = AgentLockedBuffer()
-            let lineBuffer = AgentLockedBuffer()
-            let eventPipeline = AgentRuntimeEventPipelineBox(
-                supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
-            )
-            let monitor = AgentProcessMonitor(
-                tokenBudget: remainingBudget,
-                maxTurns: task.maxTurns,
-                maxRepetitions: 8,
-                idleTimeoutSeconds: timeoutSeconds,
-                taskID: task.id
-            )
-
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty,
-                      let chunk = String(data: data, encoding: .utf8) else { return }
-
-                for line in lineBuffer.appendAndDrainLines(chunk) {
-                    if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                        onLine(line)
-                        for parsed in StreamEventParser.parseAll(line: line) {
-                            for filtered in eventPipeline.process(parsed) {
-                                _ = monitor.processEvent(filtered, process: process)
-                            }
-                        }
-                    }
-                }
-            }
-
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                if let string = String(data: data, encoding: .utf8) {
-                    errorOutput.append(string)
-                }
-            }
-
-            process.terminationHandler = { proc in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                if let chunk = String(
-                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                ), !chunk.isEmpty {
-                    for line in lineBuffer.appendAndDrainLines(chunk) {
-                        if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                            onLine(line)
-                            for parsed in StreamEventParser.parseAll(line: line) {
-                                for filtered in eventPipeline.process(parsed) {
-                                    _ = monitor.processEvent(filtered, process: process)
-                                }
-                            }
-                        }
-                    }
-                }
-                if let string = String(
-                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                ), !string.isEmpty {
-                    errorOutput.append(string)
-                }
-                let remaining = lineBuffer.drainRemaining()
-                if !remaining.trimmingCharacters(in: .whitespaces).isEmpty {
-                    onLine(remaining)
-                    for parsed in StreamEventParser.parseAll(line: remaining) {
-                        for filtered in eventPipeline.process(parsed) {
-                            _ = monitor.processEvent(filtered, process: process)
-                        }
-                    }
-                }
-                for filtered in eventPipeline.flushParsedEvents() {
-                    _ = monitor.processEvent(filtered, process: process)
-                }
-                let error = errorOutput.value
-                resumeOnce(AgentProcessResult(
-                    exitCode: Int(proc.terminationStatus),
-                    error: error.isEmpty ? nil : error,
-                    budgetExceeded: monitor.budgetExceeded,
-                    finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
-                    timedOut: monitor.timedOut,
-                    repetitionKilled: monitor.repetitionKilled,
-                    maxTurnsExceeded: monitor.maxTurnsExceeded
-                ))
-            }
-
-            currentProcess = process
-            do {
-                try process.run()
-            } catch {
-                resumeOnce(AgentProcessResult(exitCode: -1, error: error.localizedDescription))
-            }
-
-            monitor.startWatchdog(process: process)
-        }
-    }
-
-    @MainActor
-    private static func tokenBudget(for task: AgentTask) -> Int {
+    static func effectiveTokenBudget(for task: AgentTask) -> Int {
         let baseBudget = task.tokenBudget
         if baseBudget == 0 {
             return Int.max
@@ -563,7 +443,15 @@ final class AgentRuntimeProcessRunner {
         return baseBudget
     }
 
-    private static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
+    static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {
+        AgentRuntimeBudgetProfile.profile(for: runtime).estimatedLaunchInputTokens(prompt: prompt)
+    }
+
+    static func launchOverheadTokens(for runtime: AgentRuntimeID) -> Int {
+        AgentRuntimeBudgetProfile.profile(for: runtime).launchOverheadTokens
+    }
+
+    static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
         switch runtime {
         case .claudeCode:
             return model.isEmpty ? runtime.defaultModel : model

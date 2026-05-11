@@ -92,7 +92,7 @@ final class AgentTask {
         workspaceAccess.effectiveWorkspacePath
     }
 
-    /// The directory where the Claude CLI process should actually run.
+    /// The directory where the selected provider process should actually run.
     /// Prefers the first additional path (where the actual code lives) over the
     /// Astra workspace folder (which is for metadata/task outputs).
     var codeWorkingDirectory: String {
@@ -257,6 +257,7 @@ final class AgentTask {
 
     var resolvedAllowedTools: [String] { makeSkillResolver().resolvedAllowedTools }
     var resolvedDisallowedTools: [String] { makeSkillResolver().resolvedDisallowedTools }
+    var resolvedProviderAllowedTools: [String] { makeSkillResolver().resolvedProviderAllowedTools }
     var resolvedClaudeAllowedTools: [String] { makeSkillResolver().resolvedClaudeAllowedTools }
     var resolvedBehaviorInstructions: String { makeSkillResolver().resolvedBehaviorInstructions }
     var resolvedEnvironmentVariables: [String: String] { makeSkillResolver().resolvedEnvironmentVariables }

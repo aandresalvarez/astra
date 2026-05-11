@@ -31,10 +31,12 @@ Tasks may begin as a simple request, but ASTRA keeps the surrounding context: wo
 
 - macOS 14 or newer
 - Xcode or the Swift 5.10 toolchain
-- Claude CLI installed and authenticated
+- At least one supported provider CLI installed and authenticated: Claude Code
+  or GitHub Copilot CLI
 - Optional local CLIs for specific plugins, such as Docker or gcloud
 
-The first-run onboarding flow checks the Claude CLI and helps choose a workspace root.
+The first-run onboarding flow checks the selected provider CLI and helps choose
+a workspace root.
 
 ## Getting Started
 
@@ -43,6 +45,10 @@ Build the app:
 ```bash
 swift build
 ```
+
+ASTRA is packaged as an Apple-Silicon-only macOS app. The bundle helper verifies
+that it is running from a native `arm64` shell and that bundled executables are
+`arm64`.
 
 Run the test suite:
 
@@ -284,6 +290,23 @@ Before opening a change:
 swift test
 ```
 
+Default tests do not call account-backed provider CLIs. To run live provider
+integration checks, including Claude/Copilot smoke paths, opt in explicitly:
+
+```bash
+RUN_PROVIDER_INTEGRATION=1 swift test --filter IntegrationTests
+RUN_REAL_PROVIDERS=1 swift test --filter RealProviderSmokeTests
+```
+
+For provider stream debugging, launch ASTRA with `ASTRA_STREAM_DEBUG=1`. Normal
+runs keep only compact counters; debug mode adds bounded raw stream samples,
+unknown JSON shapes, stderr tail, and timing to the task log.
+
+In Instruments, filter the `Performance` signpost category for
+`process_stream_line`, `parse_provider_stream`, `persist_provider_event`,
+`build_thread_snapshot`, and `render_task_thread` to isolate stream-to-render
+latency.
+
 For UI or workflow changes, also launch the app and exercise the affected flow:
 
 ```bash
@@ -294,6 +317,6 @@ Keep changes focused, match the existing SwiftUI patterns, and prefer small prod
 
 ## Current Status
 
-ASTRA is under active development. The repository includes the SwiftUI macOS app, persistent SwiftData models, task scheduling, Claude CLI execution, plugin and skill management, onboarding, logging, and a growing test suite.
+ASTRA is under active development. The repository includes the SwiftUI macOS app, persistent SwiftData models, task scheduling, provider-agnostic CLI execution, plugin and skill management, onboarding, logging, and a growing test suite. Claude Code and GitHub Copilot CLI are supported today, with the runtime registry shaped so additional providers such as Codex and Gemini CLIs can be added deliberately.
 
 The long-term direction is a polished supervision system where people can confidently delegate work to durable software operators and stay in control of the important decisions.

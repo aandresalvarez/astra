@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
+import AppKit
 
 enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
@@ -39,11 +41,13 @@ enum ContentDetailPresentation: Equatable {
 /// Future cases can choose wider sizing for browser or file previews.
 private enum WorkspaceCanvasItem: Equatable {
     case plan
+    case markdown
     case browser
 
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
+        case .markdown: 360
         case .browser: 360
         }
     }
@@ -51,6 +55,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
+        case .markdown: 520
         case .browser: 440
         }
     }
@@ -58,6 +63,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
+        case .markdown: 980
         case .browser: 1120
         }
     }
@@ -65,6 +71,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var title: String {
         switch self {
         case .plan: "Plan"
+        case .markdown: "Markdown"
         case .browser: "Browser"
         }
     }
@@ -86,6 +93,62 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
         if next.isVisible {
             value = next
         }
+    }
+}
+
+@MainActor
+private final class ShelfBrowserSessionStore: ObservableObject {
+    private let sharedSession = ShelfBrowserSession()
+    private var taskSessions: [UUID: ShelfBrowserSession] = [:]
+
+    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfBrowserSession {
+        guard pinnedToTask, let taskID else {
+            sharedSession.bindToTask(taskID)
+            return sharedSession
+        }
+
+        if let session = taskSessions[taskID] {
+            session.bindToTask(taskID)
+            return session
+        }
+
+        let session = ShelfBrowserSession()
+        session.bindToTask(taskID)
+        taskSessions[taskID] = session
+        return session
+    }
+
+    func setPresented(_ isPresented: Bool, taskID: UUID?, pinnedToTask: Bool) {
+        sharedSession.setPresented(false)
+        for session in taskSessions.values {
+            session.setPresented(false)
+        }
+
+        guard isPresented else { return }
+        session(for: taskID, pinnedToTask: pinnedToTask).setPresented(true)
+    }
+}
+
+@MainActor
+private final class ShelfMarkdownSessionStore: ObservableObject {
+    private let sharedSession = ShelfMarkdownSession()
+    private var taskSessions: [UUID: ShelfMarkdownSession] = [:]
+
+    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfMarkdownSession {
+        guard pinnedToTask, let taskID else {
+            sharedSession.bindToTask(taskID)
+            return sharedSession
+        }
+
+        if let session = taskSessions[taskID] {
+            session.bindToTask(taskID)
+            return session
+        }
+
+        let session = ShelfMarkdownSession()
+        session.bindToTask(taskID)
+        taskSessions[taskID] = session
+        return session
     }
 }
 
@@ -128,6 +191,8 @@ private extension View {
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
+    var selectedCapabilityIDs: Set<String> = []
+    var capabilityConfiguration = OnboardingCapabilityConfiguration()
 
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -138,12 +203,26 @@ struct NewWorkspaceDraft: Equatable {
     }
 
     var canCreate: Bool {
-        !trimmedName.isEmpty
+        !trimmedName.isEmpty && capabilitySetupIssues(githubCLIReady: true).isEmpty
+    }
+
+    func capabilitySetupIssues(githubCLIReady: Bool) -> [String] {
+        OnboardingCapabilitySetup.configurableOptions.flatMap { option -> [String] in
+            guard let packageID = option.packageID,
+                  selectedCapabilityIDs.contains(packageID) else {
+                return []
+            }
+            return capabilityConfiguration
+                .missingRequirements(for: packageID, githubCLIReady: githubCLIReady)
+                .map { "\(option.title): \($0)" }
+        }
     }
 
     mutating func clear() {
         name = ""
         instructions = ""
+        selectedCapabilityIDs = []
+        capabilityConfiguration = OnboardingCapabilityConfiguration()
     }
 }
 
@@ -166,10 +245,9 @@ struct ContentView: View {
     @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
-    @State private var shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-    @State private var onboardingCapabilityConfiguration = OnboardingCapabilityConfiguration()
     @State private var runtime = AppRuntimeController()
-    @StateObject private var browserSession = ShelfBrowserSession()
+    @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
+    @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -186,7 +264,8 @@ struct ContentView: View {
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
-    @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
+    @AppStorage(AppStorageKeys.browserPinnedToTask) private var isBrowserPinnedToTask = true
+    @AppStorage(AppStorageKeys.markdownPinnedToTask) private var isMarkdownPinnedToTask = true
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -194,6 +273,13 @@ struct ContentView: View {
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var panelTransitionGeneration = 0
     @State private var cachedHasCanvasContent = false
+    @State private var generatedHTMLPreviewTask: Task<Void, Never>?
+    @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
+    @State private var markdownAvailabilityTask: Task<Void, Never>?
+    @State private var lastGeneratedHTMLPreviewSignature = ""
+    @State private var lastGeneratedMarkdownPreviewSignature = ""
+    @State private var selectedTaskHasMarkdownShelfContent = false
+    @State private var selectedTaskPreferredMarkdownPath = ""
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -203,7 +289,7 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.hasPresentedOnboarding) private var hasPresentedOnboarding = false
     @State private var isReplayingOnboarding = false
     /// Shared preflight cache — one instance for the whole app run so the
-    /// wizard's probe of `claude` warms the cache for the catalog badges
+    /// wizard's provider probe warms the cache for the catalog badges
     /// (and vice versa).
 
     @MainActor
@@ -242,6 +328,34 @@ struct ContentView: View {
         )
     }
 
+    private var currentBrowserSession: ShelfBrowserSession {
+        browserSessionStore.session(
+            for: selectedTask?.id,
+            pinnedToTask: isBrowserPinnedToTask
+        )
+    }
+
+    private var currentMarkdownSession: ShelfMarkdownSession {
+        markdownSessionStore.session(
+            for: selectedTask?.id,
+            pinnedToTask: isMarkdownPinnedToTask
+        )
+    }
+
+    private var browserPinnedToTaskBinding: Binding<Bool> {
+        Binding(
+            get: { isBrowserPinnedToTask },
+            set: setBrowserPinnedToTask
+        )
+    }
+
+    private var markdownPinnedToTaskBinding: Binding<Bool> {
+        Binding(
+            get: { isMarkdownPinnedToTask },
+            set: setMarkdownPinnedToTask
+        )
+    }
+
     private var selectedTaskUnreadSignature: String {
         guard let selectedTask else { return "" }
         let unread = selectedTask.unreadAt?.timeIntervalSince1970 ?? 0
@@ -250,10 +364,23 @@ struct ContentView: View {
 
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
+        let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
+        let inputSignature = selectedTask.inputs.joined(separator: "|")
         let state = TaskPlanService.reconstruct(for: selectedTask)
-        guard let plan = state.plan else { return "\(selectedTask.id.uuidString):none" }
+        guard let plan = state.plan else {
+            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature):\(inputSignature)"
+        }
         let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary)"
+        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature):\(inputSignature)"
+    }
+
+    private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
+        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
+        return [
+            task.status.rawValue,
+            latestRun?.id.uuidString ?? "none",
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: "|")
     }
 
     private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }
@@ -316,7 +443,10 @@ struct ContentView: View {
                 effectiveWorkspace: effectiveWorkspace,
                 isComposingTask: isComposingTask,
                 taskQueue: runtime.taskQueue,
-                browserSession: browserSession,
+                browserSession: currentBrowserSession,
+                isBrowserPinnedToTask: browserPinnedToTaskBinding,
+                markdownSession: currentMarkdownSession,
+                isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -350,7 +480,8 @@ struct ContentView: View {
                 onNewSSHConnection: showSSHConnectionEditor,
                 onEditSSHConnection: beginEditingSSHConnection,
                 onCreateWorkspace: createWorkspace,
-                onImportWorkspace: importWorkspace
+                onImportWorkspace: importWorkspace,
+                onOpenGeneratedFile: openGeneratedFile
             )
         }
         .navigationSplitViewStyle(.balanced)
@@ -369,10 +500,13 @@ struct ContentView: View {
                 hasTaskThread: hasOpenTaskThread,
                 hasCanvasContent: hasWorkspaceCanvasContent,
                 isCanvasVisible: activeWorkspaceCanvasItem == .plan,
+                hasMarkdownContent: selectedTaskHasMarkdownShelfContent,
+                isMarkdownVisible: activeWorkspaceCanvasItem == .markdown,
                 isBrowserVisible: activeWorkspaceCanvasItem == .browser,
                 isRightRailVisible: isWorkspaceRightRailVisible,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
                 onToggleCanvas: toggleWorkspaceCanvas,
+                onToggleMarkdown: toggleMarkdownCanvas,
                 onToggleBrowser: toggleBrowserCanvas,
                 onToggleRightRail: toggleRightRail
             )
@@ -404,14 +538,23 @@ struct ContentView: View {
             if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
                 activeWorkspaceCanvasItem = nil
             }
+            if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .markdown {
+                activeWorkspaceCanvasItem = nil
+            }
+            refreshMarkdownShelfAvailabilityForSelectedTask()
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
         .onChange(of: hasOpenTaskThread) {
             if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
                 activeWorkspaceCanvasItem = nil
             }
+            if !hasOpenTaskThread, activeWorkspaceCanvasItem == .markdown {
+                activeWorkspaceCanvasItem = nil
+            }
         }
         .onChange(of: activeWorkspaceCanvasItem) {
-            browserSession.setPresented(activeWorkspaceCanvasItem == .browser)
+            syncBrowserPresentation()
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -554,11 +697,8 @@ struct ContentView: View {
                 allowsDismiss: isReplayingOnboarding,
                 onDismiss: {
                     hasCompletedOnboarding = true
-                    onboardingCapabilityConfiguration.clearSecrets()
                 },
-                capabilityConfiguration: $onboardingCapabilityConfiguration,
                 onCreateWorkspace: {
-                    shouldApplyOnboardingCapabilitiesToNextWorkspace = true
                     createWorkspace()
                 }
             )
@@ -741,7 +881,7 @@ struct ContentView: View {
             }
             return
         }
-        browserSession.bindToTask(selectedTask?.id)
+        currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             let _ = nextPanelTransitionGeneration()
             animatePanelChange {
@@ -749,6 +889,245 @@ struct ContentView: View {
             }
         } else {
             presentCanvas(.browser)
+        }
+    }
+
+    private func toggleMarkdownCanvas() {
+        guard selectedTaskHasMarkdownShelfContent, selectedTask != nil || isComposingTask else {
+            if activeWorkspaceCanvasItem == .markdown {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+            return
+        }
+        currentMarkdownSession.bindToTask(selectedTask?.id)
+        if !selectedTaskPreferredMarkdownPath.isEmpty {
+            let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
+            if currentMarkdownSession.fileURL?.path != url.path {
+                currentMarkdownSession.load(url)
+            }
+        }
+        if activeWorkspaceCanvasItem == .markdown {
+            let _ = nextPanelTransitionGeneration()
+            animatePanelChange {
+                activeWorkspaceCanvasItem = nil
+            }
+        } else {
+            presentCanvas(.markdown)
+        }
+    }
+
+    private func refreshMarkdownShelfAvailabilityForSelectedTask() {
+        markdownAvailabilityTask?.cancel()
+        guard let selectedTask else {
+            selectedTaskHasMarkdownShelfContent = false
+            selectedTaskPreferredMarkdownPath = ""
+            if activeWorkspaceCanvasItem == .markdown {
+                activeWorkspaceCanvasItem = nil
+            }
+            return
+        }
+
+        let taskID = selectedTask.id
+        let attachedMarkdownPath = preferredAttachedMarkdownPath(for: selectedTask)
+        selectedTaskPreferredMarkdownPath = attachedMarkdownPath ?? ""
+        selectedTaskHasMarkdownShelfContent = attachedMarkdownPath != nil
+
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else {
+            closeMarkdownShelfIfUnavailable()
+            return
+        }
+
+        markdownAvailabilityTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            let generatedMarkdownPath = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder)
+
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID else {
+                    return
+                }
+
+                if let generatedMarkdownPath {
+                    selectedTaskPreferredMarkdownPath = generatedMarkdownPath
+                    selectedTaskHasMarkdownShelfContent = true
+                } else if let attachedMarkdownPath {
+                    selectedTaskPreferredMarkdownPath = attachedMarkdownPath
+                    selectedTaskHasMarkdownShelfContent = true
+                } else {
+                    selectedTaskPreferredMarkdownPath = ""
+                    selectedTaskHasMarkdownShelfContent = false
+                    closeMarkdownShelfIfUnavailable()
+                }
+            }
+        }
+    }
+
+    private func preferredAttachedMarkdownPath(for task: AgentTask) -> String? {
+        let paths = TaskGeneratedFiles.markdownFiles(inInputs: task.inputs)
+        return TaskGeneratedFiles.preferredMarkdownFile(in: paths)
+    }
+
+    private func closeMarkdownShelfIfUnavailable() {
+        guard activeWorkspaceCanvasItem == .markdown else { return }
+        let _ = nextPanelTransitionGeneration()
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+        }
+    }
+
+    private func previewGeneratedHTMLForSelectedTaskIfNeeded() {
+        guard isBrowserPinnedToTask else { return }
+        guard let selectedTask else {
+            generatedHTMLPreviewTask?.cancel()
+            return
+        }
+
+        let taskID = selectedTask.id
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else { return }
+
+        generatedHTMLPreviewTask?.cancel()
+        generatedHTMLPreviewTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            guard !Task.isCancelled,
+                  let path = TaskGeneratedFiles.preferredHTMLFile(in: files, taskFolder: taskFolder) else {
+                return
+            }
+
+            let signature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID,
+                      lastGeneratedHTMLPreviewSignature != signature else {
+                    return
+                }
+
+                lastGeneratedHTMLPreviewSignature = signature
+                let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+                session.load(URL(fileURLWithPath: path))
+                if activeWorkspaceCanvasItem != .browser {
+                    presentCanvas(.browser)
+                }
+                syncBrowserPresentation()
+            }
+        }
+    }
+
+    private func previewGeneratedMarkdownForSelectedTaskIfNeeded() {
+        guard isMarkdownPinnedToTask else { return }
+        guard let selectedTask else {
+            generatedMarkdownPreviewTask?.cancel()
+            return
+        }
+
+        let taskID = selectedTask.id
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else { return }
+
+        generatedMarkdownPreviewTask?.cancel()
+        generatedMarkdownPreviewTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            guard !Task.isCancelled,
+                  let path = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder) else {
+                return
+            }
+
+            let signature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID,
+                      lastGeneratedMarkdownPreviewSignature != signature else {
+                    return
+                }
+
+                lastGeneratedMarkdownPreviewSignature = signature
+                selectedTaskPreferredMarkdownPath = path
+                selectedTaskHasMarkdownShelfContent = true
+                let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+                session.load(URL(fileURLWithPath: path))
+                if activeWorkspaceCanvasItem != .browser {
+                    presentCanvas(.markdown)
+                }
+            }
+        }
+    }
+
+    private func openGeneratedFile(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if TaskGeneratedFiles.isHTMLFile(path) {
+            let taskID = selectedTask?.id
+            let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+            session.load(url)
+            if let taskID {
+                lastGeneratedHTMLPreviewSignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            }
+            presentCanvas(.browser)
+            syncBrowserPresentation()
+            return
+        }
+
+        if TaskGeneratedFiles.isMarkdownFile(path) {
+            let taskID = selectedTask?.id
+            selectedTaskPreferredMarkdownPath = path
+            selectedTaskHasMarkdownShelfContent = true
+            let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+            session.load(url)
+            if let taskID {
+                lastGeneratedMarkdownPreviewSignature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
+            }
+            presentCanvas(.markdown)
+            return
+        }
+
+        NSWorkspace.shared.open(url)
+    }
+
+    private func syncBrowserPresentation() {
+        browserSessionStore.setPresented(
+            activeWorkspaceCanvasItem == .browser,
+            taskID: selectedTask?.id,
+            pinnedToTask: isBrowserPinnedToTask
+        )
+    }
+
+    private func setBrowserPinnedToTask(_ pinnedToTask: Bool) {
+        guard isBrowserPinnedToTask != pinnedToTask else { return }
+
+        let previousSession = currentBrowserSession
+        let previousAddress = previousSession.currentURL
+        isBrowserPinnedToTask = pinnedToTask
+        lastGeneratedHTMLPreviewSignature = ""
+
+        let nextSession = currentBrowserSession
+        if !previousAddress.isEmpty && nextSession.currentURL.isEmpty {
+            nextSession.load(previousAddress)
+        }
+
+        syncBrowserPresentation()
+        if pinnedToTask {
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
+        }
+    }
+
+    private func setMarkdownPinnedToTask(_ pinnedToTask: Bool) {
+        guard isMarkdownPinnedToTask != pinnedToTask else { return }
+
+        let previousSession = currentMarkdownSession
+        let previousURL = previousSession.fileURL
+        isMarkdownPinnedToTask = pinnedToTask
+        lastGeneratedMarkdownPreviewSignature = ""
+
+        let nextSession = currentMarkdownSession
+        if let previousURL, !nextSession.hasFile {
+            nextSession.load(previousURL)
+        }
+
+        if pinnedToTask {
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
     }
 
@@ -907,8 +1286,6 @@ struct ContentView: View {
 
     private func resetNewWorkspaceDraft() {
         newWorkspaceDraft.clear()
-        shouldApplyOnboardingCapabilitiesToNextWorkspace = false
-        onboardingCapabilityConfiguration.clearSecrets()
     }
 
     private func restoreWorkspaceSelection() {
@@ -951,24 +1328,29 @@ struct ContentView: View {
         guard newWorkspaceDraft.canCreate else { return }
         let workspace = coordinator.createWorkspace(name: newWorkspaceDraft.trimmedName, rootPath: resolvedRoot)
         workspace.instructions = newWorkspaceDraft.trimmedInstructions
-        if shouldApplyOnboardingCapabilitiesToNextWorkspace {
-            applyOnboardingCapabilities(to: workspace)
-        }
+        applyNewWorkspaceCapabilities(to: workspace)
         selectedWorkspace = workspace
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }
 
-    private func applyOnboardingCapabilities(to workspace: Workspace) {
-        let packages = OnboardingCapabilitySetup.selectedPackages(
-            from: PluginCatalog.builtInPackages,
-            rawValue: onboardingEnabledCapabilityIDsRaw
-        )
+    private func applyNewWorkspaceCapabilities(to workspace: Workspace) {
+        let selectedIDs = newWorkspaceDraft.selectedCapabilityIDs
+        guard !selectedIDs.isEmpty else { return }
+
+        var packagesByID: [String: PluginPackage] = [:]
+        for package in PluginCatalog.builtInPackages {
+            packagesByID[package.id] = package
+        }
+        let packages = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> PluginPackage? in
+            guard let packageID = option.packageID, selectedIDs.contains(packageID) else { return nil }
+            return packagesByID[packageID]
+        }
         guard !packages.isEmpty else { return }
 
         let installer = CapabilityInstaller()
         for package in packages {
-            let inputs = onboardingCapabilityConfiguration.installationInputs(for: package.id)
+            let inputs = newWorkspaceDraft.capabilityConfiguration.installationInputs(for: package.id)
             do {
                 try installer.install(
                     package,
@@ -1076,7 +1458,12 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
-        let shouldCloseBrowserForTaskChange = activeWorkspaceCanvasItem == .browser
+        let shouldCloseBrowserForTaskChange = isBrowserPinnedToTask
+            && activeWorkspaceCanvasItem == .browser
+            && previousTaskID != nil
+            && previousTaskID != task?.id
+        let shouldCloseMarkdownForTaskChange = isMarkdownPinnedToTask
+            && activeWorkspaceCanvasItem == .markdown
             && previousTaskID != nil
             && previousTaskID != task?.id
         if let taskWorkspace = task?.workspace,
@@ -1085,13 +1472,26 @@ struct ContentView: View {
         }
         selectedTask = task
         if previousTaskID != task?.id {
-            browserSession.bindToTask(task?.id)
+            lastGeneratedHTMLPreviewSignature = ""
+            lastGeneratedMarkdownPreviewSignature = ""
+            currentBrowserSession.bindToTask(task?.id)
+            currentMarkdownSession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
             }
+            if shouldCloseMarkdownForTaskChange {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+            syncBrowserPresentation()
+            refreshMarkdownShelfAvailabilityForSelectedTask()
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
         if task != nil {
             isComposingTask = false
@@ -1216,6 +1616,8 @@ struct ContentView: View {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
             claudePath: claudePath,
+            copilotPath: copilotPath,
+            defaultRuntimeID: defaultRuntimeID,
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
         )
@@ -1356,10 +1758,13 @@ private struct ContentToolbar: ToolbarContent {
     let hasTaskThread: Bool
     let hasCanvasContent: Bool
     let isCanvasVisible: Bool
+    let hasMarkdownContent: Bool
+    let isMarkdownVisible: Bool
     let isBrowserVisible: Bool
     let isRightRailVisible: Bool
     let onCheckForUpdates: () -> Void
     let onToggleCanvas: () -> Void
+    let onToggleMarkdown: () -> Void
     let onToggleBrowser: () -> Void
     let onToggleRightRail: () -> Void
 
@@ -1380,7 +1785,7 @@ private struct ContentToolbar: ToolbarContent {
                     Button(action: onToggleCanvas) {
                         toolbarToggleLabel(
                             title: isCanvasVisible ? "Hide Plan" : "Show Plan",
-                            systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle",
+                            systemImage: "list.bullet.clipboard",
                             isActive: isCanvasVisible
                         )
                     }
@@ -1389,7 +1794,19 @@ private struct ContentToolbar: ToolbarContent {
                 }
             }
 
-            if hasTaskThread {
+            if hasTaskThread, hasMarkdownContent {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onToggleMarkdown) {
+                        toolbarToggleLabel(
+                            title: isMarkdownVisible ? "Hide Markdown" : "Show Markdown",
+                            systemImage: "doc.richtext",
+                            isActive: isMarkdownVisible
+                        )
+                    }
+                    .help(isMarkdownVisible ? "Hide Markdown shelf" : "Show Markdown shelf")
+                    .accessibilityIdentifier("ShelfMarkdownToggleButton")
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleBrowser) {
                         toolbarToggleLabel(
@@ -1439,6 +1856,9 @@ private struct ContentDetailAreaView: View {
     let isComposingTask: Bool
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
+    @Binding var isBrowserPinnedToTask: Bool
+    @ObservedObject var markdownSession: ShelfMarkdownSession
+    @Binding var isMarkdownPinnedToTask: Bool
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
@@ -1446,6 +1866,7 @@ private struct ContentDetailAreaView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppStorageKeys.planShelfWidth) private var planShelfStoredWidth = Double(WorkspaceCanvasItem.plan.idealWidth)
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
+    @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
     @State private var resizingShelfItem: WorkspaceCanvasItem?
@@ -1480,6 +1901,7 @@ private struct ContentDetailAreaView: View {
     let onEditSSHConnection: (SSHConnection) -> Void
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
+    let onOpenGeneratedFile: (String) -> Void
 
     var body: some View {
         contentWithOptionalCanvas
@@ -1533,14 +1955,14 @@ private struct ContentDetailAreaView: View {
 
     private func shelfLayout(for item: WorkspaceCanvasItem) -> some View {
         GeometryReader { proxy in
-            let committedWidth = committedShelfWidth(for: item, availableWidth: proxy.size.width)
             let panelWidth = shelfWidth(for: item, availableWidth: proxy.size.width)
+            let detailWidth = max(0, proxy.size.width - panelWidth)
             let isResizing = resizingShelfItem == item
 
-            ZStack(alignment: .trailing) {
+            HStack(spacing: 0) {
                 detailContent
-                    .padding(.trailing, committedWidth)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: detailWidth, height: proxy.size.height)
+                    .clipped()
 
                 canvasContent(for: item)
                 .frame(width: panelWidth, height: proxy.size.height)
@@ -1571,7 +1993,15 @@ private struct ContentDetailAreaView: View {
     }
 
     private func committedShelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
-        let storedWidth = item == .plan ? CGFloat(planShelfStoredWidth) : CGFloat(browserShelfStoredWidth)
+        let storedWidth: CGFloat
+        switch item {
+        case .plan:
+            storedWidth = CGFloat(planShelfStoredWidth)
+        case .markdown:
+            storedWidth = CGFloat(markdownShelfStoredWidth)
+        case .browser:
+            storedWidth = CGFloat(browserShelfStoredWidth)
+        }
         return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
     }
 
@@ -1582,7 +2012,7 @@ private struct ContentDetailAreaView: View {
     }
 
     private func clampedShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
-        let minimumDetailWidth: CGFloat = 380
+        let minimumDetailWidth: CGFloat = item == .browser ? 520 : 420
         let maximumUsableWidth = max(item.minWidth, availableWidth - minimumDetailWidth)
         let maximumWidth = min(item.maxWidth, maximumUsableWidth)
         return min(max(width, item.minWidth), maximumWidth)
@@ -1593,6 +2023,8 @@ private struct ContentDetailAreaView: View {
         switch item {
         case .plan:
             planShelfStoredWidth = Double(clampedWidth)
+        case .markdown:
+            markdownShelfStoredWidth = Double(clampedWidth)
         case .browser:
             browserShelfStoredWidth = Double(clampedWidth)
         }
@@ -1661,7 +2093,8 @@ private struct ContentDetailAreaView: View {
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
             onCreateWorkspace: onCreateWorkspace,
-            onImportWorkspace: onImportWorkspace
+            onImportWorkspace: onImportWorkspace,
+            onOpenGeneratedFile: onOpenGeneratedFile
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1674,10 +2107,17 @@ private struct ContentDetailAreaView: View {
                 selectedTask: selectedTask,
                 isPresented: canvasPresentedBinding(for: .plan)
             )
+        case .markdown:
+            ShelfMarkdownPanelView(
+                session: markdownSession,
+                isPresented: canvasPresentedBinding(for: .markdown),
+                isPinnedToTask: $isMarkdownPinnedToTask
+            )
         case .browser:
             ShelfBrowserPanelView(
                 session: browserSession,
-                isPresented: canvasPresentedBinding(for: .browser)
+                isPresented: canvasPresentedBinding(for: .browser),
+                isPinnedToTask: $isBrowserPinnedToTask
             )
         }
     }
@@ -1729,6 +2169,7 @@ private struct ContentDetailContentView: View {
     let onManageCapabilities: () -> Void
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
+    let onOpenGeneratedFile: (String) -> Void
 
     var body: some View {
         switch ContentDetailPresentation.resolve(
@@ -1768,7 +2209,8 @@ private struct ContentDetailContentView: View {
                     sshReloadTrigger: sshReloadTrigger,
                     onMoveToDraft: onMoveToDraft,
                     onManageSkills: onManageSkills,
-                    onForkTask: onForkTask
+                    onForkTask: onForkTask,
+                    onOpenGeneratedFile: onOpenGeneratedFile
                 )
                 .id(task.id)
             }
@@ -1812,12 +2254,19 @@ private struct ContentDetailContentView: View {
 }
 
 private struct NewWorkspaceSheet: View {
+    @Environment(\.preflightCache) private var preflightCache
     @Binding var draft: NewWorkspaceDraft
     let rootPath: String
     let onCancel: () -> Void
     let onCreate: () -> Void
 
     @FocusState private var focusedField: Field?
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @State private var isCapabilitiesExpanded = false
+    @State private var githubStatus: HealthStatus?
+    @State private var githubAuthStatus: HealthStatus?
+    @State private var isProbingGitHub = false
 
     private enum Field {
         case name
@@ -1831,14 +2280,20 @@ private struct NewWorkspaceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             header
-            formFields
+            ScrollView {
+                formFields
+            }
+            .scrollIndicators(.visible)
             footer
         }
         .padding(24)
-        .frame(width: 560)
+        .frame(width: 620)
+        .frame(maxHeight: 760)
         .background(Stanford.panelBackground)
         .onAppear {
             focusedField = .name
+            applyCapabilityDefaults()
+            Task { await probeGitHub(forceRefresh: false) }
         }
     }
 
@@ -1886,7 +2341,7 @@ private struct NewWorkspaceSheet: View {
                     )
                     .focused($focusedField, equals: .name)
                     .onSubmit {
-                        if draft.canCreate {
+                        if canCreate {
                             onCreate()
                         }
                     }
@@ -1935,6 +2390,8 @@ private struct NewWorkspaceSheet: View {
                 }
             }
 
+            capabilitiesSection
+
             HStack(spacing: 7) {
                 Image(systemName: "folder")
                     .font(Stanford.ui(11, weight: .medium))
@@ -1948,8 +2405,334 @@ private struct NewWorkspaceSheet: View {
         }
     }
 
+    private var capabilitiesSection: some View {
+        DisclosureGroup(isExpanded: $isCapabilitiesExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                if hasReadyCapabilityDefaults {
+                    workspaceSetupAssistant
+                }
+
+                ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
+                    workspaceCapabilityRow(option)
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Capabilities")
+                            .font(Stanford.caption(13).weight(.semibold))
+                            .foregroundStyle(Stanford.black)
+                        Text("Optional")
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.coolGrey)
+                    }
+                    Text(selectedCapabilitySummary)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Stanford.sandstone.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var workspaceSetupAssistant: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Ready defaults")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(setupAssistantSummary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Apply") {
+                enableReadyDefaults()
+            }
+            .font(Stanford.caption(11))
+            .tint(Stanford.lagunita)
+            .disabled(!hasReadyCapabilityDefaults)
+        }
+        .padding(10)
+        .background(Stanford.lagunita.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func workspaceCapabilityRow(_ option: OnboardingCapabilityOption) -> some View {
+        let packageID = option.packageID
+        let isSelected = packageID.map { draft.selectedCapabilityIDs.contains($0) } ?? false
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 10) {
+                Image(systemName: option.icon)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(isSelected ? Stanford.lagunita : Stanford.coolGrey)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.title)
+                        .font(Stanford.body(13).weight(.medium))
+                        .foregroundStyle(Stanford.black)
+                    Text(option.subtitle)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if let packageID {
+                    Text(capabilityStatusText(for: packageID))
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(capabilityStatusColor(for: packageID))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(capabilityStatusColor(for: packageID).opacity(0.1))
+                        .clipShape(Capsule())
+
+                    Toggle("", isOn: capabilityBinding(for: packageID))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                        .accessibilityLabel(option.title)
+                }
+            }
+
+            if let packageID, isSelected {
+                capabilitySetupFields(for: packageID)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(isSelected ? Stanford.lagunita.opacity(0.08) : Stanford.fog.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Stanford.sandstone.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func capabilitySetupFields(for packageID: String) -> some View {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                capabilityTextField("Base URL", prompt: "https://company.atlassian.net", text: $draft.capabilityConfiguration.jiraBaseURL)
+                capabilityTextField("Email", prompt: "you@example.com", text: $draft.capabilityConfiguration.jiraEmail)
+                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.jiraAPIToken)
+                capabilityTextField("Project keys", prompt: "ENG, OPS", text: $draft.capabilityConfiguration.jiraProjects)
+            }
+        case OnboardingCapabilitySetup.githubPackageID:
+            HStack(spacing: 8) {
+                Image(systemName: isGitHubHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.poppy)
+                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the environment check." : "Run gh auth login, then create this workspace.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Project defaults")
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .textCase(.uppercase)
+                    Spacer()
+                    if hasVertexDefaults {
+                        Button("Use Vertex Settings") {
+                            applyCapabilityDefaults()
+                        }
+                        .font(Stanford.caption(11))
+                    }
+                }
+                capabilityTextField("GCP project", prompt: "my-gcp-project", text: $draft.capabilityConfiguration.gcpProject)
+                capabilityTextField("Region", prompt: OnboardingCapabilityConfiguration.defaultGCPRegion, text: $draft.capabilityConfiguration.gcpRegion)
+            }
+        case OnboardingCapabilitySetup.redcapPackageID:
+            VStack(alignment: .leading, spacing: 8) {
+                capabilityTextField("API URL", prompt: OnboardingCapabilityConfiguration.defaultRedcapAPIURL, text: $draft.capabilityConfiguration.redcapAPIURL)
+                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.redcapAPIToken)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func capabilityTextField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
+    }
+
+    private func capabilitySecureField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+            SecureField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Stanford.ui(12))
+        }
+    }
+
+    private var selectedCapabilitySummary: String {
+        let names = OnboardingCapabilitySetup.selectedDisplayNames(from: draft.selectedCapabilityIDs)
+        return names.isEmpty ? "Add Jira, GitHub, Google Cloud, or REDCap for this workspace." : names.joined(separator: ", ")
+    }
+
+    private var canCreate: Bool {
+        !draft.trimmedName.isEmpty && capabilityIssues.isEmpty
+    }
+
+    private var capabilityIssues: [String] {
+        draft.capabilitySetupIssues(githubCLIReady: isGitHubHealthy)
+    }
+
+    private var isGitHubHealthy: Bool {
+        if case .healthy = githubStatus, case .healthy = githubAuthStatus {
+            return true
+        }
+        return false
+    }
+
+    private var hasVertexDefaults: Bool {
+        !claudeVertexProjectID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasReadyCapabilityDefaults: Bool {
+        isGitHubHealthy || hasVertexDefaults
+    }
+
+    private var setupAssistantSummary: String {
+        var suggestions: [String] = []
+        if isGitHubHealthy {
+            suggestions.append("GitHub is ready")
+        }
+        if hasVertexDefaults {
+            suggestions.append("Google Cloud can use Vertex settings")
+        }
+        return suggestions.joined(separator: ". ") + "."
+    }
+
+    private func capabilityStatusText(for packageID: String) -> String {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            if isProbingGitHub { return "Checking" }
+            return isGitHubHealthy ? "Ready" : "Needs gh"
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !project.isEmpty { return "Ready" }
+            return hasVertexDefaults ? "Can fill" : "Needs project"
+        case OnboardingCapabilitySetup.jiraPackageID, OnboardingCapabilitySetup.redcapPackageID:
+            return "Needs setup"
+        default:
+            return "Optional"
+        }
+    }
+
+    private func capabilityStatusColor(for packageID: String) -> Color {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            return isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.coolGrey
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (!project.isEmpty || hasVertexDefaults) ? Stanford.paloAltoGreen : Stanford.coolGrey
+        default:
+            return Stanford.coolGrey
+        }
+    }
+
+    private func capabilityBinding(for packageID: String) -> Binding<Bool> {
+        Binding(
+            get: { draft.selectedCapabilityIDs.contains(packageID) },
+            set: { enabled in
+                if enabled {
+                    draft.selectedCapabilityIDs.insert(packageID)
+                    if packageID == OnboardingCapabilitySetup.gcloudPackageID {
+                        applyCapabilityDefaults()
+                    }
+                } else {
+                    draft.selectedCapabilityIDs.remove(packageID)
+                }
+            }
+        )
+    }
+
+    private func applyCapabilityDefaults() {
+        _ = draft.capabilityConfiguration.applyEnvironmentDefaults(
+            gcpProject: claudeVertexProjectID,
+            gcpRegion: claudeVertexRegion
+        )
+    }
+
+    private func enableReadyDefaults() {
+        applyCapabilityDefaults()
+        if isGitHubHealthy {
+            draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.githubPackageID)
+        }
+        if !draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.gcloudPackageID)
+        }
+    }
+
+    private func probeGitHub(forceRefresh: Bool) async {
+        isProbingGitHub = true
+        defer { isProbingGitHub = false }
+
+        if forceRefresh {
+            await preflightCache.invalidate(binary: "gh")
+        }
+
+        githubStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubCLI)
+        guard case .healthy = githubStatus else {
+            githubAuthStatus = nil
+            return
+        }
+        githubAuthStatus = await preflightCache.status(for: CommonCLIPrerequisites.githubAuth)
+    }
+
     private var footer: some View {
         HStack {
+            if let firstIssue = capabilityIssues.first {
+                Label(firstIssue, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
             Spacer()
 
             Button("Cancel", action: onCancel)
@@ -1959,8 +2742,8 @@ private struct NewWorkspaceSheet: View {
             Button("Create", action: onCreate)
                 .buttonStyle(StanfordButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.canCreate)
-                .opacity(draft.canCreate ? 1 : 0.45)
+                .disabled(!canCreate)
+                .opacity(canCreate ? 1 : 0.45)
         }
     }
 }

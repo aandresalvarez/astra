@@ -79,6 +79,8 @@ enum AuditEvent: String, CaseIterable {
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
     case runtimeProgressState = "runtime.progress_state"
+    case runtimeStreamDebug = "runtime.stream_debug"
+    case runtimeStreamDebugSample = "runtime.stream_debug_sample"
 
     case planCreated = "plan.created"
     case planUpdated = "plan.updated"
@@ -179,10 +181,10 @@ enum LogSanitizer {
         return output
     }
 
-    static func sanitizeFields(_ fields: [String: String]) -> [String: String] {
+    static func sanitizeFields(_ fields: [String: String], maxLength: Int = maxFieldLength) -> [String: String] {
         fields.reduce(into: [:]) { result, pair in
             let key = sanitizeFieldKey(pair.key)
-            result[key] = sanitize(pair.value, maxLength: maxFieldLength)
+            result[key] = sanitize(pair.value, maxLength: maxLength)
         }
     }
 
@@ -343,9 +345,10 @@ enum AppLogger {
         category: String = "Audit",
         taskID: UUID? = nil,
         fields: [String: String] = [:],
-        level: LogLevel = .info
+        level: LogLevel = .info,
+        fieldMaxLength: Int = 120
     ) {
-        let safeFields = LogSanitizer.sanitizeFields(fields)
+        let safeFields = LogSanitizer.sanitizeFields(fields, maxLength: fieldMaxLength)
         let suffix = safeFields
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }

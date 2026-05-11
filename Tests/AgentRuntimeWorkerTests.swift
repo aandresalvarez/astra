@@ -465,6 +465,15 @@ struct ShelfBrowserAddressTests {
         #expect(ShelfBrowserAddress.normalizedURL(from: "outlook.office.com")?.absoluteString == "https://outlook.office.com")
     }
 
+    @Test("normalizes absolute local file paths")
+    func normalizesAbsoluteLocalFilePaths() {
+        let path = "/tmp/astra preview/index.html"
+        let url = ShelfBrowserAddress.normalizedURL(from: path)
+
+        #expect(url?.isFileURL == true)
+        #expect(url?.path == path)
+    }
+
     @Test("normalizes search terms")
     func normalizesSearchTerms() {
         let url = ShelfBrowserAddress.normalizedURL(from: "service now incident form")?.absoluteString ?? ""

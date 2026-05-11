@@ -12,6 +12,11 @@ enum ShelfBrowserAddress {
             return url
         }
 
+        let expandedPath = (trimmed as NSString).expandingTildeInPath
+        if expandedPath.hasPrefix("/") {
+            return URL(fileURLWithPath: expandedPath)
+        }
+
         if trimmed.contains(".") || trimmed.contains(":") || trimmed == "localhost" {
             return URL(string: "https://\(trimmed)") ?? URL(string: "http://\(trimmed)")
         }
@@ -166,6 +171,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     func load(_ url: URL) {
         if isUsingControlledBrowser {
             Task { await navigateControlledBrowser(to: url.absoluteString) }
+        } else if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         } else {
             webView.load(URLRequest(url: url))
         }

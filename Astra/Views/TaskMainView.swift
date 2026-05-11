@@ -31,6 +31,24 @@ private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     }
 }
 
+private struct PendingDecisionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+
+        configuration.label
+            .font(Stanford.body(15).weight(.medium))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(isEnabled ? Stanford.paloAltoGreen : Stanford.fog.opacity(0.85))
+            .foregroundStyle(isEnabled ? .white : Stanford.coolGrey.opacity(0.82))
+            .clipShape(shape)
+            .contentShape(shape)
+            .opacity(configuration.isPressed && isEnabled ? 0.82 : 1.0)
+    }
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -71,10 +89,14 @@ struct TaskMainView: View {
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
     @State private var isPlanning = false
+    @FocusState private var isComposerFocused: Bool
+    @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
+    var onOpenGeneratedFile: ((String) -> Void)?
 
     private var availableSkills: [Skill] {
         guard let workspace = task.workspace else { return [] }
@@ -126,10 +148,16 @@ struct TaskMainView: View {
         }
     }
 
-    private var planningModel: String {
-        task.resolvedRuntimeID == .claudeCode && AgentRuntimeID.claudeCode.defaultModels.contains(task.model)
-            ? task.model
-            : AgentRuntimeID.claudeCode.defaultModel
+    private var taskUtilityRuntime: AgentUtilityRuntimeConfiguration {
+        let runtime = task.resolvedRuntimeID
+        let model = runtime.defaultModels.contains(task.model) ? task.model : runtime.defaultModel
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: model,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
     }
 
     private var threadScrollSignature: String {
@@ -144,15 +172,6 @@ struct TaskMainView: View {
         VStack(spacing: 0) {
             mainContent
                 .frame(maxHeight: .infinity, alignment: .top)
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [Color(nsColor: .windowBackgroundColor), .clear],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                    .frame(height: 18)
-                    .allowsHitTesting(false)
-                }
 
             if selectedTab != .files {
                 composerView
@@ -170,6 +189,15 @@ struct TaskMainView: View {
             .padding(.bottom, 4)
             .allowsHitTesting(true)
         }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.isFileURL,
+                  TaskGeneratedFiles.isHTMLFile(url.path) || TaskGeneratedFiles.isMarkdownFile(url.path),
+                  let onOpenGeneratedFile else {
+                return .systemAction
+            }
+            onOpenGeneratedFile(url.path)
+            return .handled
+        })
         .sheet(isPresented: $showDiffsSheet) {
             DiffsTabView(task: task)
                 .frame(minWidth: 700, minHeight: 500)
@@ -395,13 +423,6 @@ struct TaskMainView: View {
                         .accessibilityLabel("Cancel task")
                 }
             case .pendingUser:
-                if let onApprove = onApproveTask {
-                    Button("Approve") { onApprove(task) }
-                        .buttonStyle(StanfordButtonStyle())
-                        .controlSize(.small)
-                        .accessibilityIdentifier("ApproveTaskButton")
-                        .accessibilityLabel("Approve task")
-                }
                 if let onRetry = onRetryTask {
                     Button("Retry") { onRetry(task) }
                         .buttonStyle(StanfordButtonStyle(isPrimary: false))
@@ -530,6 +551,11 @@ struct TaskMainView: View {
                 if task.tokensUsed > 0 {
                     Label(Formatters.formatTokens(task.tokensUsed), systemImage: "number")
                 }
+                if task.tokenBudget > 0 {
+                    Label("Budget \(Formatters.formatTokens(task.tokenBudget))", systemImage: "speedometer")
+                } else {
+                    Label("Budget unlimited", systemImage: "speedometer")
+                }
                 if task.costUSD > 0 {
                     Label(String(format: "$%.2f", task.costUSD), systemImage: "dollarsign.circle")
                 }
@@ -538,7 +564,7 @@ struct TaskMainView: View {
                     Label(formatDuration(durationSec), systemImage: "clock")
                 }
                 if let run = latestRun, run.inputTokens > 0 {
-                    Label("\(Formatters.formatTokens(run.inputTokens))/200.0k", systemImage: "circle.dashed")
+                    Label("Context \(Formatters.formatTokens(run.inputTokens))/200.0k", systemImage: "circle.dashed")
                 }
             }
 
@@ -600,6 +626,13 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var chatThreadContent: some View {
+        PerformanceSignposts.renderTaskThread {
+            chatThreadContentBody
+        }
+    }
+
+    @ViewBuilder
+    private var chatThreadContentBody: some View {
         if task.isForked {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.branch")
@@ -1095,6 +1128,10 @@ struct TaskMainView: View {
                 agentCompletionPanel(protocolState)
             }
 
+            ForEach(activity.notices) { notice in
+                runNoticeView(notice)
+            }
+
             // Response text — flows directly, no card
             if !run.output.isEmpty {
                 if run.status == .running {
@@ -1116,7 +1153,11 @@ struct TaskMainView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
                         Button {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                            if let onOpenGeneratedFile {
+                                onOpenGeneratedFile(path)
+                            } else {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                            }
                         } label: {
                             HStack(spacing: 5) {
                                 Image(systemName: Formatters.fileIcon(for: path))
@@ -1185,6 +1226,36 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func runNoticeView(_ notice: TaskRunNotice) -> some View {
+        let isWarning = notice.type == "budget.warning"
+        let color = isWarning ? Stanford.poppy : Stanford.cardinalRed
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isWarning ? "exclamationmark.triangle" : "xmark.octagon")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isWarning ? "Budget Warning" : "Budget Exceeded")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(color)
+                Text(notice.payload)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(color.opacity(0.25), lineWidth: 1)
+        )
     }
 
     private func forkTask(from run: TaskRunSnapshot) {
@@ -1403,7 +1474,7 @@ struct TaskMainView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 if task.status == .pendingUser {
-                    Label("Review the output, then **Approve** or **Retry**.", systemImage: "info.circle")
+                    Label("Use the review controls above the composer to continue.", systemImage: "info.circle")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.poppy)
                 } else if task.status == .completed {
@@ -1487,7 +1558,7 @@ struct TaskMainView: View {
                 return "Agent went idle — no output for the timeout period."
             }
             if payload.contains("CLI not found") {
-                return "Claude CLI not found. Check Settings."
+                return "Provider CLI not found. Check Settings."
             }
             if payload.contains("not found") || payload.contains("Workspace") {
                 return "Workspace directory not found."
@@ -1617,6 +1688,58 @@ struct TaskMainView: View {
         id == "recap"
     }
 
+    private var hasOpenRuntimePermissionApprovalRequest: Bool {
+        let latestRequest = sortedEvents
+            .filter { $0.type == "permission.approval.requested" }
+            .max { $0.timestamp < $1.timestamp }
+        guard let latestRequest else { return false }
+
+        let latestApproval = sortedEvents
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+    }
+
+    private var latestRuntimePermissionRequestPayload: String? {
+        sortedEvents
+            .filter { $0.type == "permission.approval.requested" }
+            .max { $0.timestamp < $1.timestamp }?
+            .payload
+    }
+
+    private var shouldShowPendingDecisionBar: Bool {
+        task.status == .pendingUser && (hasOpenRuntimePermissionApprovalRequest || executableApprovedPlan == nil)
+    }
+
+    private var pendingDecisionTitle: String {
+        hasOpenRuntimePermissionApprovalRequest ? "Permission needed" : "Needs your review"
+    }
+
+    private var pendingDecisionDetail: String {
+        if hasOpenRuntimePermissionApprovalRequest {
+            let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
+            guard let payload = latestRuntimePermissionRequestPayload else { return fallback }
+            let lines = payload
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("Provider detail:") }
+            return lines.first ?? fallback
+        }
+        return "Review the latest output, then approve it or retry the task."
+    }
+
+    private var pendingDecisionPrimaryLabel: String {
+        hasOpenRuntimePermissionApprovalRequest ? "Allow once & continue" : "Approve result"
+    }
+
+    private var pendingDecisionPrimaryIcon: String {
+        hasOpenRuntimePermissionApprovalRequest ? "lock.open.fill" : "checkmark"
+    }
+
+    private var pendingDecisionIcon: String {
+        hasOpenRuntimePermissionApprovalRequest ? "hand.raised.fill" : "person.crop.circle.badge.questionmark"
+    }
+
     private var composerPlaceholder: String {
         switch task.status {
         case .queued: return "Type to refine this task (moves back to draft)..."
@@ -1624,6 +1747,58 @@ struct TaskMainView: View {
         case .pendingUser: return "Send a message to continue..."
         default: return "Send a message..."
         }
+    }
+
+    private var pendingDecisionBar: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: pendingDecisionIcon)
+                .font(Stanford.ui(18, weight: .semibold))
+                .foregroundStyle(Stanford.poppy)
+                .frame(width: 24, height: 24)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(pendingDecisionTitle)
+                    .font(Stanford.body(14).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(pendingDecisionDetail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            if let onRetry = onRetryTask {
+                Button("Retry") {
+                    onRetry(task)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .controlSize(.small)
+                .accessibilityLabel("Retry task")
+            }
+
+            if let onApprove = onApproveTask {
+                Button {
+                    onApprove(task)
+                } label: {
+                    Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(PendingDecisionButtonStyle())
+                .controlSize(.small)
+                .accessibilityIdentifier("ApproveTaskButton")
+                .accessibilityLabel(pendingDecisionPrimaryLabel)
+            }
+        }
+        .padding(12)
+        .background(Stanford.poppy.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Stanford.poppy.opacity(0.20), lineWidth: 1)
+        )
     }
 
     private func planExecutionActionBar(_ plan: TaskPlanPayload) -> some View {
@@ -1663,7 +1838,7 @@ struct TaskMainView: View {
                 } label: {
                     Label(
                         isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
-                        systemImage: "rectangle.inset.filled"
+                        systemImage: "list.bullet.clipboard"
                     )
                         .labelStyle(.titleAndIcon)
                 }
@@ -1696,7 +1871,15 @@ struct TaskMainView: View {
     private var composerView: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                if let plan = executableApprovedPlan {
+                if shouldShowPendingDecisionBar {
+                    pendingDecisionBar
+                        .padding(.horizontal, 18)
+                        .padding(.top, 14)
+                        .padding(.bottom, 10)
+
+                    Divider()
+                        .overlay(Stanford.sandstone.opacity(0.25))
+                } else if let plan = executableApprovedPlan {
                     planExecutionActionBar(plan)
                         .padding(.horizontal, 18)
                         .padding(.top, 14)
@@ -1722,10 +1905,11 @@ struct TaskMainView: View {
                 TextField(composerPlaceholder, text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Stanford.ui(16))
-                    .lineLimit(3...12)
+                    .lineLimit(2...10)
                     .padding(.horizontal, 18)
-                    .padding(.top, attachedFiles.isEmpty ? 16 : 8)
-                    .padding(.bottom, 12)
+                    .padding(.top, attachedFiles.isEmpty ? 14 : 8)
+                    .padding(.bottom, 10)
+                    .focused($isComposerFocused)
                     .onSubmit {
                         if showSlashMenu && !visibleSlashOptions.isEmpty {
                             selectSlashOption()
@@ -1812,7 +1996,6 @@ struct TaskMainView: View {
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(isDragOver ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.3), lineWidth: isDragOver ? 2 : 1)
             )
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !visibleSlashOptions.isEmpty {
                     let opts = visibleSlashOptions
@@ -1946,12 +2129,23 @@ struct TaskMainView: View {
     private func installPasteMonitor() {
         removePasteMonitor()
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if isComposerFocused,
+               event.modifierFlags.contains(.shift),
+               Self.isReturnKey(event),
+               task.status != .running {
+                messageText.append("\n")
+                return nil
+            }
             if event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
             return event
         }
+    }
+
+    private static func isReturnKey(_ event: NSEvent) -> Bool {
+        event.keyCode == 36 || event.keyCode == 76
     }
 
     private func removePasteMonitor() {
@@ -1973,8 +2167,8 @@ struct TaskMainView: View {
         options: []
     )
 
-    /// Use Claude to analyze the conversation context + user instruction and create a routine.
-    /// Ask Claude to summarize the task conversation so the user can resume later.
+    /// Use the selected utility runtime to analyze the conversation context + user instruction and create a routine.
+    /// Ask the selected utility runtime to summarize the task conversation so the user can resume later.
     /// Response is plain markdown (no JSON), inserted as a recap.result event.
     private func generateRecapAgentically() {
         let conversationSnapshot = scheduleConversationContext
@@ -2030,7 +2224,7 @@ struct TaskMainView: View {
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                model: task.model
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
@@ -2129,7 +2323,7 @@ struct TaskMainView: View {
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                model: source.model
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
@@ -2147,12 +2341,12 @@ struct TaskMainView: View {
         }
     }
 
-    /// Parse Claude's JSON response and create the routine schedule.
+    /// Parse the provider's JSON response and create the routine schedule.
     private func parseAndCreateSchedule(from response: String, workspace: Workspace, source: ScheduleSourceContext) {
         guard let regex = Self.jsonBlockRegex,
               let match = regex.firstMatch(in: response, range: NSRange(response.startIndex..., in: response)),
               let jsonRange = Range(match.range(at: 1), in: response) else {
-            // Try parsing the whole response as JSON (Claude sometimes skips the fences)
+            // Try parsing the whole response as JSON (providers sometimes skip the fences)
             if let data = response.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 createScheduleFromJSON(json, workspace: workspace, source: source)
@@ -2247,6 +2441,7 @@ struct TaskMainView: View {
               task.status != .running else { return }
 
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        showPlanCanvasIfNeeded()
         task.status = .queued
         task.completedAt = nil
         task.updatedAt = Date()
@@ -2263,12 +2458,17 @@ struct TaskMainView: View {
         }
     }
 
+    private func showPlanCanvasIfNeeded() {
+        guard !isPlanCanvasVisible else { return }
+        onOpenPlan?(task)
+    }
+
     private func sendMessage() {
         guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedFiles.isEmpty else { return }
 
         shouldScrollAfterUserMessage = true
 
-        // Intercept /remember command — direct action, no Claude call needed
+        // Intercept /remember command — direct action, no provider call needed
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.hasPrefix("/remember ") {
@@ -2282,7 +2482,7 @@ struct TaskMainView: View {
             return
         }
 
-        // Intercept /recap command — agentic summary, no Claude session needed
+        // Intercept /recap command — agentic summary, no provider session needed
         if lower == "/recap" || lower.hasPrefix("/recap ") {
             messageText = ""
             generateRecapAgentically()
@@ -2375,7 +2575,7 @@ struct TaskMainView: View {
                 messages: history,
                 workspacePath: workspacePath,
                 skillContext: skillContext,
-                model: planningModel
+                utilityRuntime: taskUtilityRuntime
             )
 
             await MainActor.run {
@@ -2449,7 +2649,7 @@ struct TaskMainView: View {
         Return concise planning prose, then include exactly one structured plan line using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include likely tools and a done signal for each step. The user must confirm from the Plan panel before execution starts.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. The user must confirm from the Plan panel before execution starts.
         """
     }
 

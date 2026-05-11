@@ -332,6 +332,51 @@ struct AgentRuntimeStreamTelemetryTests {
     }
 }
 
+@Suite("Agent Runtime Stream Debug")
+struct AgentRuntimeStreamDebugTests {
+    @Test("ASTRA_STREAM_DEBUG enables bounded stream diagnostics")
+    func streamDebugFlagParsing() {
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "1"]))
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "true"]))
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "on"]))
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: [:]))
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "0"]))
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "false"]))
+    }
+
+    @Test("Stream debug captures samples, counters, stderr tail, and unknown JSON shape")
+    func streamDebugCaptureSnapshot() {
+        let capture = AgentRuntimeStreamDebugCapture(
+            maxRawSamples: 1,
+            maxUnknownJSONShapes: 2,
+            maxSampleLength: 200,
+            maxStderrTailLength: 24
+        )
+        let unknownLine = #"{"type":"assistant.new_event","data":{"deltaContent":"hello","extra":true},"id":"evt-1"}"#
+
+        capture.recordLine(unknownLine, parsesJSONLines: true)
+        capture.recordParsed([
+            .unknown(provider: "copilot", type: "assistant.new_event", raw: unknownLine)
+        ], rawLine: unknownLine)
+        capture.recordEmitted([AgentEvent]())
+        capture.recordStderr("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        let snapshot = capture.snapshot()
+        #expect(snapshot.rawLineCount == 1)
+        #expect(snapshot.jsonLineCount == 1)
+        #expect(snapshot.plainTextLineCount == 0)
+        #expect(snapshot.parsedEventCount == 1)
+        #expect(snapshot.emittedEventCount == 0)
+        #expect(snapshot.rawSamples == [unknownLine])
+        #expect(snapshot.stderrTail == "cdefghijklmnopqrstuvwxyz")
+        #expect(snapshot.unknownJSONShapes.count == 1)
+        #expect(snapshot.unknownJSONShapes[0].contains("type=assistant.new_event"))
+        #expect(snapshot.unknownJSONShapes[0].contains("data_keys=deltaContent,extra"))
+        #expect(snapshot.fields["unknown_json_shapes"] == "1")
+        #expect(snapshot.fields["event_types"]?.contains("unknown:assistant.new_event:1") == true)
+    }
+}
+
 @Suite("Agent Runtime Failure Diagnostics")
 struct AgentRuntimeFailureDiagnosticsTests {
     @Test("Classifies selected model failures without treating the model as statically invalid")
@@ -653,9 +698,7 @@ struct CopilotWorkerExecutionTests {
         #expect(run.output == "Hello from Copilot")
         #expect(run.inputTokens == 4)
         #expect(run.outputTokens == 5)
-        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == "Hello" })
-        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == " from" })
-        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == " Copilot" })
+        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == "Hello from Copilot" })
     }
 
     @Test("Worker records Copilot edits to files that were already dirty")
@@ -847,8 +890,8 @@ struct CopilotWorkerExecutionTests {
         #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("index.html")))
     }
 
-    @Test("Worker fails fast when Copilot waits for hidden permission prompt")
-    func copilotHiddenPermissionPromptFailsFast() async throws {
+    @Test("Worker pauses for approval when Copilot waits for hidden permission prompt")
+    func copilotHiddenPermissionPromptPausesForApproval() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-permission-prompt-\(UUID().uuidString)", isDirectory: true)
         let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
@@ -899,13 +942,12 @@ struct CopilotWorkerExecutionTests {
 
         await worker.execute(task: task, modelContext: context) { _ in }
 
-        #expect(task.status == .failed)
+        #expect(task.status == .pendingUser)
         let run = try #require(task.runs.first)
         #expect(run.status == .failed)
-        #expect(run.stopReason == "failed")
+        #expect(run.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
-        let errorEvent = try #require(task.events.first { $0.type == "error" })
-        #expect(errorEvent.payload.contains("approval prompt ASTRA could not answer"))
+        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Approve to continue") })
     }
 
     @discardableResult

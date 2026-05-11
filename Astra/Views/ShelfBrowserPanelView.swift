@@ -4,6 +4,7 @@ import WebKit
 struct ShelfBrowserPanelView: View {
     @ObservedObject var session: ShelfBrowserSession
     @Binding var isPresented: Bool
+    @Binding var isPinnedToTask: Bool
 
     @State private var addressText = ""
     @FocusState private var isAddressFocused: Bool
@@ -15,6 +16,7 @@ struct ShelfBrowserPanelView: View {
             browserBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .id(ObjectIdentifier(session))
         // No background — parent paints .bar material that extends behind toolbar.
         .onAppear {
             addressText = session.currentURL
@@ -51,6 +53,15 @@ struct ShelfBrowserPanelView: View {
                 }
             }
             .pickerStyle(.inline)
+
+            Divider()
+
+            Toggle(isOn: $isPinnedToTask) {
+                Label(
+                    "Pin to task",
+                    systemImage: isPinnedToTask ? "pin.fill" : "pin"
+                )
+            }
 
             Divider()
 
@@ -281,6 +292,7 @@ struct ShelfBrowserPanelView: View {
             .animation(.smooth(duration: 0.32, extraBounce: 0.05), value: hasDisplayablePage)
         } else {
             ShelfBrowserWebView(session: session)
+                .id(ObjectIdentifier(session))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

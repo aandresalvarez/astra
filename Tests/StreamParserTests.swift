@@ -88,6 +88,17 @@ struct StreamParserTests {
         #expect(content.id == "tool_123")
     }
 
+    @Test("Assistant usage event is emitted with cache tokens")
+    func assistantUsageEvent() throws {
+        let events = StreamEventParser.parseAll(line: textJSON)
+        #expect(events.contains {
+            if case .usage(let input, let output) = $0 {
+                return input == 101 && output == 5
+            }
+            return false
+        })
+    }
+
     @Test("Result event parsing")
     func resultEvent() throws {
         let event = try decode(resultJSON, as: ResultEvent.self)

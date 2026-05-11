@@ -11,12 +11,47 @@ enum AppStorageKeys {
     static let diagnosticsScope = "astra.diagnostics.scope.v1"
     static let planShelfWidth = "astra.planShelf.width.v1"
     static let browserShelfWidth = "astra.browserShelf.width.v1"
+    static let markdownShelfWidth = "astra.markdownShelf.width.v1"
+    static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
+    static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
+    static let defaultTokenBudget = "defaultTokenBudget"
+    static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
     static let claudeProvider = "astra.claudeProvider.v1"
     static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
     static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
     static let claudeVertexOpusModel = "astra.claudeVertexOpusModel.v1"
     static let claudeVertexSonnetModel = "astra.claudeVertexSonnetModel.v1"
     static let claudeVertexHaikuModel = "astra.claudeVertexHaikuModel.v1"
+}
+
+enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
+    case hardStop = "hard_stop"
+    case warning = "warning"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .hardStop: "Hard Stop"
+        case .warning: "Warning Only"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .hardStop: "Stop the provider process when ASTRA estimates or receives usage above the task budget."
+        case .warning: "Keep the task running and record a budget warning when usage goes over the task budget."
+        }
+    }
+
+    static var configuredDefault: BudgetEnforcementMode {
+        configuredDefault(in: .standard)
+    }
+
+    static func configuredDefault(in defaults: UserDefaults) -> BudgetEnforcementMode {
+        let raw = defaults.string(forKey: AppStorageKeys.budgetEnforcementMode)
+        return BudgetEnforcementMode(rawValue: raw ?? "") ?? .hardStop
+    }
 }
 
 /// Where the Claude Code CLI routes its API calls. Only matters for the

@@ -1857,7 +1857,7 @@ struct TemplatesTabContent: View {
             Text("No Templates Yet")
                 .font(Stanford.heading(18))
                 .foregroundStyle(Stanford.black)
-            Text("Templates define multi-phase workflows with before, main, and after agents. Each phase is a full Claude agent that can think, adapt, and troubleshoot.")
+            Text("Templates define multi-phase workflows with before, main, and after agents. Each phase runs through the selected provider and can think, adapt, and troubleshoot.")
                 .font(Stanford.body(14))
                 .foregroundStyle(Stanford.coolGrey)
                 .multilineTextAlignment(.center)
