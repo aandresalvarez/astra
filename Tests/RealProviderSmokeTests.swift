@@ -47,7 +47,7 @@ struct RealProviderSmokeTests {
         let claudePath = try #require(Self.findExecutable("claude"))
         let copilotPath = try #require(Self.findExecutable("copilot"))
         let claudeModel = ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? "claude-sonnet-4-6"
-        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? "gpt-5"
+        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeID.copilotCLI.defaultModel
 
         let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
         let task = harness.makeTask(
@@ -96,7 +96,7 @@ struct RealProviderSmokeTests {
         let claudePath = try #require(Self.findExecutable("claude"))
         let copilotPath = try #require(Self.findExecutable("copilot"))
         let claudeModel = ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? "claude-sonnet-4-6"
-        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? "gpt-5"
+        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeID.copilotCLI.defaultModel
 
         let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
         let task = harness.makeTask(

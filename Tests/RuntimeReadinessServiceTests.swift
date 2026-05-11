@@ -138,4 +138,102 @@ struct RuntimeReadinessServiceTests {
         #expect(calls.contains { $0.path == "/custom/bin/claude" && $0.args == ["--version"] })
         #expect(!calls.contains { $0.path == "/detected/claude" })
     }
+
+    @Test("Copilot readiness does not warn when only auth status is unknown")
+    func copilotReadinessDefersAccountValidation() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "0.0.342\nCommit: abc123\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "copilot" ? "/opt/homebrew/bin/copilot" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/copilot" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .copilotCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .ready)
+        #expect(report.checks.contains { $0.id == "copilot-cli" && $0.state == .ready })
+        let account = report.checks.first { $0.id == "copilot-account" }
+        #expect(account?.state == .ready)
+        #expect(account?.remediation == nil)
+        #expect(account?.detail.contains("account validation happens when a task starts") == true)
+
+        let calls = await runner.recordedCalls()
+        #expect(calls == [
+            StubBinaryRunner.Call(path: "/opt/homebrew/bin/copilot", args: ["--version"])
+        ])
+    }
+
+    @Test("Configured Copilot path is used before detection")
+    func configuredCopilotPathWins() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/custom/bin/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "copilot 1.0\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { _ in "/detected/copilot" },
+            isExecutable: { $0 == "/custom/bin/copilot" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .copilotCLI,
+            claudePath: "",
+            copilotPath: "/custom/bin/copilot",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .ready)
+        let calls = await runner.recordedCalls()
+        #expect(calls.contains { $0.path == "/custom/bin/copilot" && $0.args == ["--version"] })
+        #expect(!calls.contains { $0.path == "/detected/copilot" })
+    }
+
+    @Test("Missing Copilot CLI blocks readiness before account validation")
+    func missingCopilotBlocksReadiness() async {
+        let runner = StubBinaryRunner()
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { _ in "" },
+            isExecutable: { _ in false }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .copilotCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        #expect(report.checks.count == 1)
+        #expect(report.checks.first?.id == "copilot-cli")
+        #expect(report.checks.first?.state == .blocked)
+    }
 }

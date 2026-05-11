@@ -105,7 +105,7 @@ public enum CommonCLIPrerequisites {
 
     public static let githubAuth = CLIPrerequisite(
         binary: "gh",
-        livenessArgs: ["auth", "status"],
+        livenessArgs: ["auth", "status", "--hostname", "github.com"],
         displayName: "GitHub login",
         purpose: "An authenticated GitHub CLI session is required for issues, pull requests, and Actions.",
         installHint: "Run `gh auth login`.",

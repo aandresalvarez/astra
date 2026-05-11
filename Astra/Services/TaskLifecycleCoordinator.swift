@@ -365,7 +365,7 @@ final class TaskLifecycleCoordinator {
         let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
         let utilityRuntime = AgentUtilityRuntimeConfiguration(
             runtime: runtime,
-            model: runtime.defaultModels.contains(model) ? model : runtime.defaultModel,
+            model: RuntimeModelAvailability.normalizedModel(model, for: runtime),
             claudePath: claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
             copilotPath: copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
             copilotHome: CopilotCLIRuntime.channelHome()

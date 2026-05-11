@@ -615,8 +615,10 @@ struct ArtifactsTabView: View {
             return "doc.text"
         case "json", "yaml", "yml", "toml", "xml", "plist":
             return "doc.badge.gearshape"
-        case "md", "txt", "rtf", "log":
+        case "md", "markdown", "qmd", "txt", "rtf", "log":
             return "doc.plaintext"
+        case "html", "htm", "css":
+            return "globe"
         case "png", "jpg", "jpeg", "gif", "svg", "webp":
             return "photo"
         case "pdf":
@@ -772,6 +774,7 @@ struct DiffsTabView: View {
 
 struct FilesTabView: View {
     let task: AgentTask
+    var onOpenGeneratedFile: ((String) -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedPaths: Set<String> = []
     @State private var taskFolderFiles: [ArtifactFile] = []
@@ -937,23 +940,27 @@ struct FilesTabView: View {
 
     // MARK: - File Row
 
-    private static let textExtensions: Set<String> = [
-        "md", "txt", "json", "csv", "py", "swift", "js", "ts", "html", "css", "xml", "yaml", "yml",
-        "sh", "bash", "zsh", "toml", "ini", "cfg", "conf", "log", "sql", "r", "rb", "go", "rs",
-        "java", "kt", "c", "cpp", "h", "hpp", "m", "mm", "pl", "lua", "env", "gitignore", "dockerfile"
-    ]
-
-    private static let markdownExtensions: Set<String> = ["md", "markdown"]
-
     private var isFileReadable: (ArtifactFile) -> Bool {
         { file in
-            let ext = URL(fileURLWithPath: file.path).pathExtension.lowercased()
-            return Self.textExtensions.contains(ext) || ext.isEmpty
+            TaskGeneratedFiles.isTextShelfFile(file.path)
         }
     }
 
     private func isMarkdown(_ file: ArtifactFile) -> Bool {
-        Self.markdownExtensions.contains(URL(fileURLWithPath: file.path).pathExtension.lowercased())
+        TaskGeneratedFiles.isMarkdownFile(file.path)
+    }
+
+    private func shelfDestination(for file: ArtifactFile) -> TaskGeneratedFileShelfDestination? {
+        guard !file.isDirectory,
+              FileManager.default.fileExists(atPath: file.path) else {
+            return nil
+        }
+        return TaskGeneratedFiles.shelfDestination(for: file.path)
+    }
+
+    private func openInShelf(_ file: ArtifactFile) {
+        guard shelfDestination(for: file) != nil else { return }
+        onOpenGeneratedFile?(file.path)
     }
 
     private func loadFileContent(_ file: ArtifactFile) {
@@ -979,61 +986,78 @@ struct FilesTabView: View {
     }
 
     private func fileRow(_ file: ArtifactFile) -> some View {
-        Button {
-            if expandedPaths.contains(file.path) {
-                expandedPaths.remove(file.path)
-            } else {
-                expandedPaths.insert(file.path)
-                loadFileContent(file)
-                // Default to content view, diff if the file has changes
-                if viewMode[file.path] == nil {
-                    viewMode[file.path] = file.change != nil ? .diff : .content
+        HStack(spacing: 10) {
+            Button {
+                toggleExpanded(file)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: fileIcon(for: file))
+                        .font(Stanford.ui(14))
+                        .foregroundStyle(fileColor(for: file.source))
+                        .frame(width: 22)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(file.name)
+                            .font(Stanford.body(14))
+                            .foregroundStyle(Stanford.black)
+                            .lineLimit(1)
+                        Text(file.path)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: fileIcon(for: file))
-                    .font(Stanford.ui(14))
-                    .foregroundStyle(fileColor(for: file.source))
-                    .frame(width: 22)
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(file.name)
-                        .font(Stanford.body(14))
-                        .foregroundStyle(Stanford.black)
-                        .lineLimit(1)
-                    Text(file.path)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
+                Button {
+                    openInShelf(file)
+                } label: {
+                    Label(destination.compactTitle, systemImage: destination.systemImage)
+                        .font(Stanford.caption(11).weight(.medium))
+                        .labelStyle(.titleAndIcon)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Stanford.lagunita.opacity(0.10))
+                        .clipShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(Stanford.lagunita)
+                .help(destination.title)
+            }
 
-                Spacer()
+            Text(file.source)
+                .font(Stanford.caption(11))
+                .foregroundStyle(fileColor(for: file.source))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(fileColor(for: file.source).opacity(0.1))
+                .clipShape(Capsule())
 
-                Text(file.source)
+            if file.size > 0 {
+                Text(formatSize(file.size))
                     .font(Stanford.caption(11))
-                    .foregroundStyle(fileColor(for: file.source))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(fileColor(for: file.source).opacity(0.1))
-                    .clipShape(Capsule())
+                    .foregroundStyle(Stanford.coolGrey)
+            }
 
-                if file.size > 0 {
-                    Text(formatSize(file.size))
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-
+            Button {
+                toggleExpanded(file)
+            } label: {
                 Image(systemName: expandedPaths.contains(file.path) ? "chevron.down" : "chevron.right")
                     .font(Stanford.ui(11))
                     .foregroundStyle(.tertiary)
+                    .frame(width: 18, height: 18)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(expandedPaths.contains(file.path) ? "Hide file details" : "Show file details")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
         .contextMenu {
             Button {
                 NSPasteboard.general.clearContents()
@@ -1042,6 +1066,13 @@ struct FilesTabView: View {
                 Label("Copy Path", systemImage: "doc.on.doc")
             }
             if FileManager.default.fileExists(atPath: file.path) {
+                if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
+                    Button {
+                        openInShelf(file)
+                    } label: {
+                        Label(destination.title, systemImage: destination.systemImage)
+                    }
+                }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file.path)])
                 } label: {
@@ -1052,6 +1083,19 @@ struct FilesTabView: View {
                 } label: {
                     Label("Open in Default App", systemImage: "arrow.up.right.square")
                 }
+            }
+        }
+    }
+
+    private func toggleExpanded(_ file: ArtifactFile) {
+        if expandedPaths.contains(file.path) {
+            expandedPaths.remove(file.path)
+        } else {
+            expandedPaths.insert(file.path)
+            loadFileContent(file)
+            // Default to content view, diff if the file has changes
+            if viewMode[file.path] == nil {
+                viewMode[file.path] = file.change != nil ? .diff : .content
             }
         }
     }
@@ -1077,10 +1121,22 @@ struct FilesTabView: View {
                 Spacer()
 
                 if FileManager.default.fileExists(atPath: file.path) {
+                    if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
+                        Button {
+                            openInShelf(file)
+                        } label: {
+                            Label(destination.title, systemImage: destination.systemImage)
+                                .font(Stanford.caption(12))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Stanford.lagunita)
+                        .help(destination.title)
+                    }
+
                     Button {
                         NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
                     } label: {
-                        Label("Open", systemImage: "arrow.up.right.square")
+                        Label("Default App", systemImage: "arrow.up.right.square")
                             .font(Stanford.caption(12))
                     }
                     .buttonStyle(.plain)
@@ -1576,8 +1632,10 @@ struct FilesTabView: View {
             return "doc.text"
         case "json", "yaml", "yml", "toml", "xml", "plist":
             return "doc.badge.gearshape"
-        case "md", "txt", "rtf", "log":
+        case "md", "markdown", "qmd", "txt", "rtf", "log":
             return "doc.plaintext"
+        case "html", "htm", "css":
+            return "globe"
         case "png", "jpg", "jpeg", "gif", "svg", "webp":
             return "photo"
         case "pdf":

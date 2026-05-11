@@ -263,7 +263,7 @@ struct ShelfMarkdownSessionTests {
 
         #expect(session.documents.isEmpty)
         #expect(session.fileURL == nil)
-        #expect(session.title == "Markdown")
+        #expect(session.title == "Text")
     }
 
     @MainActor
@@ -282,6 +282,126 @@ struct ShelfMarkdownSessionTests {
         session.copyContentToPasteboard()
 
         #expect(NSPasteboard.general.string(forType: .string) == "# Story\n\nFull text")
+    }
+
+    @MainActor
+    @Test("Saving selected text file persists edits and clears dirty state")
+    func savingSelectedTextFilePersistsEditsAndClearsDirtyState() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-text-save-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("notes.txt")
+        try "first draft".write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+
+        #expect(session.selectedDocumentKind == .text)
+        #expect(session.isSelectedDocumentDirty == false)
+
+        session.updateSelectedContent("final draft\n")
+
+        #expect(session.content == "final draft\n")
+        #expect(session.isSelectedDocumentDirty == true)
+
+        session.saveSelectedDocument()
+
+        #expect(try String(contentsOf: file, encoding: .utf8) == "final draft\n")
+        #expect(session.isSelectedDocumentDirty == false)
+        #expect(session.errorMessage == nil)
+    }
+
+    @MainActor
+    @Test("Text shelf infers Markdown and plain text document kinds")
+    func textShelfInfersMarkdownAndPlainTextKinds() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-text-kinds-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let quarto = root.appendingPathComponent("report.qmd")
+        let json = root.appendingPathComponent("data.json")
+        try "# Report".write(to: quarto, atomically: true, encoding: .utf8)
+        try #"{"ok":true}"#.write(to: json, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(quarto)
+        session.load(json)
+
+        #expect(session.documents.map(\.kind) == [.markdown, .text])
+        #expect(session.selectedDocumentKind == .text)
+        #expect(session.documents.map(\.title) == ["report.qmd", "data.json"])
+    }
+
+    @MainActor
+    @Test("Reloading selected text file discards dirty edits and rereads disk")
+    func reloadingSelectedTextFileDiscardsDirtyEditsAndRereadsDisk() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-text-reload-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("notes.txt")
+        try "original".write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+        session.updateSelectedContent("unsaved")
+        try "changed on disk".write(to: file, atomically: true, encoding: .utf8)
+
+        #expect(session.isSelectedDocumentDirty == true)
+
+        session.reload()
+
+        #expect(session.content == "changed on disk")
+        #expect(session.isSelectedDocumentDirty == false)
+        #expect(session.saveErrorMessage == nil)
+    }
+
+    @MainActor
+    @Test("Failed save preserves dirty text and reports save error")
+    func failedSavePreservesDirtyTextAndReportsSaveError() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-text-save-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let file = root.appendingPathComponent("notes.txt")
+        try "original".write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+        session.updateSelectedContent("unsaved edit")
+        try FileManager.default.removeItem(at: root)
+
+        session.saveSelectedDocument()
+
+        #expect(session.content == "unsaved edit")
+        #expect(session.isSelectedDocumentDirty == true)
+        #expect(session.errorMessage == nil)
+        #expect(session.saveErrorMessage?.contains("Could not save notes.txt") == true)
+
+        session.updateSelectedContent("unsaved edit with follow-up")
+
+        #expect(session.saveErrorMessage == nil)
+        #expect(session.isSelectedDocumentDirty == true)
+    }
+
+    @MainActor
+    @Test("Unreadable selected file disables saving")
+    func unreadableSelectedFileDisablesSaving() {
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-missing-text-\(UUID().uuidString).txt")
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+
+        #expect(session.hasFile == true)
+        #expect(session.content == "")
+        #expect(session.errorMessage?.contains("Could not read") == true)
+        #expect(session.canSaveSelectedDocument == false)
+        #expect(session.isSelectedDocumentDirty == false)
     }
 }
 
@@ -884,6 +1004,7 @@ struct TaskThreadSnapshotTests {
         let root = URL(fileURLWithPath: "/tmp/astra-generated-files-markdown-preview")
         let paths = [
             root.appendingPathComponent("nested/report.md").path,
+            root.appendingPathComponent("docs/starr_common.qmd").path,
             root.appendingPathComponent("summary.markdown").path,
             root.appendingPathComponent("README.md").path,
             root.appendingPathComponent("index.html").path
@@ -903,6 +1024,59 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.preferredMarkdownFile(in: paths) == nil)
     }
 
+    @Test("Generated file shelf destination routes web and text artifacts")
+    func generatedFileShelfDestinationRoutesPreviewableArtifacts() {
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
+    }
+
+    @Test("Generated file text shelf recognition covers common source and config files")
+    func generatedFileTextShelfRecognitionCoversCommonSourceAndConfigFiles() {
+        let textPaths = [
+            "/tmp/Sources/App.swift",
+            "/tmp/scripts/run.sh",
+            "/tmp/styles/site.css",
+            "/tmp/data/results.jsonl",
+            "/tmp/config/settings.yaml",
+            "/tmp/config/.env.local",
+            "/tmp/project/.gitignore",
+            "/tmp/project/Dockerfile",
+            "/tmp/project/Makefile",
+            "/tmp/project/LICENSE",
+            "/tmp/project/README"
+        ]
+
+        for path in textPaths {
+            #expect(TaskGeneratedFiles.isTextShelfFile(path), "Expected \(path) to be recognized as text")
+            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .text, "Expected \(path) to route to the Text Shelf")
+        }
+    }
+
+    @Test("Generated file shelf keeps HTML in browser even though it is text")
+    func generatedFileShelfKeepsHTMLInBrowserEvenThoughItIsText() {
+        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/index.html") == true)
+        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/preview.htm") == true)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
+    }
+
+    @Test("Generated file text shelf rejects unknown binary and arbitrary extensionless files")
+    func generatedFileTextShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
+        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/image.png") == false)
+        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/archive.zip") == false)
+        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/random-output") == false)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/archive.zip") == nil)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/random-output") == nil)
+    }
+
     @Test("Generated file preview finds attached Markdown inputs")
     func generatedFilePreviewFindsAttachedMarkdownInputs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -912,6 +1086,7 @@ struct TaskThreadSnapshotTests {
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try "# Attached".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         try "nested".write(to: nested.appendingPathComponent("notes.markdown"), atomically: true, encoding: .utf8)
+        try "quarto".write(to: nested.appendingPathComponent("starr_common.qmd"), atomically: true, encoding: .utf8)
         try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -923,6 +1098,7 @@ struct TaskThreadSnapshotTests {
 
         #expect(paths.contains(root.appendingPathComponent("README.md").path))
         #expect(paths.contains(nested.appendingPathComponent("notes.markdown").path))
+        #expect(paths.contains(nested.appendingPathComponent("starr_common.qmd").path))
         #expect(!paths.contains(root.appendingPathComponent("index.html").path))
     }
 }

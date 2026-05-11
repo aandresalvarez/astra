@@ -43,6 +43,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let executableName: String
     public let installHint: String
     public let authHint: String
+    public let prerequisite: CLIPrerequisite
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
 
@@ -52,6 +53,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: String,
         installHint: String,
         authHint: String,
+        prerequisite: CLIPrerequisite? = nil,
         defaultModels: [String],
         supportsAstraRunProtocol: Bool
     ) {
@@ -60,6 +62,13 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.executableName = executableName
         self.installHint = installHint
         self.authHint = authHint
+        self.prerequisite = prerequisite ?? CLIPrerequisite(
+            binary: executableName,
+            displayName: displayName,
+            purpose: "Runs tasks when \(displayName) is the selected provider.",
+            installHint: installHint,
+            authHint: authHint
+        )
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
     }
@@ -70,6 +79,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: "claude",
         installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
+        prerequisite: CommonCLIPrerequisites.claude,
         defaultModels: AgentRuntimeID.claudeCode.defaultModels,
         supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
     )
@@ -80,6 +90,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         executableName: "copilot",
         installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
+        prerequisite: CommonCLIPrerequisites.copilot,
         defaultModels: AgentRuntimeID.copilotCLI.defaultModels,
         supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
     )

@@ -22,6 +22,10 @@ enum AppStorageKeys {
     static let claudeVertexOpusModel = "astra.claudeVertexOpusModel.v1"
     static let claudeVertexSonnetModel = "astra.claudeVertexSonnetModel.v1"
     static let claudeVertexHaikuModel = "astra.claudeVertexHaikuModel.v1"
+    static let claudeAvailableModels = "astra.claude.availableModels.v1"
+    static let claudeModelsCheckedAt = "astra.claude.modelsCheckedAt.v1"
+    static let copilotAvailableModels = "astra.copilot.availableModels.v1"
+    static let copilotModelsCheckedAt = "astra.copilot.modelsCheckedAt.v1"
 }
 
 enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
@@ -63,7 +67,7 @@ enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
 /// Authentication for Vertex piggybacks on `gcloud auth
 /// application-default login`; if those credentials are missing the CLI
 /// falls back to Anthropic auth and reports "Not logged in".
-enum ClaudeProvider: String, CaseIterable, Identifiable {
+enum ClaudeProvider: String, CaseIterable, Identifiable, Sendable {
     case anthropic
     case vertex
 

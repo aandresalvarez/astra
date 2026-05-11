@@ -445,16 +445,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode:
-            return model.isEmpty ? runtime.defaultModel : model
-        case .copilotCLI:
-            if model.isEmpty { return runtime.defaultModel }
-            if model == "claude-sonnet-4-6" || model == "claude-opus-4-6" || model == "claude-haiku-4-5-20251001" {
-                return runtime.defaultModel
-            }
-            return model
-        }
+        RuntimeModelAvailability.normalizedModel(model, for: runtime)
     }
 
     @MainActor

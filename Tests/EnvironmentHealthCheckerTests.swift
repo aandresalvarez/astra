@@ -83,6 +83,30 @@ struct EnvironmentHealthCheckerTests {
         #expect(status == .missingBinary)
     }
 
+    @Test("Fallback scan finds Homebrew-style binary when GUI PATH misses it")
+    func fallbackScanFindsHomebrewStyleBinary() async {
+        let fallbackPath = "/opt/homebrew/bin/gh"
+        let stub = await makeStub(responses: [
+            ("/usr/bin/env which gh", RunResult(outcome: .exited(code: 1), stdout: "", stderr: "")),
+            ("\(fallbackPath) --version",
+             RunResult(outcome: .exited(code: 0), stdout: "gh version 2.80.0\n", stderr: ""))
+        ])
+        let checker = EnvironmentHealthChecker(
+            runner: stub,
+            fallbackDirectories: ["/opt/homebrew/bin"],
+            isExecutable: { $0 == fallbackPath }
+        )
+
+        let status = await checker.check(binary: "gh")
+
+        guard case .healthy(let path, let version) = status else {
+            Issue.record("Expected .healthy, got \(status)")
+            return
+        }
+        #expect(path == fallbackPath)
+        #expect(version == "gh version 2.80.0")
+    }
+
     @Test("Healthy path + version when liveness exits 0")
     func healthy() async {
         let stub = await makeStub(responses: [

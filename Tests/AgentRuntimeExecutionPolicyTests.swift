@@ -21,6 +21,8 @@ struct AgentRuntimeRegistryTests {
             #expect(!descriptor.executableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(!descriptor.installHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(!descriptor.authHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            #expect(descriptor.prerequisite.binary == descriptor.executableName)
+            #expect(descriptor.prerequisite.livenessArgs.isEmpty == false)
             #expect(descriptor.defaultModels == runtime.defaultModels)
             #expect(descriptor.supportsAstraRunProtocol == runtime.supportsAstraRunProtocol)
         }

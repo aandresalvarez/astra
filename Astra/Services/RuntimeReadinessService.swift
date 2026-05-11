@@ -83,18 +83,20 @@ struct RuntimeReadinessService {
 
     private func checkClaude(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessReport {
         var checks: [RuntimeReadinessCheck] = []
+        let descriptor = AgentRuntimeRegistry.descriptor(for: .claudeCode)
+        let prerequisite = descriptor.prerequisite
         let executable = resolvedExecutable(
             configuredPath: configuration.claudePath,
-            binary: "claude"
+            binary: prerequisite.binary
         )
 
         let cliStatus = await checkExecutable(
             id: "claude-cli",
-            title: "Claude CLI",
+            title: prerequisite.displayName,
             executable: executable,
-            args: ["--version"],
-            missingDetail: "Claude Code CLI was not found.",
-            installHint: CommonCLIPrerequisites.claude.installHint
+            args: prerequisite.livenessArgs,
+            missingDetail: "\(prerequisite.displayName) was not found.",
+            installHint: prerequisite.installHint
         )
         checks.append(cliStatus.check)
 
@@ -131,28 +133,24 @@ struct RuntimeReadinessService {
     }
 
     private func checkCopilot(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessReport {
+        let descriptor = AgentRuntimeRegistry.descriptor(for: .copilotCLI)
+        let prerequisite = descriptor.prerequisite
         let executable = resolvedExecutable(
             configuredPath: configuration.copilotPath,
-            binary: "copilot"
+            binary: prerequisite.binary
         )
         let cliStatus = await checkExecutable(
             id: "copilot-cli",
-            title: "GitHub Copilot CLI",
+            title: prerequisite.displayName,
             executable: executable,
-            args: ["--version"],
-            missingDetail: "GitHub Copilot CLI was not found.",
-            installHint: CommonCLIPrerequisites.copilot.installHint
+            args: prerequisite.livenessArgs,
+            missingDetail: "\(prerequisite.displayName) was not found.",
+            installHint: prerequisite.installHint
         )
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
-            checks.append(RuntimeReadinessCheck(
-                id: "copilot-account",
-                title: "Copilot account",
-                detail: "CLI is available. Copilot validates account access when a task starts.",
-                state: .warning,
-                remediation: CommonCLIPrerequisites.copilot.authHint
-            ))
+            checks.append(copilotAccountDeferredCheck())
         }
         return RuntimeReadinessReport(checks: checks)
     }
@@ -237,6 +235,24 @@ struct RuntimeReadinessService {
             id: "vertex-adc",
             title: "Vertex ADC credentials",
             detail: "Application Default Credentials are available.",
+            state: .ready,
+            remediation: nil
+        )
+    }
+
+    private func copilotAccountDeferredCheck() -> RuntimeReadinessCheck {
+        let tokenKeys = ["GH_TOKEN", "GITHUB_TOKEN"]
+        let hasToken = tokenKeys.contains { key in
+            !(ProcessInfo.processInfo.environment[key] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+        return RuntimeReadinessCheck(
+            id: "copilot-account",
+            title: "Copilot account",
+            detail: hasToken
+                ? "CLI is available. GitHub token environment is present; Copilot will validate account access when a task starts."
+                : "CLI is available. The Copilot CLI does not expose a safe local auth status check, so account validation happens when a task starts.",
             state: .ready,
             remediation: nil
         )
@@ -435,26 +451,8 @@ struct RuntimeReadinessService {
         case "copilot":
             return RuntimePathResolver.detectCopilotPath()
         default:
-            return detectExecutableOnPath(binary)
+            return RuntimePathResolver.detectExecutablePath(named: binary)
         }
-    }
-
-    private static func detectExecutableOnPath(_ binary: String) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = [binary]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return ""
-        }
-        guard process.terminationStatus == 0 else { return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }
 

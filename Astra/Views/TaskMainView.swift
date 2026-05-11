@@ -92,6 +92,8 @@ struct TaskMainView: View {
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -150,7 +152,12 @@ struct TaskMainView: View {
 
     private var taskUtilityRuntime: AgentUtilityRuntimeConfiguration {
         let runtime = task.resolvedRuntimeID
-        let model = runtime.defaultModels.contains(task.model) ? task.model : runtime.defaultModel
+        let model = RuntimeModelAvailability.normalizedModel(
+            task.model,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: model,
@@ -158,6 +165,20 @@ struct TaskMainView: View {
             copilotPath: copilotPath,
             copilotHome: CopilotCLIRuntime.channelHome()
         )
+    }
+
+    private func alignTaskModelWithRuntime() {
+        let runtime = task.resolvedRuntimeID
+        let normalized = RuntimeModelAvailability.normalizedModel(
+            task.model,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
+        if task.model != normalized {
+            task.model = normalized
+            task.updatedAt = Date()
+        }
     }
 
     private var threadScrollSignature: String {
@@ -191,7 +212,7 @@ struct TaskMainView: View {
         }
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL,
-                  TaskGeneratedFiles.isHTMLFile(url.path) || TaskGeneratedFiles.isMarkdownFile(url.path),
+                  TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
                   let onOpenGeneratedFile else {
                 return .systemAction
             }
@@ -226,8 +247,10 @@ struct TaskMainView: View {
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            alignTaskModelWithRuntime()
         }
         .onAppear {
+            alignTaskModelWithRuntime()
             runtimeHealthNow = Date()
             threadViewModel.reset(for: task)
             loadSSHConnections()
@@ -239,6 +262,8 @@ struct TaskMainView: View {
             removePasteMonitor()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
+        .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
+        .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
             runtimeHealthNow = Date()
@@ -396,7 +421,7 @@ struct TaskMainView: View {
         case .summary:
             summaryContent
         case .files:
-            FilesTabView(task: task)
+            FilesTabView(task: task, onOpenGeneratedFile: onOpenGeneratedFile)
         }
     }
 
@@ -1169,6 +1194,7 @@ struct TaskMainView: View {
                             .foregroundStyle(Stanford.lagunita)
                         }
                         .buttonStyle(.plain)
+                        .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
                     }
                 }
             }
@@ -1972,9 +1998,12 @@ struct TaskMainView: View {
                     onRuntimeChange: { runtime in
                         task.runtimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        if !resolved.defaultModels.contains(task.model) {
-                            task.model = resolved.defaultModel
-                        }
+                        task.model = RuntimeModelAvailability.normalizedModel(
+                            task.model,
+                            for: resolved,
+                            cachedClaudeModelsJSON: claudeAvailableModels,
+                            cachedCopilotModelsJSON: copilotAvailableModels
+                        )
                         task.updatedAt = Date()
                     },
                     onBudgetChange: { task.tokenBudget = $0 },

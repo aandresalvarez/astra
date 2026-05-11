@@ -386,6 +386,8 @@ struct ChatPanelView: View {
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var chainedGoal = ""
@@ -421,13 +423,28 @@ struct ChatPanelView: View {
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
         let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
-        let model = runtime.defaultModels.contains(defaultModel) ? defaultModel : runtime.defaultModel
+        let model = RuntimeModelAvailability.normalizedModel(
+            defaultModel,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: model,
             claudePath: claudePath,
             copilotPath: copilotPath,
             copilotHome: CopilotCLIRuntime.channelHome()
+        )
+    }
+
+    private func alignDefaultModelWithRuntime() {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        defaultModel = RuntimeModelAvailability.normalizedModel(
+            defaultModel,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
         )
     }
 
@@ -616,6 +633,7 @@ struct ChatPanelView: View {
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
         .onAppear {
+            alignDefaultModelWithRuntime()
             loadSSHConnections()
             focusComposerInput()
             if let draft = draftToLoad {
@@ -627,6 +645,9 @@ struct ChatPanelView: View {
             removePasteMonitor()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
+        .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
+        .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
+        .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
     }
 
     // MARK: - Hero (empty state)
@@ -987,9 +1008,12 @@ struct ChatPanelView: View {
                     onRuntimeChange: { runtime in
                         defaultRuntimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        if !resolved.defaultModels.contains(defaultModel) {
-                            defaultModel = resolved.defaultModel
-                        }
+                        defaultModel = RuntimeModelAvailability.normalizedModel(
+                            defaultModel,
+                            for: resolved,
+                            cachedClaudeModelsJSON: claudeAvailableModels,
+                            cachedCopilotModelsJSON: copilotAvailableModels
+                        )
                     },
                     onBudgetChange: { defaultBudget = $0 },
                     onRemoveSkill: { skill in excludedSkillIDs.insert(skill.id) },

@@ -49,6 +49,8 @@ struct ComposerToolbar: View {
     var sshConnections: [SSHConnection] = []
 
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = BudgetEnforcementMode.hardStop.rawValue
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @State private var isPlusHovered = false
 
     var body: some View {
@@ -167,8 +169,9 @@ struct ComposerToolbar: View {
                 ForEach(AgentRuntimeID.allCases) { runtime in
                     Button {
                         onRuntimeChange?(runtime.rawValue)
-                        if !runtime.defaultModels.contains(model) {
-                            onModelChange?(runtime.defaultModel)
+                        let candidates = runtimeModels(for: runtime)
+                        if !candidates.contains(model) {
+                            onModelChange?(candidates.first ?? runtime.defaultModel)
                         }
                     } label: {
                         HStack {
@@ -182,7 +185,7 @@ struct ComposerToolbar: View {
             }
 
             Menu {
-                ForEach(resolvedRuntime.defaultModels, id: \.self) { candidate in
+                ForEach(runtimeModels(for: resolvedRuntime), id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
                         HStack {
                             Text(modelDisplayName(candidate))
@@ -193,10 +196,12 @@ struct ComposerToolbar: View {
             } label: {
                 Label("Model", systemImage: "cpu")
             }
-            if !resolvedRuntime.defaultModels.contains(model) {
-                Button { onModelChange?(resolvedRuntime.defaultModel) } label: {
+            let candidates = runtimeModels(for: resolvedRuntime)
+            if !candidates.contains(model) {
+                let fallback = candidates.first ?? resolvedRuntime.defaultModel
+                Button { onModelChange?(fallback) } label: {
                     HStack {
-                        Text("Use \(modelDisplayName(resolvedRuntime.defaultModel))")
+                        Text("Use \(modelDisplayName(fallback))")
                     }
                 }
             }
@@ -628,6 +633,14 @@ struct ComposerToolbar: View {
 
     private func modelDisplayName(_ model: String) -> String {
         model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
+        RuntimeModelAvailability.models(
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private func shortModelDisplayName(_ model: String) -> String {

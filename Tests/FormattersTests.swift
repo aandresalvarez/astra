@@ -34,6 +34,9 @@ struct FormattersTests {
     @Test("fileIcon for markdown")
     func markdownIcon() { #expect(Formatters.fileIcon(for: "README.md") == "doc.plaintext") }
 
+    @Test("fileIcon for Quarto markdown")
+    func quartoMarkdownIcon() { #expect(Formatters.fileIcon(for: "starr_common.qmd") == "doc.plaintext") }
+
     @Test("shortenIdentifierTokens preserves normal prose")
     func shortenIdentifierTokensLeavesProseAlone() {
         #expect(Formatters.shortenIdentifierTokens("Review the workspace import flow") == "Review the workspace import flow")

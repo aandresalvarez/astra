@@ -1,13 +1,48 @@
 import AppKit
 import Foundation
 
+enum ShelfTextDocumentKind: String, Equatable {
+    case markdown
+    case text
+
+    var displayName: String {
+        switch self {
+        case .markdown: "Markdown"
+        case .text: "Text"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .markdown: "doc.richtext"
+        case .text: "doc.plaintext"
+        }
+    }
+
+    static func infer(from url: URL) -> ShelfTextDocumentKind {
+        switch url.pathExtension.lowercased() {
+        case "md", "markdown", "qmd":
+            .markdown
+        default:
+            .text
+        }
+    }
+}
+
 struct ShelfMarkdownDocument: Identifiable, Equatable {
     let id: String
     let fileURL: URL
     var title: String
+    var kind: ShelfTextDocumentKind
     var content: String
+    var savedContent: String
     var errorMessage: String?
+    var saveErrorMessage: String?
     var contentSignature: String
+
+    var isDirty: Bool {
+        content != savedContent
+    }
 }
 
 @MainActor
@@ -26,7 +61,7 @@ final class ShelfMarkdownSession: ObservableObject {
     }
 
     var title: String {
-        selectedDocument?.title ?? "Markdown"
+        selectedDocument?.title ?? "Text"
     }
 
     var content: String {
@@ -37,8 +72,24 @@ final class ShelfMarkdownSession: ObservableObject {
         selectedDocument?.errorMessage
     }
 
+    var saveErrorMessage: String? {
+        selectedDocument?.saveErrorMessage
+    }
+
     var contentSignature: String {
         selectedDocument?.contentSignature ?? ""
+    }
+
+    var selectedDocumentKind: ShelfTextDocumentKind? {
+        selectedDocument?.kind
+    }
+
+    var isSelectedDocumentDirty: Bool {
+        selectedDocument?.isDirty == true
+    }
+
+    var canSaveSelectedDocument: Bool {
+        selectedDocument != nil && selectedDocument?.errorMessage == nil
     }
 
     var displayPath: String {
@@ -92,6 +143,46 @@ final class ShelfMarkdownSession: ObservableObject {
         load(fileURL)
     }
 
+    func updateSelectedContent(_ content: String) {
+        guard let selectedDocumentID,
+              let index = documents.firstIndex(where: { $0.id == selectedDocumentID }),
+              documents[index].content != content else {
+            return
+        }
+
+        documents[index].content = content
+        documents[index].errorMessage = nil
+        documents[index].saveErrorMessage = nil
+        documents[index].contentSignature = Self.contentSignature(
+            for: documents[index].fileURL,
+            content: content
+        )
+    }
+
+    func saveSelectedDocument() {
+        guard let selectedDocumentID,
+              let index = documents.firstIndex(where: { $0.id == selectedDocumentID }) else {
+            return
+        }
+
+        do {
+            try documents[index].content.write(
+                to: documents[index].fileURL,
+                atomically: true,
+                encoding: .utf8
+            )
+            documents[index].savedContent = documents[index].content
+            documents[index].errorMessage = nil
+            documents[index].saveErrorMessage = nil
+            documents[index].contentSignature = Self.contentSignature(
+                for: documents[index].fileURL,
+                content: documents[index].content
+            )
+        } catch {
+            documents[index].saveErrorMessage = "Could not save \(documents[index].fileURL.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
     func openExternal() {
         guard let fileURL else { return }
         NSWorkspace.shared.open(fileURL)
@@ -122,9 +213,16 @@ final class ShelfMarkdownSession: ObservableObject {
             id: url.path,
             fileURL: url,
             title: url.lastPathComponent,
+            kind: ShelfTextDocumentKind.infer(from: url),
             content: content,
+            savedContent: content,
             errorMessage: errorMessage,
-            contentSignature: "\(url.path)|\(content.count)|\(Date().timeIntervalSince1970)"
+            saveErrorMessage: nil,
+            contentSignature: Self.contentSignature(for: url, content: content)
         )
+    }
+
+    private static func contentSignature(for url: URL, content: String) -> String {
+        "\(url.path)|\(content.count)|\(Date().timeIntervalSince1970)"
     }
 }

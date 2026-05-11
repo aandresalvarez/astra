@@ -105,7 +105,7 @@ struct PluginPackagePrereqTests {
         #expect(github?.localTools.map(\.command) == ["gh"])
         #expect(github?.prerequisites.count == 2)
         #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])
-        #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status"])
+        #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status", "--hostname", "github.com"])
         #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
     }
 

@@ -56,7 +56,7 @@ struct CapabilityToolDetectorTests {
 
         let bq = try #require(CapabilityToolDetector.knownCandidates.first { $0.id == "bq" })
         let gh = try #require(CapabilityToolDetector.knownCandidates.first { $0.id == "gh" })
-        let checker = EnvironmentHealthChecker(runner: runner)
+        let checker = EnvironmentHealthChecker(runner: runner, fallbackDirectories: [])
         let detector = CapabilityToolDetector(checker: checker)
 
         let statuses = await detector.detect([bq, gh])

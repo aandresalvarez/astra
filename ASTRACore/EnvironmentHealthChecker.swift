@@ -52,20 +52,38 @@ public enum SemanticCheck: String, Codable, Sendable, Equatable {
 ///     `--version` in 3s is effectively unresponsive for interactive use.
 public struct EnvironmentHealthChecker: Sendable {
     public static let defaultEnvPath = "/usr/bin/env"
+    public static var defaultFallbackDirectories: [String] {
+        [
+            "\(NSHomeDirectory())/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(NSHomeDirectory())/.npm-global/bin",
+            "\(NSHomeDirectory())/.astra/tools",
+            "/usr/bin"
+        ]
+    }
 
     private let runner: BinaryRunner
     private let envPath: String
     /// Explicit PATH to pass to `which`. Nil = inherit. Tests inject this.
     private let overridePath: String?
+    private let fallbackDirectories: [String]
+    private let isExecutable: @Sendable (String) -> Bool
 
     public init(
         runner: BinaryRunner = ProcessBinaryRunner(),
         envPath: String = EnvironmentHealthChecker.defaultEnvPath,
-        overridePath: String? = nil
+        overridePath: String? = nil,
+        fallbackDirectories: [String] = EnvironmentHealthChecker.defaultFallbackDirectories,
+        isExecutable: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
     ) {
         self.runner = runner
         self.envPath = envPath
         self.overridePath = overridePath
+        self.fallbackDirectories = fallbackDirectories
+        self.isExecutable = isExecutable
     }
 
     /// Check a single binary. Order: resolve → liveness → semantic.
@@ -85,12 +103,12 @@ public struct EnvironmentHealthChecker: Sendable {
             environment: whichEnv
         )
 
-        guard whichResult.isSuccess else {
-            return .missingBinary
-        }
-
-        let resolved = whichResult.stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let whichPath = whichResult.isSuccess
+            ? whichResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let resolved = whichPath.isEmpty
+            ? fallbackExecutablePath(binary: binary)
+            : whichPath
         guard !resolved.isEmpty else {
             return .missingBinary
         }
@@ -135,6 +153,18 @@ public struct EnvironmentHealthChecker: Sendable {
         }
 
         return .healthy(path: resolved, version: version)
+    }
+
+    private func fallbackExecutablePath(binary: String) -> String {
+        for directory in fallbackDirectories {
+            let path = URL(fileURLWithPath: directory)
+                .appendingPathComponent(binary)
+                .path
+            if isExecutable(path) {
+                return path
+            }
+        }
+        return ""
     }
 }
 

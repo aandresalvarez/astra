@@ -23,6 +23,8 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
+    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
+    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
 
     private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
 
@@ -75,6 +77,12 @@ struct SettingsView: View {
             readinessReport = nil
             readinessCheckedAt = nil
         }
+        .onChange(of: claudeAvailableModels) {
+            alignDefaultModelsWithRuntime()
+        }
+        .onChange(of: copilotAvailableModels) {
+            alignDefaultModelsWithRuntime()
+        }
     }
 
     private var runtimeSettingsTab: some View {
@@ -86,13 +94,7 @@ struct SettingsView: View {
                     }
                 }
                 .onChange(of: defaultRuntimeID) {
-                    let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
-                    if !runtime.defaultModels.contains(defaultModel) {
-                        defaultModel = runtime.defaultModel
-                    }
-                    if !runtime.defaultModels.contains(validationModel) {
-                        validationModel = runtime.defaultModel
-                    }
+                    alignDefaultModelsWithRuntime()
                 }
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
                     .font(Stanford.caption(12))
@@ -401,7 +403,11 @@ struct SettingsView: View {
     }
 
     private var runtimeModels: [String] {
-        (AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode).defaultModels
+        RuntimeModelAvailability.models(
+            for: AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
@@ -607,7 +613,90 @@ struct SettingsView: View {
         defer { isCheckingReadiness = false }
 
         let service = RuntimeReadinessService()
-        readinessReport = await service.check(configuration: readinessConfiguration)
+        var report = await service.check(configuration: readinessConfiguration)
+        if report.checks.contains(where: { $0.id == readinessConfiguration.runtimeReadinessCheckID && $0.state == .ready }) {
+            let modelCheck = await refreshModelAvailability(for: readinessConfiguration)
+            report = RuntimeReadinessReport(checks: report.checks + [modelCheck])
+            alignDefaultModelsWithRuntime()
+        }
+        readinessReport = report
         readinessCheckedAt = Date()
+    }
+
+    private func refreshModelAvailability(for configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        switch configuration.runtime {
+        case .claudeCode:
+            let result = await ClaudeModelAvailabilityService().refreshAndPersist(
+                configuration: ClaudeModelAvailabilityConfiguration(
+                    provider: configuration.claudeProvider,
+                    vertexOpusModel: configuration.vertexOpusModel,
+                    vertexSonnetModel: configuration.vertexSonnetModel,
+                    vertexHaikuModel: configuration.vertexHaikuModel
+                )
+            )
+            switch result {
+            case .available(let models):
+                return RuntimeReadinessCheck(
+                    id: "claude-models",
+                    title: "Claude models",
+                    detail: "Available: \(models.joined(separator: ", "))",
+                    state: .ready,
+                    remediation: nil
+                )
+            case .unavailable(let reason):
+                return RuntimeReadinessCheck(
+                    id: "claude-models",
+                    title: "Claude models",
+                    detail: "Using cached or default model choices until provider model access can be verified.",
+                    state: .warning,
+                    remediation: reason
+                )
+            }
+        case .copilotCLI:
+            let result = await CopilotModelAvailabilityService().refreshAndPersist()
+            switch result {
+            case .available(let models):
+                return RuntimeReadinessCheck(
+                    id: "copilot-models",
+                    title: "Copilot models",
+                    detail: "Available: \(models.joined(separator: ", "))",
+                    state: .ready,
+                    remediation: nil
+                )
+            case .unavailable(let reason):
+                return RuntimeReadinessCheck(
+                    id: "copilot-models",
+                    title: "Copilot models",
+                    detail: "Using cached or default model choices until account model access can be verified.",
+                    state: .warning,
+                    remediation: reason
+                )
+            }
+        }
+    }
+
+    private func alignDefaultModelsWithRuntime() {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        defaultModel = RuntimeModelAvailability.normalizedModel(
+            defaultModel,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
+        validationModel = RuntimeModelAvailability.normalizedModel(
+            validationModel,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
+    }
+}
+
+private extension RuntimeReadinessConfiguration {
+    var runtimeReadinessCheckID: String {
+        switch runtime {
+        case .claudeCode: "claude-cli"
+        case .copilotCLI: "copilot-cli"
+        }
     }
 }
