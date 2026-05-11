@@ -939,11 +939,11 @@ struct ChatPanelView: View {
                 TextField("Describe a task or ask a question...", text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Stanford.ui(17))
-                    .lineLimit(3...12)
+                    .lineLimit(2...10)
                     .focused($isComposerFocused)
                     .padding(.horizontal, 18)
-                    .padding(.top, attachedFiles.isEmpty ? 18 : 10)
-                    .padding(.bottom, 14)
+                    .padding(.top, attachedFiles.isEmpty ? 14 : 8)
+                    .padding(.bottom, 12)
                     .onSubmit {
                         submitComposer()
                     }
@@ -1021,7 +1021,6 @@ struct ChatPanelView: View {
                 RoundedRectangle(cornerRadius: 18)
                     .stroke(isDragOver ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.3), lineWidth: isDragOver ? 2 : 1)
             )
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !slashOptions.isEmpty {
                     slashMenuView
@@ -1064,7 +1063,6 @@ struct ChatPanelView: View {
             quickRun()
         }
     }
-
 
     /// Send message → start or continue the provider-assisted conversation
     private func sendMessage() {
@@ -1656,12 +1654,22 @@ struct ChatPanelView: View {
     private func installPasteMonitor() {
         removePasteMonitor()
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if isComposerFocused,
+               event.modifierFlags.contains(.shift),
+               Self.isReturnKey(event) {
+                messageText.append("\n")
+                return nil
+            }
             if event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
             return event
         }
+    }
+
+    private static func isReturnKey(_ event: NSEvent) -> Bool {
+        event.keyCode == 36 || event.keyCode == 76
     }
 
     private func removePasteMonitor() {

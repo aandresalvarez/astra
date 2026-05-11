@@ -199,6 +199,92 @@ struct MarkdownTextViewTests {
     }
 }
 
+// MARK: - ShelfMarkdownSession
+
+@Suite("ShelfMarkdownSession")
+struct ShelfMarkdownSessionTests {
+
+    @MainActor
+    @Test("Opening multiple Markdown files keeps them as selectable tabs")
+    func openingMultipleMarkdownFilesKeepsSelectableTabs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-tabs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let summary = root.appendingPathComponent("summary.md")
+        let story = root.appendingPathComponent("warriors_story.md")
+        try "# Summary".write(to: summary, atomically: true, encoding: .utf8)
+        try "# The Last Quarter".write(to: story, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(summary)
+        session.load(story)
+
+        #expect(session.documents.map(\.fileURL) == [summary, story])
+        #expect(session.fileURL == story)
+        #expect(session.title == "warriors_story.md")
+        #expect(session.content.contains("The Last Quarter"))
+
+        session.selectDocument(summary.path)
+
+        #expect(session.fileURL == summary)
+        #expect(session.title == "summary.md")
+        #expect(session.content.contains("Summary"))
+
+        session.load(story)
+
+        #expect(session.documents.count == 2)
+        #expect(session.fileURL == story)
+    }
+
+    @MainActor
+    @Test("Closing selected Markdown tab selects a neighboring file")
+    func closingSelectedMarkdownTabSelectsNeighbor() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-close-tabs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = root.appendingPathComponent("first.md")
+        let second = root.appendingPathComponent("second.md")
+        try "First".write(to: first, atomically: true, encoding: .utf8)
+        try "Second".write(to: second, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(first)
+        session.load(second)
+        session.closeSelectedDocument()
+
+        #expect(session.documents.map(\.fileURL) == [first])
+        #expect(session.fileURL == first)
+
+        session.closeSelectedDocument()
+
+        #expect(session.documents.isEmpty)
+        #expect(session.fileURL == nil)
+        #expect(session.title == "Markdown")
+    }
+
+    @MainActor
+    @Test("Copying selected Markdown tab writes content to pasteboard")
+    func copyingSelectedMarkdownTabWritesContentToPasteboard() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-copy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("story.md")
+        try "# Story\n\nFull text".write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+        session.copyContentToPasteboard()
+
+        #expect(NSPasteboard.general.string(forType: .string) == "# Story\n\nFull text")
+    }
+}
+
 // MARK: - TaskThreadSnapshot
 
 @Suite("TaskThreadSnapshot")
@@ -721,6 +807,53 @@ struct TaskThreadSnapshotTests {
         ]
 
         #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths) == nil)
+    }
+
+    @Test("Generated file preview prefers task README Markdown")
+    func generatedFilePreviewPrefersTaskReadmeMarkdown() {
+        let root = URL(fileURLWithPath: "/tmp/astra-generated-files-markdown-preview")
+        let paths = [
+            root.appendingPathComponent("nested/report.md").path,
+            root.appendingPathComponent("summary.markdown").path,
+            root.appendingPathComponent("README.md").path,
+            root.appendingPathComponent("index.html").path
+        ]
+
+        #expect(TaskGeneratedFiles.preferredMarkdownFile(in: paths, taskFolder: root.path) == root.appendingPathComponent("README.md").path)
+    }
+
+    @Test("Generated file preview ignores non Markdown files")
+    func generatedFilePreviewIgnoresNonMarkdownFiles() {
+        let paths = [
+            "/tmp/index.html",
+            "/tmp/styles.css",
+            "/tmp/result.txt"
+        ]
+
+        #expect(TaskGeneratedFiles.preferredMarkdownFile(in: paths) == nil)
+    }
+
+    @Test("Generated file preview finds attached Markdown inputs")
+    func generatedFilePreviewFindsAttachedMarkdownInputs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-attached-markdown-\(UUID().uuidString)")
+        let nested = root.appendingPathComponent("nested")
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "# Attached".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "nested".write(to: nested.appendingPathComponent("notes.markdown"), atomically: true, encoding: .utf8)
+        try "html".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = TaskGeneratedFiles.markdownFiles(inInputs: [
+            root.appendingPathComponent("README.md").path,
+            root.path,
+            root.appendingPathComponent("index.html").path
+        ])
+
+        #expect(paths.contains(root.appendingPathComponent("README.md").path))
+        #expect(paths.contains(nested.appendingPathComponent("notes.markdown").path))
+        #expect(!paths.contains(root.appendingPathComponent("index.html").path))
     }
 }
 

@@ -52,89 +52,20 @@ struct ComposerToolbar: View {
     @State private var isPlusHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             plusMenu
-
-            ViewThatFits(in: .horizontal) {
-                wideControlsRow
-                mediumControlsRow
-                compactControlsRow
-            }
-
-            Spacer(minLength: 0)
-
-            submitArea
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    // MARK: - Control Row Layouts
-
-    private var wideControlsRow: some View {
-        HStack(spacing: 8) {
-            modelBudgetPill
 
             if showSecurityGate || showPermissionControls {
                 permissionModeButton
             }
 
-            if showPermissionControls {
-                teamModeButton
-                planModeToggle
-            }
+            Spacer(minLength: 8)
 
-            skillChips
-
-            if !sshConnections.isEmpty {
-                sshIndicator
-            }
+            runtimeStatusPill
+            submitArea
         }
-        .fixedSize()
-    }
-
-    private var mediumControlsRow: some View {
-        HStack(spacing: 8) {
-            modelBudgetPill
-
-            if showSecurityGate || showPermissionControls {
-                permissionModeButton(compact: true)
-            }
-
-            if showPermissionControls {
-                teamModeButton(compact: true)
-                planModeToggle(compact: true)
-            }
-
-            skillChips
-
-            if !sshConnections.isEmpty {
-                sshIndicator
-            }
-        }
-        .fixedSize()
-    }
-
-    private var compactControlsRow: some View {
-        HStack(spacing: 6) {
-            modelBudgetPill(compact: true)
-
-            if showSecurityGate || showPermissionControls {
-                permissionModeButton(compact: true)
-            }
-
-            if showPermissionControls {
-                teamModeButton(compact: true)
-                planModeToggle(compact: true)
-            }
-
-            compactSkillChips
-
-            if !sshConnections.isEmpty {
-                sshIndicator(compact: true)
-            }
-        }
-        .fixedSize()
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
     }
 
     // MARK: - Plus Menu
@@ -145,6 +76,35 @@ struct ComposerToolbar: View {
                 onAttachFile()
             } label: {
                 Label("Add files or photos", systemImage: "paperclip")
+            }
+
+            Button {
+                onPasteClipboard()
+            } label: {
+                Label("Paste from clipboard", systemImage: "doc.on.clipboard")
+            }
+
+            if showPermissionControls {
+                Divider()
+
+                Toggle(isOn: $isPlanMode) {
+                    Label("Plan mode", systemImage: "text.badge.checkmark")
+                }
+                .disabled(isPlanModeDisabled)
+
+                Toggle(isOn: $useAgentTeam) {
+                    Label("Agent team", systemImage: "person.3")
+                }
+
+                if useAgentTeam {
+                    Menu {
+                        ForEach(2...5, id: \.self) { size in
+                            Button("\(size) teammates") { teamSize = size }
+                        }
+                    } label: {
+                        Label("Team size: \(teamSize)", systemImage: "number")
+                    }
+                }
             }
 
             Divider()
@@ -197,7 +157,7 @@ struct ComposerToolbar: View {
 
     // MARK: - Model / Budget Pill
 
-    private var modelBudgetPill: some View {
+    private var runtimeStatusPill: some View {
         modelBudgetPill(compact: false)
     }
 
@@ -255,27 +215,91 @@ struct ComposerToolbar: View {
             }
 
             Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "cpu")
-                    .font(Stanford.ui(11, weight: .medium))
-                if !compact {
-                    Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementSummary)")
-                        .font(Stanford.caption(12))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .fixedSize(horizontal: true, vertical: false)
+
+            if !skills.isEmpty || !sshConnections.isEmpty || showPermissionControls {
+                Divider()
+            }
+
+            if showPermissionControls {
+                Label(useAgentTeam ? "Team: \(teamSize)" : "Solo agent", systemImage: useAgentTeam ? "person.3.fill" : "person")
+                Label(isPlanMode ? "Plan mode on" : "Plan mode off", systemImage: "text.badge.checkmark")
+            }
+
+            if !skills.isEmpty {
+                Menu {
+                    ForEach(skills.sorted { $0.name < $1.name }) { skill in
+                        Button {
+                            onRemoveSkill?(skill)
+                        } label: {
+                            Label("Remove \(skill.name)", systemImage: "xmark")
+                        }
+                    }
+                } label: {
+                    Label(skills.count == 1 ? "1 skill active" : "\(skills.count) skills active", systemImage: "puzzlepiece.fill")
                 }
             }
-            .foregroundStyle(Stanford.coolGrey)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
+
+            if !sshConnections.isEmpty {
+                Section("Remote Machines") {
+                    ForEach(sshConnections) { conn in
+                        let isOk = conn.lastTestResult == true
+                        Label {
+                            Text("\(conn.displayLabel)  —  \(conn.host)")
+                        } icon: {
+                            Image(systemName: isOk ? "circle.fill" : "circle")
+                                .foregroundStyle(isOk ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                        }
+                    }
+                }
+            }
+        } label: {
+            runtimeStatusLabel(style: .full)
+            .foregroundStyle(isRunning ? Stanford.lagunita : Stanford.coolGrey)
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, 6)
+            .background((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.13 : 0.07))
+            .clipShape(Capsule())
         }
         .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)")
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+    }
+
+    private enum RuntimeStatusLabelStyle {
+        case full
+        case medium
+        case iconOnly
+    }
+
+    private func runtimeStatusLabel(style: RuntimeStatusLabelStyle) -> some View {
+        HStack(spacing: 6) {
+            if isRunning {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 14, height: 14)
+            } else {
+                Image(systemName: "cpu")
+                    .font(Stanford.ui(11, weight: .medium))
+            }
+
+            switch style {
+            case .full:
+                Text("\(shortRuntimeName(resolvedRuntime)) · \(shortModelDisplayName(model)) · \(budgetSummary(budget))")
+                    .font(Stanford.caption(12).weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 260, alignment: .trailing)
+            case .medium:
+                Text("\(shortModelDisplayName(model)) · \(budgetSummary(budget))")
+                    .font(Stanford.caption(12).weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 180, alignment: .trailing)
+            case .iconOnly:
+                EmptyView()
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - Permission Controls
@@ -295,30 +319,32 @@ struct ComposerToolbar: View {
             Button {
                 skipPermissions = true
             } label: {
-                Label("Auto: full access", systemImage: "lock.open.fill")
+                Label("Full access", systemImage: "lock.open.fill")
             }
         } label: {
-            HStack(spacing: 3) {
-                Image(systemName: skipPermissions ? "lock.open.fill" : "lock.fill")
-                    .font(Stanford.ui(11))
-                if !compact {
-                    Text(skipPermissions ? "Auto" : "Review")
-                        .font(Stanford.caption(13))
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Image(systemName: skipPermissions ? "exclamationmark.shield.fill" : "lock.fill")
+                        .font(Stanford.ui(12, weight: .semibold))
+                    Text(skipPermissions ? "Full access" : "Review")
+                        .font(Stanford.caption(13).weight(.medium))
                         .fixedSize(horizontal: true, vertical: false)
+                    Image(systemName: "chevron.down")
+                        .font(Stanford.ui(9, weight: .bold))
                 }
             }
             .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, 5)
-            .background(skipPermissions ? Stanford.poppy.opacity(0.12) : Stanford.paloAltoGreen.opacity(0.12))
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, 6)
+            .background((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.12))
             .clipShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help(skipPermissions ? "Auto mode skips CLI permission prompts. Use only for trusted tasks." : "Review mode keeps agents on restricted tools by default.")
+        .help(skipPermissions ? "Full access skips CLI permission prompts. Use only for trusted tasks." : "Review mode keeps agents on restricted tools by default.")
         .accessibilityIdentifier("SecurityGate")
         .accessibilityLabel("Security Gate")
-        .accessibilityValue(skipPermissions ? "Auto" : "Review")
+        .accessibilityValue(skipPermissions ? "Full access" : "Review")
     }
 
     private var teamModeButton: some View {
@@ -602,6 +628,36 @@ struct ComposerToolbar: View {
 
     private func modelDisplayName(_ model: String) -> String {
         model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func shortModelDisplayName(_ model: String) -> String {
+        let normalized = modelDisplayName(model)
+        let lower = normalized.lowercased()
+
+        if lower.contains("sonnet") {
+            return versionedModelName("Sonnet", from: normalized)
+        }
+        if lower.contains("opus") {
+            return versionedModelName("Opus", from: normalized)
+        }
+        if lower.contains("haiku") {
+            return versionedModelName("Haiku", from: normalized)
+        }
+        if lower.hasPrefix("gpt-") {
+            return normalized
+                .replacingOccurrences(of: "gpt-", with: "GPT-")
+                .replacingOccurrences(of: "-mini", with: " Mini")
+        }
+        return normalized
+    }
+
+    private func versionedModelName(_ family: String, from model: String) -> String {
+        let parts = model.split(separator: "-")
+        let numbers = parts.filter { part in
+            part.allSatisfy(\.isNumber)
+        }
+        guard numbers.count >= 2 else { return family }
+        return "\(family) \(numbers[0]).\(numbers[1])"
     }
 
     private var resolvedRuntime: AgentRuntimeID {

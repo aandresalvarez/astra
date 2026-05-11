@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import ASTRACore
+import AppKit
 
 enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
@@ -40,11 +41,13 @@ enum ContentDetailPresentation: Equatable {
 /// Future cases can choose wider sizing for browser or file previews.
 private enum WorkspaceCanvasItem: Equatable {
     case plan
+    case markdown
     case browser
 
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
+        case .markdown: 360
         case .browser: 360
         }
     }
@@ -52,6 +55,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
+        case .markdown: 520
         case .browser: 440
         }
     }
@@ -59,6 +63,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
+        case .markdown: 980
         case .browser: 1120
         }
     }
@@ -66,6 +71,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var title: String {
         switch self {
         case .plan: "Plan"
+        case .markdown: "Markdown"
         case .browser: "Browser"
         }
     }
@@ -120,6 +126,29 @@ private final class ShelfBrowserSessionStore: ObservableObject {
 
         guard isPresented else { return }
         session(for: taskID, pinnedToTask: pinnedToTask).setPresented(true)
+    }
+}
+
+@MainActor
+private final class ShelfMarkdownSessionStore: ObservableObject {
+    private let sharedSession = ShelfMarkdownSession()
+    private var taskSessions: [UUID: ShelfMarkdownSession] = [:]
+
+    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfMarkdownSession {
+        guard pinnedToTask, let taskID else {
+            sharedSession.bindToTask(taskID)
+            return sharedSession
+        }
+
+        if let session = taskSessions[taskID] {
+            session.bindToTask(taskID)
+            return session
+        }
+
+        let session = ShelfMarkdownSession()
+        session.bindToTask(taskID)
+        taskSessions[taskID] = session
+        return session
     }
 }
 
@@ -218,6 +247,7 @@ struct ContentView: View {
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
     @State private var runtime = AppRuntimeController()
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
+    @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -235,6 +265,7 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
     @AppStorage(AppStorageKeys.browserPinnedToTask) private var isBrowserPinnedToTask = true
+    @AppStorage(AppStorageKeys.markdownPinnedToTask) private var isMarkdownPinnedToTask = true
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -243,7 +274,12 @@ struct ContentView: View {
     @State private var panelTransitionGeneration = 0
     @State private var cachedHasCanvasContent = false
     @State private var generatedHTMLPreviewTask: Task<Void, Never>?
+    @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
+    @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var lastGeneratedHTMLPreviewSignature = ""
+    @State private var lastGeneratedMarkdownPreviewSignature = ""
+    @State private var selectedTaskHasMarkdownShelfContent = false
+    @State private var selectedTaskPreferredMarkdownPath = ""
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -299,10 +335,24 @@ struct ContentView: View {
         )
     }
 
+    private var currentMarkdownSession: ShelfMarkdownSession {
+        markdownSessionStore.session(
+            for: selectedTask?.id,
+            pinnedToTask: isMarkdownPinnedToTask
+        )
+    }
+
     private var browserPinnedToTaskBinding: Binding<Bool> {
         Binding(
             get: { isBrowserPinnedToTask },
             set: setBrowserPinnedToTask
+        )
+    }
+
+    private var markdownPinnedToTaskBinding: Binding<Bool> {
+        Binding(
+            get: { isMarkdownPinnedToTask },
+            set: setMarkdownPinnedToTask
         )
     }
 
@@ -315,12 +365,13 @@ struct ContentView: View {
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
         let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
+        let inputSignature = selectedTask.inputs.joined(separator: "|")
         let state = TaskPlanService.reconstruct(for: selectedTask)
         guard let plan = state.plan else {
-            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature)"
+            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature):\(inputSignature)"
         }
         let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature)"
+        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature):\(inputSignature)"
     }
 
     private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
@@ -394,6 +445,8 @@ struct ContentView: View {
                 taskQueue: runtime.taskQueue,
                 browserSession: currentBrowserSession,
                 isBrowserPinnedToTask: browserPinnedToTaskBinding,
+                markdownSession: currentMarkdownSession,
+                isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -427,7 +480,8 @@ struct ContentView: View {
                 onNewSSHConnection: showSSHConnectionEditor,
                 onEditSSHConnection: beginEditingSSHConnection,
                 onCreateWorkspace: createWorkspace,
-                onImportWorkspace: importWorkspace
+                onImportWorkspace: importWorkspace,
+                onOpenGeneratedFile: openGeneratedFile
             )
         }
         .navigationSplitViewStyle(.balanced)
@@ -446,10 +500,13 @@ struct ContentView: View {
                 hasTaskThread: hasOpenTaskThread,
                 hasCanvasContent: hasWorkspaceCanvasContent,
                 isCanvasVisible: activeWorkspaceCanvasItem == .plan,
+                hasMarkdownContent: selectedTaskHasMarkdownShelfContent,
+                isMarkdownVisible: activeWorkspaceCanvasItem == .markdown,
                 isBrowserVisible: activeWorkspaceCanvasItem == .browser,
                 isRightRailVisible: isWorkspaceRightRailVisible,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
                 onToggleCanvas: toggleWorkspaceCanvas,
+                onToggleMarkdown: toggleMarkdownCanvas,
                 onToggleBrowser: toggleBrowserCanvas,
                 onToggleRightRail: toggleRightRail
             )
@@ -481,10 +538,18 @@ struct ContentView: View {
             if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
                 activeWorkspaceCanvasItem = nil
             }
+            if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .markdown {
+                activeWorkspaceCanvasItem = nil
+            }
+            refreshMarkdownShelfAvailabilityForSelectedTask()
             previewGeneratedHTMLForSelectedTaskIfNeeded()
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
         .onChange(of: hasOpenTaskThread) {
             if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
+                activeWorkspaceCanvasItem = nil
+            }
+            if !hasOpenTaskThread, activeWorkspaceCanvasItem == .markdown {
                 activeWorkspaceCanvasItem = nil
             }
         }
@@ -827,6 +892,93 @@ struct ContentView: View {
         }
     }
 
+    private func toggleMarkdownCanvas() {
+        guard selectedTaskHasMarkdownShelfContent, selectedTask != nil || isComposingTask else {
+            if activeWorkspaceCanvasItem == .markdown {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+            return
+        }
+        currentMarkdownSession.bindToTask(selectedTask?.id)
+        if !selectedTaskPreferredMarkdownPath.isEmpty {
+            let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
+            if currentMarkdownSession.fileURL?.path != url.path {
+                currentMarkdownSession.load(url)
+            }
+        }
+        if activeWorkspaceCanvasItem == .markdown {
+            let _ = nextPanelTransitionGeneration()
+            animatePanelChange {
+                activeWorkspaceCanvasItem = nil
+            }
+        } else {
+            presentCanvas(.markdown)
+        }
+    }
+
+    private func refreshMarkdownShelfAvailabilityForSelectedTask() {
+        markdownAvailabilityTask?.cancel()
+        guard let selectedTask else {
+            selectedTaskHasMarkdownShelfContent = false
+            selectedTaskPreferredMarkdownPath = ""
+            if activeWorkspaceCanvasItem == .markdown {
+                activeWorkspaceCanvasItem = nil
+            }
+            return
+        }
+
+        let taskID = selectedTask.id
+        let attachedMarkdownPath = preferredAttachedMarkdownPath(for: selectedTask)
+        selectedTaskPreferredMarkdownPath = attachedMarkdownPath ?? ""
+        selectedTaskHasMarkdownShelfContent = attachedMarkdownPath != nil
+
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else {
+            closeMarkdownShelfIfUnavailable()
+            return
+        }
+
+        markdownAvailabilityTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            let generatedMarkdownPath = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder)
+
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID else {
+                    return
+                }
+
+                if let generatedMarkdownPath {
+                    selectedTaskPreferredMarkdownPath = generatedMarkdownPath
+                    selectedTaskHasMarkdownShelfContent = true
+                } else if let attachedMarkdownPath {
+                    selectedTaskPreferredMarkdownPath = attachedMarkdownPath
+                    selectedTaskHasMarkdownShelfContent = true
+                } else {
+                    selectedTaskPreferredMarkdownPath = ""
+                    selectedTaskHasMarkdownShelfContent = false
+                    closeMarkdownShelfIfUnavailable()
+                }
+            }
+        }
+    }
+
+    private func preferredAttachedMarkdownPath(for task: AgentTask) -> String? {
+        let paths = TaskGeneratedFiles.markdownFiles(inInputs: task.inputs)
+        return TaskGeneratedFiles.preferredMarkdownFile(in: paths)
+    }
+
+    private func closeMarkdownShelfIfUnavailable() {
+        guard activeWorkspaceCanvasItem == .markdown else { return }
+        let _ = nextPanelTransitionGeneration()
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+        }
+    }
+
     private func previewGeneratedHTMLForSelectedTaskIfNeeded() {
         guard isBrowserPinnedToTask else { return }
         guard let selectedTask else {
@@ -865,6 +1017,75 @@ struct ContentView: View {
         }
     }
 
+    private func previewGeneratedMarkdownForSelectedTaskIfNeeded() {
+        guard isMarkdownPinnedToTask else { return }
+        guard let selectedTask else {
+            generatedMarkdownPreviewTask?.cancel()
+            return
+        }
+
+        let taskID = selectedTask.id
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else { return }
+
+        generatedMarkdownPreviewTask?.cancel()
+        generatedMarkdownPreviewTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            guard !Task.isCancelled,
+                  let path = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder) else {
+                return
+            }
+
+            let signature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID,
+                      lastGeneratedMarkdownPreviewSignature != signature else {
+                    return
+                }
+
+                lastGeneratedMarkdownPreviewSignature = signature
+                selectedTaskPreferredMarkdownPath = path
+                selectedTaskHasMarkdownShelfContent = true
+                let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+                session.load(URL(fileURLWithPath: path))
+                if activeWorkspaceCanvasItem != .browser {
+                    presentCanvas(.markdown)
+                }
+            }
+        }
+    }
+
+    private func openGeneratedFile(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if TaskGeneratedFiles.isHTMLFile(path) {
+            let taskID = selectedTask?.id
+            let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+            session.load(url)
+            if let taskID {
+                lastGeneratedHTMLPreviewSignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            }
+            presentCanvas(.browser)
+            syncBrowserPresentation()
+            return
+        }
+
+        if TaskGeneratedFiles.isMarkdownFile(path) {
+            let taskID = selectedTask?.id
+            selectedTaskPreferredMarkdownPath = path
+            selectedTaskHasMarkdownShelfContent = true
+            let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+            session.load(url)
+            if let taskID {
+                lastGeneratedMarkdownPreviewSignature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
+            }
+            presentCanvas(.markdown)
+            return
+        }
+
+        NSWorkspace.shared.open(url)
+    }
+
     private func syncBrowserPresentation() {
         browserSessionStore.setPresented(
             activeWorkspaceCanvasItem == .browser,
@@ -889,6 +1110,24 @@ struct ContentView: View {
         syncBrowserPresentation()
         if pinnedToTask {
             previewGeneratedHTMLForSelectedTaskIfNeeded()
+        }
+    }
+
+    private func setMarkdownPinnedToTask(_ pinnedToTask: Bool) {
+        guard isMarkdownPinnedToTask != pinnedToTask else { return }
+
+        let previousSession = currentMarkdownSession
+        let previousURL = previousSession.fileURL
+        isMarkdownPinnedToTask = pinnedToTask
+        lastGeneratedMarkdownPreviewSignature = ""
+
+        let nextSession = currentMarkdownSession
+        if let previousURL, !nextSession.hasFile {
+            nextSession.load(previousURL)
+        }
+
+        if pinnedToTask {
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
     }
 
@@ -1223,6 +1462,10 @@ struct ContentView: View {
             && activeWorkspaceCanvasItem == .browser
             && previousTaskID != nil
             && previousTaskID != task?.id
+        let shouldCloseMarkdownForTaskChange = isMarkdownPinnedToTask
+            && activeWorkspaceCanvasItem == .markdown
+            && previousTaskID != nil
+            && previousTaskID != task?.id
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
@@ -1230,15 +1473,25 @@ struct ContentView: View {
         selectedTask = task
         if previousTaskID != task?.id {
             lastGeneratedHTMLPreviewSignature = ""
+            lastGeneratedMarkdownPreviewSignature = ""
             currentBrowserSession.bindToTask(task?.id)
+            currentMarkdownSession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
             }
+            if shouldCloseMarkdownForTaskChange {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
             syncBrowserPresentation()
+            refreshMarkdownShelfAvailabilityForSelectedTask()
             previewGeneratedHTMLForSelectedTaskIfNeeded()
+            previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
         if task != nil {
             isComposingTask = false
@@ -1505,10 +1758,13 @@ private struct ContentToolbar: ToolbarContent {
     let hasTaskThread: Bool
     let hasCanvasContent: Bool
     let isCanvasVisible: Bool
+    let hasMarkdownContent: Bool
+    let isMarkdownVisible: Bool
     let isBrowserVisible: Bool
     let isRightRailVisible: Bool
     let onCheckForUpdates: () -> Void
     let onToggleCanvas: () -> Void
+    let onToggleMarkdown: () -> Void
     let onToggleBrowser: () -> Void
     let onToggleRightRail: () -> Void
 
@@ -1538,7 +1794,19 @@ private struct ContentToolbar: ToolbarContent {
                 }
             }
 
-            if hasTaskThread {
+            if hasTaskThread, hasMarkdownContent {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onToggleMarkdown) {
+                        toolbarToggleLabel(
+                            title: isMarkdownVisible ? "Hide Markdown" : "Show Markdown",
+                            systemImage: "doc.richtext",
+                            isActive: isMarkdownVisible
+                        )
+                    }
+                    .help(isMarkdownVisible ? "Hide Markdown shelf" : "Show Markdown shelf")
+                    .accessibilityIdentifier("ShelfMarkdownToggleButton")
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleBrowser) {
                         toolbarToggleLabel(
@@ -1589,6 +1857,8 @@ private struct ContentDetailAreaView: View {
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
     @Binding var isBrowserPinnedToTask: Bool
+    @ObservedObject var markdownSession: ShelfMarkdownSession
+    @Binding var isMarkdownPinnedToTask: Bool
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
@@ -1596,6 +1866,7 @@ private struct ContentDetailAreaView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppStorageKeys.planShelfWidth) private var planShelfStoredWidth = Double(WorkspaceCanvasItem.plan.idealWidth)
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
+    @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
     @State private var resizingShelfItem: WorkspaceCanvasItem?
@@ -1630,6 +1901,7 @@ private struct ContentDetailAreaView: View {
     let onEditSSHConnection: (SSHConnection) -> Void
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
+    let onOpenGeneratedFile: (String) -> Void
 
     var body: some View {
         contentWithOptionalCanvas
@@ -1683,14 +1955,14 @@ private struct ContentDetailAreaView: View {
 
     private func shelfLayout(for item: WorkspaceCanvasItem) -> some View {
         GeometryReader { proxy in
-            let committedWidth = committedShelfWidth(for: item, availableWidth: proxy.size.width)
             let panelWidth = shelfWidth(for: item, availableWidth: proxy.size.width)
+            let detailWidth = max(0, proxy.size.width - panelWidth)
             let isResizing = resizingShelfItem == item
 
-            ZStack(alignment: .trailing) {
+            HStack(spacing: 0) {
                 detailContent
-                    .padding(.trailing, committedWidth)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: detailWidth, height: proxy.size.height)
+                    .clipped()
 
                 canvasContent(for: item)
                 .frame(width: panelWidth, height: proxy.size.height)
@@ -1721,7 +1993,15 @@ private struct ContentDetailAreaView: View {
     }
 
     private func committedShelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
-        let storedWidth = item == .plan ? CGFloat(planShelfStoredWidth) : CGFloat(browserShelfStoredWidth)
+        let storedWidth: CGFloat
+        switch item {
+        case .plan:
+            storedWidth = CGFloat(planShelfStoredWidth)
+        case .markdown:
+            storedWidth = CGFloat(markdownShelfStoredWidth)
+        case .browser:
+            storedWidth = CGFloat(browserShelfStoredWidth)
+        }
         return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
     }
 
@@ -1732,7 +2012,7 @@ private struct ContentDetailAreaView: View {
     }
 
     private func clampedShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
-        let minimumDetailWidth: CGFloat = 380
+        let minimumDetailWidth: CGFloat = item == .browser ? 520 : 420
         let maximumUsableWidth = max(item.minWidth, availableWidth - minimumDetailWidth)
         let maximumWidth = min(item.maxWidth, maximumUsableWidth)
         return min(max(width, item.minWidth), maximumWidth)
@@ -1743,6 +2023,8 @@ private struct ContentDetailAreaView: View {
         switch item {
         case .plan:
             planShelfStoredWidth = Double(clampedWidth)
+        case .markdown:
+            markdownShelfStoredWidth = Double(clampedWidth)
         case .browser:
             browserShelfStoredWidth = Double(clampedWidth)
         }
@@ -1811,7 +2093,8 @@ private struct ContentDetailAreaView: View {
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
             onCreateWorkspace: onCreateWorkspace,
-            onImportWorkspace: onImportWorkspace
+            onImportWorkspace: onImportWorkspace,
+            onOpenGeneratedFile: onOpenGeneratedFile
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1823,6 +2106,12 @@ private struct ContentDetailAreaView: View {
             WorkspaceCanvasPanelView(
                 selectedTask: selectedTask,
                 isPresented: canvasPresentedBinding(for: .plan)
+            )
+        case .markdown:
+            ShelfMarkdownPanelView(
+                session: markdownSession,
+                isPresented: canvasPresentedBinding(for: .markdown),
+                isPinnedToTask: $isMarkdownPinnedToTask
             )
         case .browser:
             ShelfBrowserPanelView(
@@ -1880,6 +2169,7 @@ private struct ContentDetailContentView: View {
     let onManageCapabilities: () -> Void
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
+    let onOpenGeneratedFile: (String) -> Void
 
     var body: some View {
         switch ContentDetailPresentation.resolve(
@@ -1919,7 +2209,8 @@ private struct ContentDetailContentView: View {
                     sshReloadTrigger: sshReloadTrigger,
                     onMoveToDraft: onMoveToDraft,
                     onManageSkills: onManageSkills,
-                    onForkTask: onForkTask
+                    onForkTask: onForkTask,
+                    onOpenGeneratedFile: onOpenGeneratedFile
                 )
                 .id(task.id)
             }

@@ -604,6 +604,33 @@ enum TaskGeneratedFiles {
         }.value
     }
 
+    static func markdownFiles(inInputs inputs: [String], fileManager: FileManager = .default) -> [String] {
+        var paths: [String] = []
+        var seen: Set<String> = []
+
+        for input in inputs {
+            let path = (input as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
+
+            let candidates: [String]
+            if isDirectory.boolValue {
+                candidates = files(in: path, fileManager: fileManager).filter(isMarkdownFile)
+            } else if isMarkdownFile(path) {
+                candidates = [path]
+            } else {
+                candidates = []
+            }
+
+            for candidate in candidates where !seen.contains(candidate) {
+                seen.insert(candidate)
+                paths.append(candidate)
+            }
+        }
+
+        return paths.sorted()
+    }
+
     static func preferredHTMLFile(in paths: [String], taskFolder: String = "") -> String? {
         paths
             .filter(isHTMLFile)
@@ -613,14 +640,43 @@ enum TaskGeneratedFiles {
             .first
     }
 
+    static func preferredMarkdownFile(in paths: [String], taskFolder: String = "") -> String? {
+        paths
+            .filter(isMarkdownFile)
+            .sorted { lhs, rhs in
+                markdownPreviewScore(for: lhs, taskFolder: taskFolder) < markdownPreviewScore(for: rhs, taskFolder: taskFolder)
+            }
+            .first
+    }
+
     static func isHTMLFile(_ path: String) -> Bool {
         ["html", "htm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    static func isMarkdownFile(_ path: String) -> Bool {
+        ["md", "markdown"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
     static func htmlPreviewSignature(
         for path: String,
         taskID: UUID,
         fileManager: FileManager = .default
+    ) -> String {
+        previewSignature(for: path, taskID: taskID, fileManager: fileManager)
+    }
+
+    static func markdownPreviewSignature(
+        for path: String,
+        taskID: UUID,
+        fileManager: FileManager = .default
+    ) -> String {
+        previewSignature(for: path, taskID: taskID, fileManager: fileManager)
+    }
+
+    private static func previewSignature(
+        for path: String,
+        taskID: UUID,
+        fileManager: FileManager
     ) -> String {
         let attributes = try? fileManager.attributesOfItem(atPath: path)
         let modifiedAt = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
@@ -639,6 +695,26 @@ enum TaskGeneratedFiles {
         )
     }
 
+    private static func markdownPreviewScore(for path: String, taskFolder: String) -> MarkdownPreviewScore {
+        let url = URL(fileURLWithPath: path)
+        let name = url.lastPathComponent.lowercased()
+        let relativePath = relativePath(for: path, taskFolder: taskFolder)
+        return MarkdownPreviewScore(
+            namePriority: markdownNamePriority(name),
+            depth: relativePath.split(separator: "/").count,
+            relativePath: relativePath.lowercased()
+        )
+    }
+
+    private static func markdownNamePriority(_ name: String) -> Int {
+        switch name {
+        case "readme.md", "readme.markdown", "index.md", "index.markdown":
+            0
+        default:
+            1
+        }
+    }
+
     private static func relativePath(for path: String, taskFolder: String) -> String {
         guard !taskFolder.isEmpty else { return path }
         let prefix = taskFolder.hasSuffix("/") ? taskFolder : "\(taskFolder)/"
@@ -652,6 +728,22 @@ enum TaskGeneratedFiles {
         let relativePath: String
 
         static func < (lhs: HTMLPreviewScore, rhs: HTMLPreviewScore) -> Bool {
+            if lhs.namePriority != rhs.namePriority {
+                return lhs.namePriority < rhs.namePriority
+            }
+            if lhs.depth != rhs.depth {
+                return lhs.depth < rhs.depth
+            }
+            return lhs.relativePath < rhs.relativePath
+        }
+    }
+
+    private struct MarkdownPreviewScore: Comparable {
+        let namePriority: Int
+        let depth: Int
+        let relativePath: String
+
+        static func < (lhs: MarkdownPreviewScore, rhs: MarkdownPreviewScore) -> Bool {
             if lhs.namePriority != rhs.namePriority {
                 return lhs.namePriority < rhs.namePriority
             }
