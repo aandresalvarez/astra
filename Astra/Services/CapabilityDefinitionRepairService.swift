@@ -14,9 +14,11 @@ enum CapabilityDefinitionRepairService {
 
         let skills: [Skill]
         let connectors: [Connector]
+        let workspaces: [Workspace]
         do {
             skills = try modelContext.fetch(FetchDescriptor<Skill>())
             connectors = try modelContext.fetch(FetchDescriptor<Connector>())
+            workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
         } catch {
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                 "migration": "approved_capability_definitions",
@@ -42,6 +44,12 @@ enum CapabilityDefinitionRepairService {
                     }
                 }
             }
+            updated += repairEnabledPackageActivations(
+                package,
+                skills: skills,
+                connectors: connectors,
+                workspaces: workspaces
+            )
         }
 
         guard updated > 0 else { return }
@@ -58,6 +66,50 @@ enum CapabilityDefinitionRepairService {
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
+    }
+
+    private static func repairEnabledPackageActivations(
+        _ package: PluginPackage,
+        skills: [Skill],
+        connectors: [Connector],
+        workspaces: [Workspace]
+    ) -> Int {
+        let packageSkillNames = Set(package.skills.map(\.name))
+        let packageSkills = skills.filter { skill in
+            skill.isGlobal && packageSkillNames.contains(skill.name)
+        }
+        guard !packageSkills.isEmpty else { return 0 }
+
+        let packageSkillIDs = Set(packageSkills.map(\.id.uuidString))
+        let linkedGlobalConnectors = connectors.filter { connector in
+            guard connector.isGlobal else { return false }
+            guard let skill = connector.skill else { return false }
+            return packageSkillIDs.contains(skill.id.uuidString)
+        }
+
+        var updated = 0
+        for workspace in workspaces where workspace.enabledCapabilityIDs.contains(package.id) {
+            var changed = false
+            for skill in packageSkills {
+                let id = skill.id.uuidString
+                if !workspace.enabledGlobalSkillIDs.contains(id) {
+                    workspace.enabledGlobalSkillIDs.append(id)
+                    changed = true
+                }
+            }
+            for connector in linkedGlobalConnectors {
+                let id = connector.id.uuidString
+                if !workspace.enabledGlobalConnectorIDs.contains(id) {
+                    workspace.enabledGlobalConnectorIDs.append(id)
+                    changed = true
+                }
+            }
+            if changed {
+                workspace.updatedAt = Date()
+                updated += 1
+            }
+        }
+        return updated
     }
 
     private static func shouldRefresh(

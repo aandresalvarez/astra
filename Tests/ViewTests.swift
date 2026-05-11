@@ -491,6 +491,76 @@ struct TaskThreadSnapshotTests {
         })
     }
 
+    @Test("Provider error event is visible in run activity")
+    func providerErrorCreatesRunNotice() {
+        let task = makeTask(status: .failed)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.output = ""
+        let events = [
+            makeEvent(
+                task: task,
+                type: "error",
+                payload: "Copilot exited with code 1. GitHub Copilot failed before ASTRA received a visible assistant response.",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.notices.count == 1)
+        #expect(activity.notices.first?.type == "error")
+        #expect(activity.notices.first?.payload.contains("Copilot exited") == true)
+        #expect(snapshot.conversationItems.contains {
+            if case .agentResponse(let visibleRun) = $0 {
+                return visibleRun.id == run.id
+            }
+            return false
+        })
+    }
+
+    @Test("Permission approval request is visible in run activity")
+    func permissionApprovalCreatesRunNotice() {
+        let task = makeTask(status: .pendingUser)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "permission_approval_required"
+        let events = [
+            makeEvent(
+                task: task,
+                type: "permission.approval.requested",
+                payload: "Approve to continue with Write access.",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.notices.count == 1)
+        #expect(activity.notices.first?.type == "permission.approval.requested")
+        #expect(activity.notices.first?.payload.contains("Approve to continue") == true)
+        #expect(snapshot.conversationItems.contains {
+            if case .agentResponse(let visibleRun) = $0 {
+                return visibleRun.id == run.id
+            }
+            return false
+        })
+    }
+
     @Test("Conversation includes running run with tool activity before output")
     func toolActivityCreatesLiveConversationItemBeforeOutput() {
         let createdAt = Date(timeIntervalSince1970: 100)
