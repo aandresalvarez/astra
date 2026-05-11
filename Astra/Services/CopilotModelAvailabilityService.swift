@@ -89,8 +89,8 @@ struct CopilotModelAvailabilityService {
                 return .unavailable(reason: "Copilot returned no enabled models for this account.")
             }
             if let cliModels = await installedCLIModelChoices(), !cliModels.isEmpty {
-                let cliModelSet = Set(cliModels)
-                let usable = available.filter { cliModelSet.contains($0) }
+                let availableSet = Set(available)
+                let usable = cliModels.filter { availableSet.contains($0) }
                 guard !usable.isEmpty else {
                     return .unavailable(reason: "Copilot account models do not overlap with the installed Copilot CLI's supported models.")
                 }
@@ -136,16 +136,20 @@ struct CopilotModelAvailabilityService {
     private func installedCLIModelChoices() async -> [String]? {
         let copilot = detectExecutable("copilot")
         guard !copilot.isEmpty, isExecutable(copilot) else { return nil }
-        let result = await runner.run(
-            path: copilot,
-            args: ["--help"],
-            timeout: timeout,
-            environment: nil
-        )
-        guard result.isSuccess else { return nil }
 
-        let choices = Self.parseModelChoices(from: "\(result.stdout)\n\(result.stderr)")
-        return choices.isEmpty ? nil : choices
+        for args in [["help", "config"], ["--help"]] {
+            let result = await runner.run(
+                path: copilot,
+                args: args,
+                timeout: timeout,
+                environment: nil
+            )
+            guard result.isSuccess else { continue }
+
+            let choices = Self.parseModelChoices(from: "\(result.stdout)\n\(result.stderr)")
+            if !choices.isEmpty { return choices }
+        }
+        return nil
     }
 
     private func keychainCopilotToken() async -> String? {
@@ -256,9 +260,18 @@ struct CopilotModelAvailabilityService {
     }
 
     static func parseModelChoices(from text: String) -> [String] {
-        let source = modelOptionBlock(from: text) ?? text
+        if let source = modelOptionBlock(from: text) ?? modelConfigBlock(from: text) {
+            let quotedChoices = quotedValues(in: source)
+            if !quotedChoices.isEmpty {
+                return RuntimeModelAvailability.cleanProviderModels(quotedChoices)
+            }
+
+            return RuntimeModelAvailability.cleanProviderModels(choiceList(from: source))
+        }
+
+        let source = text
         let quotedChoices = quotedValues(in: source)
-        if !quotedChoices.isEmpty {
+        if !quotedChoices.isEmpty, source.range(of: "choices:", options: .caseInsensitive) != nil {
             return RuntimeModelAvailability.cleanProviderModels(quotedChoices)
         }
 
@@ -269,18 +282,23 @@ struct CopilotModelAvailabilityService {
 
         let tail = String(source[marker.upperBound...])
         let firstLine = tail.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? tail
+        return RuntimeModelAvailability.cleanProviderModels(choiceList(from: firstLine))
+    }
+
+    private static func choiceList(from text: String) -> [String] {
         var trimCharacters = CharacterSet.whitespacesAndNewlines
         trimCharacters.formUnion(CharacterSet(charactersIn: "\"'()[]:."))
-        let choices = firstLine
+        return text
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: trimCharacters) }
             .filter { !$0.isEmpty && !$0.contains(" ") }
-        return RuntimeModelAvailability.cleanProviderModels(choices)
     }
 
     private static func modelOptionBlock(from text: String) -> String? {
         let lines = text.components(separatedBy: .newlines)
-        guard let startIndex = lines.firstIndex(where: { $0.contains("--model") }) else {
+        guard let startIndex = lines.firstIndex(where: { line in
+            line.trimmingCharacters(in: .whitespaces).hasPrefix("--model")
+        }) else {
             return nil
         }
 
@@ -290,6 +308,28 @@ struct CopilotModelAvailabilityService {
             if index > startIndex {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty || trimmed.hasPrefix("-") || trimmed == "Commands:" || trimmed == "Options:" {
+                    break
+                }
+            }
+            block.append(line)
+        }
+        return block.joined(separator: "\n")
+    }
+
+    private static func modelConfigBlock(from text: String) -> String? {
+        let lines = text.components(separatedBy: .newlines)
+        guard let startIndex = lines.firstIndex(where: { line in
+            line.trimmingCharacters(in: .whitespaces).hasPrefix("`model`:")
+        }) else {
+            return nil
+        }
+
+        var block: [String] = []
+        for index in startIndex..<lines.count {
+            let line = lines[index]
+            if index > startIndex {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("`") && trimmed.contains("`:") {
                     break
                 }
             }

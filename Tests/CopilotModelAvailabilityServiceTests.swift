@@ -9,6 +9,79 @@ struct CopilotModelAvailabilityServiceTests {
     func accountModelCheckIntersectsEnabledModelsWithCLIChoices() async {
         let runner = StubBinaryRunner()
         await runner.setResponse(
+            forKey: "/opt/homebrew/bin/copilot help config",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: """
+                  `model`: AI model to use for Copilot CLI; can be changed with /model command or --model flag option.
+                    - "claude-sonnet-4.6"
+                    - "claude-sonnet-4.5"
+                    - "claude-haiku-4.5"
+                    - "claude-opus-4.7"
+                    - "claude-opus-4.6"
+                    - "gpt-5.2-codex"
+                    - "gpt-5.2"
+                    - "gpt-5-mini"
+                    - "gpt-4.1"
+
+                  `mouse`: whether to enable mouse support in alt screen mode; defaults to `true`.
+                """,
+                stderr: ""
+            )
+        )
+
+        let http = StubModelAvailabilityHTTPClient()
+        await http.setResponse(
+            method: "POST",
+            url: "https://api.github.com/graphql",
+            statusCode: 200,
+            body: #"{"data":{"viewer":{"copilotEndpoints":{"api":"https://api.githubcopilot.test"}}}}"#
+        )
+        await http.setResponse(
+            method: "GET",
+            url: "https://api.githubcopilot.test/models",
+            statusCode: 200,
+            body: """
+            {
+              "data": [
+                {"id": "text-embedding-3-small", "policy": {"state": "enabled"}},
+                {"id": "claude-sonnet-4.5", "policy": {"state": "enabled"}},
+                {"id": "claude-opus-4.7", "policy": {"state": "enabled"}},
+                {"id": "gpt-4o-mini-2024-07-18", "policy": {"state": "enabled"}},
+                {"id": "claude-sonnet-4.6", "policy": {"state": "enabled"}},
+                {"id": "gpt-5.2", "policy": {"state": "enabled"}},
+                {"id": "grok-code-fast-1", "policy": {"state": "enabled"}},
+                {"id": "gpt-4.1", "policy": {"state": "disabled"}}
+              ]
+            }
+            """
+        )
+
+        let service = CopilotModelAvailabilityService(
+            runner: runner,
+            httpClient: http,
+            environment: { ["GITHUB_TOKEN": "env-token"] },
+            detectExecutable: { $0 == "copilot" ? "/opt/homebrew/bin/copilot" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/copilot" }
+        )
+
+        let result = await service.availableModels()
+
+        #expect(result == .available(models: ["claude-sonnet-4.6", "claude-sonnet-4.5", "claude-opus-4.7", "gpt-5.2"]))
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/homebrew/bin/copilot", args: ["help", "config"])
+        ])
+        #expect(await http.recordedRequests().last?.authorization == "Bearer env-token")
+    }
+
+    @Test("Installed CLI model choices fall back to top-level help")
+    func installedCLIModelChoicesFallBackToTopLevelHelp() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/copilot help config",
+            result: RunResult(outcome: .exited(code: 1), stdout: "", stderr: "unknown topic")
+        )
+        await runner.setResponse(
             forKey: "/opt/homebrew/bin/copilot --help",
             result: RunResult(
                 outcome: .exited(code: 0),
@@ -35,17 +108,7 @@ struct CopilotModelAvailabilityServiceTests {
             method: "GET",
             url: "https://api.githubcopilot.test/models",
             statusCode: 200,
-            body: """
-            {
-              "data": [
-                {"id": "gpt-5", "policy": {"state": "enabled"}},
-                {"id": "claude-opus-4.7", "policy": {"state": "enabled"}},
-                {"id": "claude-sonnet-4.5", "policy": {"state": "enabled"}},
-                {"id": "claude-sonnet-4", "policy": {"state": "disabled"}},
-                {"id": "grok-code-fast-1", "policy": {"state": "enabled"}}
-              ]
-            }
-            """
+            body: #"{"data":[{"id":"gpt-5"},{"id":"claude-sonnet-4.5"}]}"#
         )
 
         let service = CopilotModelAvailabilityService(
@@ -58,11 +121,11 @@ struct CopilotModelAvailabilityServiceTests {
 
         let result = await service.availableModels()
 
-        #expect(result == .available(models: ["gpt-5", "claude-sonnet-4.5"]))
+        #expect(result == .available(models: ["claude-sonnet-4.5", "gpt-5"]))
         #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/homebrew/bin/copilot", args: ["help", "config"]),
             StubBinaryRunner.Call(path: "/opt/homebrew/bin/copilot", args: ["--help"])
         ])
-        #expect(await http.recordedRequests().last?.authorization == "Bearer env-token")
     }
 
     @Test("Copilot CLI help parser reads multiline model choices")
@@ -77,6 +140,22 @@ struct CopilotModelAvailabilityServiceTests {
         """)
 
         #expect(choices == ["claude-sonnet-4.5", "claude-sonnet-4", "gpt-5"])
+    }
+
+    @Test("Copilot CLI config parser reads model setting choices only")
+    func copilotCLIConfigParserReadsModelSettingChoicesOnly() {
+        let choices = CopilotModelAvailabilityService.parseModelChoices(from: """
+          `model`: AI model to use for Copilot CLI; can be changed with /model command or --model flag option.
+            - "claude-sonnet-4.6"
+            - "claude-sonnet-4.5"
+            - "gpt-5.2"
+
+          `mouse`: whether to enable mouse support in alt screen mode; defaults to `true`.
+            - "true"
+            - "false"
+        """)
+
+        #expect(choices == ["claude-sonnet-4.6", "claude-sonnet-4.5", "gpt-5.2"])
     }
 
     @Test("Account model check filters disabled Copilot models and persists the enabled set")
