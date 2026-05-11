@@ -11,7 +11,7 @@ struct RuntimeModelAvailabilityTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         #expect(RuntimeModelAvailability.models(for: .copilotCLI, defaults: defaults) == AgentRuntimeID.copilotCLI.defaultModels)
-        #expect(RuntimeModelAvailability.defaultModel(for: .copilotCLI, defaults: defaults) == "gpt-5")
+        #expect(RuntimeModelAvailability.defaultModel(for: .copilotCLI, defaults: defaults) == "claude-sonnet-4.6")
     }
 
     @Test("Cached Copilot account models preserve provider choices")
@@ -63,7 +63,7 @@ struct RuntimeModelAvailabilityTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         #expect(RuntimeModelAvailability.normalizedModel("custom-provider-model", for: .claudeCode, defaults: defaults) == "custom-provider-model")
-        #expect(RuntimeModelAvailability.normalizedModel("gpt-5", for: .claudeCode, defaults: defaults) == AgentRuntimeID.claudeCode.defaultModel)
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == AgentRuntimeID.claudeCode.defaultModel)
     }
 
     private func makeDefaults() -> (UserDefaults, String) {

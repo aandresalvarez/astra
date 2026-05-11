@@ -412,7 +412,9 @@ private struct ShelfTextEditorView: NSViewRepresentable {
         context.coordinator.isApplyingExternalChange = true
         if textView.string != text {
             let selectedRange = textView.selectedRange()
+            context.coordinator.clearUndoActions()
             textView.string = text
+            context.coordinator.clearUndoActions()
             textView.setSelectedRange(NSRange(
                 location: min(selectedRange.location, (text as NSString).length),
                 length: 0
@@ -420,6 +422,10 @@ private struct ShelfTextEditorView: NSViewRepresentable {
         }
 
         textView.isEditable = isEditable
+        textView.allowsUndo = isEditable
+        if !isEditable {
+            context.coordinator.clearUndoActions()
+        }
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         textView.typingAttributes = [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
@@ -427,6 +433,11 @@ private struct ShelfTextEditorView: NSViewRepresentable {
         ]
         configureWrapping(for: textView, in: scrollView)
         context.coordinator.isApplyingExternalChange = false
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.detach()
+        scrollView.documentView = nil
     }
 
     private func configureWrapping(for textView: NSTextView, in scrollView: NSScrollView) {
@@ -455,6 +466,19 @@ private struct ShelfTextEditorView: NSViewRepresentable {
                 return
             }
             text.wrappedValue = textView.string
+        }
+
+        func clearUndoActions() {
+            guard let textView else { return }
+            textView.undoManager?.removeAllActions(withTarget: textView)
+        }
+
+        func detach() {
+            guard let textView else { return }
+            clearUndoActions()
+            textView.delegate = nil
+            textView.allowsUndo = false
+            self.textView = nil
         }
     }
 }

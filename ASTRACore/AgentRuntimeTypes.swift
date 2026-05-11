@@ -16,7 +16,7 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
     public var defaultModel: String {
         switch self {
         case .claudeCode: "claude-sonnet-4-6"
-        case .copilotCLI: "gpt-5"
+        case .copilotCLI: "claude-sonnet-4.6"
         }
     }
 
@@ -25,7 +25,18 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
         case .claudeCode:
             ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
         case .copilotCLI:
-            ["gpt-5", "claude-sonnet-4.5", "claude-sonnet-4"]
+            [
+                "claude-sonnet-4.6",
+                "claude-sonnet-4.5",
+                "claude-haiku-4.5",
+                "claude-opus-4.7",
+                "claude-opus-4.6",
+                "claude-opus-4.5",
+                "gpt-5.2-codex",
+                "gpt-5.2",
+                "gpt-5-mini",
+                "gpt-4.1"
+            ]
         }
     }
 
