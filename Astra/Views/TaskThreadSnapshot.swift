@@ -397,7 +397,7 @@ struct TaskThreadSnapshot: Sendable {
                         id: event.id,
                         payload: event.payload
                     ))
-                case "budget.warning", "budget.exceeded":
+                case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
                     noticesByRunID[runID, default: []].append(TaskRunNotice(
                         id: event.id,
                         type: event.type,

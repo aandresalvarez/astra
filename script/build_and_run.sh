@@ -2,16 +2,42 @@
 set -euo pipefail
 
 MODE="${1:-run}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="ASTRA"
 TOOL_PRODUCTS=("astra-browser" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
-APP_VERSION="${ASTRA_VERSION:-0.1.0}"
-APP_BUILD="${ASTRA_BUILD:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
 SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
+
+latest_release_tag() {
+  git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | tail -n 1 || true
+}
+
+default_app_version() {
+  local tag
+  tag="$(latest_release_tag)"
+  if [[ -n "$tag" ]]; then
+    printf '%s\n' "${tag#v}"
+  else
+    printf '0.1.0\n'
+  fi
+}
+
+default_app_build() {
+  local count
+  count="$(git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
+    printf '%s\n' "$count"
+  else
+    printf '1\n'
+  fi
+}
+
+APP_VERSION="${ASTRA_VERSION:-$(default_app_version)}"
+APP_BUILD="${ASTRA_BUILD:-$(default_app_build)}"
 
 verify_arm64_binary() {
   local binary="$1"
@@ -62,7 +88,6 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARK
   exit 2
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"

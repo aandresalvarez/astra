@@ -1229,17 +1229,16 @@ struct TaskMainView: View {
     }
 
     private func runNoticeView(_ notice: TaskRunNotice) -> some View {
-        let isWarning = notice.type == "budget.warning"
-        let color = isWarning ? Stanford.poppy : Stanford.cardinalRed
+        let presentation = runNoticePresentation(for: notice.type)
         return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: isWarning ? "exclamationmark.triangle" : "xmark.octagon")
+            Image(systemName: presentation.icon)
                 .font(Stanford.ui(13, weight: .semibold))
-                .foregroundStyle(color)
+                .foregroundStyle(presentation.color)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(isWarning ? "Budget Warning" : "Budget Exceeded")
+                Text(presentation.title)
                     .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(color)
+                    .foregroundStyle(presentation.color)
                 Text(notice.payload)
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.black)
@@ -1250,12 +1249,27 @@ struct TaskMainView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08))
+        .background(presentation.color.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(color.opacity(0.25), lineWidth: 1)
+                .stroke(presentation.color.opacity(0.25), lineWidth: 1)
         )
+    }
+
+    private func runNoticePresentation(for type: String) -> (title: String, icon: String, color: Color) {
+        switch type {
+        case "budget.warning":
+            ("Budget Warning", "exclamationmark.triangle", Stanford.poppy)
+        case "budget.exceeded":
+            ("Budget Exceeded", "xmark.octagon", Stanford.cardinalRed)
+        case "permission.approval.requested":
+            ("Approval Needed", "hand.raised", Stanford.poppy)
+        case "error":
+            ("Provider Error", "xmark.octagon", Stanford.cardinalRed)
+        default:
+            ("Notice", "info.circle", Stanford.coolGrey)
+        }
     }
 
     private func forkTask(from run: TaskRunSnapshot) {
