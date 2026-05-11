@@ -90,6 +90,39 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
     }
 }
 
+@MainActor
+private final class ShelfBrowserSessionStore: ObservableObject {
+    private let sharedSession = ShelfBrowserSession()
+    private var taskSessions: [UUID: ShelfBrowserSession] = [:]
+
+    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfBrowserSession {
+        guard pinnedToTask, let taskID else {
+            sharedSession.bindToTask(taskID)
+            return sharedSession
+        }
+
+        if let session = taskSessions[taskID] {
+            session.bindToTask(taskID)
+            return session
+        }
+
+        let session = ShelfBrowserSession()
+        session.bindToTask(taskID)
+        taskSessions[taskID] = session
+        return session
+    }
+
+    func setPresented(_ isPresented: Bool, taskID: UUID?, pinnedToTask: Bool) {
+        sharedSession.setPresented(false)
+        for session in taskSessions.values {
+            session.setPresented(false)
+        }
+
+        guard isPresented else { return }
+        session(for: taskID, pinnedToTask: pinnedToTask).setPresented(true)
+    }
+}
+
 private struct ShelfBoundaryOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.overlayPreferenceValue(ShelfBoundaryMetricsPreferenceKey.self) { metrics in
@@ -184,7 +217,7 @@ struct ContentView: View {
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
     @State private var runtime = AppRuntimeController()
-    @StateObject private var browserSession = ShelfBrowserSession()
+    @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -201,6 +234,7 @@ struct ContentView: View {
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
+    @AppStorage(AppStorageKeys.browserPinnedToTask) private var isBrowserPinnedToTask = true
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
@@ -208,6 +242,8 @@ struct ContentView: View {
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var panelTransitionGeneration = 0
     @State private var cachedHasCanvasContent = false
+    @State private var generatedHTMLPreviewTask: Task<Void, Never>?
+    @State private var lastGeneratedHTMLPreviewSignature = ""
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -256,6 +292,20 @@ struct ContentView: View {
         )
     }
 
+    private var currentBrowserSession: ShelfBrowserSession {
+        browserSessionStore.session(
+            for: selectedTask?.id,
+            pinnedToTask: isBrowserPinnedToTask
+        )
+    }
+
+    private var browserPinnedToTaskBinding: Binding<Bool> {
+        Binding(
+            get: { isBrowserPinnedToTask },
+            set: setBrowserPinnedToTask
+        )
+    }
+
     private var selectedTaskUnreadSignature: String {
         guard let selectedTask else { return "" }
         let unread = selectedTask.unreadAt?.timeIntervalSince1970 ?? 0
@@ -264,10 +314,22 @@ struct ContentView: View {
 
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
+        let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
         let state = TaskPlanService.reconstruct(for: selectedTask)
-        guard let plan = state.plan else { return "\(selectedTask.id.uuidString):none" }
+        guard let plan = state.plan else {
+            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature)"
+        }
         let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary)"
+        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature)"
+    }
+
+    private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
+        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
+        return [
+            task.status.rawValue,
+            latestRun?.id.uuidString ?? "none",
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: "|")
     }
 
     private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }
@@ -330,7 +392,8 @@ struct ContentView: View {
                 effectiveWorkspace: effectiveWorkspace,
                 isComposingTask: isComposingTask,
                 taskQueue: runtime.taskQueue,
-                browserSession: browserSession,
+                browserSession: currentBrowserSession,
+                isBrowserPinnedToTask: browserPinnedToTaskBinding,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -418,6 +481,7 @@ struct ContentView: View {
             if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
                 activeWorkspaceCanvasItem = nil
             }
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
         }
         .onChange(of: hasOpenTaskThread) {
             if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
@@ -425,7 +489,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: activeWorkspaceCanvasItem) {
-            browserSession.setPresented(activeWorkspaceCanvasItem == .browser)
+            syncBrowserPresentation()
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
@@ -752,7 +816,7 @@ struct ContentView: View {
             }
             return
         }
-        browserSession.bindToTask(selectedTask?.id)
+        currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             let _ = nextPanelTransitionGeneration()
             animatePanelChange {
@@ -760,6 +824,71 @@ struct ContentView: View {
             }
         } else {
             presentCanvas(.browser)
+        }
+    }
+
+    private func previewGeneratedHTMLForSelectedTaskIfNeeded() {
+        guard isBrowserPinnedToTask else { return }
+        guard let selectedTask else {
+            generatedHTMLPreviewTask?.cancel()
+            return
+        }
+
+        let taskID = selectedTask.id
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else { return }
+
+        generatedHTMLPreviewTask?.cancel()
+        generatedHTMLPreviewTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            guard !Task.isCancelled,
+                  let path = TaskGeneratedFiles.preferredHTMLFile(in: files, taskFolder: taskFolder) else {
+                return
+            }
+
+            let signature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID,
+                      lastGeneratedHTMLPreviewSignature != signature else {
+                    return
+                }
+
+                lastGeneratedHTMLPreviewSignature = signature
+                let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+                session.load(URL(fileURLWithPath: path))
+                if activeWorkspaceCanvasItem != .browser {
+                    presentCanvas(.browser)
+                }
+                syncBrowserPresentation()
+            }
+        }
+    }
+
+    private func syncBrowserPresentation() {
+        browserSessionStore.setPresented(
+            activeWorkspaceCanvasItem == .browser,
+            taskID: selectedTask?.id,
+            pinnedToTask: isBrowserPinnedToTask
+        )
+    }
+
+    private func setBrowserPinnedToTask(_ pinnedToTask: Bool) {
+        guard isBrowserPinnedToTask != pinnedToTask else { return }
+
+        let previousSession = currentBrowserSession
+        let previousAddress = previousSession.currentURL
+        isBrowserPinnedToTask = pinnedToTask
+        lastGeneratedHTMLPreviewSignature = ""
+
+        let nextSession = currentBrowserSession
+        if !previousAddress.isEmpty && nextSession.currentURL.isEmpty {
+            nextSession.load(previousAddress)
+        }
+
+        syncBrowserPresentation()
+        if pinnedToTask {
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
         }
     }
 
@@ -1090,7 +1219,8 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
-        let shouldCloseBrowserForTaskChange = activeWorkspaceCanvasItem == .browser
+        let shouldCloseBrowserForTaskChange = isBrowserPinnedToTask
+            && activeWorkspaceCanvasItem == .browser
             && previousTaskID != nil
             && previousTaskID != task?.id
         if let taskWorkspace = task?.workspace,
@@ -1099,13 +1229,16 @@ struct ContentView: View {
         }
         selectedTask = task
         if previousTaskID != task?.id {
-            browserSession.bindToTask(task?.id)
+            lastGeneratedHTMLPreviewSignature = ""
+            currentBrowserSession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
             }
+            syncBrowserPresentation()
+            previewGeneratedHTMLForSelectedTaskIfNeeded()
         }
         if task != nil {
             isComposingTask = false
@@ -1396,7 +1529,7 @@ private struct ContentToolbar: ToolbarContent {
                     Button(action: onToggleCanvas) {
                         toolbarToggleLabel(
                             title: isCanvasVisible ? "Hide Plan" : "Show Plan",
-                            systemImage: isCanvasVisible ? "rectangle.inset.filled" : "rectangle.inset.filled.on.rectangle",
+                            systemImage: "list.bullet.clipboard",
                             isActive: isCanvasVisible
                         )
                     }
@@ -1455,6 +1588,7 @@ private struct ContentDetailAreaView: View {
     let isComposingTask: Bool
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
+    @Binding var isBrowserPinnedToTask: Bool
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
@@ -1693,7 +1827,8 @@ private struct ContentDetailAreaView: View {
         case .browser:
             ShelfBrowserPanelView(
                 session: browserSession,
-                isPresented: canvasPresentedBinding(for: .browser)
+                isPresented: canvasPresentedBinding(for: .browser),
+                isPinnedToTask: $isBrowserPinnedToTask
             )
         }
     }

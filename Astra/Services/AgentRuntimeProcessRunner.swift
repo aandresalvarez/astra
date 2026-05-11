@@ -1,6 +1,27 @@
 import Foundation
 import ASTRACore
 
+struct AgentRuntimeBudgetProfile: Sendable, Equatable {
+    let runtime: AgentRuntimeID
+    let launchOverheadTokens: Int
+
+    func estimatedLaunchInputTokens(prompt: String) -> Int {
+        AgentProcessMonitor.estimatedTokenCount(for: prompt) + launchOverheadTokens
+    }
+
+    static func profile(for runtime: AgentRuntimeID) -> AgentRuntimeBudgetProfile {
+        switch runtime {
+        case .claudeCode:
+            // Claude Code includes its system prompt, tool schemas, and runtime context
+            // in billed input. Recent local runs report roughly 120k input tokens before
+            // user-visible output, so low budgets must be rejected before launch.
+            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 120_000)
+        case .copilotCLI:
+            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 0)
+        }
+    }
+}
+
 final class AgentRuntimeProcessRunner {
     private var currentProcess: Process?
 
@@ -17,13 +38,14 @@ final class AgentRuntimeProcessRunner {
         claudePath: String,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
-        let tokenBudget = Self.tokenBudget(for: task)
+        let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -68,6 +90,7 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                budgetEnforcementMode: budgetEnforcementMode,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -140,6 +163,7 @@ final class AgentRuntimeProcessRunner {
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     budgetExceeded: monitor.budgetExceeded,
+                    budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
@@ -168,13 +192,14 @@ final class AgentRuntimeProcessRunner {
         copilotHome: String,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
-        let tokenBudget = task.tokenBudget == 0 ? Int.max : task.tokenBudget
+        let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -266,6 +291,7 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                budgetEnforcementMode: budgetEnforcementMode,
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
@@ -358,6 +384,7 @@ final class AgentRuntimeProcessRunner {
                     error: error.isEmpty ? nil : error,
                     providerVersion: providerVersion,
                     budgetExceeded: monitor.budgetExceeded,
+                    budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
@@ -398,7 +425,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    private static func tokenBudget(for task: AgentTask) -> Int {
+    static func effectiveTokenBudget(for task: AgentTask) -> Int {
         let baseBudget = task.tokenBudget
         if baseBudget == 0 {
             return Int.max
@@ -414,6 +441,14 @@ final class AgentRuntimeProcessRunner {
             return tokenBudget
         }
         return baseBudget
+    }
+
+    static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {
+        AgentRuntimeBudgetProfile.profile(for: runtime).estimatedLaunchInputTokens(prompt: prompt)
+    }
+
+    static func launchOverheadTokens(for runtime: AgentRuntimeID) -> Int {
+        AgentRuntimeBudgetProfile.profile(for: runtime).launchOverheadTokens
     }
 
     static func model(_ model: String, for runtime: AgentRuntimeID) -> String {

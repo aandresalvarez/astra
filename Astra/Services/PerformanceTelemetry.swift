@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum PerformanceTelemetry {
     @discardableResult
@@ -48,5 +49,45 @@ enum PerformanceTelemetry {
         case .error:
             AppLogger.error(message, category: "Performance")
         }
+    }
+}
+
+enum PerformanceSignposts {
+    private static let signposter = OSSignposter(
+        subsystem: AppChannel.current.loggingSubsystem,
+        category: "Performance"
+    )
+
+    @discardableResult
+    static func processStreamLine<T>(_ work: () -> T) -> T {
+        interval("process_stream_line", work)
+    }
+
+    @discardableResult
+    static func parseProviderStream<T>(_ work: () -> T) -> T {
+        interval("parse_provider_stream", work)
+    }
+
+    @discardableResult
+    static func persistProviderEvent<T>(_ work: () -> T) -> T {
+        interval("persist_provider_event", work)
+    }
+
+    @discardableResult
+    static func buildThreadSnapshot<T>(_ work: () -> T) -> T {
+        interval("build_thread_snapshot", work)
+    }
+
+    @discardableResult
+    static func renderTaskThread<T>(_ work: () -> T) -> T {
+        interval("render_task_thread", work)
+    }
+
+    @discardableResult
+    private static func interval<T>(_ name: StaticString, _ work: () -> T) -> T {
+        let id = signposter.makeSignpostID()
+        let state = signposter.beginInterval(name, id: id)
+        defer { signposter.endInterval(name, state) }
+        return work()
     }
 }

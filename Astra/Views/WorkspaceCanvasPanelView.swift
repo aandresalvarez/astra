@@ -513,7 +513,7 @@ struct WorkspaceCanvasPanelView: View {
         ZStack {
             Stanford.panelBackground
             VStack(spacing: 12) {
-                Image(systemName: "rectangle.inset.filled")
+                Image(systemName: "list.bullet.clipboard")
                     .font(.system(size: 32, weight: .semibold))
                     .foregroundStyle(Stanford.lagunita)
                 Text("No Plan Open")

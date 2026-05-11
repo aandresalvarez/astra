@@ -48,6 +48,7 @@ struct ComposerToolbar: View {
 
     var sshConnections: [SSHConnection] = []
 
+    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = BudgetEnforcementMode.hardStop.rawValue
     @State private var isPlusHovered = false
 
     var body: some View {
@@ -252,12 +253,14 @@ struct ComposerToolbar: View {
             } label: {
                 Label("Budget", systemImage: "gauge.with.needle")
             }
+
+            Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "cpu")
                     .font(Stanford.ui(11, weight: .medium))
                 if !compact {
-                    Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
+                    Text("\(shortRuntimeName(resolvedRuntime)) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementSummary)")
                         .font(Stanford.caption(12))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -270,7 +273,7 @@ struct ComposerToolbar: View {
             .background(Stanford.fog)
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
         }
-        .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget))")
+        .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)")
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
     }
@@ -614,5 +617,23 @@ struct ComposerToolbar: View {
 
     private func budgetSummary(_ budget: Int) -> String {
         budget == 0 ? "∞" : "\(budget / 1000)k"
+    }
+
+    private var budgetEnforcementMode: BudgetEnforcementMode {
+        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? .hardStop
+    }
+
+    private var budgetEnforcementSummary: String {
+        switch budgetEnforcementMode {
+        case .hardStop: "Stop"
+        case .warning: "Warn"
+        }
+    }
+
+    private var budgetEnforcementIcon: String {
+        switch budgetEnforcementMode {
+        case .hardStop: "hand.raised.fill"
+        case .warning: "exclamationmark.triangle"
+        }
     }
 }

@@ -5,7 +5,8 @@ import ASTRACore
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
-    @AppStorage("defaultTokenBudget") private var defaultTokenBudget = 50000
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = 50000
+    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = BudgetEnforcementMode.hardStop.rawValue
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -94,6 +95,25 @@ struct SettingsView: View {
                     }
                 }
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Budget Guardrail") {
+                Picker("Default Budget", selection: $defaultTokenBudget) {
+                    ForEach(budgetPresets, id: \.self) { b in
+                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
+                    }
+                }
+
+                Picker("Enforcement", selection: $budgetEnforcementModeRaw) {
+                    ForEach(BudgetEnforcementMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(selectedBudgetEnforcementMode.helpText)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -217,12 +237,6 @@ struct SettingsView: View {
                 Picker("Model", selection: $defaultModel) {
                     ForEach(runtimeModels, id: \.self) { m in
                         Text(m).tag(m)
-                    }
-                }
-
-                Picker("Token Budget", selection: $defaultTokenBudget) {
-                    ForEach(budgetPresets, id: \.self) { b in
-                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
                     }
                 }
 
@@ -388,6 +402,10 @@ struct SettingsView: View {
 
     private var runtimeModels: [String] {
         (AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode).defaultModels
+    }
+
+    private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
+        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? .hardStop
     }
 
     private var readinessConfiguration: RuntimeReadinessConfiguration {

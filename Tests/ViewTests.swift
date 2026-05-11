@@ -372,6 +372,39 @@ struct TaskThreadSnapshotTests {
         #expect(activity.toolResults.first?.payload == "result")
     }
 
+    @Test("Budget warning is visible in run activity")
+    func budgetWarningCreatesRunNotice() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(
+                task: task,
+                type: "budget.warning",
+                payload: "Budget exceeded in warning mode (147124/10000).",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.notices.count == 1)
+        #expect(activity.notices.first?.type == "budget.warning")
+        #expect(activity.notices.first?.payload.contains("147124/10000") == true)
+        #expect(snapshot.conversationItems.contains {
+            if case .agentResponse(let visibleRun) = $0 {
+                return visibleRun.id == run.id
+            }
+            return false
+        })
+    }
+
     @Test("Conversation includes running run with tool activity before output")
     func toolActivityCreatesLiveConversationItemBeforeOutput() {
         let createdAt = Date(timeIntervalSince1970: 100)
@@ -589,6 +622,45 @@ struct TaskThreadSnapshotTests {
         #expect(snapshot.activity(for: responseRun).toolResults.first?.payload == "read result")
     }
 
+    @Test("Task snapshot input windows long histories for app rendering")
+    func taskSnapshotInputWindowsLongHistories() {
+        let task = makeTask()
+        task.createdAt = Date(timeIntervalSince1970: 0)
+
+        for runIndex in 0..<100 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
+            run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
+            run.output = "run \(runIndex)"
+            task.runs.append(run)
+
+            for resultIndex in 0..<20 {
+                task.events.append(makeEvent(
+                    task: task,
+                    type: "tool.result",
+                    payload: "result \(runIndex)-\(resultIndex)",
+                    timestamp: Date(timeIntervalSince1970: Double(runIndex * 100 + resultIndex)),
+                    run: run
+                ))
+            }
+        }
+
+        let input = TaskThreadSnapshotInput(task: task)
+        let snapshot = TaskThreadSnapshot(input: input)
+
+        #expect(input.totalRunCount == 100)
+        #expect(input.omittedRunCount > 0)
+        #expect(input.runs.count < 100)
+        #expect(input.totalEventCount == 2_000)
+        #expect(input.omittedEventCount > 0)
+        #expect(snapshot.latestRun?.output == "run 99")
+        #expect(!snapshot.sortedRuns.contains { $0.output == "run 0" })
+
+        let latestActivity = snapshot.latestRun.map { snapshot.activity(for: $0) } ?? .empty
+        #expect(latestActivity.toolResults.count <= 12)
+        #expect(latestActivity.toolResults.last?.payload == "result 99-19")
+    }
+
     @Test("Generated file scan excludes internal task files")
     func generatedFileScanExcludesInternalFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -625,6 +697,30 @@ struct TaskThreadSnapshotTests {
         let paths = await TaskGeneratedFiles.filesAsync(in: root.path)
 
         #expect(paths == [root.appendingPathComponent("visible.txt").path])
+    }
+
+    @Test("Generated file preview prefers task index HTML")
+    func generatedFilePreviewPrefersTaskIndexHTML() {
+        let root = URL(fileURLWithPath: "/tmp/astra-generated-files-preview")
+        let paths = [
+            root.appendingPathComponent("nested/page.html").path,
+            root.appendingPathComponent("preview.htm").path,
+            root.appendingPathComponent("index.html").path,
+            root.appendingPathComponent("notes.txt").path
+        ]
+
+        #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths, taskFolder: root.path) == root.appendingPathComponent("index.html").path)
+    }
+
+    @Test("Generated file preview ignores non HTML files")
+    func generatedFilePreviewIgnoresNonHTMLFiles() {
+        let paths = [
+            "/tmp/result.md",
+            "/tmp/styles.css",
+            "/tmp/script.js"
+        ]
+
+        #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths) == nil)
     }
 }
 
@@ -1206,6 +1302,26 @@ struct SidebarGroupingTests {
 
         #expect(afterMetadataUpdate == initial)
         #expect(afterStatusUpdate != initial)
+    }
+
+    @Test("TaskThreadSnapshotTrigger coalesces small streaming text updates")
+    func taskThreadSnapshotTriggerCoalescesSmallStreamingTextUpdates() {
+        let task = makeTask(status: .running)
+        let run = TaskRun(task: task)
+        task.runs.append(run)
+        run.output = "small chunk"
+        task.events.append(TaskEvent(task: task, type: "agent.response", payload: "small chunk", run: run))
+        let initial = TaskThreadSnapshotTrigger(task: task)
+
+        run.output += " plus more"
+        task.events.append(TaskEvent(task: task, type: "agent.response", payload: " plus more", run: run))
+        let afterSmallTextUpdate = TaskThreadSnapshotTrigger(task: task)
+
+        run.output = String(repeating: "x", count: 1_025)
+        let afterOutputBucketChange = TaskThreadSnapshotTrigger(task: task)
+
+        #expect(afterSmallTextUpdate == initial)
+        #expect(afterOutputBucketChange != initial)
     }
 
     @Test("Workspace sidebar filter applies starred-only before search")

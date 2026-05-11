@@ -538,6 +538,11 @@ struct TaskMainView: View {
                 if task.tokensUsed > 0 {
                     Label(Formatters.formatTokens(task.tokensUsed), systemImage: "number")
                 }
+                if task.tokenBudget > 0 {
+                    Label("Budget \(Formatters.formatTokens(task.tokenBudget))", systemImage: "speedometer")
+                } else {
+                    Label("Budget unlimited", systemImage: "speedometer")
+                }
                 if task.costUSD > 0 {
                     Label(String(format: "$%.2f", task.costUSD), systemImage: "dollarsign.circle")
                 }
@@ -546,7 +551,7 @@ struct TaskMainView: View {
                     Label(formatDuration(durationSec), systemImage: "clock")
                 }
                 if let run = latestRun, run.inputTokens > 0 {
-                    Label("\(Formatters.formatTokens(run.inputTokens))/200.0k", systemImage: "circle.dashed")
+                    Label("Context \(Formatters.formatTokens(run.inputTokens))/200.0k", systemImage: "circle.dashed")
                 }
             }
 
@@ -608,6 +613,13 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var chatThreadContent: some View {
+        PerformanceSignposts.renderTaskThread {
+            chatThreadContentBody
+        }
+    }
+
+    @ViewBuilder
+    private var chatThreadContentBody: some View {
         if task.isForked {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.branch")
@@ -1103,6 +1115,10 @@ struct TaskMainView: View {
                 agentCompletionPanel(protocolState)
             }
 
+            ForEach(activity.notices) { notice in
+                runNoticeView(notice)
+            }
+
             // Response text — flows directly, no card
             if !run.output.isEmpty {
                 if run.status == .running {
@@ -1193,6 +1209,36 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func runNoticeView(_ notice: TaskRunNotice) -> some View {
+        let isWarning = notice.type == "budget.warning"
+        let color = isWarning ? Stanford.poppy : Stanford.cardinalRed
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isWarning ? "exclamationmark.triangle" : "xmark.octagon")
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isWarning ? "Budget Warning" : "Budget Exceeded")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(color)
+                Text(notice.payload)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(color.opacity(0.25), lineWidth: 1)
+        )
     }
 
     private func forkTask(from run: TaskRunSnapshot) {
@@ -1671,7 +1717,7 @@ struct TaskMainView: View {
                 } label: {
                     Label(
                         isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
-                        systemImage: "rectangle.inset.filled"
+                        systemImage: "list.bullet.clipboard"
                     )
                         .labelStyle(.titleAndIcon)
                 }
@@ -2255,6 +2301,7 @@ struct TaskMainView: View {
               task.status != .running else { return }
 
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+        showPlanCanvasIfNeeded()
         task.status = .queued
         task.completedAt = nil
         task.updatedAt = Date()
@@ -2269,6 +2316,11 @@ struct TaskMainView: View {
                 threadViewModel.refreshSnapshot(for: task)
             }
         }
+    }
+
+    private func showPlanCanvasIfNeeded() {
+        guard !isPlanCanvasVisible else { return }
+        onOpenPlan?(task)
     }
 
     private func sendMessage() {

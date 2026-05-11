@@ -71,9 +71,11 @@ struct HeadlessChatScenarioTests {
         defer { harness.cleanup() }
 
         let largeOutput = String(repeating: "x", count: 600)
+        let launchMarker = harness.rootURL.appendingPathComponent("hard-stop-launched")
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\(largeOutput)"}}'
             sleep 1
             exit 0
@@ -87,6 +89,7 @@ struct HeadlessChatScenarioTests {
             tokenBudget: 20
         )
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.budgetEnforcementModeOverride = .hardStop
 
         _ = await harness.execute(task: task, worker: worker)
 
@@ -94,7 +97,147 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .budgetExceeded)
         #expect(run.status == .budgetExceeded)
         #expect(run.stopReason == "max_budget_reached")
+        #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Copilot hard stop rejects prompt estimate before starting")
+    func copilotHardStopRejectsPromptEstimateBeforeLaunch() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("copilot-low-budget-launched")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: String(repeating: "x", count: 400),
+            model: "gpt-5",
+            tokenBudget: 20
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.exceeded" && $0.payload.contains("Provider was not started") })
+    }
+
+    @Test("Copilot hard stop enforces reported usage")
+    func copilotHardStopEnforcesReportedUsage() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("copilot-usage-launched")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":12000,"output_tokens":15},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "Use reported usage",
+            model: "gpt-5",
+            tokenBudget: 10_000
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Headless chat warning budget records warning and keeps running")
+    func headlessChatWarningBudgetKeepsRunning() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("warning-launched")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Warning mode still runs"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":30,"output_tokens":15},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "Produce output above budget",
+            model: "gpt-5",
+            tokenBudget: 20
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.budgetEnforcementModeOverride = .warning
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.tokensUsed == 45)
+        #expect(task.tokensUsed == 45)
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Claude hard stop rejects budgets below launch overhead before starting")
+    func claudeHardStopRejectsLowBudgetBeforeLaunch() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("claude-low-budget-launched")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"should not launch","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "This low-budget Claude task should not launch",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 10_000
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.exceeded" && $0.payload.contains("Provider was not started") })
     }
 
     @Test("Permission warning can recover when later provider output arrives")
@@ -176,6 +319,182 @@ struct HeadlessChatScenarioTests {
 
         let autoArgs = try String(contentsOf: autoArgsURL, encoding: .utf8)
         #expect(autoArgs.contains("--allow-all-tools"))
+    }
+
+    @Test("Copilot hidden permission prompt pauses for user approval and can continue")
+    func copilotHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("permission-approval-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -q -- '--allow-all-tools'; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote the approved story"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '● I will write the story to the task folder.'
+                printf '%s\\n' '✗ Create .astra/tasks/BAD5D673/warriors_story.md'
+                printf '%s\\n' 'Permission denied and could not request permission from user' >&2
+                exit 15
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "write a story about golden state warriors",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let firstRun = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(firstRun.status == .failed)
+        #expect(firstRun.stopReason == "permission_approval_required")
+        #expect(task.events.contains { $0.type == "permission.approval.requested" })
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "The user approved the blocked permission.",
+            worker: worker,
+            executionPolicy: .approvedRuntimePermission(runtime: .copilotCLI)
+        )
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(args.contains("--allow-all-tools"))
+        #expect(task.status == .completed)
+        #expect(runs[1].output == "Wrote the approved story")
+    }
+
+    @Test("UI approval resumes a Copilot runtime permission pause")
+    func uiApprovalResumesCopilotRuntimePermissionPause() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-permission-approval-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -q -- '--allow-all-tools'; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Approved through UI path"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"event","data":{"type":"permission_request","toolName":"Write","message":"Permission denied and could not request permission from user"}}'
+                printf '%s\\n' 'Permission denied and could not request permission from user' >&2
+                exit 15
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "write a story about golden state warriors",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: nil,
+            copilotPath: copilotPath,
+            copilotHome: harness.rootURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 10,
+            validationModel: "gpt-5"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+
+        await queue.executeTask(task, modelContext: harness.context)
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.first?.stopReason == "permission_approval_required")
+        #expect(task.events.contains { $0.type == "permission.approval.requested" })
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(completed)
+        #expect(runs.count == 2)
+        #expect(args.contains("--allow-all-tools"))
+        #expect(runs.last?.output == "Approved through UI path")
+        #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
+    }
+
+    @Test("Claude hidden permission prompt pauses for user approval and can continue")
+    func claudeHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("claude-permission-approval-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -q -- '--dangerously-skip-permissions'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-approved-session","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude continued after approval"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude continued after approval","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Permission denied for tool: Write. approval required"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"error","is_error":true,"duration_ms":12,"num_turns":1,"result":"Permission denied for tool: Write","usage":{"input_tokens":3,"output_tokens":5}}'
+                printf '%s\\n' 'Permission denied for tool: Write. approval required' >&2
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "write a file after approval",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let firstRun = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(firstRun.status == .failed)
+        #expect(firstRun.stopReason == "permission_approval_required")
+        #expect(task.events.contains { $0.type == "permission.approval.requested" })
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "The user approved the blocked permission.",
+            worker: worker,
+            executionPolicy: .approvedRuntimePermission(runtime: .claudeCode)
+        )
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(args.contains("--dangerously-skip-permissions"))
+        #expect(task.status == .completed)
+        #expect(runs[1].output == "Claude continued after approval")
     }
 
     @Test("Headless chat can continue a task")
@@ -702,8 +1021,8 @@ struct HeadlessChatScenarioTests {
         #expect(state.plan?.steps.first?.status == .done)
     }
 
-    @Test("Approved plan permission prompts fail fast instead of timing out")
-    func approvedPlanPermissionPromptFailsFastInsteadOfTimingOut() async throws {
+    @Test("Approved plan permission prompts pause for user approval instead of timing out")
+    func approvedPlanPermissionPromptPausesForUserApprovalInsteadOfTimingOut() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
@@ -740,13 +1059,12 @@ struct HeadlessChatScenarioTests {
         _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
 
         let run = try #require(task.runs.first)
-        let errorEvent = try #require(task.events.first { $0.type == "error" })
-        #expect(task.status == .failed)
+        #expect(task.status == .pendingUser)
         #expect(run.status == .failed)
-        #expect(run.stopReason == "failed")
+        #expect(run.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
-        #expect(errorEvent.payload.contains("approval prompt ASTRA could not answer"))
-        #expect(!errorEvent.payload.contains("idle timeout"))
+        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Approve to continue") })
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("idle timeout") })
     }
 
     @Test("Changing runtime from Claude to Copilot starts a clean provider run")
@@ -827,6 +1145,7 @@ struct HeadlessChatScenarioTests {
 
         task.runtimeID = AgentRuntimeID.claudeCode.rawValue
         task.model = "claude-sonnet-4-6"
+        task.tokenBudget = 200_000
         _ = await harness.continueTask(task: task, message: "Continue with Claude", worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -912,16 +1231,17 @@ private final class HeadlessChatHarness {
         runtime: AgentRuntimeID,
         goal: String,
         model: String,
-        tokenBudget: Int = 1_000
+        tokenBudget: Int? = nil
     ) -> AgentTask {
         let workspace = Workspace(name: "Headless", primaryPath: workspaceURL.path)
         context.insert(workspace)
+        let resolvedBudget = tokenBudget ?? (runtime == .claudeCode ? 200_000 : 1_000)
 
         let task = AgentTask(
             title: "Headless \(runtime.rawValue)",
             goal: goal,
             workspace: workspace,
-            tokenBudget: tokenBudget,
+            tokenBudget: resolvedBudget,
             model: model
         )
         task.runtimeID = runtime.rawValue
@@ -972,9 +1292,19 @@ private final class HeadlessChatHarness {
         return events
     }
 
-    func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
+    func continueTask(
+        task: AgentTask,
+        message: String,
+        worker: AgentRuntimeWorker,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        await worker.continueSession(task: task, message: message, modelContext: context) { event in
+        await worker.continueSession(
+            task: task,
+            message: message,
+            modelContext: context,
+            executionPolicy: executionPolicy
+        ) { event in
             events.append(event)
         }
         try? context.save()
@@ -993,5 +1323,20 @@ private final class HeadlessChatHarness {
         }
         try? context.save()
         return events
+    }
+
+    func waitUntil(
+        task: AgentTask,
+        timeoutSeconds: TimeInterval = 3,
+        predicate: @escaping (AgentTask) -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if predicate(task) {
+                return true
+            }
+            try? await Swift.Task.sleep(nanoseconds: 50_000_000)
+        }
+        return predicate(task)
     }
 }

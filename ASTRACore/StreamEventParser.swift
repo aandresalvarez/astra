@@ -164,6 +164,7 @@ public enum ParsedEvent {
     case text(text: String)
     case toolUse(name: String, id: String, input: [String: Any]?)
     case toolResult(toolId: String, content: String)
+    case usage(totalInputTokens: Int, totalOutputTokens: Int)
     case result(text: String?, costUSD: Double?, totalInputTokens: Int, totalOutputTokens: Int, durationMs: Int?, numTurns: Int?, isError: Bool)
     case teammateStarted(taskId: String, name: String, prompt: String)
     case teammateCompleted(taskId: String, name: String)
@@ -267,7 +268,11 @@ public enum StreamEventParser {
                 }
             }
             if events.isEmpty, let firstThinking {
-                return [firstThinking]
+                events.append(firstThinking)
+            }
+            if let usage = event.message?.usage,
+               let usageEvent = parsedUsageEvent(from: usage) {
+                events.append(usageEvent)
             }
             return events
 
@@ -324,6 +329,15 @@ public enum StreamEventParser {
         default:
             return [.unknown(type: baseEvent.type)]
         }
+    }
+
+    private static func parsedUsageEvent(from usage: StreamUsage) -> ParsedEvent? {
+        let totalInput = (usage.input_tokens ?? 0)
+            + (usage.cache_read_input_tokens ?? 0)
+            + (usage.cache_creation_input_tokens ?? 0)
+        let totalOutput = usage.output_tokens ?? 0
+        guard totalInput > 0 || totalOutput > 0 else { return nil }
+        return .usage(totalInputTokens: totalInput, totalOutputTokens: totalOutput)
     }
 
     private static func extractAgentName(from description: String?) -> String? {

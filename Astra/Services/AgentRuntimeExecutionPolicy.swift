@@ -27,6 +27,13 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             allowedToolsOverride: allowedTools
         )
     }
+
+    static func approvedRuntimePermission(runtime: AgentRuntimeID) -> AgentRuntimeExecutionPolicy {
+        AgentRuntimeExecutionPolicy(
+            permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedRuntimePermission(),
+            allowedToolsOverride: nil
+        )
+    }
 }
 
 private extension AgentRuntimeID {
@@ -43,6 +50,13 @@ private extension AgentRuntimeID {
             case .autonomous, .interactive:
                 return current
             }
+        }
+    }
+
+    func permissionPolicyAfterUserApprovedRuntimePermission() -> PermissionPolicy {
+        switch self {
+        case .claudeCode, .copilotCLI:
+            return .autonomous
         }
     }
 }

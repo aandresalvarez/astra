@@ -71,6 +71,11 @@ final class AgentRuntimeWorker {
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner = AgentRuntimeProcessRunner()
+    var budgetEnforcementModeOverride: BudgetEnforcementMode?
+
+    private var currentBudgetEnforcementMode: BudgetEnforcementMode {
+        budgetEnforcementModeOverride ?? .configuredDefault
+    }
 
     /// Path to the Claude CLI. Auto-detected or set manually.
     var claudePath: String {
@@ -235,10 +240,23 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        let budgetEnforcementMode = currentBudgetEnforcementMode
+        guard enforcePromptBudgetIfNeeded(
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) else {
+            return
+        }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
         AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
             "model": task.model,
             "token_budget": String(task.tokenBudget),
+            "budget_enforcement": budgetEnforcementMode.rawValue,
             "isolation": task.isolationStrategy.rawValue,
             "workspace_changed": String(executionPath != task.effectiveWorkspacePath)
         ])
@@ -262,6 +280,8 @@ final class AgentRuntimeWorker {
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
         )
+        let recordingState = AgentEventRecordingState()
+        let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
 
         let result = await processRunner.runClaudeProcess(
             prompt: prompt,
@@ -270,27 +290,55 @@ final class AgentRuntimeWorker {
             claudePath: claudePath,
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
+            budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
-                // Parse each JSON line into structured events
-                for parsed in StreamEventParser.parseAll(line: line) {
-                    for filtered in eventPipeline.process(parsed) {
-                        pendingEvents.add { [weak self] in
-                            guard self != nil else { return }
+                PerformanceSignposts.processStreamLine {
+                    streamDebugCapture?.recordLine(line, parsesJSONLines: true)
+                    // Parse each JSON line into structured events
+                    let parsedEvents = PerformanceSignposts.parseProviderStream {
+                        StreamEventParser.parseAll(line: line)
+                    }
+                    streamDebugCapture?.recordParsed(parsedEvents, rawLine: line)
+                    for parsed in parsedEvents {
+                        let filteredEvents = eventPipeline.process(parsed)
+                        streamDebugCapture?.recordEmitted(filteredEvents)
+                        for filtered in filteredEvents {
+                            pendingEvents.add { [weak self] in
+                                guard self != nil else { return }
 
-                            AgentEventRecorder.recordClaudeRunEvent(filtered, to: task, run: run, modelContext: modelContext)
-                            onEvent(filtered)
+                                PerformanceSignposts.persistProviderEvent {
+                                    AgentEventRecorder.recordClaudeRunEvent(
+                                        filtered,
+                                        to: task,
+                                        run: run,
+                                        modelContext: modelContext,
+                                        recordingState: recordingState
+                                    )
+                                }
+                                onEvent(filtered)
+                            }
                         }
                     }
                 }
             }
         )
 
-        for parsed in eventPipeline.flushParsedEvents() {
+        let flushedEvents = eventPipeline.flushParsedEvents()
+        streamDebugCapture?.recordEmitted(flushedEvents)
+        for parsed in flushedEvents {
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
 
-                AgentEventRecorder.recordClaudeRunEvent(parsed, to: task, run: run, modelContext: modelContext)
+                PerformanceSignposts.persistProviderEvent {
+                    AgentEventRecorder.recordClaudeRunEvent(
+                        parsed,
+                        to: task,
+                        run: run,
+                        modelContext: modelContext,
+                        recordingState: recordingState
+                    )
+                }
                 onEvent(parsed)
             }
         }
@@ -302,12 +350,45 @@ final class AgentRuntimeWorker {
         // Final status
         run.completedAt = Date()
         run.exitCode = result.exitCode
+        streamDebugCapture?.recordStderr(result.error)
+        if let streamDebugCapture {
+            Self.logStreamDebug(
+                snapshot: streamDebugCapture.snapshot(),
+                runtime: .claudeCode,
+                task: task,
+                run: run,
+                phase: "run",
+                exitCode: result.exitCode
+            )
+        }
 
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "tokens_used": String(task.tokensUsed),
             "token_budget": String(task.tokenBudget)
         ], level: result.exitCode == 0 ? .info : .warning)
+
+        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: task.model,
+            exitCode: result.exitCode,
+            rawError: result.error,
+            providerVersion: run.providerVersion,
+            stream: nil,
+            timedOut: result.timedOut,
+            budgetExceeded: result.budgetExceeded,
+            maxTurnsExceeded: result.maxTurnsExceeded
+        )
+
+        if let failureDiagnostic {
+            AppLogger.audit(
+                .runtimeFailureDiagnostic,
+                category: "Worker",
+                taskID: task.id,
+                fields: failureDiagnostic.auditFields(phase: "run", stream: nil),
+                level: .error
+            )
+        }
 
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
@@ -334,13 +415,18 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
-        } else if result.budgetExceeded {
+        } else if Self.shouldTreatAsBudgetExceeded(
+            result: result,
+            task: task,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) {
             run.status = .budgetExceeded
             run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
             task.status = .budgetExceeded
             let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). Process killed.", run: run)
+                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
                 "reason": result.repetitionKilled ? "repetition_detected" : "max_budget_reached",
@@ -355,7 +441,8 @@ final class AgentRuntimeWorker {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                phase: "run"
+                phase: "run",
+                budgetEnforcementMode: budgetEnforcementMode
             )
 
             // Run validation based on strategy
@@ -413,11 +500,27 @@ final class AgentRuntimeWorker {
                     modelContext.insert(event)
                 }
             }
+        } else if Self.shouldPauseForRuntimePermissionApproval(
+            failureDiagnostic: failureDiagnostic,
+            task: task,
+            run: run
+        ) {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let payload = permissionApprovalRequestPayload(
+                diagnostic: failureDiagnostic,
+                result: result
+            )
+            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
+            modelContext.insert(event)
         } else {
             run.status = .failed
             run.stopReason = "failed"
             task.status = .failed
-            let payload = enrichedFailurePayload(
+            let payload = failureDiagnostic?.userFacingPayload(
+                prefix: "Agent exited with code \(result.exitCode)."
+            ) ?? enrichedFailurePayload(
                 prefix: "Agent exited with code \(result.exitCode).",
                 rawError: result.error
             )
@@ -694,6 +797,7 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         message: String,
         modelContext: ModelContext,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
@@ -718,7 +822,8 @@ final class AgentRuntimeWorker {
                 promptOverride: prompt,
                 startEventType: "user.message",
                 startEventPayload: message,
-                auditPhase: "resume"
+                auditPhase: "resume",
+                executionPolicy: executionPolicy
             )
             return
         case .claudeCode:
@@ -760,10 +865,23 @@ final class AgentRuntimeWorker {
         // Build a fresh prompt with session history instead of --resume (which resends full conversation).
         // This cuts input tokens by ~90% on follow-ups.
         let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        let budgetEnforcementMode = currentBudgetEnforcementMode
+        guard enforcePromptBudgetIfNeeded(
+            prompt: followUpPrompt,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: "resume",
+            runtime: .claudeCode,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) else {
+            return
+        }
 
         AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
             "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
             "runtime": AgentRuntimeID.claudeCode.rawValue,
+            "budget_enforcement": budgetEnforcementMode.rawValue,
             "message_length": String(message.count),
             "prompt_chars": String(followUpPrompt.count),
             "history_run_count": String(task.runs.count),
@@ -776,6 +894,8 @@ final class AgentRuntimeWorker {
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
         )
+        let recordingState = AgentEventRecordingState()
+        let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
 
         let result = await processRunner.runClaudeProcess(
             prompt: followUpPrompt,
@@ -783,22 +903,51 @@ final class AgentRuntimeWorker {
             workspacePath: task.codeWorkingDirectory,
             claudePath: claudePath,
             permissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy,
+            budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
-                for parsed in StreamEventParser.parseAll(line: line) {
-                    for filtered in eventPipeline.process(parsed) {
-                        pendingEvents.add {
-                            AgentEventRecorder.recordClaudeFollowUpEvent(filtered, to: task, run: run, modelContext: modelContext)
-                            onEvent(filtered)
+                PerformanceSignposts.processStreamLine {
+                    streamDebugCapture?.recordLine(line, parsesJSONLines: true)
+                    let parsedEvents = PerformanceSignposts.parseProviderStream {
+                        StreamEventParser.parseAll(line: line)
+                    }
+                    streamDebugCapture?.recordParsed(parsedEvents, rawLine: line)
+                    for parsed in parsedEvents {
+                        let filteredEvents = eventPipeline.process(parsed)
+                        streamDebugCapture?.recordEmitted(filteredEvents)
+                        for filtered in filteredEvents {
+                            pendingEvents.add {
+                                PerformanceSignposts.persistProviderEvent {
+                                    AgentEventRecorder.recordClaudeFollowUpEvent(
+                                        filtered,
+                                        to: task,
+                                        run: run,
+                                        modelContext: modelContext,
+                                        recordingState: recordingState
+                                    )
+                                }
+                                onEvent(filtered)
+                            }
                         }
                     }
                 }
             }
         )
 
-        for parsed in eventPipeline.flushParsedEvents() {
+        let flushedEvents = eventPipeline.flushParsedEvents()
+        streamDebugCapture?.recordEmitted(flushedEvents)
+        for parsed in flushedEvents {
             pendingEvents.add {
-                AgentEventRecorder.recordClaudeFollowUpEvent(parsed, to: task, run: run, modelContext: modelContext)
+                PerformanceSignposts.persistProviderEvent {
+                    AgentEventRecorder.recordClaudeFollowUpEvent(
+                        parsed,
+                        to: task,
+                        run: run,
+                        modelContext: modelContext,
+                        recordingState: recordingState
+                    )
+                }
                 onEvent(parsed)
             }
         }
@@ -808,6 +957,39 @@ final class AgentRuntimeWorker {
 
         run.completedAt = Date()
         run.exitCode = result.exitCode
+        streamDebugCapture?.recordStderr(result.error)
+        if let streamDebugCapture {
+            Self.logStreamDebug(
+                snapshot: streamDebugCapture.snapshot(),
+                runtime: .claudeCode,
+                task: task,
+                run: run,
+                phase: "resume",
+                exitCode: result.exitCode
+            )
+        }
+
+        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: task.model,
+            exitCode: result.exitCode,
+            rawError: result.error,
+            providerVersion: run.providerVersion,
+            stream: nil,
+            timedOut: result.timedOut,
+            budgetExceeded: result.budgetExceeded,
+            maxTurnsExceeded: result.maxTurnsExceeded
+        )
+
+        if let failureDiagnostic {
+            AppLogger.audit(
+                .runtimeFailureDiagnostic,
+                category: "Worker",
+                taskID: task.id,
+                fields: failureDiagnostic.auditFields(phase: "resume", stream: nil),
+                level: .error
+            )
+        }
 
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
@@ -835,13 +1017,18 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
-        } else if result.budgetExceeded {
+        } else if Self.shouldTreatAsBudgetExceeded(
+            result: result,
+            task: task,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) {
             run.status = .budgetExceeded
             run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
             task.status = .budgetExceeded
             let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). Process killed.", run: run)
+                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
                 "phase": "resume",
@@ -858,9 +1045,24 @@ final class AgentRuntimeWorker {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                phase: "resume"
+                phase: "resume",
+                budgetEnforcementMode: budgetEnforcementMode
             )
             let event = TaskEvent(task: task, type: "task.completed", payload: "Follow-up completed.", run: run)
+            modelContext.insert(event)
+        } else if Self.shouldPauseForRuntimePermissionApproval(
+            failureDiagnostic: failureDiagnostic,
+            task: task,
+            run: run
+        ) {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let payload = permissionApprovalRequestPayload(
+                diagnostic: failureDiagnostic,
+                result: result
+            )
+            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
             modelContext.insert(event)
         } else {
             run.status = .failed
@@ -876,7 +1078,9 @@ final class AgentRuntimeWorker {
                     "reason": "stale_session"
                 ], level: .warning)
             } else {
-                let payload = enrichedFailurePayload(
+                let payload = failureDiagnostic?.userFacingPayload(
+                    prefix: "Follow-up failed (exit \(result.exitCode))."
+                ) ?? enrichedFailurePayload(
                     prefix: "Follow-up failed (exit \(result.exitCode)).",
                     rawError: result.error
                 )
@@ -1041,6 +1245,18 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        let budgetEnforcementMode = currentBudgetEnforcementMode
+        guard enforcePromptBudgetIfNeeded(
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            runtime: .copilotCLI,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) else {
+            return
+        }
         Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
         let startTime = Date()
         let beforeGitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
@@ -1058,7 +1274,9 @@ final class AgentRuntimeWorker {
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
         )
+        let recordingState = AgentEventRecordingState()
         let streamTelemetry = AgentRuntimeStreamTelemetry()
+        let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
         let result = await processRunner.runCopilotProcess(
             prompt: prompt,
             task: task,
@@ -1067,22 +1285,38 @@ final class AgentRuntimeWorker {
             copilotHome: copilotHome,
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
+            budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
-                streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
-                let events: [AgentEvent] = parsesJSONLines
-                    ? CopilotStreamEventParser.parseAgentEvents(line: line)
-                    : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
-                streamTelemetry.recordParsed(events)
-                for event in events {
-                    let filteredEvents = eventPipeline.process(event)
-                    streamTelemetry.recordEmitted(filteredEvents)
-                    for filtered in filteredEvents {
-                        pendingEvents.add { [weak self] in
-                            guard self != nil else { return }
-                            AgentEventRecorder.recordCopilotEvent(filtered, to: task, run: run, modelContext: modelContext)
-                            if let parsed = AgentEventRecorder.parsedEvent(from: filtered) {
-                                onEvent(parsed)
+                PerformanceSignposts.processStreamLine {
+                    streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
+                    streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
+                    let events: [AgentEvent] = PerformanceSignposts.parseProviderStream {
+                        parsesJSONLines
+                            ? CopilotStreamEventParser.parseAgentEvents(line: line)
+                            : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
+                    }
+                    streamTelemetry.recordParsed(events)
+                    streamDebugCapture?.recordParsed(events, rawLine: line)
+                    for event in events {
+                        let filteredEvents = eventPipeline.process(event)
+                        streamTelemetry.recordEmitted(filteredEvents)
+                        streamDebugCapture?.recordEmitted(filteredEvents)
+                        for filtered in filteredEvents {
+                            pendingEvents.add { [weak self] in
+                                guard self != nil else { return }
+                                PerformanceSignposts.persistProviderEvent {
+                                    AgentEventRecorder.recordCopilotEvent(
+                                        filtered,
+                                        to: task,
+                                        run: run,
+                                        modelContext: modelContext,
+                                        recordingState: recordingState
+                                    )
+                                }
+                                if let parsed = AgentEventRecorder.parsedEvent(from: filtered) {
+                                    onEvent(parsed)
+                                }
                             }
                         }
                     }
@@ -1091,10 +1325,19 @@ final class AgentRuntimeWorker {
         )
         let flushedEvents = eventPipeline.flushAgentEvents()
         streamTelemetry.recordEmitted(flushedEvents)
+        streamDebugCapture?.recordEmitted(flushedEvents)
         for event in flushedEvents {
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
-                AgentEventRecorder.recordCopilotEvent(event, to: task, run: run, modelContext: modelContext)
+                PerformanceSignposts.persistProviderEvent {
+                    AgentEventRecorder.recordCopilotEvent(
+                        event,
+                        to: task,
+                        run: run,
+                        modelContext: modelContext,
+                        recordingState: recordingState
+                    )
+                }
                 if let parsed = AgentEventRecorder.parsedEvent(from: event) {
                     onEvent(parsed)
                 }
@@ -1116,6 +1359,7 @@ final class AgentRuntimeWorker {
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
+        streamDebugCapture?.recordStderr(result.error)
         Self.logCopilotStreamTelemetry(
             snapshot: streamSnapshot,
             task: task,
@@ -1123,6 +1367,16 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             exitCode: result.exitCode
         )
+        if let streamDebugCapture {
+            Self.logStreamDebug(
+                snapshot: streamDebugCapture.snapshot(),
+                runtime: .copilotCLI,
+                task: task,
+                run: run,
+                phase: auditPhase,
+                exitCode: result.exitCode
+            )
+        }
         let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .copilotCLI,
             model: task.model,
@@ -1167,13 +1421,18 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
             modelContext.insert(event)
-        } else if result.budgetExceeded {
+        } else if Self.shouldTreatAsBudgetExceeded(
+            result: result,
+            task: task,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) {
             run.status = .budgetExceeded
             run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
             task.status = .budgetExceeded
             let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). Process killed.", run: run)
+                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
         } else if result.exitCode == 0 {
             run.status = .completed
@@ -1183,7 +1442,8 @@ final class AgentRuntimeWorker {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                phase: auditPhase
+                phase: auditPhase,
+                budgetEnforcementMode: budgetEnforcementMode
             )
             switch task.validationStrategy {
             case .manual:
@@ -1235,6 +1495,20 @@ final class AgentRuntimeWorker {
                     modelContext.insert(event)
                 }
             }
+        } else if Self.shouldPauseForRuntimePermissionApproval(
+            failureDiagnostic: failureDiagnostic,
+            task: task,
+            run: run
+        ) {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let payload = permissionApprovalRequestPayload(
+                diagnostic: failureDiagnostic,
+                result: result
+            )
+            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
+            modelContext.insert(event)
         } else {
             run.status = .failed
             run.stopReason = "failed"
@@ -1303,6 +1577,38 @@ final class AgentRuntimeWorker {
             copilotPath: copilotPath,
             copilotHome: copilotHome
         )
+    }
+
+    private func permissionApprovalRequestPayload(
+        diagnostic: AgentRuntimeFailureDiagnostic?,
+        result: AgentProcessResult
+    ) -> String {
+        let providerDetail = result.error?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(500)
+        let detail = providerDetail.map { "\n\nProvider detail:\n\($0)" } ?? ""
+        let message = diagnostic?.category == .permissionDenied
+            ? diagnostic?.userMessage
+            : "The provider needs a runtime permission before it can continue."
+        return """
+        \(message ?? "The provider needs a runtime permission before it can continue.")
+
+        Approve to continue this task with one-time expanded runtime permissions.\(detail)
+        """
+    }
+
+    @MainActor
+    private static func shouldPauseForRuntimePermissionApproval(
+        failureDiagnostic: AgentRuntimeFailureDiagnostic?,
+        task: AgentTask,
+        run: TaskRun
+    ) -> Bool {
+        if failureDiagnostic?.category == .permissionDenied {
+            return true
+        }
+        return task.events.contains { event in
+            event.type == "permission.denied" && event.run?.id == run.id
+        }
     }
 
     @MainActor
@@ -1430,6 +1736,82 @@ final class AgentRuntimeWorker {
                 "completed_events": String(snapshot.completedEventCount),
                 "unknown_events": String(snapshot.unknownEventCount)
             ], level: .warning)
+        }
+    }
+
+    @MainActor
+    private static func logStreamDebug(
+        snapshot: AgentRuntimeStreamDebugSnapshot,
+        runtime: AgentRuntimeID,
+        task: AgentTask,
+        run: TaskRun,
+        phase: String,
+        exitCode: Int
+    ) {
+        var fields = snapshot.fields
+        fields["runtime"] = runtime.rawValue
+        fields["phase"] = phase
+        fields["exit_code"] = String(exitCode)
+        fields["run_output_chars"] = String(run.output.count)
+        fields["file_changes"] = String(run.fileChanges.count)
+
+        AppLogger.audit(
+            .runtimeStreamDebug,
+            category: "Worker",
+            taskID: task.id,
+            fields: fields,
+            level: .debug,
+            fieldMaxLength: 240
+        )
+
+        for (index, sample) in snapshot.rawSamples.enumerated() {
+            AppLogger.audit(
+                .runtimeStreamDebugSample,
+                category: "Worker",
+                taskID: task.id,
+                fields: [
+                    "runtime": runtime.rawValue,
+                    "phase": phase,
+                    "sample_kind": "raw_line",
+                    "sample_index": String(index + 1),
+                    "sample": sample
+                ],
+                level: .debug,
+                fieldMaxLength: 500
+            )
+        }
+
+        for (index, shape) in snapshot.unknownJSONShapes.enumerated() {
+            AppLogger.audit(
+                .runtimeStreamDebugSample,
+                category: "Worker",
+                taskID: task.id,
+                fields: [
+                    "runtime": runtime.rawValue,
+                    "phase": phase,
+                    "sample_kind": "unknown_json_shape",
+                    "sample_index": String(index + 1),
+                    "shape": shape
+                ],
+                level: .debug,
+                fieldMaxLength: 500
+            )
+        }
+
+        if let stderrTail = snapshot.stderrTail, !stderrTail.isEmpty {
+            AppLogger.audit(
+                .runtimeStreamDebugSample,
+                category: "Worker",
+                taskID: task.id,
+                fields: [
+                    "runtime": runtime.rawValue,
+                    "phase": phase,
+                    "sample_kind": "stderr_tail",
+                    "tail": stderrTail
+                ],
+                level: .debug,
+                fieldMaxLength: 500
+            )
         }
     }
 
@@ -1633,15 +2015,91 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
+    private func enforcePromptBudgetIfNeeded(
+        prompt: String,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        runtime: AgentRuntimeID,
+        budgetEnforcementMode: BudgetEnforcementMode
+    ) -> Bool {
+        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
+        guard tokenBudget != Int.max else { return true }
+
+        let estimatedInputTokens = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(prompt: prompt, runtime: runtime)
+        guard estimatedInputTokens > tokenBudget else { return true }
+
+        let fields = [
+            "phase": phase,
+            "reason": "prompt_budget_estimate_exceeded",
+            "estimated_input_tokens": String(estimatedInputTokens),
+            "launch_overhead_tokens": String(AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)),
+            "runtime": runtime.rawValue,
+            "token_budget": String(tokenBudget),
+            "configured_task_budget": String(task.tokenBudget),
+            "enforcement": budgetEnforcementMode.rawValue
+        ]
+
+        if budgetEnforcementMode == .warning {
+            let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
+            modelContext.insert(TaskEvent(task: task, type: "budget.warning", payload: message, run: run))
+            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .warning)
+            return true
+        }
+
+        run.status = .budgetExceeded
+        run.completedAt = Date()
+        run.stopReason = "max_budget_reached"
+        task.status = .budgetExceeded
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
+        modelContext.insert(TaskEvent(task: task, type: "budget.exceeded", payload: message, run: run))
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .error)
+        try? modelContext.save()
+        isRunning = false
+        return false
+    }
+
+    @MainActor
+    private static func hasReportedTokensAboveBudget(task: AgentTask) -> Bool {
+        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
+        return tokenBudget != Int.max && task.tokensUsed > tokenBudget
+    }
+
+    @MainActor
+    private static func shouldTreatAsBudgetExceeded(
+        result: AgentProcessResult,
+        task: AgentTask,
+        budgetEnforcementMode: BudgetEnforcementMode
+    ) -> Bool {
+        result.budgetExceeded ||
+            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(task: task))
+    }
+
+    @MainActor
     private static func recordFinalBudgetWarningIfNeeded(
         result: AgentProcessResult,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: String,
+        budgetEnforcementMode: BudgetEnforcementMode
     ) {
-        guard result.finalReportedBudgetExceededAfterCompletion else { return }
-        let message = "Completed after exceeding the reported provider token budget (\(task.tokensUsed)/\(task.tokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
+        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
+        guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
+            return
+        }
+        let message: String
+        let reason: String
+        if result.budgetWarning || reportedBudgetWarning {
+            message = "Budget exceeded in warning mode (\(task.tokensUsed)/\(task.tokenBudget)). ASTRA kept the provider running because Budget Enforcement is set to Warning Only."
+            reason = "budget_exceeded_warning_mode"
+        } else {
+            message = "Completed after exceeding the reported provider token budget (\(task.tokensUsed)/\(task.tokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
+            reason = "final_reported_budget_exceeded_after_completion"
+        }
         modelContext.insert(TaskEvent(
             task: task,
             type: "budget.warning",
@@ -1650,7 +2108,7 @@ final class AgentRuntimeWorker {
         ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
             "phase": phase,
-            "reason": "final_reported_budget_exceeded_after_completion",
+            "reason": reason,
             "tokens_used": String(task.tokensUsed),
             "token_budget": String(task.tokenBudget)
         ], level: .warning)

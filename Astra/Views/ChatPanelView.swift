@@ -386,7 +386,7 @@ struct ChatPanelView: View {
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
-    @AppStorage("defaultTokenBudget") private var defaultBudget = 50000
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
@@ -1297,6 +1297,7 @@ struct ChatPanelView: View {
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
+        showPlanCanvasIfNeeded(for: task)
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload) {
@@ -1315,6 +1316,7 @@ struct ChatPanelView: View {
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
+        showPlanCanvasIfNeeded(for: task)
 
         Task {
             let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
@@ -1323,6 +1325,11 @@ struct ChatPanelView: View {
                 _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
         }
+    }
+
+    private func showPlanCanvasIfNeeded(for task: AgentTask) {
+        guard !isPlanCanvasVisible else { return }
+        onOpenPlan?(task)
     }
 
     /// Create task from extracted spec
@@ -2248,7 +2255,7 @@ private struct ApprovedPlanReadyCard: View {
                 } label: {
                     Label(
                         isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
-                        systemImage: "rectangle.inset.filled"
+                        systemImage: "list.bullet.clipboard"
                     )
                         .labelStyle(.titleAndIcon)
                 }

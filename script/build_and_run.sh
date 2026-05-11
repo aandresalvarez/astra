@@ -7,10 +7,22 @@ TOOL_PRODUCTS=("astra-browser" "stanford-mail" "stanford-apple-mail" "stanford-g
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
+REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 APP_VERSION="${ASTRA_VERSION:-0.1.0}"
 APP_BUILD="${ASTRA_BUILD:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
 SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
+
+verify_arm64_binary() {
+  local binary="$1"
+  local description
+  description="$(/usr/bin/file "$binary")"
+  if [[ "$description" != *"arm64"* ]]; then
+    echo "ASTRA is Apple-Silicon-only; expected an arm64 binary at $binary." >&2
+    echo "Actual: $description" >&2
+    exit 2
+  fi
+}
 
 validate_sparkle_public_ed_key() {
   local key="$1"
@@ -61,6 +73,15 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 ENTITLEMENTS="$ROOT_DIR/script/ASTRA.entitlements"
 
+if [[ "$REQUIRE_ARM64" == "1" ]]; then
+  HOST_ARCH="$(/usr/bin/uname -m)"
+  if [[ "$HOST_ARCH" != "arm64" ]]; then
+    echo "ASTRA is Apple-Silicon-only; run this script from a native arm64 shell on Apple Silicon." >&2
+    echo "Current process architecture: $HOST_ARCH" >&2
+    exit 2
+  fi
+fi
+
 if [[ "$MODE" != "bundle" && "$MODE" != "--bundle" ]]; then
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 fi
@@ -76,6 +97,13 @@ for tool_product in "${TOOL_PRODUCTS[@]}"; do
 done
 BUILD_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
+
+if [[ "$REQUIRE_ARM64" == "1" ]]; then
+  verify_arm64_binary "$BUILD_BINARY"
+  for tool_product in "${TOOL_PRODUCTS[@]}"; do
+    verify_arm64_binary "$BUILD_DIR/$tool_product"
+  done
+fi
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES"

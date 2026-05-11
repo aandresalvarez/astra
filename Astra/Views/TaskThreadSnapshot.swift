@@ -134,13 +134,22 @@ struct TaskThreadSnapshotInput: Sendable {
     let createdAt: Date
     let events: [TaskEventSnapshot]
     let runs: [TaskRunSnapshotInput]
+    let totalEventCount: Int
+    let omittedEventCount: Int
+    let totalRunCount: Int
+    let omittedRunCount: Int
 
     init(task: AgentTask) {
+        let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs)
         self.init(
             goal: task.goal,
             createdAt: task.createdAt,
-            events: task.events.map(TaskEventSnapshot.init),
-            runs: task.runs.map(TaskRunSnapshotInput.init)
+            events: window.events.map(TaskEventSnapshot.init),
+            runs: window.runs.map(TaskRunSnapshotInput.init),
+            totalEventCount: window.totalEventCount,
+            omittedEventCount: window.omittedEventCount,
+            totalRunCount: window.totalRunCount,
+            omittedRunCount: window.omittedRunCount
         )
     }
 
@@ -149,7 +158,11 @@ struct TaskThreadSnapshotInput: Sendable {
             goal: goal,
             createdAt: createdAt,
             events: events.map(TaskEventSnapshot.init),
-            runs: runs.map(TaskRunSnapshotInput.init)
+            runs: runs.map(TaskRunSnapshotInput.init),
+            totalEventCount: events.count,
+            omittedEventCount: 0,
+            totalRunCount: runs.count,
+            omittedRunCount: 0
         )
     }
 
@@ -157,12 +170,71 @@ struct TaskThreadSnapshotInput: Sendable {
         goal: String,
         createdAt: Date,
         events: [TaskEventSnapshot],
-        runs: [TaskRunSnapshotInput]
+        runs: [TaskRunSnapshotInput],
+        totalEventCount: Int,
+        omittedEventCount: Int,
+        totalRunCount: Int,
+        omittedRunCount: Int
     ) {
         self.goal = goal
         self.createdAt = createdAt
         self.events = events
         self.runs = runs
+        self.totalEventCount = totalEventCount
+        self.omittedEventCount = omittedEventCount
+        self.totalRunCount = totalRunCount
+        self.omittedRunCount = omittedRunCount
+    }
+}
+
+private struct TaskThreadSnapshotWindow {
+    private static let maxRuns = 80
+    private static let maxEvents = 1_200
+    private static let maxToolResultsPerRun = 12
+    private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    let events: [TaskEvent]
+    let runs: [TaskRun]
+    let totalEventCount: Int
+    let omittedEventCount: Int
+    let totalRunCount: Int
+    let omittedRunCount: Int
+
+    init(events allEvents: [TaskEvent], runs allRuns: [TaskRun]) {
+        totalEventCount = allEvents.count
+        totalRunCount = allRuns.count
+
+        let sortedRuns = allRuns.sorted { $0.startedAt < $1.startedAt }
+        runs = Array(sortedRuns.suffix(Self.maxRuns))
+        let keptRunIDs = Set(runs.map(\.id))
+
+        let sortedEvents = allEvents.sorted { $0.timestamp < $1.timestamp }
+        let runFilteredEvents = sortedEvents.filter { event in
+            guard let runID = event.run?.id else { return true }
+            return keptRunIDs.contains(runID)
+        }
+        let cappedToolResults = Self.capToolResults(runFilteredEvents)
+        events = Array(cappedToolResults.suffix(Self.maxEvents))
+
+        omittedEventCount = max(0, totalEventCount - events.count)
+        omittedRunCount = max(0, totalRunCount - runs.count)
+    }
+
+    private static func capToolResults(_ events: [TaskEvent]) -> [TaskEvent] {
+        var keptToolResultsByRunID: [UUID: Int] = [:]
+        var keepEventIDs = Set<UUID>()
+
+        for event in events.reversed() where event.type == "tool.result" {
+            let runID = event.run?.id ?? runlessToolResultID
+            let count = keptToolResultsByRunID[runID, default: 0]
+            guard count < maxToolResultsPerRun else { continue }
+            keptToolResultsByRunID[runID] = count + 1
+            keepEventIDs.insert(event.id)
+        }
+
+        return events.filter { event in
+            event.type != "tool.result" || keepEventIDs.contains(event.id)
+        }
     }
 }
 
@@ -178,15 +250,22 @@ struct TaskToolResult: Identifiable, Hashable, Sendable {
     let payload: String
 }
 
+struct TaskRunNotice: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let type: String
+    let payload: String
+}
+
 struct TaskRunActivity: Sendable {
     let tools: [TaskToolSummary]
     let toolResults: [TaskToolResult]
+    let notices: [TaskRunNotice]
     let fileChanges: [StoredFileChange]
 
-    static let empty = TaskRunActivity(tools: [], toolResults: [], fileChanges: [])
+    static let empty = TaskRunActivity(tools: [], toolResults: [], notices: [], fileChanges: [])
 
     var hasVisibleActivity: Bool {
-        !tools.isEmpty || !toolResults.isEmpty || !fileChanges.isEmpty
+        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty
     }
 }
 
@@ -217,6 +296,10 @@ struct TaskThreadSnapshot: Sendable {
     let latestRun: TaskRunSnapshot?
     let conversationItems: [TaskConversationItem]
     let latestAgentPlanItems: [TaskProtocolTodoItem]
+    let totalEventCount: Int
+    let omittedEventCount: Int
+    let totalRunCount: Int
+    let omittedRunCount: Int
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -247,7 +330,9 @@ struct TaskThreadSnapshot: Sendable {
                 thresholdMilliseconds: 8,
                 fields: fields
             ) {
-                TaskThreadSnapshot(input: input)
+                PerformanceSignposts.buildThreadSnapshot {
+                    TaskThreadSnapshot(input: input)
+                }
             }
         }.value
     }
@@ -261,7 +346,11 @@ struct TaskThreadSnapshot: Sendable {
             goal: input.goal,
             createdAt: input.createdAt,
             events: input.events,
-            runs: input.runs.map(TaskRunSnapshot.init)
+            runs: input.runs.map(TaskRunSnapshot.init),
+            totalEventCount: input.totalEventCount,
+            omittedEventCount: input.omittedEventCount,
+            totalRunCount: input.totalRunCount,
+            omittedRunCount: input.omittedRunCount
         )
     }
 
@@ -274,13 +363,27 @@ struct TaskThreadSnapshot: Sendable {
         ))
     }
 
-    init(goal: String, createdAt: Date, events: [TaskEventSnapshot], runs: [TaskRunSnapshot]) {
+    init(
+        goal: String,
+        createdAt: Date,
+        events: [TaskEventSnapshot],
+        runs: [TaskRunSnapshot],
+        totalEventCount: Int? = nil,
+        omittedEventCount: Int = 0,
+        totalRunCount: Int? = nil,
+        omittedRunCount: Int = 0
+    ) {
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
         latestRun = sortedRuns.last
+        self.totalEventCount = totalEventCount ?? events.count
+        self.omittedEventCount = omittedEventCount
+        self.totalRunCount = totalRunCount ?? runs.count
+        self.omittedRunCount = omittedRunCount
 
         var toolsByRunID: [UUID: [TaskEventSnapshot]] = [:]
         var resultsByRunID: [UUID: [TaskToolResult]] = [:]
+        var noticesByRunID: [UUID: [TaskRunNotice]] = [:]
         var protocolStatesByRunID: [UUID: TaskRunProtocolState] = [:]
         var latestPlanItems: [TaskProtocolTodoItem] = []
 
@@ -292,6 +395,12 @@ struct TaskThreadSnapshot: Sendable {
                 case "tool.result" where !event.payload.isEmpty:
                     resultsByRunID[runID, default: []].append(TaskToolResult(
                         id: event.id,
+                        payload: event.payload
+                    ))
+                case "budget.warning", "budget.exceeded":
+                    noticesByRunID[runID, default: []].append(TaskRunNotice(
+                        id: event.id,
+                        type: event.type,
                         payload: event.payload
                     ))
                 default:
@@ -327,6 +436,7 @@ struct TaskThreadSnapshot: Sendable {
             activity[run.id] = TaskRunActivity(
                 tools: Self.summarizeToolEvents(toolsByRunID[run.id] ?? []),
                 toolResults: resultsByRunID[run.id] ?? [],
+                notices: noticesByRunID[run.id] ?? [],
                 fileChanges: run.fileChanges
             )
         }
@@ -493,19 +603,109 @@ enum TaskGeneratedFiles {
             files(in: folder)
         }.value
     }
+
+    static func preferredHTMLFile(in paths: [String], taskFolder: String = "") -> String? {
+        paths
+            .filter(isHTMLFile)
+            .sorted { lhs, rhs in
+                htmlPreviewScore(for: lhs, taskFolder: taskFolder) < htmlPreviewScore(for: rhs, taskFolder: taskFolder)
+            }
+            .first
+    }
+
+    static func isHTMLFile(_ path: String) -> Bool {
+        ["html", "htm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    static func htmlPreviewSignature(
+        for path: String,
+        taskID: UUID,
+        fileManager: FileManager = .default
+    ) -> String {
+        let attributes = try? fileManager.attributesOfItem(atPath: path)
+        let modifiedAt = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = attributes?[.size] as? Int64 ?? 0
+        return "\(taskID.uuidString)|\(path)|\(modifiedAt)|\(size)"
+    }
+
+    private static func htmlPreviewScore(for path: String, taskFolder: String) -> HTMLPreviewScore {
+        let url = URL(fileURLWithPath: path)
+        let name = url.lastPathComponent.lowercased()
+        let relativePath = relativePath(for: path, taskFolder: taskFolder)
+        return HTMLPreviewScore(
+            namePriority: name == "index.html" || name == "index.htm" ? 0 : 1,
+            depth: relativePath.split(separator: "/").count,
+            relativePath: relativePath.lowercased()
+        )
+    }
+
+    private static func relativePath(for path: String, taskFolder: String) -> String {
+        guard !taskFolder.isEmpty else { return path }
+        let prefix = taskFolder.hasSuffix("/") ? taskFolder : "\(taskFolder)/"
+        guard path.hasPrefix(prefix) else { return path }
+        return String(path.dropFirst(prefix.count))
+    }
+
+    private struct HTMLPreviewScore: Comparable {
+        let namePriority: Int
+        let depth: Int
+        let relativePath: String
+
+        static func < (lhs: HTMLPreviewScore, rhs: HTMLPreviewScore) -> Bool {
+            if lhs.namePriority != rhs.namePriority {
+                return lhs.namePriority < rhs.namePriority
+            }
+            if lhs.depth != rhs.depth {
+                return lhs.depth < rhs.depth
+            }
+            return lhs.relativePath < rhs.relativePath
+        }
+    }
 }
 
 struct TaskThreadSnapshotTrigger: Equatable {
+    private static let liveOutputBucketSize = 1_024
+    private static let highFrequencyEventTypes: Set<String> = ["agent.response", "agent.thinking"]
+
     let taskID: UUID
     let eventCount: Int
+    let visibleEventCount: Int
     let runCount: Int
     let status: TaskStatus
+    let latestRunID: UUID?
+    let latestRunStatus: RunStatus?
+    let latestRunOutputBucket: Int
+    let latestRunOutputCount: Int
 
     init(task: AgentTask) {
+        let events = task.events
+        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
-        eventCount = task.events.count
+        eventCount = events.count
+        visibleEventCount = events.reduce(0) { count, event in
+            Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
+        }
         runCount = task.runs.count
         status = task.status
+        latestRunID = latestRun?.id
+        latestRunStatus = latestRun?.status
+        latestRunOutputCount = latestRun?.output.count ?? 0
+        latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
+    }
+
+    static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
+        lhs.taskID == rhs.taskID &&
+            lhs.visibleEventCount == rhs.visibleEventCount &&
+            lhs.runCount == rhs.runCount &&
+            lhs.status == rhs.status &&
+            lhs.latestRunID == rhs.latestRunID &&
+            lhs.latestRunStatus == rhs.latestRunStatus &&
+            lhs.latestRunOutputBucket == rhs.latestRunOutputBucket
+    }
+
+    private static func outputBucket(for characterCount: Int) -> Int {
+        guard characterCount > 0 else { return 0 }
+        return ((characterCount - 1) / liveOutputBucketSize) + 1
     }
 }
 

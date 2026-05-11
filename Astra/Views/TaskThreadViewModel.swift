@@ -25,8 +25,15 @@ final class TaskThreadViewModel {
         let fields = [
             "task_id": String(task.id.uuidString.prefix(8)),
             "event_count": String(trigger.eventCount),
+            "visible_event_count": String(trigger.visibleEventCount),
             "run_count": String(trigger.runCount),
-            "status": trigger.status.rawValue
+            "status": trigger.status.rawValue,
+            "latest_run_output_bucket": String(trigger.latestRunOutputBucket),
+            "latest_run_output_chars": String(trigger.latestRunOutputCount),
+            "snapshot_input_events": String(input.events.count),
+            "snapshot_input_runs": String(input.runs.count),
+            "omitted_events": String(input.omittedEventCount),
+            "omitted_runs": String(input.omittedRunCount)
         ]
 
         snapshotTask?.cancel()
@@ -89,9 +96,13 @@ final class TaskThreadViewModel {
             "status": trigger.status.rawValue,
             "workspace_id": workspaceID?.uuidString ?? "none",
             "event_count": String(trigger.eventCount),
+            "visible_event_count": String(trigger.visibleEventCount),
             "run_count": String(trigger.runCount),
+            "latest_run_output_bucket": String(trigger.latestRunOutputBucket),
             "snapshot_event_count": String(snapshot.sortedEvents.count),
             "snapshot_run_count": String(snapshot.sortedRuns.count),
+            "omitted_events": String(snapshot.omittedEventCount),
+            "omitted_runs": String(snapshot.omittedRunCount),
             "conversation_item_count": String(snapshot.conversationItems.count),
             "agent_response_count": String(agentResponseCount),
             "user_message_count": String(userMessageCount),

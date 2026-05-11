@@ -40,6 +40,293 @@ final class AgentLockedBuffer: @unchecked Sendable {
     }
 }
 
+struct AgentRuntimeStreamDebugSnapshot: Sendable {
+    let rawLineCount: Int
+    let jsonLineCount: Int
+    let plainTextLineCount: Int
+    let parsedEventCount: Int
+    let emittedEventCount: Int
+    let stdoutBytes: Int
+    let stderrBytes: Int
+    let durationMs: Int
+    let firstLineLatencyMs: Int?
+    let lastLineOffsetMs: Int?
+    let eventTypeCounts: [String: Int]
+    let rawSamples: [String]
+    let unknownJSONShapes: [String]
+    let stderrTail: String?
+
+    var fields: [String: String] {
+        var fields: [String: String] = [
+            "raw_lines": String(rawLineCount),
+            "json_lines": String(jsonLineCount),
+            "plain_text_lines": String(plainTextLineCount),
+            "parsed_events": String(parsedEventCount),
+            "emitted_events": String(emittedEventCount),
+            "stdout_bytes": String(stdoutBytes),
+            "stderr_bytes": String(stderrBytes),
+            "duration_ms": String(durationMs),
+            "raw_samples": String(rawSamples.count),
+            "unknown_json_shapes": String(unknownJSONShapes.count),
+            "stderr_tail_chars": String(stderrTail?.count ?? 0),
+            "event_types": eventTypeCounts
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key):\($0.value)" }
+                .joined(separator: ",")
+        ]
+        if let firstLineLatencyMs {
+            fields["first_line_latency_ms"] = String(firstLineLatencyMs)
+        }
+        if let lastLineOffsetMs {
+            fields["last_line_offset_ms"] = String(lastLineOffsetMs)
+        }
+        return fields
+    }
+}
+
+final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
+    static let environmentKey = "ASTRA_STREAM_DEBUG"
+
+    private let lock = NSLock()
+    private let startedAt = Date()
+    private let maxRawSamples: Int
+    private let maxUnknownJSONShapes: Int
+    private let maxSampleLength: Int
+    private let maxStderrTailLength: Int
+
+    private var rawLineCount = 0
+    private var jsonLineCount = 0
+    private var plainTextLineCount = 0
+    private var parsedEventCount = 0
+    private var emittedEventCount = 0
+    private var stdoutBytes = 0
+    private var stderrBytes = 0
+    private var firstLineAt: Date?
+    private var lastLineAt: Date?
+    private var eventTypeCounts: [String: Int] = [:]
+    private var rawSamples: [String] = []
+    private var unknownJSONShapes: [String] = []
+    private var stderrTail = ""
+
+    init(
+        maxRawSamples: Int = 4,
+        maxUnknownJSONShapes: Int = 4,
+        maxSampleLength: Int = 500,
+        maxStderrTailLength: Int = 2_000
+    ) {
+        self.maxRawSamples = maxRawSamples
+        self.maxUnknownJSONShapes = maxUnknownJSONShapes
+        self.maxSampleLength = maxSampleLength
+        self.maxStderrTailLength = maxStderrTailLength
+    }
+
+    static var isEnabled: Bool {
+        isEnabled(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func isEnabled(environment: [String: String]) -> Bool {
+        guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else {
+            return false
+        }
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    static func makeIfEnabled() -> AgentRuntimeStreamDebugCapture? {
+        isEnabled ? AgentRuntimeStreamDebugCapture() : nil
+    }
+
+    func recordLine(_ line: String, parsesJSONLines: Bool) {
+        let now = Date()
+        lock.lock()
+        rawLineCount += 1
+        if parsesJSONLines {
+            jsonLineCount += 1
+        } else {
+            plainTextLineCount += 1
+        }
+        stdoutBytes += line.utf8.count
+        if firstLineAt == nil {
+            firstLineAt = now
+        }
+        lastLineAt = now
+        if rawSamples.count < maxRawSamples {
+            rawSamples.append(Self.truncated(line, limit: maxSampleLength))
+        }
+        lock.unlock()
+    }
+
+    func recordParsed(_ events: [ParsedEvent], rawLine: String) {
+        lock.lock()
+        parsedEventCount += events.count
+        for event in events {
+            let type = Self.eventType(event)
+            eventTypeCounts[type, default: 0] += 1
+            if case .unknown(let unknownType) = event {
+                appendUnknownJSONShape(raw: rawLine, eventType: unknownType)
+            }
+        }
+        if events.isEmpty {
+            appendUnknownJSONShape(raw: rawLine, eventType: nil)
+        }
+        lock.unlock()
+    }
+
+    func recordParsed(_ events: [AgentEvent], rawLine: String) {
+        lock.lock()
+        parsedEventCount += events.count
+        for event in events {
+            let type = Self.eventType(event)
+            eventTypeCounts[type, default: 0] += 1
+            if case .unknown(_, let unknownType, let raw) = event {
+                appendUnknownJSONShape(raw: raw.isEmpty ? rawLine : raw, eventType: unknownType)
+            }
+        }
+        if events.isEmpty {
+            appendUnknownJSONShape(raw: rawLine, eventType: nil)
+        }
+        lock.unlock()
+    }
+
+    func recordEmitted(_ events: [ParsedEvent]) {
+        lock.lock()
+        emittedEventCount += events.count
+        lock.unlock()
+    }
+
+    func recordEmitted(_ events: [AgentEvent]) {
+        lock.lock()
+        emittedEventCount += events.count
+        lock.unlock()
+    }
+
+    func recordStderr(_ stderr: String?) {
+        guard let stderr, !stderr.isEmpty else { return }
+        lock.lock()
+        stderrBytes += stderr.utf8.count
+        stderrTail += stderr
+        if stderrTail.count > maxStderrTailLength {
+            stderrTail = String(stderrTail.suffix(maxStderrTailLength))
+        }
+        lock.unlock()
+    }
+
+    func snapshot() -> AgentRuntimeStreamDebugSnapshot {
+        let finishedAt = Date()
+        lock.lock()
+        defer { lock.unlock() }
+        return AgentRuntimeStreamDebugSnapshot(
+            rawLineCount: rawLineCount,
+            jsonLineCount: jsonLineCount,
+            plainTextLineCount: plainTextLineCount,
+            parsedEventCount: parsedEventCount,
+            emittedEventCount: emittedEventCount,
+            stdoutBytes: stdoutBytes,
+            stderrBytes: stderrBytes,
+            durationMs: Self.milliseconds(from: startedAt, to: finishedAt),
+            firstLineLatencyMs: firstLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
+            lastLineOffsetMs: lastLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
+            eventTypeCounts: eventTypeCounts,
+            rawSamples: rawSamples,
+            unknownJSONShapes: unknownJSONShapes,
+            stderrTail: stderrTail.isEmpty ? nil : stderrTail
+        )
+    }
+
+    private func appendUnknownJSONShape(raw: String, eventType: String?) {
+        guard unknownJSONShapes.count < maxUnknownJSONShapes,
+              let shape = Self.jsonShape(raw: raw, eventType: eventType),
+              !unknownJSONShapes.contains(shape) else {
+            return
+        }
+        unknownJSONShapes.append(shape)
+    }
+
+    private static func jsonShape(raw: String, eventType: String?) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.first == "{",
+              let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let type = eventType
+            ?? firstString(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"])
+            ?? "unknown"
+        var parts = [
+            "type=\(type)",
+            "keys=\(object.keys.sorted().joined(separator: ","))"
+        ]
+        for key in ["data", "payload", "message", "content", "delta"] {
+            if let nested = object[key] as? [String: Any] {
+                parts.append("\(key)_keys=\(nested.keys.sorted().joined(separator: ","))")
+            }
+        }
+        return truncated(parts.joined(separator: " "), limit: 500)
+    }
+
+    private static func firstString(in object: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = object[key] as? String, !value.isEmpty {
+                return value
+            }
+        }
+        for key in ["data", "payload", "message"] {
+            if let nested = object[key] as? [String: Any],
+               let value = firstString(in: nested, keys: keys) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func eventType(_ event: ParsedEvent) -> String {
+        switch event {
+        case .systemInit: "system_init"
+        case .thinking: "thinking"
+        case .text: "text"
+        case .toolUse: "tool_use"
+        case .toolResult: "tool_result"
+        case .usage: "usage"
+        case .result: "result"
+        case .teammateStarted: "teammate_started"
+        case .teammateCompleted: "teammate_completed"
+        case .teamCreated: "team_created"
+        case .teamDeleted: "team_deleted"
+        case .teamMessage: "team_message"
+        case .permissionDenied: "permission_denied"
+        case .astraProtocol: "astra_protocol"
+        case .unknown(let type): "unknown:\(type)"
+        }
+    }
+
+    private static func eventType(_ event: AgentEvent) -> String {
+        switch event {
+        case .started: "started"
+        case .thinking: "thinking"
+        case .text: "text"
+        case .toolUse: "tool_use"
+        case .toolResult: "tool_result"
+        case .fileChange: "file_change"
+        case .permissionRequested: "permission_requested"
+        case .stats: "stats"
+        case .astraProtocol: "astra_protocol"
+        case .completed: "completed"
+        case .failed: "failed"
+        case .unknown(_, let type, _): "unknown:\(type)"
+        }
+    }
+
+    private static func milliseconds(from start: Date, to end: Date) -> Int {
+        max(0, Int(end.timeIntervalSince(start) * 1_000))
+    }
+
+    private static func truncated(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit)) + " [truncated]"
+    }
+}
+
 struct AgentRuntimeStreamTelemetrySnapshot: Sendable {
     let rawLineCount: Int
     let jsonLineCount: Int
@@ -225,6 +512,7 @@ struct AgentProcessResult {
     let error: String?
     let providerVersion: String?
     let budgetExceeded: Bool
+    let budgetWarning: Bool
     let finalReportedBudgetExceededAfterCompletion: Bool
     let timedOut: Bool
     let repetitionKilled: Bool
@@ -235,6 +523,7 @@ struct AgentProcessResult {
         error: String? = nil,
         providerVersion: String? = nil,
         budgetExceeded: Bool = false,
+        budgetWarning: Bool = false,
         finalReportedBudgetExceededAfterCompletion: Bool = false,
         timedOut: Bool = false,
         repetitionKilled: Bool = false,
@@ -244,6 +533,7 @@ struct AgentProcessResult {
         self.error = error
         self.providerVersion = providerVersion
         self.budgetExceeded = budgetExceeded
+        self.budgetWarning = budgetWarning
         self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
         self.timedOut = timedOut
         self.repetitionKilled = repetitionKilled
@@ -255,6 +545,7 @@ struct AgentProcessResult {
 /// for agent runtime processes.
 nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let tokenBudget: Int
+    let budgetEnforcementMode: BudgetEnforcementMode
     let maxTurns: Int
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
@@ -265,6 +556,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _estimatedTokens: Int = 0
     private var _turnCount: Int = 0
     private var _budgetExceeded: Bool = false
+    private var _budgetWarning: Bool = false
     private var _finalReportedBudgetExceededAfterCompletion: Bool = false
     private var _maxTurnsExceeded: Bool = false
     private var _timedOut: Bool = false
@@ -279,6 +571,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
     var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
     var budgetExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _budgetExceeded }
+    var budgetWarning: Bool { lock.lock(); defer { lock.unlock() }; return _budgetWarning }
     var finalReportedBudgetExceededAfterCompletion: Bool { lock.lock(); defer { lock.unlock() }; return _finalReportedBudgetExceededAfterCompletion }
     var maxTurnsExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _maxTurnsExceeded }
     var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return _timedOut }
@@ -286,16 +579,23 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     init(
         tokenBudget: Int,
+        budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
         taskID: UUID = UUID()
     ) {
         self.tokenBudget = tokenBudget
+        self.budgetEnforcementMode = budgetEnforcementMode
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.taskID = taskID
+    }
+
+    static func estimatedTokenCount(for text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        return max(1, text.count / 4)
     }
 
     func processEvent(_ parsed: ParsedEvent, process: Process?) -> Bool {
@@ -345,28 +645,66 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             repetitionCount = 1
         }
 
-        if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
+        if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
             if totalTokens > tokenBudget {
-                if _sawAstraComplete && !isError {
+                if budgetEnforcementMode == .warning {
+                    return recordBudgetWarning(
+                        reason: "stream_usage_budget_exceeded",
+                        fields: [
+                            "reported_tokens": String(totalTokens),
+                            "token_budget": String(tokenBudget)
+                        ],
+                        process: process
+                    )
+                }
+                return recordBudgetOverage(
+                    reason: "stream_usage_budget_exceeded",
+                    fields: [
+                        "reported_tokens": String(totalTokens),
+                        "token_budget": String(tokenBudget)
+                    ],
+                    process: process
+                )
+            }
+        } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
+            let totalTokens = totalInput + totalOutput
+            if totalTokens > tokenBudget {
+                if budgetEnforcementMode == .warning {
+                    return recordBudgetWarning(
+                        reason: "reported_budget_exceeded",
+                        fields: [
+                            "reported_tokens": String(totalTokens),
+                            "token_budget": String(tokenBudget)
+                        ],
+                        process: process
+                    )
+                } else if _sawAstraComplete && !isError {
                     _finalReportedBudgetExceededAfterCompletion = true
                     return false
                 }
-                _budgetExceeded = true
-                process?.terminate()
-                return true
+                return recordBudgetOverage(
+                    reason: "reported_budget_exceeded",
+                    fields: [
+                        "reported_tokens": String(totalTokens),
+                        "token_budget": String(tokenBudget)
+                    ],
+                    process: process
+                )
             }
         }
 
         switch parsed {
         case .text(let text):
-            _estimatedTokens += max(1, text.count / 4)
+            _estimatedTokens += Self.estimatedTokenCount(for: text)
         case .thinking(let text):
-            _estimatedTokens += max(1, text.count / 4)
+            _estimatedTokens += Self.estimatedTokenCount(for: text)
         case .toolUse:
             _estimatedTokens += 100
         case .toolResult:
             _estimatedTokens += 200
+        case .usage:
+            break
         case .teamMessage(_, _, let content):
             _estimatedTokens += max(50, content.count / 4)
         case .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted:
@@ -382,16 +720,44 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if _estimatedTokens > tokenBudget {
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
-                "reason": "estimated_budget_exceeded",
+            let fields = [
                 "estimated_tokens": String(_estimatedTokens),
                 "token_budget": String(tokenBudget)
-            ], level: .error)
-            _budgetExceeded = true
-            process?.terminate()
-            return true
+            ]
+            if budgetEnforcementMode == .warning {
+                return recordBudgetWarning(
+                    reason: "estimated_budget_exceeded",
+                    fields: fields,
+                    process: process
+                )
+            }
+            return recordBudgetOverage(
+                reason: "estimated_budget_exceeded",
+                fields: fields,
+                process: process
+            )
         }
 
+        return false
+    }
+
+    private func recordBudgetOverage(reason: String, fields: [String: String], process: Process?) -> Bool {
+        var auditFields = fields
+        auditFields["reason"] = reason
+        auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .error)
+        _budgetExceeded = true
+        process?.terminate()
+        return true
+    }
+
+    private func recordBudgetWarning(reason: String, fields: [String: String], process _: Process?) -> Bool {
+        guard !_budgetWarning else { return false }
+        var auditFields = fields
+        auditFields["reason"] = reason
+        auditFields["enforcement"] = BudgetEnforcementMode.warning.rawValue
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .warning)
+        _budgetWarning = true
         return false
     }
 
@@ -438,6 +804,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         case .thinking(let t): return "think:\(t.prefix(80))"
         case .toolUse(let name, _, _): return "tool:\(name)"
         case .toolResult(let id, _): return "result:\(id)"
+        case .usage(let input, let output): return "usage:\(input):\(output)"
         case .result(let t, _, _, _, _, _, _): return "result:\(String((t ?? "").prefix(80)))"
         case .systemInit: return "init"
         case .teammateStarted(_, let name, _): return "teammate.start:\(name)"

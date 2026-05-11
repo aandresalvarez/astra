@@ -54,6 +54,45 @@ struct ProcessMonitorTests {
         #expect(monitor.estimatedTokens == 125)
     }
 
+    @Test("Warning budget mode does not kill on estimated overage")
+    func warningBudgetModeDoesNotKillEstimatedOverage() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 100,
+            budgetEnforcementMode: .warning
+        )
+
+        let event = ParsedEvent.text(text: String(repeating: "x", count: 500))
+        let shouldKill = monitor.processEvent(event, process: nil)
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
+        #expect(monitor.estimatedTokens == 125)
+    }
+
+    @Test("Warning budget mode does not kill on reported overage")
+    func warningBudgetModeDoesNotKillReportedOverage() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1000,
+            budgetEnforcementMode: .warning
+        )
+
+        let event = ParsedEvent.result(
+            text: "done",
+            costUSD: 0.01,
+            totalInputTokens: 800,
+            totalOutputTokens: 300,
+            durationMs: 5000,
+            numTurns: 1,
+            isError: false
+        )
+        let shouldKill = monitor.processEvent(event, process: nil)
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
+    }
+
     @Test("Budget not exceeded when under limit")
     func budgetNotExceeded() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 10000)
@@ -82,6 +121,36 @@ struct ProcessMonitorTests {
 
         #expect(shouldKill == true)
         #expect(monitor.budgetExceeded == true)
+    }
+
+    @Test("Budget exceeded via stream usage event")
+    func budgetExceededFromStreamUsage() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1000)
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.budgetExceeded == true)
+    }
+
+    @Test("Warning budget mode does not kill on stream usage overage")
+    func warningBudgetModeDoesNotKillStreamUsageOverage() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: 1000,
+            budgetEnforcementMode: .warning
+        )
+
+        let shouldKill = monitor.processEvent(
+            .usage(totalInputTokens: 900, totalOutputTokens: 200),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.budgetWarning == true)
     }
 
     @Test("Final result budget overage after astra complete is warning only")
@@ -410,5 +479,51 @@ struct ProcessMonitorTests {
         )
         #expect(result.maxTurnsExceeded == true)
         #expect(result.budgetExceeded == false)
+    }
+}
+
+@Suite("Budget Enforcement Preferences")
+struct BudgetEnforcementPreferenceTests {
+    @Test("Configured enforcement defaults to hard stop and reads warning")
+    func configuredDefaultReadsStoredMode() {
+        let suiteName = "astra-budget-enforcement-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
+
+        defaults.set(BudgetEnforcementMode.warning.rawValue, forKey: AppStorageKeys.budgetEnforcementMode)
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .warning)
+
+        defaults.set(BudgetEnforcementMode.hardStop.rawValue, forKey: AppStorageKeys.budgetEnforcementMode)
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
+
+        defaults.set("unexpected", forKey: AppStorageKeys.budgetEnforcementMode)
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
+    }
+}
+
+@Suite("Runtime Budget Profiles")
+struct RuntimeBudgetProfileTests {
+    @Test("Every provider has a budget profile")
+    func everyProviderHasBudgetProfile() {
+        for runtime in AgentRuntimeID.allCases {
+            let profile = AgentRuntimeBudgetProfile.profile(for: runtime)
+            #expect(profile.runtime == runtime)
+            #expect(profile.launchOverheadTokens >= 0)
+        }
+    }
+
+    @Test("Launch estimates are provider specific")
+    func launchEstimatesAreProviderSpecific() {
+        let prompt = String(repeating: "x", count: 400)
+        let promptEstimate = AgentProcessMonitor.estimatedTokenCount(for: prompt)
+
+        let claude = AgentRuntimeBudgetProfile.profile(for: .claudeCode)
+        let copilot = AgentRuntimeBudgetProfile.profile(for: .copilotCLI)
+
+        #expect(claude.estimatedLaunchInputTokens(prompt: prompt) == promptEstimate + claude.launchOverheadTokens)
+        #expect(copilot.estimatedLaunchInputTokens(prompt: prompt) == promptEstimate + copilot.launchOverheadTokens)
+        #expect(claude.launchOverheadTokens > copilot.launchOverheadTokens)
     }
 }
