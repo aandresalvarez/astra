@@ -5,6 +5,80 @@ import ASTRACore
 
 @Suite("CopilotModelAvailabilityService")
 struct CopilotModelAvailabilityServiceTests {
+    @Test("Account model check intersects enabled Copilot models with installed CLI choices")
+    func accountModelCheckIntersectsEnabledModelsWithCLIChoices() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/copilot --help",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: """
+                Usage: copilot [options]
+
+                  --model <model>  Set the AI model to use (choices:
+                                      "claude-sonnet-4.5", "claude-sonnet-4",
+                                      "gpt-5")
+                  --version        Show version information
+                """,
+                stderr: ""
+            )
+        )
+
+        let http = StubModelAvailabilityHTTPClient()
+        await http.setResponse(
+            method: "POST",
+            url: "https://api.github.com/graphql",
+            statusCode: 200,
+            body: #"{"data":{"viewer":{"copilotEndpoints":{"api":"https://api.githubcopilot.test"}}}}"#
+        )
+        await http.setResponse(
+            method: "GET",
+            url: "https://api.githubcopilot.test/models",
+            statusCode: 200,
+            body: """
+            {
+              "data": [
+                {"id": "gpt-5", "policy": {"state": "enabled"}},
+                {"id": "claude-opus-4.7", "policy": {"state": "enabled"}},
+                {"id": "claude-sonnet-4.5", "policy": {"state": "enabled"}},
+                {"id": "claude-sonnet-4", "policy": {"state": "disabled"}},
+                {"id": "grok-code-fast-1", "policy": {"state": "enabled"}}
+              ]
+            }
+            """
+        )
+
+        let service = CopilotModelAvailabilityService(
+            runner: runner,
+            httpClient: http,
+            environment: { ["GITHUB_TOKEN": "env-token"] },
+            detectExecutable: { $0 == "copilot" ? "/opt/homebrew/bin/copilot" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/copilot" }
+        )
+
+        let result = await service.availableModels()
+
+        #expect(result == .available(models: ["gpt-5", "claude-sonnet-4.5"]))
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/homebrew/bin/copilot", args: ["--help"])
+        ])
+        #expect(await http.recordedRequests().last?.authorization == "Bearer env-token")
+    }
+
+    @Test("Copilot CLI help parser reads multiline model choices")
+    func copilotCLIHelpParserReadsMultilineModelChoices() {
+        let choices = CopilotModelAvailabilityService.parseModelChoices(from: """
+        Usage: copilot [options]
+
+          --model <model>  Set the AI model to use (choices:
+                              "claude-sonnet-4.5", "claude-sonnet-4",
+                              "gpt-5")
+          --version        Show version information
+        """)
+
+        #expect(choices == ["claude-sonnet-4.5", "claude-sonnet-4", "gpt-5"])
+    }
+
     @Test("Account model check filters disabled Copilot models and persists the enabled set")
     func accountModelCheckFiltersDisabledModels() async throws {
         let runner = StubBinaryRunner()
@@ -166,8 +240,8 @@ struct CopilotModelAvailabilityServiceTests {
             runner: runner,
             httpClient: http,
             environment: { ["GITHUB_TOKEN": "env-token"] },
-            detectExecutable: { _ in "/opt/homebrew/bin/gh" },
-            isExecutable: { _ in true }
+            detectExecutable: { $0 == "gh" ? "/opt/homebrew/bin/gh" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/gh" }
         )
 
         let result = await service.availableModels()

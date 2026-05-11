@@ -88,6 +88,14 @@ struct CopilotModelAvailabilityService {
             guard !available.isEmpty else {
                 return .unavailable(reason: "Copilot returned no enabled models for this account.")
             }
+            if let cliModels = await installedCLIModelChoices(), !cliModels.isEmpty {
+                let cliModelSet = Set(cliModels)
+                let usable = available.filter { cliModelSet.contains($0) }
+                guard !usable.isEmpty else {
+                    return .unavailable(reason: "Copilot account models do not overlap with the installed Copilot CLI's supported models.")
+                }
+                return .available(models: usable)
+            }
             return .available(models: available)
         } catch {
             return .unavailable(reason: Self.userFacingMessage(for: error))
@@ -123,6 +131,21 @@ struct CopilotModelAvailabilityService {
         guard result.isSuccess else { return nil }
         let token = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return token.isEmpty ? nil : token
+    }
+
+    private func installedCLIModelChoices() async -> [String]? {
+        let copilot = detectExecutable("copilot")
+        guard !copilot.isEmpty, isExecutable(copilot) else { return nil }
+        let result = await runner.run(
+            path: copilot,
+            args: ["--help"],
+            timeout: timeout,
+            environment: nil
+        )
+        guard result.isSuccess else { return nil }
+
+        let choices = Self.parseModelChoices(from: "\(result.stdout)\n\(result.stderr)")
+        return choices.isEmpty ? nil : choices
     }
 
     private func keychainCopilotToken() async -> String? {
@@ -230,6 +253,61 @@ struct CopilotModelAvailabilityService {
         return URL(fileURLWithPath: basePath)
             .appendingPathComponent(".copilot", isDirectory: true)
             .appendingPathComponent("config.json")
+    }
+
+    static func parseModelChoices(from text: String) -> [String] {
+        let source = modelOptionBlock(from: text) ?? text
+        let quotedChoices = quotedValues(in: source)
+        if !quotedChoices.isEmpty {
+            return RuntimeModelAvailability.cleanProviderModels(quotedChoices)
+        }
+
+        guard let marker = source.range(of: "Allowed choices are", options: .caseInsensitive)
+            ?? source.range(of: "choices:", options: .caseInsensitive) else {
+            return []
+        }
+
+        let tail = String(source[marker.upperBound...])
+        let firstLine = tail.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? tail
+        var trimCharacters = CharacterSet.whitespacesAndNewlines
+        trimCharacters.formUnion(CharacterSet(charactersIn: "\"'()[]:."))
+        let choices = firstLine
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: trimCharacters) }
+            .filter { !$0.isEmpty && !$0.contains(" ") }
+        return RuntimeModelAvailability.cleanProviderModels(choices)
+    }
+
+    private static func modelOptionBlock(from text: String) -> String? {
+        let lines = text.components(separatedBy: .newlines)
+        guard let startIndex = lines.firstIndex(where: { $0.contains("--model") }) else {
+            return nil
+        }
+
+        var block: [String] = []
+        for index in startIndex..<lines.count {
+            let line = lines[index]
+            if index > startIndex {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty || trimmed.hasPrefix("-") || trimmed == "Commands:" || trimmed == "Options:" {
+                    break
+                }
+            }
+            block.append(line)
+        }
+        return block.joined(separator: "\n")
+    }
+
+    private static func quotedValues(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #""([^"]+)""#) else {
+            return []
+        }
+        let nsText = text as NSString
+        let range = NSRange(location: 0, length: nsText.length)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > 1 else { return nil }
+            return nsText.substring(with: match.range(at: 1))
+        }
     }
 }
 
