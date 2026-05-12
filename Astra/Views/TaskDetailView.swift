@@ -787,27 +787,7 @@ struct FilesTabView: View {
         case content, diff
     }
 
-    struct ArtifactFile: Identifiable, Hashable {
-        let id = UUID()
-        let path: String
-        let name: String
-        let isDirectory: Bool
-        let size: Int64
-        let source: String
-        let change: StoredFileChange?
-
-        init(path: String, name: String, isDirectory: Bool, size: Int64, source: String, change: StoredFileChange? = nil) {
-            self.path = path
-            self.name = name
-            self.isDirectory = isDirectory
-            self.size = size
-            self.source = source
-            self.change = change
-        }
-
-        func hash(into hasher: inout Hasher) { hasher.combine(path) }
-        static func == (lhs: ArtifactFile, rhs: ArtifactFile) -> Bool { lhs.path == rhs.path }
-    }
+    typealias ArtifactFile = TaskFileItem
 
     @State private var showInternalFiles = false
     @State private var latestRun: TaskRun?
@@ -1514,71 +1494,19 @@ struct FilesTabView: View {
     // MARK: - Data Loading
 
     private func refreshAllFiles() {
-        var files: [ArtifactFile] = []
-        var seen = Set<String>()
-
-        // 1. Files from fileChanges (with diff data)
-        if let run = latestRun {
-            for change in run.fileChanges {
-                guard !seen.contains(change.path) else { continue }
-                seen.insert(change.path)
-                let exists = FileManager.default.fileExists(atPath: change.path)
-                files.append(ArtifactFile(
-                    path: change.path,
-                    name: URL(fileURLWithPath: change.path).lastPathComponent,
-                    isDirectory: false,
-                    size: exists ? (try? FileManager.default.attributesOfItem(atPath: change.path)[.size] as? Int64) ?? 0 : 0,
-                    source: change.changeType == "Write" ? "created" : "changed",
-                    change: change
-                ))
-            }
-        }
-
-        // 2. Files in task output folder
-        for file in taskFolderFiles where !seen.contains(file.path) {
-            seen.insert(file.path)
-            files.append(file)
-        }
-
-        // 3. Attached input files
-        for input in task.inputs where !input.isEmpty && !seen.contains(input) {
-            seen.insert(input)
-            var isDir: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: input, isDirectory: &isDir)
-            files.append(ArtifactFile(
-                path: input,
-                name: URL(fileURLWithPath: input).lastPathComponent,
-                isDirectory: isDir.boolValue,
-                size: exists && !isDir.boolValue ? ((try? FileManager.default.attributesOfItem(atPath: input)[.size] as? Int64) ?? 0) : 0,
-                source: "input"
-            ))
-        }
-
-        // 4. File paths found in output text
-        for file in outputPathFiles where !seen.contains(file.path) {
-            seen.insert(file.path)
-            files.append(file)
-        }
-
-        cachedAllFiles = files
+        cachedAllFiles = TaskFileIndex.mergedItems(
+            latestRun: latestRun,
+            taskFolderFiles: taskFolderFiles,
+            inputs: task.inputs,
+            outputPathFiles: outputPathFiles
+        )
     }
 
     private func scanTaskFolder() {
         let folder = task.taskFolder
         Task {
             let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
-                guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
-                var files: [ArtifactFile] = []
-                while let relativePath = enumerator.nextObject() as? String {
-                    let fullPath = (folder as NSString).appendingPathComponent(relativePath)
-                    var isDir: ObjCBool = false
-                    FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
-                    if isDir.boolValue { continue }
-                    let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
-                    files.append(ArtifactFile(path: fullPath, name: URL(fileURLWithPath: fullPath).lastPathComponent, isDirectory: false, size: size, source: "output"))
-                }
-                return files
+                TaskFileIndex.scanTaskFolder(folder)
             }.value
             taskFolderFiles = scanned
         }
@@ -1594,26 +1522,7 @@ struct FilesTabView: View {
         guard !combined.isEmpty else { return }
         Task {
             let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard let regex = TaskDetailFilePathMatcher.regex else { return [] }
-                let nsText = combined as NSString
-                let matches = regex.matches(in: combined, range: NSRange(location: 0, length: nsText.length))
-                var seen = Set<String>()
-                var files: [ArtifactFile] = []
-                let fm = FileManager.default
-                for match in matches {
-                    let path = nsText.substring(with: match.range)
-                    guard !seen.contains(path) else { continue }
-                    seen.insert(path)
-                    var isDir: ObjCBool = false
-                    guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
-                    if path.hasPrefix("/usr/") || path.hasPrefix("/bin/") || path.hasPrefix("/sbin/") ||
-                       path.hasPrefix("/System/") || path.hasPrefix("/Library/") ||
-                       path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/private/") { continue }
-                    if path.contains("/.claude/") { continue }
-                    let size: Int64 = isDir.boolValue ? 0 : ((try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0)
-                    files.append(ArtifactFile(path: path, name: URL(fileURLWithPath: path).lastPathComponent, isDirectory: isDir.boolValue, size: size, source: isDir.boolValue ? "folder" : "referenced"))
-                }
-                return files
+                TaskFileIndex.referencedItems(in: combined)
             }.value
             outputPathFiles = found
         }

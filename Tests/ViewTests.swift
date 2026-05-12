@@ -975,6 +975,46 @@ struct TaskThreadSnapshotTests {
         #expect(paths == [root.appendingPathComponent("visible.txt").path])
     }
 
+    @Test("Task file index scans task folder with shelf destinations")
+    func taskFileIndexScansTaskFolderWithShelfDestinations() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-index-\(UUID().uuidString)")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
+        try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskFileIndex.scanTaskFolder(root.path)
+        let destinations = Dictionary(uniqueKeysWithValues: files.map { ($0.name, $0.destination) })
+
+        #expect(destinations["summary.md"] == .text)
+        #expect(destinations["index.html"] == .browser)
+    }
+
+    @Test("Task file index merges visible files without duplicates")
+    func taskFileIndexMergesVisibleFilesWithoutDuplicates() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-merge-\(UUID().uuidString)")
+        let report = root.appendingPathComponent("report.md")
+        let data = root.appendingPathComponent("data.json")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        try "{}".write(to: data, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let merged = TaskFileIndex.mergedItems(
+            latestRun: nil,
+            taskFolderFiles: [TaskFileIndex.fileItem(path: report.path, isDirectory: false, source: "output")],
+            inputs: [report.path, data.path],
+            outputPathFiles: [TaskFileIndex.fileItem(path: data.path, isDirectory: false, source: "referenced")]
+        )
+
+        #expect(merged.map(\.path) == [report.path, data.path])
+        #expect(merged.map(\.source) == ["output", "input"])
+    }
+
     @Test("Generated file preview prefers task index HTML")
     func generatedFilePreviewPrefersTaskIndexHTML() {
         let root = URL(fileURLWithPath: "/tmp/astra-generated-files-preview")

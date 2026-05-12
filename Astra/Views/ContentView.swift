@@ -401,6 +401,18 @@ struct ContentView: View {
         selectedTask != nil || isComposingTask
     }
 
+    private var topRightActions: WorkspaceTopRightActions {
+        WorkspaceTopRightActions(
+            hasWorkspace: effectiveWorkspace != nil,
+            hasTaskThread: hasOpenTaskThread,
+            canShowPlanShelf: hasWorkspaceCanvasContent,
+            canShowTextShelf: hasOpenTaskThread && (selectedTaskHasMarkdownShelfContent || activeWorkspaceCanvasItem == .markdown),
+            canShowBrowserShelf: hasOpenTaskThread || activeWorkspaceCanvasItem == .browser,
+            activeCanvasItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible
+        )
+    }
+
     private var isWorkspaceCanvasPresented: Bool {
         activeWorkspaceCanvasItem != nil
     }
@@ -508,14 +520,7 @@ struct ContentView: View {
         .toolbar {
             ContentToolbar(
                 appUpdateController: appUpdateController,
-                hasWorkspace: effectiveWorkspace != nil,
-                hasTaskThread: hasOpenTaskThread,
-                hasCanvasContent: hasWorkspaceCanvasContent,
-                isCanvasVisible: activeWorkspaceCanvasItem == .plan,
-                hasMarkdownContent: selectedTaskHasMarkdownShelfContent,
-                isMarkdownVisible: activeWorkspaceCanvasItem == .markdown,
-                isBrowserVisible: activeWorkspaceCanvasItem == .browser,
-                isRightRailVisible: isWorkspaceRightRailVisible,
+                actions: topRightActions,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
                 onToggleCanvas: toggleWorkspaceCanvas,
                 onToggleMarkdown: toggleMarkdownCanvas,
@@ -1147,6 +1152,7 @@ struct ContentView: View {
     private func startComposingTask() {
         setSelectedTask(nil)
         isComposingTask = true
+        presentRightRail()
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
@@ -1158,6 +1164,7 @@ struct ContentView: View {
     private func handleTaskCreated(_ task: AgentTask) {
         setSelectedTask(task)
         isComposingTask = false
+        presentRightRail()
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
@@ -1819,17 +1826,24 @@ struct ContentView: View {
     }
 }
 
+private struct WorkspaceTopRightActions: Equatable {
+    let hasWorkspace: Bool
+    let hasTaskThread: Bool
+    let canShowPlanShelf: Bool
+    let canShowTextShelf: Bool
+    let canShowBrowserShelf: Bool
+    let activeCanvasItem: WorkspaceCanvasItem?
+    let isRightRailVisible: Bool
+
+    var isPlanShelfVisible: Bool { activeCanvasItem == .plan }
+    var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
+    var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
+}
+
 private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
-    let hasWorkspace: Bool
-    let hasTaskThread: Bool
-    let hasCanvasContent: Bool
-    let isCanvasVisible: Bool
-    let hasMarkdownContent: Bool
-    let isMarkdownVisible: Bool
-    let isBrowserVisible: Bool
-    let isRightRailVisible: Bool
+    let actions: WorkspaceTopRightActions
     let onCheckForUpdates: () -> Void
     let onToggleCanvas: () -> Void
     let onToggleMarkdown: () -> Void
@@ -1847,43 +1861,45 @@ private struct ContentToolbar: ToolbarContent {
             }
         }
 
-        if hasWorkspace {
-            if hasCanvasContent {
+        if actions.hasWorkspace {
+            if actions.canShowPlanShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleCanvas) {
                         toolbarToggleLabel(
-                            title: isCanvasVisible ? "Hide Plan" : "Show Plan",
+                            title: actions.isPlanShelfVisible ? "Hide Plan" : "Show Plan",
                             systemImage: "list.bullet.clipboard",
-                            isActive: isCanvasVisible
+                            isActive: actions.isPlanShelfVisible
                         )
                     }
-                    .help(isCanvasVisible ? "Hide plan shelf" : "Show plan shelf")
+                    .help(actions.isPlanShelfVisible ? "Hide plan shelf" : "Show plan shelf")
                     .accessibilityIdentifier("WorkspaceCanvasToggleButton")
                 }
             }
 
-            if hasTaskThread, hasMarkdownContent {
+            if actions.canShowTextShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleMarkdown) {
                         toolbarToggleLabel(
-                            title: isMarkdownVisible ? "Hide Text" : "Show Text",
+                            title: actions.isTextShelfVisible ? "Hide Text" : "Show Text",
                             systemImage: "doc.text",
-                            isActive: isMarkdownVisible
+                            isActive: actions.isTextShelfVisible
                         )
                     }
-                    .help(isMarkdownVisible ? "Hide text shelf" : "Show text shelf")
+                    .help(actions.isTextShelfVisible ? "Hide text shelf" : "Show text shelf")
                     .accessibilityIdentifier("ShelfMarkdownToggleButton")
                 }
+            }
 
+            if actions.canShowBrowserShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleBrowser) {
                         toolbarToggleLabel(
-                            title: isBrowserVisible ? "Hide Browser" : "Show Browser",
-                            systemImage: isBrowserVisible ? "globe.badge.chevron.backward" : "globe",
-                            isActive: isBrowserVisible
+                            title: actions.isBrowserShelfVisible ? "Hide Browser" : "Show Browser",
+                            systemImage: actions.isBrowserShelfVisible ? "globe.badge.chevron.backward" : "globe",
+                            isActive: actions.isBrowserShelfVisible
                         )
                     }
-                    .help(isBrowserVisible ? "Hide browser shelf" : "Show browser shelf")
+                    .help(actions.isBrowserShelfVisible ? "Hide browser shelf" : "Show browser shelf")
                     .accessibilityIdentifier("ShelfBrowserToggleButton")
                 }
             }
@@ -1891,12 +1907,12 @@ private struct ContentToolbar: ToolbarContent {
             ToolbarItem(placement: .primaryAction) {
                 Button(action: onToggleRightRail) {
                     toolbarToggleLabel(
-                        title: isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                        title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
                         systemImage: "sidebar.right",
-                        isActive: isRightRailVisible
+                        isActive: actions.isRightRailVisible
                     )
                 }
-                .help(isRightRailVisible ? "Hide control panel" : "Show control panel")
+                .help(actions.isRightRailVisible ? "Hide control panel" : "Show control panel")
             }
         }
     }
