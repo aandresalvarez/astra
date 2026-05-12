@@ -12,6 +12,51 @@ struct ShelfQueryDocument: Identifiable, Equatable {
     var isDirty: Bool { sql != savedSQL }
 }
 
+enum QueryValidationStepStatus: String, Equatable, Sendable {
+    case running
+    case passed
+    case failed
+    case repaired
+    case blocked
+}
+
+struct QueryValidationStep: Identifiable, Equatable, Sendable {
+    var id: String { "\(status.rawValue)-\(title)-\(detail)" }
+    var status: QueryValidationStepStatus
+    var title: String
+    var detail: String
+}
+
+enum QuerySafetyGateCheckStatus: String, Equatable, Sendable {
+    case passed
+    case warning
+    case blocked
+}
+
+struct QuerySafetyGateCheck: Identifiable, Equatable, Sendable {
+    var id: String { "\(status.rawValue)-\(label)" }
+    var status: QuerySafetyGateCheckStatus
+    var label: String
+}
+
+struct QuerySafetyGateReview: Equatable, Sendable {
+    var signature: String
+    var connectionName: String
+    var dialect: SQLDialect
+    var classification: QueryClassification
+    var recoveryTitle: String
+    var recoveryDetails: String
+    var restoreSQL: String
+    var sourceTableID: String?
+    var backupTableID: String?
+    var checks: [QuerySafetyGateCheck]
+    var approvedAt: Date?
+
+    var isApproved: Bool {
+        approvedAt != nil
+    }
+}
+
 @MainActor
 final class ShelfQuerySession: ObservableObject {
     @Published private(set) var documents: [ShelfQueryDocument] = []
@@ -24,6 +69,14 @@ final class ShelfQuerySession: ObservableObject {
     @Published private(set) var dryRunResult: QueryDryRunResult?
     @Published private(set) var executionResult: QueryExecutionResult?
     @Published private(set) var recoveryPlan: RecoveryPlan?
+    @Published private(set) var aiBrief: QueryBrief?
+    @Published private(set) var aiBriefErrorMessage: String?
+    @Published private(set) var resultExplanation: QueryResultExplanation?
+    @Published private(set) var resultExplanationErrorMessage: String?
+    @Published private(set) var validationSteps: [QueryValidationStep] = []
+    @Published private(set) var validationErrorMessage: String?
+    @Published private(set) var selfHealingOriginalSQL: String?
+    @Published private(set) var safetyGateReview: QuerySafetyGateReview?
     @Published private(set) var schemaCatalog: SchemaCatalog?
     @Published private(set) var schemaErrorMessage: String?
     @Published private(set) var tableSchemaErrorMessage: String?
@@ -31,6 +84,9 @@ final class ShelfQuerySession: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isRunning = false
     @Published private(set) var isLoadingSchema = false
+    @Published private(set) var isGeneratingBrief = false
+    @Published private(set) var isExplainingResult = false
+    @Published private(set) var isValidatingQuery = false
 
     private let queryService: DatabaseQueryService
 
@@ -72,8 +128,16 @@ final class ShelfQuerySession: ObservableObject {
         recoveryPlan?.isPrepared == true
     }
 
+    var requiresSafetyGate: Bool {
+        classification.requiresRecovery
+    }
+
     var canSaveSelectedDocument: Bool {
         selectedDocument?.sourcePath != nil
+    }
+
+    var canRestoreSelfHealingOriginalSQL: Bool {
+        selfHealingOriginalSQL != nil
     }
 
     func bindToTask(_ taskID: UUID?) {
@@ -135,13 +199,17 @@ final class ShelfQuerySession: ObservableObject {
     }
 
     func updateSelectedSQL(_ sql: String) {
+        setSelectedSQL(sql, resetState: true)
+    }
+
+    private func setSelectedSQL(_ sql: String, resetState: Bool) {
         guard let selectedDocumentID,
               let index = documents.firstIndex(where: { $0.id == selectedDocumentID }) else {
             return
         }
         let previousSQL = documents[index].sql
         documents[index].sql = sql
-        if previousSQL != sql {
+        if previousSQL != sql, resetState {
             resetResults()
         }
     }
@@ -293,19 +361,27 @@ final class ShelfQuerySession: ObservableObject {
     }
 
     func run(connection: DatabaseConnection) async {
+        let connection = requestConnection(from: connection)
         let currentClassification = classification
-        guard !currentClassification.requiresRecovery || hasPreparedRecovery else {
+        guard !currentClassification.requiresRecovery || hasCurrentPreparedRecovery(connection: connection) else {
             let message = "Mutation and script execution is blocked until a prepared recovery plan exists."
             errorMessage = message
             appendHistory(status: .blocked, connection: connection, errorMessage: message)
             return
         }
+        guard !currentClassification.requiresRecovery || hasApprovedSafetyGate(connection: connection) else {
+            let message = "Mutation and script execution is blocked until the safe execution gate is approved."
+            errorMessage = message
+            appendHistory(status: .blocked, connection: connection, errorMessage: message)
+            return
+        }
 
-        let connection = requestConnection(from: connection)
         let request = QueryRequest(sql: sql, connection: connection, rowLimit: rowLimit)
         isRunning = true
         errorMessage = nil
         executionResult = nil
+        resultExplanation = nil
+        resultExplanationErrorMessage = nil
         defer { isRunning = false }
         do {
             let result = try await queryService.run(request)
@@ -393,10 +469,336 @@ final class ShelfQuerySession: ObservableObject {
         do {
             let plan = try await queryService.prepareRecovery(request, classification: classification)
             recoveryPlan = plan
+            safetyGateReview = plan.isPrepared && classification.requiresRecovery
+                ? makeSafetyGateReview(connection: connection, recoveryPlan: plan, approvedAt: nil)
+                : nil
             appendHistory(status: .blocked, connection: connection, recoveryPlan: plan)
         } catch {
             errorMessage = error.localizedDescription
             appendHistory(status: .failed, connection: connection, errorMessage: error.localizedDescription)
+        }
+    }
+
+    func hasApprovedSafetyGate(connection: DatabaseConnection) -> Bool {
+        guard let safetyGateReview,
+              safetyGateReview.isApproved,
+              safetyGateReview.signature == safetyGateSignature(connection: requestConnection(from: connection)),
+              hasCurrentPreparedRecovery(connection: connection) else {
+            return false
+        }
+        return true
+    }
+
+    func hasCurrentPreparedRecovery(connection: DatabaseConnection) -> Bool {
+        guard recoveryPlan?.isPrepared == true else {
+            return false
+        }
+        guard classification.requiresRecovery else {
+            return true
+        }
+        return safetyGateReview?.signature == safetyGateSignature(connection: requestConnection(from: connection))
+    }
+
+    func approveSafetyGate(connection: DatabaseConnection) {
+        let connection = requestConnection(from: connection)
+        guard classification.requiresRecovery else {
+            safetyGateReview = nil
+            return
+        }
+        guard let recoveryPlan, recoveryPlan.isPrepared else {
+            let message = "Prepare recovery before approving the safe execution gate."
+            errorMessage = message
+            safetyGateReview = makeBlockedSafetyGateReview(connection: connection, message: message)
+            return
+        }
+        guard safetyGateReview?.signature == safetyGateSignature(connection: connection) else {
+            let message = "Prepare recovery again before approving this SQL, dialect, and connection."
+            errorMessage = message
+            return
+        }
+        safetyGateReview = makeSafetyGateReview(
+            connection: connection,
+            recoveryPlan: recoveryPlan,
+            approvedAt: Date()
+        )
+        errorMessage = nil
+        AppLogger.info(
+            "Query shelf safe execution gate approved classification=\(classification.rawValue)",
+            category: "QueryShelf",
+            taskID: boundTaskID
+        )
+    }
+
+    func validateAndRepair(
+        connection: DatabaseConnection,
+        taskContext: QueryBriefTaskContext?,
+        repairGenerator: QueryRepairGenerating,
+        maxRepairAttempts: Int = 2
+    ) async {
+        let originalSQL = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !originalSQL.isEmpty else {
+            validationSteps = [
+                QueryValidationStep(status: .blocked, title: "No SQL", detail: "Write or open SQL before validating.")
+            ]
+            validationErrorMessage = "Write or open SQL before validating."
+            return
+        }
+
+        guard connection.id != DatabaseConnection.editOnly.id else {
+            let message = "Choose a database connection before validating SQL."
+            validationSteps = [
+                QueryValidationStep(status: .blocked, title: "No connection", detail: message)
+            ]
+            validationErrorMessage = message
+            errorMessage = message
+            return
+        }
+
+        let originalClassification = SQLClassifier.classify(originalSQL)
+        guard originalClassification == .read else {
+            let message = "Self-healing dry-run validation only runs automatically for read-only SQL."
+            validationSteps = [
+                QueryValidationStep(status: .blocked, title: "Blocked", detail: message)
+            ]
+            validationErrorMessage = message
+            errorMessage = message
+            return
+        }
+
+        let connection = requestConnection(from: connection)
+        validationSteps = [
+            QueryValidationStep(status: .running, title: "Started", detail: "Running an automatic dry run.")
+        ]
+        validationErrorMessage = nil
+        errorMessage = nil
+        dryRunResult = nil
+        executionResult = nil
+        resultExplanation = nil
+        resultExplanationErrorMessage = nil
+        recoveryPlan = nil
+        selfHealingOriginalSQL = nil
+        isRunning = true
+        isValidatingQuery = true
+        defer {
+            isRunning = false
+            isValidatingQuery = false
+        }
+
+        var candidateSQL = originalSQL
+        var repairAttempt = 0
+
+        while true {
+            let dryRunAttempt = repairAttempt + 1
+            appendValidationStep(.running, title: "Dry run \(dryRunAttempt)", detail: "Checking SQL syntax and cost without execution.")
+
+            do {
+                let result = try await queryService.dryRun(QueryRequest(
+                    sql: candidateSQL,
+                    connection: connection,
+                    rowLimit: rowLimit
+                ))
+                dryRunResult = result
+                errorMessage = nil
+                appendValidationStep(.passed, title: "Dry run passed", detail: dryRunPassedDetail(result))
+                appendHistory(status: .dryRunSucceeded, connection: connection, dryRun: result)
+                AppLogger.info(
+                    "Query shelf self-healing validation passed repairs=\(repairAttempt)",
+                    category: "QueryShelf",
+                    taskID: boundTaskID
+                )
+                return
+            } catch {
+                let dryRunError = error.localizedDescription
+                appendValidationStep(.failed, title: "Dry run failed", detail: dryRunError)
+
+                guard repairAttempt < maxRepairAttempts else {
+                    validationErrorMessage = dryRunError
+                    errorMessage = dryRunError
+                    appendHistory(status: .failed, connection: connection, errorMessage: dryRunError)
+                    AppLogger.error(
+                        "Query shelf self-healing validation failed repairs=\(repairAttempt) error=\(dryRunError)",
+                        category: "QueryShelf",
+                        taskID: boundTaskID
+                    )
+                    return
+                }
+
+                repairAttempt += 1
+                appendValidationStep(.running, title: "Repair \(repairAttempt)", detail: "Asking AI for a minimal read-only SQL repair.")
+
+                do {
+                    let repair = try await repairGenerator.repair(QueryRepairRequest(
+                        title: title,
+                        originalSQL: originalSQL,
+                        failedSQL: candidateSQL,
+                        dryRunError: dryRunError,
+                        attempt: repairAttempt,
+                        connection: connection,
+                        dialect: selectedDialect,
+                        schemaCatalog: schemaCatalog,
+                        taskContext: taskContext
+                    ))
+                    let repairedSQL = repair.sql.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !repairedSQL.isEmpty else {
+                        throw QueryRepairGenerationError.invalidOutput("The repaired SQL was empty.")
+                    }
+                    guard SQLClassifier.classify(repairedSQL) == .read else {
+                        throw QueryRepairGenerationError.unsafeSQL("AI repair returned non-read-only SQL, so ASTRA did not apply it.")
+                    }
+                    guard repairedSQL != candidateSQL else {
+                        throw QueryRepairGenerationError.invalidOutput("AI returned the same SQL after a failed dry run.")
+                    }
+
+                    if selfHealingOriginalSQL == nil {
+                        selfHealingOriginalSQL = originalSQL
+                    }
+                    candidateSQL = repairedSQL
+                    setSelectedSQL(repairedSQL, resetState: false)
+                    dryRunResult = nil
+                    errorMessage = nil
+                    aiBrief = nil
+                    aiBriefErrorMessage = nil
+                    resultExplanation = nil
+                    resultExplanationErrorMessage = nil
+
+                    let assumptions = repair.assumptions.isEmpty
+                        ? ""
+                        : " Assumptions: \(repair.assumptions.joined(separator: "; "))"
+                    appendValidationStep(.repaired, title: "SQL repaired", detail: "\(repair.summary)\(assumptions)")
+                } catch {
+                    let message = error.localizedDescription
+                    validationErrorMessage = message
+                    errorMessage = message
+                    appendValidationStep(.blocked, title: "Repair stopped", detail: message)
+                    appendHistory(status: .failed, connection: connection, errorMessage: message)
+                    AppLogger.error(
+                        "Query shelf self-healing repair failed attempt=\(repairAttempt) error=\(message)",
+                        category: "QueryShelf",
+                        taskID: boundTaskID
+                    )
+                    return
+                }
+            }
+        }
+    }
+
+    func restoreSelfHealingOriginalSQL() {
+        guard let original = selfHealingOriginalSQL else { return }
+        setSelectedSQL(original, resetState: false)
+        dryRunResult = nil
+        executionResult = nil
+        recoveryPlan = nil
+        aiBrief = nil
+        aiBriefErrorMessage = nil
+        resultExplanation = nil
+        resultExplanationErrorMessage = nil
+        errorMessage = nil
+        validationErrorMessage = nil
+        validationSteps = [
+            QueryValidationStep(status: .repaired, title: "Original restored", detail: "Restored the SQL from before AI repair.")
+        ]
+        selfHealingOriginalSQL = nil
+    }
+
+    func generateBrief(
+        connection: DatabaseConnection,
+        taskContext: QueryBriefTaskContext?,
+        generator: QueryBriefGenerating
+    ) async {
+        let trimmedSQL = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSQL.isEmpty else {
+            aiBrief = nil
+            aiBriefErrorMessage = QueryBriefGenerationError.emptySQL.localizedDescription
+            return
+        }
+
+        let connection = requestConnection(from: connection)
+        let request = QueryBriefRequest(
+            title: title,
+            sql: trimmedSQL,
+            connection: connection,
+            dialect: selectedDialect,
+            classification: classification,
+            rowLimit: rowLimit,
+            dryRunResult: dryRunResult,
+            schemaCatalog: schemaCatalog,
+            taskContext: taskContext
+        )
+
+        isGeneratingBrief = true
+        aiBriefErrorMessage = nil
+        defer { isGeneratingBrief = false }
+
+        do {
+            let brief = try await generator.generateBrief(request)
+            aiBrief = brief
+            AppLogger.info(
+                "Query shelf AI Brief generated title=\(title) risk=\(brief.risk.rawValue)",
+                category: "QueryShelf",
+                taskID: boundTaskID
+            )
+        } catch {
+            aiBrief = nil
+            aiBriefErrorMessage = error.localizedDescription
+            AppLogger.error(
+                "Query shelf AI Brief failed title=\(title) error=\(error.localizedDescription)",
+                category: "QueryShelf",
+                taskID: boundTaskID
+            )
+        }
+    }
+
+    func explainResult(
+        connection: DatabaseConnection,
+        taskContext: QueryBriefTaskContext?,
+        generator: QueryResultExplanationGenerating
+    ) async {
+        let trimmedSQL = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSQL.isEmpty else {
+            resultExplanation = nil
+            resultExplanationErrorMessage = QueryResultExplanationError.emptySQL.localizedDescription
+            return
+        }
+        guard let executionResult else {
+            resultExplanation = nil
+            resultExplanationErrorMessage = QueryResultExplanationError.noResult.localizedDescription
+            return
+        }
+
+        let connection = requestConnection(from: connection)
+        let request = QueryResultExplanationRequest(
+            title: title,
+            sql: trimmedSQL,
+            connection: connection,
+            dialect: selectedDialect,
+            rowLimit: rowLimit,
+            dryRunResult: dryRunResult,
+            executionResult: executionResult,
+            schemaCatalog: schemaCatalog,
+            taskContext: taskContext,
+            brief: aiBrief
+        )
+
+        isExplainingResult = true
+        resultExplanationErrorMessage = nil
+        defer { isExplainingResult = false }
+
+        do {
+            let explanation = try await generator.explainResult(request)
+            resultExplanation = explanation
+            AppLogger.info(
+                "Query shelf result explanation generated title=\(title) rows=\(executionResult.rowCount)",
+                category: "QueryShelf",
+                taskID: boundTaskID
+            )
+        } catch {
+            resultExplanation = nil
+            resultExplanationErrorMessage = error.localizedDescription
+            AppLogger.error(
+                "Query shelf result explanation failed title=\(title) error=\(error.localizedDescription)",
+                category: "QueryShelf",
+                taskID: boundTaskID
+            )
         }
     }
 
@@ -451,6 +853,95 @@ final class ShelfQuerySession: ObservableObject {
         persistHistory()
     }
 
+    private func makeSafetyGateReview(
+        connection: DatabaseConnection,
+        recoveryPlan: RecoveryPlan,
+        approvedAt: Date?
+    ) -> QuerySafetyGateReview {
+        QuerySafetyGateReview(
+            signature: safetyGateSignature(connection: connection),
+            connectionName: connection.displayName,
+            dialect: selectedDialect,
+            classification: classification,
+            recoveryTitle: recoveryPlan.title,
+            recoveryDetails: recoveryPlan.details,
+            restoreSQL: recoveryPlan.restoreSQL,
+            sourceTableID: recoveryPlan.sourceTableID,
+            backupTableID: recoveryPlan.backupTableID,
+            checks: safetyGateChecks(recoveryPlan: recoveryPlan),
+            approvedAt: approvedAt
+        )
+    }
+
+    private func makeBlockedSafetyGateReview(connection: DatabaseConnection, message: String) -> QuerySafetyGateReview {
+        QuerySafetyGateReview(
+            signature: safetyGateSignature(connection: connection),
+            connectionName: connection.displayName,
+            dialect: selectedDialect,
+            classification: classification,
+            recoveryTitle: "Recovery not prepared",
+            recoveryDetails: message,
+            restoreSQL: "",
+            sourceTableID: nil,
+            backupTableID: nil,
+            checks: [
+                QuerySafetyGateCheck(status: .blocked, label: message)
+            ],
+            approvedAt: nil
+        )
+    }
+
+    private func safetyGateChecks(recoveryPlan: RecoveryPlan) -> [QuerySafetyGateCheck] {
+        var checks = [
+            QuerySafetyGateCheck(
+                status: .warning,
+                label: "\(classification.displayName) requires explicit approval before execution."
+            ),
+            QuerySafetyGateCheck(
+                status: recoveryPlan.isPrepared ? .passed : .blocked,
+                label: recoveryPlan.isPrepared ? "Recovery is prepared." : "Recovery is not prepared."
+            )
+        ]
+
+        if let source = recoveryPlan.sourceTableID, !source.isEmpty {
+            checks.append(QuerySafetyGateCheck(status: .warning, label: "Affected object: \(source)"))
+        }
+        if let backup = recoveryPlan.backupTableID, !backup.isEmpty {
+            checks.append(QuerySafetyGateCheck(status: .passed, label: "Backup object: \(backup)"))
+        }
+        checks.append(QuerySafetyGateCheck(
+            status: recoveryPlan.restoreSQL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .warning : .passed,
+            label: recoveryPlan.restoreSQL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "No restore SQL was recorded."
+                : "Restore SQL is recorded."
+        ))
+        return checks
+    }
+
+    private func safetyGateSignature(connection: DatabaseConnection) -> String {
+        [
+            connection.id,
+            selectedDialect.rawValue,
+            classification.rawValue,
+            sql.trimmingCharacters(in: .whitespacesAndNewlines),
+            recoveryPlan?.title ?? "",
+            recoveryPlan?.restoreSQL ?? "",
+            recoveryPlan?.sourceTableID ?? "",
+            recoveryPlan?.backupTableID ?? ""
+        ].joined(separator: "\u{1F}")
+    }
+
+    private func appendValidationStep(_ status: QueryValidationStepStatus, title: String, detail: String) {
+        validationSteps.append(QueryValidationStep(status: status, title: title, detail: detail))
+    }
+
+    private func dryRunPassedDetail(_ result: QueryDryRunResult) -> String {
+        if let bytes = result.bytesProcessed {
+            return "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) estimated. \(result.message)"
+        }
+        return result.message
+    }
+
     private func requestConnection(from connection: DatabaseConnection) -> DatabaseConnection {
         var requestConnection = connection
         requestConnection.dialect = selectedDialect
@@ -462,6 +953,14 @@ final class ShelfQuerySession: ObservableObject {
         executionResult = nil
         recoveryPlan = nil
         errorMessage = nil
+        aiBrief = nil
+        aiBriefErrorMessage = nil
+        resultExplanation = nil
+        resultExplanationErrorMessage = nil
+        validationSteps = []
+        validationErrorMessage = nil
+        selfHealingOriginalSQL = nil
+        safetyGateReview = nil
     }
 
     private func loadPersistedHistory() {

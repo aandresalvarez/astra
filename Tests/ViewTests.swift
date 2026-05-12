@@ -88,6 +88,51 @@ private actor QueryStubRunner: StandardInputBinaryRunner {
     }
 }
 
+private final class QueryBriefRecordingGenerator: QueryBriefGenerating {
+    var result: Result<QueryBrief, Error>
+    private(set) var lastRequest: QueryBriefRequest?
+
+    init(result: Result<QueryBrief, Error>) {
+        self.result = result
+    }
+
+    func generateBrief(_ request: QueryBriefRequest) async throws -> QueryBrief {
+        lastRequest = request
+        return try result.get()
+    }
+}
+
+private final class QueryRepairRecordingGenerator: QueryRepairGenerating {
+    var results: [Result<QueryRepairSuggestion, Error>]
+    private(set) var requests: [QueryRepairRequest] = []
+
+    init(results: [Result<QueryRepairSuggestion, Error>]) {
+        self.results = results
+    }
+
+    func repair(_ request: QueryRepairRequest) async throws -> QueryRepairSuggestion {
+        requests.append(request)
+        guard !results.isEmpty else {
+            return QueryRepairSuggestion(sql: request.failedSQL, summary: "No repair", assumptions: [])
+        }
+        return try results.removeFirst().get()
+    }
+}
+
+private final class QueryResultExplanationRecordingGenerator: QueryResultExplanationGenerating {
+    var result: Result<QueryResultExplanation, Error>
+    private(set) var lastRequest: QueryResultExplanationRequest?
+
+    init(result: Result<QueryResultExplanation, Error>) {
+        self.result = result
+    }
+
+    func explainResult(_ request: QueryResultExplanationRequest) async throws -> QueryResultExplanation {
+        lastRequest = request
+        return try result.get()
+    }
+}
+
 // MARK: - Content Selection
 
 @Suite("Content selection")
@@ -1202,6 +1247,353 @@ struct TaskThreadSnapshotTests {
         #expect(SQLClassifier.classify("select 1; select 2") == .script)
     }
 
+    @Test("AI Brief parser reads prefixed JSON")
+    func queryBriefParserReadsPrefixedJSON() throws {
+        let output = """
+        planning text
+        ASTRA_QUERY_BRIEF {"version":1,"goal":"Compare visits","grain":"one row per dataset and visit source","tables":["demo.clinical.visit_occurrence"],"columns":["visit_source_value"],"filters":["visit_source_value LIKE '%History%'"],"joins":[],"assumptions":["History means source value contains History"],"risk":"low","estimatedCost":"12 KB","checks":[{"status":"passed","label":"All referenced columns are listed"}],"notes":["Dry run has not executed"]}
+        """
+
+        let brief = try #require(QueryBriefParser.parse(from: output))
+
+        #expect(brief.goal == "Compare visits")
+        #expect(brief.grain == "one row per dataset and visit source")
+        #expect(brief.risk == .low)
+        #expect(brief.checks.first?.status == .passed)
+    }
+
+    @Test("Query repair parser reads prefixed JSON")
+    func queryRepairParserReadsPrefixedJSON() throws {
+        let output = """
+        ASTRA_QUERY_REPAIR {"sql":"SELECT 1 AS value","summary":"Replaced the missing column with a constant for validation.","assumptions":["The user only needs a smoke test."]}
+        """
+
+        let repair = try #require(QueryRepairParser.parse(from: output))
+
+        #expect(repair.sql == "SELECT 1 AS value")
+        #expect(repair.summary.contains("missing column"))
+        #expect(repair.assumptions == ["The user only needs a smoke test."])
+    }
+
+    @Test("AI result explanation parser reads prefixed JSON")
+    func queryResultExplanationParserReadsPrefixedJSON() throws {
+        let output = """
+        ASTRA_RESULT_EXPLANATION {"version":1,"headline":"stet53 has the dominant History source count.","summary":"The returned preview compares History-like visit sources across two datasets.","keyFindings":["stet53 History has 392224 rows while stet54 History has 1065 rows."],"anomalies":["stet54 is much lower than stet53 for the plain History source."],"caveats":["This only explains the returned preview rows."],"followUps":["Check the upstream source period for stet54."],"checks":[{"status":"warning","label":"Preview rows may be limited by the shelf row limit."}]}
+        """
+
+        let explanation = try #require(QueryResultExplanationParser.parse(from: output))
+
+        #expect(explanation.headline.contains("stet53"))
+        #expect(explanation.keyFindings.first?.contains("392224") == true)
+        #expect(explanation.checks.first?.status == .warning)
+    }
+
+    @Test("SQL syntax tokenizer preserves strings comments and quoted identifiers")
+    func sqlSyntaxTokenizerPreservesStringsCommentsAndQuotedIdentifiers() {
+        let sql = "-- comment\nSELECT 'from' AS source FROM `demo.dataset.table` WHERE value = 42"
+        let tokens = SQLSyntaxTokenizer.tokens(in: sql)
+
+        #expect(tokens.contains { $0.kind == .lineComment && $0.text == "-- comment" })
+        #expect(tokens.contains { $0.kind == .stringLiteral && $0.text == "'from'" })
+        #expect(tokens.contains { $0.kind == .quotedIdentifier && $0.text == "`demo.dataset.table`" })
+        #expect(tokens.contains { $0.kind == .number && $0.text == "42" })
+    }
+
+    @Test("SQL formatter uppercases keywords and breaks common clauses")
+    func sqlFormatterUppercasesKeywordsAndBreaksCommonClauses() {
+        let input = """
+        -- keep this comment
+        select 'from' as source, count(*) as n from `demo.dataset.table` where visit_source_value like '%History%' group by 1 order by n desc
+        """
+
+        let formatted = SQLFormatter.format(input)
+
+        #expect(formatted.contains("-- keep this comment"))
+        #expect(formatted.contains("SELECT 'from' AS source,"))
+        #expect(formatted.contains("\n    COUNT(*) AS n"))
+        #expect(formatted.contains("\nFROM `demo.dataset.table`"))
+        #expect(formatted.contains("\nWHERE visit_source_value LIKE '%History%'"))
+        #expect(formatted.contains("\nGROUP BY 1"))
+        #expect(formatted.contains("\nORDER BY n DESC"))
+    }
+
+    @MainActor
+    @Test("Query session stores generated AI Brief")
+    func querySessionStoresGeneratedAIBrief() async throws {
+        let session = ShelfQuerySession()
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+        let expectedBrief = QueryBrief(
+            goal: "Preview a constant value",
+            grain: "one row",
+            tables: [],
+            columns: ["value"],
+            risk: .low,
+            checks: [
+                QueryBriefTrustCheck(status: .passed, label: "Read-only SQL")
+            ]
+        )
+        let generator = QueryBriefRecordingGenerator(result: .success(expectedBrief))
+
+        session.loadSQL("SELECT 1 AS value", title: "constant.sql")
+        await session.generateBrief(
+            connection: connection,
+            taskContext: QueryBriefTaskContext(
+                taskTitle: "Check BigQuery",
+                taskGoal: "Run a simple query",
+                workspaceName: "Analytics"
+            ),
+            generator: generator
+        )
+
+        #expect(session.aiBrief?.goal == "Preview a constant value")
+        #expect(session.aiBriefErrorMessage == nil)
+        #expect(generator.lastRequest?.sql == "SELECT 1 AS value")
+        #expect(generator.lastRequest?.classification == .read)
+        #expect(generator.lastRequest?.taskContext?.taskTitle == "Check BigQuery")
+    }
+
+    @MainActor
+    @Test("Query session clears stale AI Brief when SQL changes")
+    func querySessionClearsStaleAIBriefWhenSQLChanges() async {
+        let session = ShelfQuerySession()
+        let generator = QueryBriefRecordingGenerator(result: .success(QueryBrief(goal: "Initial brief")))
+
+        session.loadSQL("SELECT 1", title: "constant.sql")
+        await session.generateBrief(
+            connection: .editOnly,
+            taskContext: nil,
+            generator: generator
+        )
+        session.updateSelectedSQL("SELECT 2")
+
+        #expect(session.aiBrief == nil)
+        #expect(session.aiBriefErrorMessage == nil)
+    }
+
+    @MainActor
+    @Test("Query session stores generated AI result explanation")
+    func querySessionStoresGeneratedAIResultExplanation() async throws {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: #"[{"dataset":"stet53","row_count":392224},{"dataset":"stet54","row_count":1065}]"#,
+            stderr: "Total bytes processed: 42"
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+        let expectedExplanation = QueryResultExplanation(
+            headline: "stet53 has many more History rows than stet54.",
+            summary: "The preview compares row counts by dataset.",
+            keyFindings: ["stet53 has 392224 rows compared with 1065 for stet54."],
+            caveats: ["This reflects only the returned preview."]
+        )
+        let generator = QueryResultExplanationRecordingGenerator(result: .success(expectedExplanation))
+
+        session.loadSQL("SELECT dataset, row_count FROM comparison", title: "comparison.sql")
+        await session.run(connection: connection)
+        await session.explainResult(
+            connection: connection,
+            taskContext: QueryBriefTaskContext(
+                taskTitle: "Compare History visits",
+                taskGoal: "Understand dataset differences",
+                workspaceName: "Analytics"
+            ),
+            generator: generator
+        )
+
+        #expect(session.resultExplanation?.headline.contains("stet53") == true)
+        #expect(session.resultExplanationErrorMessage == nil)
+        #expect(generator.lastRequest?.sql == "SELECT dataset, row_count FROM comparison")
+        #expect(generator.lastRequest?.executionResult.rowCount == 2)
+        #expect(generator.lastRequest?.taskContext?.taskTitle == "Compare History visits")
+    }
+
+    @MainActor
+    @Test("Query result explanation requires an executed result")
+    func queryResultExplanationRequiresExecutedResult() async {
+        let session = ShelfQuerySession()
+        let generator = QueryResultExplanationRecordingGenerator(result: .success(QueryResultExplanation(headline: "Unused")))
+
+        session.loadSQL("SELECT 1", title: "constant.sql")
+        await session.explainResult(
+            connection: .editOnly,
+            taskContext: nil,
+            generator: generator
+        )
+
+        #expect(session.resultExplanation == nil)
+        #expect(session.resultExplanationErrorMessage == QueryResultExplanationError.noResult.localizedDescription)
+        #expect(generator.lastRequest == nil)
+    }
+
+    @MainActor
+    @Test("Query session clears stale AI result explanation when SQL changes")
+    func querySessionClearsStaleAIResultExplanationWhenSQLChanges() async {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: #"[{"value":1}]"#,
+            stderr: ""
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+        let generator = QueryResultExplanationRecordingGenerator(result: .success(QueryResultExplanation(headline: "Initial explanation")))
+
+        session.loadSQL("SELECT 1 AS value", title: "constant.sql")
+        await session.run(connection: connection)
+        await session.explainResult(connection: connection, taskContext: nil, generator: generator)
+        session.updateSelectedSQL("SELECT 2 AS value")
+
+        #expect(session.resultExplanation == nil)
+        #expect(session.resultExplanationErrorMessage == nil)
+    }
+
+    @MainActor
+    @Test("Self-healing validation passes without repair when dry run succeeds")
+    func selfHealingValidationPassesWithoutRepairWhenDryRunSucceeds() async {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: "",
+            stderr: "Query successfully validated. This query will process 1 bytes when run."
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+        let repairGenerator = QueryRepairRecordingGenerator(results: [])
+
+        session.loadSQL("SELECT 1 AS value", title: "constant.sql")
+        await session.validateAndRepair(
+            connection: connection,
+            taskContext: nil,
+            repairGenerator: repairGenerator
+        )
+
+        #expect(session.sql == "SELECT 1 AS value")
+        #expect(session.dryRunResult?.bytesProcessed == 1)
+        #expect(session.validationSteps.contains { $0.status == .passed })
+        #expect(session.selfHealingOriginalSQL == nil)
+        #expect(repairGenerator.requests.isEmpty)
+        #expect(await runner.allStandardInputs == ["SELECT 1 AS value"])
+    }
+
+    @MainActor
+    @Test("Self-healing validation applies AI repair and retries dry run")
+    func selfHealingValidationAppliesAIRepairAndRetriesDryRun() async {
+        let runner = QueryStubRunner(results: [
+            RunResult(outcome: .exited(code: 1), stdout: "", stderr: "Unrecognized name: bad_column"),
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: "",
+                stderr: "Query successfully validated. This query will process 2 bytes when run."
+            )
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+        let repairGenerator = QueryRepairRecordingGenerator(results: [
+            .success(QueryRepairSuggestion(
+                sql: "SELECT 1 AS value",
+                summary: "Replaced the missing column with a constant.",
+                assumptions: ["The intended smoke test can use a constant value."]
+            ))
+        ])
+
+        session.loadSQL("SELECT bad_column", title: "broken.sql")
+        await session.validateAndRepair(
+            connection: connection,
+            taskContext: QueryBriefTaskContext(taskTitle: "Smoke test", taskGoal: "Validate SQL", workspaceName: "Analytics"),
+            repairGenerator: repairGenerator
+        )
+
+        #expect(session.sql == "SELECT 1 AS value")
+        #expect(session.selfHealingOriginalSQL == "SELECT bad_column")
+        #expect(session.dryRunResult?.bytesProcessed == 2)
+        #expect(repairGenerator.requests.first?.dryRunError.contains("Unrecognized name") == true)
+        #expect(session.validationSteps.map(\.status).contains(.failed))
+        #expect(session.validationSteps.map(\.status).contains(.repaired))
+        #expect(session.validationSteps.map(\.status).contains(.passed))
+        #expect(await runner.allStandardInputs == ["SELECT bad_column", "SELECT 1 AS value"])
+
+        session.restoreSelfHealingOriginalSQL()
+
+        #expect(session.sql == "SELECT bad_column")
+        #expect(session.selfHealingOriginalSQL == nil)
+    }
+
+    @MainActor
+    @Test("Self-healing validation blocks mutation SQL before dry run")
+    func selfHealingValidationBlocksMutationSQLBeforeDryRun() async {
+        let runner = QueryStubRunner(result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+        let repairGenerator = QueryRepairRecordingGenerator(results: [])
+
+        session.loadSQL("DELETE FROM demo.dataset.table WHERE id = 1", title: "delete.sql")
+        await session.validateAndRepair(
+            connection: connection,
+            taskContext: nil,
+            repairGenerator: repairGenerator
+        )
+
+        #expect(session.validationErrorMessage?.contains("read-only") == true)
+        #expect(session.validationSteps.first?.status == .blocked)
+        #expect(repairGenerator.requests.isEmpty)
+        #expect((await runner.allArgs).isEmpty)
+    }
+
     @Test("BigQuery dry run parses bytes processed")
     func bigQueryDryRunParsesBytesProcessed() async throws {
         let runner = QueryStubRunner(result: RunResult(
@@ -1385,11 +1777,10 @@ struct TaskThreadSnapshotTests {
     }
 
     @MainActor
-    @Test("Query session runs mutation after recovery is prepared")
-    func querySessionRunsMutationAfterRecoveryPrepared() async {
+    @Test("Query session blocks mutation after recovery until safety gate is approved")
+    func querySessionBlocksMutationAfterRecoveryUntilSafetyGateApproved() async {
         let runner = QueryStubRunner(results: [
-            RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""),
-            RunResult(outcome: .exited(code: 0), stdout: #"[]"#, stderr: "")
+            RunResult(outcome: .exited(code: 0), stdout: "", stderr: "")
         ])
         let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
         let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
@@ -1409,10 +1800,140 @@ struct TaskThreadSnapshotTests {
         await session.run(connection: connection)
 
         #expect(session.recoveryPlan?.isPrepared == true)
+        #expect(session.safetyGateReview?.isApproved == false)
+        #expect(session.errorMessage == "Mutation and script execution is blocked until the safe execution gate is approved.")
+        #expect(session.history.first?.status == .blocked)
+        #expect((await runner.allArgs).count == 1)
+        #expect((await runner.allArgs).first?.contains("cp") == true)
+        #expect(await runner.allStandardInputs == [""])
+    }
+
+    @MainActor
+    @Test("Query session runs mutation after recovery and safety gate approval")
+    func querySessionRunsMutationAfterRecoveryAndSafetyGateApproval() async {
+        let runner = QueryStubRunner(results: [
+            RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""),
+            RunResult(outcome: .exited(code: 0), stdout: #"[]"#, stderr: "")
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        session.loadSQL("DELETE FROM `demo.clinical.person` WHERE person_id = 1", title: "delete.sql")
+        await session.prepareRecovery(connection: connection)
+        session.approveSafetyGate(connection: connection)
+        await session.run(connection: connection)
+
+        #expect(session.recoveryPlan?.isPrepared == true)
+        #expect(session.hasApprovedSafetyGate(connection: connection))
         #expect(session.errorMessage == nil)
         #expect(session.executionResult?.rowCount == 0)
         #expect(session.history.first?.status == .succeeded)
         #expect(await runner.allStandardInputs.last == "DELETE FROM `demo.clinical.person` WHERE person_id = 1")
+    }
+
+    @MainActor
+    @Test("Safety gate approval is cleared when SQL changes")
+    func safetyGateApprovalIsClearedWhenSQLChanges() async {
+        let runner = QueryStubRunner(result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        session.loadSQL("DELETE FROM `demo.clinical.person` WHERE person_id = 1", title: "delete.sql")
+        await session.prepareRecovery(connection: connection)
+        session.approveSafetyGate(connection: connection)
+        session.updateSelectedSQL("DELETE FROM `demo.clinical.person` WHERE person_id = 2")
+
+        #expect(session.recoveryPlan == nil)
+        #expect(session.safetyGateReview == nil)
+        #expect(!session.hasApprovedSafetyGate(connection: connection))
+    }
+
+    @MainActor
+    @Test("Safety gate approval cannot reuse recovery from another connection")
+    func safetyGateApprovalCannotReuseRecoveryFromAnotherConnection() async {
+        let runner = QueryStubRunner(result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let originalConnection = DatabaseConnection(
+            id: "bigquery-dev",
+            displayName: "BigQuery Dev",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+        let otherConnection = DatabaseConnection(
+            id: "bigquery-prod",
+            displayName: "BigQuery Prod",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        session.loadSQL("DELETE FROM `demo.clinical.person` WHERE person_id = 1", title: "delete.sql")
+        await session.prepareRecovery(connection: originalConnection)
+        session.approveSafetyGate(connection: otherConnection)
+        await session.run(connection: otherConnection)
+
+        #expect(session.recoveryPlan?.isPrepared == true)
+        #expect(!session.hasCurrentPreparedRecovery(connection: otherConnection))
+        #expect(!session.hasApprovedSafetyGate(connection: otherConnection))
+        #expect(session.errorMessage == "Mutation and script execution is blocked until a prepared recovery plan exists.")
+        #expect((await runner.allArgs).count == 1)
+        #expect((await runner.allArgs).first?.contains("cp") == true)
+    }
+
+    @MainActor
+    @Test("Read-only query runs without safety gate approval")
+    func readOnlyQueryRunsWithoutSafetyGateApproval() async {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: #"[{"value":1}]"#,
+            stderr: ""
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+
+        session.loadSQL("SELECT 1 AS value", title: "read.sql")
+        await session.run(connection: connection)
+
+        #expect(session.safetyGateReview == nil)
+        #expect(session.errorMessage == nil)
+        #expect(session.executionResult?.rowCount == 1)
+        #expect(await runner.allStandardInputs == ["SELECT 1 AS value"])
     }
 
     @MainActor

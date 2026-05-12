@@ -321,6 +321,20 @@ struct ContentView: View {
         )
     }
 
+    private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
+        let runtime = selectedTask?.resolvedRuntimeID
+            ?? AgentRuntimeID(rawValue: defaultRuntimeID)
+            ?? .claudeCode
+        let preferredModel = selectedTask?.model ?? RuntimeModelAvailability.defaultModel(for: runtime)
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime),
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
+    }
+
     private var workspaceSelectionSignature: String {
         workspaces
             .map { "\($0.id.uuidString)|\($0.primaryPath)" }
@@ -499,6 +513,7 @@ struct ContentView: View {
                 markdownSession: currentMarkdownSession,
                 isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
                 querySession: querySession,
+                queryUtilityRuntime: queryUtilityRuntime,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -2079,6 +2094,7 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var markdownSession: ShelfMarkdownSession
     @Binding var isMarkdownPinnedToTask: Bool
     @ObservedObject var querySession: ShelfQuerySession
+    let queryUtilityRuntime: AgentUtilityRuntimeConfiguration
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
@@ -2348,6 +2364,8 @@ private struct ContentDetailAreaView: View {
             ShelfQueryPanelView(
                 session: querySession,
                 workspace: effectiveWorkspace,
+                task: selectedTask,
+                utilityRuntime: queryUtilityRuntime,
                 isPresented: canvasPresentedBinding(for: .query)
             )
         }
