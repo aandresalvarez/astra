@@ -43,12 +43,14 @@ private enum WorkspaceCanvasItem: Equatable {
     case plan
     case markdown
     case browser
+    case query
 
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
         case .markdown: 360
         case .browser: 360
+        case .query: 460
         }
     }
 
@@ -57,6 +59,7 @@ private enum WorkspaceCanvasItem: Equatable {
         case .plan: 520
         case .markdown: 520
         case .browser: 440
+        case .query: 640
         }
     }
 
@@ -65,6 +68,7 @@ private enum WorkspaceCanvasItem: Equatable {
         case .plan: 1040
         case .markdown: 980
         case .browser: 1120
+        case .query: 1180
         }
     }
 
@@ -73,6 +77,7 @@ private enum WorkspaceCanvasItem: Equatable {
         case .plan: "Plan"
         case .markdown: "Text"
         case .browser: "Browser"
+        case .query: "Query"
         }
     }
 }
@@ -248,6 +253,8 @@ struct ContentView: View {
     @State private var runtime = AppRuntimeController()
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
+    @StateObject private var querySession = ShelfQuerySession()
+    @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -258,6 +265,8 @@ struct ContentView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
+    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
@@ -280,6 +289,7 @@ struct ContentView: View {
     @State private var generatedHTMLPreviewTask: Task<Void, Never>?
     @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
+    @State private var queryAvailabilityTask: Task<Void, Never>?
     @State private var claudeModelRefreshTask: Task<Void, Never>?
     @State private var copilotModelRefreshTask: Task<Void, Never>?
     @State private var lastClaudeModelRefreshSignature = ""
@@ -288,6 +298,8 @@ struct ContentView: View {
     @State private var lastGeneratedMarkdownPreviewSignature = ""
     @State private var selectedTaskHasMarkdownShelfContent = false
     @State private var selectedTaskPreferredMarkdownPath = ""
+    @State private var selectedTaskHasQueryShelfContent = false
+    @State private var selectedTaskPreferredQueryPath = ""
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -312,10 +324,28 @@ struct ContentView: View {
         )
     }
 
+    private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
+        let runtime = selectedTask?.resolvedRuntimeID
+            ?? AgentRuntimeID(rawValue: defaultRuntimeID)
+            ?? .claudeCode
+        let preferredModel = selectedTask?.model ?? RuntimeModelAvailability.defaultModel(for: runtime)
+        return AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime),
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            copilotHome: CopilotCLIRuntime.channelHome()
+        )
+    }
+
     private var workspaceSelectionSignature: String {
         workspaces
             .map { "\($0.id.uuidString)|\($0.primaryPath)" }
             .joined(separator: ",")
+    }
+
+    private var pendingExternalRouteID: UUID? {
+        externalRouteStore.pendingRoute?.id
     }
 
     private var executionSettingsSignature: String {
@@ -401,6 +431,25 @@ struct ContentView: View {
         selectedTask != nil || isComposingTask
     }
 
+    private var hasQueryShelfAffordance: Bool {
+        activeWorkspaceCanvasItem == .query
+            || selectedTaskHasQueryShelfContent
+            || workspaceHasQueryCapability(effectiveWorkspace)
+    }
+
+    private var topRightActions: WorkspaceTopRightActions {
+        WorkspaceTopRightActions(
+            hasWorkspace: effectiveWorkspace != nil,
+            hasTaskThread: hasOpenTaskThread,
+            canShowPlanShelf: hasWorkspaceCanvasContent,
+            canShowTextShelf: hasOpenTaskThread && (selectedTaskHasMarkdownShelfContent || activeWorkspaceCanvasItem == .markdown),
+            canShowBrowserShelf: hasOpenTaskThread || activeWorkspaceCanvasItem == .browser,
+            canShowQueryShelf: hasQueryShelfAffordance,
+            activeCanvasItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible
+        )
+    }
+
     private var isWorkspaceCanvasPresented: Bool {
         activeWorkspaceCanvasItem != nil
     }
@@ -419,6 +468,17 @@ struct ContentView: View {
                 effectiveWorkspace != nil && isWorkspaceRightRailVisible
             },
             set: setRightRailPresented
+        )
+    }
+
+    private var onboardingSheetBinding: Binding<Bool> {
+        Binding(
+            get: { !hasCompletedOnboarding && !isUITestingSeededLaunch },
+            set: { isPresented in
+                if !isPresented, isReplayingOnboarding {
+                    hasCompletedOnboarding = true
+                }
+            }
         )
     }
 
@@ -459,6 +519,8 @@ struct ContentView: View {
                 isBrowserPinnedToTask: browserPinnedToTaskBinding,
                 markdownSession: currentMarkdownSession,
                 isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
+                querySession: querySession,
+                queryUtilityRuntime: queryUtilityRuntime,
                 sshReloadTrigger: sshReloadTrigger,
                 isRightRailPresented: rightRailInspectorBinding,
                 activeCanvasItem: $activeWorkspaceCanvasItem,
@@ -508,18 +570,12 @@ struct ContentView: View {
         .toolbar {
             ContentToolbar(
                 appUpdateController: appUpdateController,
-                hasWorkspace: effectiveWorkspace != nil,
-                hasTaskThread: hasOpenTaskThread,
-                hasCanvasContent: hasWorkspaceCanvasContent,
-                isCanvasVisible: activeWorkspaceCanvasItem == .plan,
-                hasMarkdownContent: selectedTaskHasMarkdownShelfContent,
-                isMarkdownVisible: activeWorkspaceCanvasItem == .markdown,
-                isBrowserVisible: activeWorkspaceCanvasItem == .browser,
-                isRightRailVisible: isWorkspaceRightRailVisible,
+                actions: topRightActions,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
                 onToggleCanvas: toggleWorkspaceCanvas,
                 onToggleMarkdown: toggleMarkdownCanvas,
                 onToggleBrowser: toggleBrowserCanvas,
+                onToggleQuery: toggleQueryCanvas,
                 onToggleRightRail: toggleRightRail
             )
         }
@@ -554,6 +610,7 @@ struct ContentView: View {
                 activeWorkspaceCanvasItem = nil
             }
             refreshMarkdownShelfAvailabilityForSelectedTask()
+            refreshQueryShelfAvailabilityForSelectedTask()
             previewGeneratedHTMLForSelectedTaskIfNeeded()
             previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
@@ -684,6 +741,9 @@ struct ContentView: View {
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
         }
+        .onChange(of: pendingExternalRouteID) {
+            handlePendingExternalRoute()
+        }
         .onChange(of: selectedWorkspace) {
             handleSelectedWorkspaceChanged()
         }
@@ -696,14 +756,7 @@ struct ContentView: View {
         // for the matching FocusedValueKey definitions.
         .focusedSceneValue(\.newWorkspaceAction, { createWorkspace() })
         .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
-        .sheet(isPresented: Binding(
-            get: { !hasCompletedOnboarding && !isUITestingSeededLaunch },
-            set: { isPresented in
-                if !isPresented, isReplayingOnboarding {
-                    hasCompletedOnboarding = true
-                }
-            }
-        )) {
+        .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
                 hasCompletedOnboarding: $hasCompletedOnboarding,
                 allowsDismiss: isReplayingOnboarding,
@@ -931,6 +984,33 @@ struct ContentView: View {
         }
     }
 
+    private func toggleQueryCanvas() {
+        guard hasQueryShelfAffordance else {
+            if activeWorkspaceCanvasItem == .query {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
+            }
+            return
+        }
+        querySession.bindToTask(selectedTask?.id)
+        if !selectedTaskPreferredQueryPath.isEmpty {
+            let url = URL(fileURLWithPath: selectedTaskPreferredQueryPath)
+            if querySession.selectedDocument?.sourcePath != url.path {
+                querySession.loadFile(url)
+            }
+        }
+        if activeWorkspaceCanvasItem == .query {
+            let _ = nextPanelTransitionGeneration()
+            animatePanelChange {
+                activeWorkspaceCanvasItem = nil
+            }
+        } else {
+            presentCanvas(.query)
+        }
+    }
+
     private func refreshMarkdownShelfAvailabilityForSelectedTask() {
         markdownAvailabilityTask?.cancel()
         guard let selectedTask else {
@@ -981,6 +1061,64 @@ struct ContentView: View {
     private func preferredAttachedMarkdownPath(for task: AgentTask) -> String? {
         let paths = TaskGeneratedFiles.markdownFiles(inInputs: task.inputs)
         return TaskGeneratedFiles.preferredMarkdownFile(in: paths)
+    }
+
+    private func refreshQueryShelfAvailabilityForSelectedTask() {
+        queryAvailabilityTask?.cancel()
+        guard let selectedTask else {
+            selectedTaskHasQueryShelfContent = false
+            selectedTaskPreferredQueryPath = ""
+            return
+        }
+
+        let taskID = selectedTask.id
+        let attachedSQLPath = preferredAttachedSQLPath(for: selectedTask)
+        selectedTaskPreferredQueryPath = attachedSQLPath ?? ""
+        selectedTaskHasQueryShelfContent = attachedSQLPath != nil
+
+        let taskFolder = selectedTask.taskFolder
+        guard !taskFolder.isEmpty else { return }
+
+        queryAvailabilityTask = Task {
+            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
+            let generatedSQLPath = TaskGeneratedFiles.preferredSQLFile(in: files, taskFolder: taskFolder)
+
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      self.selectedTask?.id == taskID else {
+                    return
+                }
+
+                if let generatedSQLPath {
+                    selectedTaskPreferredQueryPath = generatedSQLPath
+                    selectedTaskHasQueryShelfContent = true
+                } else if let attachedSQLPath {
+                    selectedTaskPreferredQueryPath = attachedSQLPath
+                    selectedTaskHasQueryShelfContent = true
+                } else {
+                    selectedTaskPreferredQueryPath = ""
+                    selectedTaskHasQueryShelfContent = false
+                }
+            }
+        }
+    }
+
+    private func preferredAttachedSQLPath(for task: AgentTask) -> String? {
+        let paths = TaskGeneratedFiles.sqlFiles(inInputs: task.inputs)
+        return TaskGeneratedFiles.preferredSQLFile(in: paths)
+    }
+
+    private func workspaceHasQueryCapability(_ workspace: Workspace?) -> Bool {
+        guard let workspace else { return false }
+        return workspace.enabledCapabilityIDs.contains("gcloud-workflow")
+            || workspace.installedPluginIDSet.contains("gcloud-workflow")
+            || workspace.connectors.contains { connector in
+                let serviceType = connector.serviceType.lowercased()
+                return serviceType == "gcloud" || serviceType == "bigquery" || serviceType == "database"
+            }
+            || workspace.localTools.contains { tool in
+                tool.command == "bq" || tool.displayCommand.contains("bq ")
+            }
     }
 
     private func closeMarkdownShelfIfUnavailable() {
@@ -1094,6 +1232,14 @@ struct ContentView: View {
             presentCanvas(.markdown)
             return
 
+        case .query?:
+            querySession.bindToTask(selectedTask?.id)
+            selectedTaskPreferredQueryPath = path
+            selectedTaskHasQueryShelfContent = true
+            querySession.loadFile(url)
+            presentCanvas(.query)
+            return
+
         case nil:
             NSWorkspace.shared.open(url)
         }
@@ -1147,6 +1293,7 @@ struct ContentView: View {
     private func startComposingTask() {
         setSelectedTask(nil)
         isComposingTask = true
+        presentRightRail()
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
@@ -1158,6 +1305,7 @@ struct ContentView: View {
     private func handleTaskCreated(_ task: AgentTask) {
         setSelectedTask(task)
         isComposingTask = false
+        presentRightRail()
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
@@ -1179,6 +1327,126 @@ struct ContentView: View {
     private func openExistingTask(_ task: AgentTask) {
         setSelectedTask(task)
         isComposingTask = false
+    }
+
+    private func handlePendingExternalRoute() {
+        guard let route = externalRouteStore.pendingRoute else { return }
+
+        let handled: Bool
+        switch route.destination {
+        case .workspace(let workspaceID):
+            handled = openWorkspaceFromExternalRoute(workspaceID)
+
+        case .task(let taskID):
+            handled = openTaskFromExternalRoute(taskID)
+
+        case .createTask(let workspaceID, let goal, let shouldRun):
+            handled = createTaskFromExternalRoute(
+                workspaceID: workspaceID,
+                goal: goal,
+                shouldRun: shouldRun
+            )
+
+        case .continueLatestUnfinishedTask(let workspaceID):
+            handled = continueLatestUnfinishedTaskFromExternalRoute(workspaceID)
+        }
+
+        guard handled else {
+            AppLogger.warning("Could not resolve external ASTRA route", category: "AppIntents")
+            externalRouteStore.clear(route)
+            return
+        }
+
+        externalRouteStore.clear(route)
+    }
+
+    private func openWorkspaceFromExternalRoute(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspace(for: workspaceID) else { return false }
+        selectedWorkspace = workspace
+        setSelectedTask(nil)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func openTaskFromExternalRoute(_ taskID: UUID) -> Bool {
+        guard let task = task(for: taskID) else { return false }
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func continueLatestUnfinishedTaskFromExternalRoute(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspace(for: workspaceID),
+              let task = AstraTaskIntentSupport.latestUnfinishedTask(in: workspace) else {
+            return false
+        }
+        selectedWorkspace = workspace
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func createTaskFromExternalRoute(
+        workspaceID: UUID,
+        goal: String,
+        shouldRun: Bool
+    ) -> Bool {
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedGoal.isEmpty,
+              let workspace = workspace(for: workspaceID) else {
+            return false
+        }
+
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let task = AgentTask(
+            title: AstraTaskIntentSupport.title(for: trimmedGoal),
+            goal: trimmedGoal,
+            workspace: workspace,
+            tokenBudget: defaultBudget,
+            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
+        )
+        task.runtimeID = runtime.rawValue
+        task.status = shouldRun ? .queued : .draft
+        modelContext.insert(task)
+        if shouldRun {
+            modelContext.insert(TaskEvent(task: task, type: "user.message", payload: trimmedGoal))
+        } else {
+            task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: trimmedGoal)
+        }
+        task.captureSkillSnapshots()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+
+        selectedWorkspace = workspace
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+
+        AppLogger.audit(.taskCreated, category: "AppIntents", taskID: task.id, fields: [
+            "source": shouldRun ? "voice_create_and_run" : "voice_create_draft",
+            "workspace_id": workspace.id.uuidString
+        ])
+
+        if shouldRun {
+            runSingleTask(task)
+        }
+
+        return true
+    }
+
+    private func workspace(for id: UUID) -> Workspace? {
+        workspaces.first { $0.id == id }
+    }
+
+    private func task(for id: UUID) -> AgentTask? {
+        for workspace in workspaces {
+            if let task = workspace.tasks.first(where: { $0.id == id }) {
+                return task
+            }
+        }
+        return nil
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
@@ -1489,6 +1757,7 @@ struct ContentView: View {
             lastGeneratedMarkdownPreviewSignature = ""
             currentBrowserSession.bindToTask(task?.id)
             currentMarkdownSession.bindToTask(task?.id)
+            querySession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
@@ -1503,6 +1772,7 @@ struct ContentView: View {
             }
             syncBrowserPresentation()
             refreshMarkdownShelfAvailabilityForSelectedTask()
+            refreshQueryShelfAvailabilityForSelectedTask()
             previewGeneratedHTMLForSelectedTaskIfNeeded()
             previewGeneratedMarkdownForSelectedTaskIfNeeded()
         }
@@ -1654,6 +1924,7 @@ struct ContentView: View {
     private func handleWorkspaceSelectionSignatureChanged() {
         restoreWorkspaceSelection()
         enterUITestComposerIfNeeded()
+        handlePendingExternalRoute()
     }
 
     private func handleAppear() {
@@ -1673,6 +1944,7 @@ struct ContentView: View {
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
+        handlePendingExternalRoute()
         refreshUpdateSafetyHooks()
         appUpdateController.probeForUpdatesOnce()
     }
@@ -1819,21 +2091,31 @@ struct ContentView: View {
     }
 }
 
+private struct WorkspaceTopRightActions: Equatable {
+    let hasWorkspace: Bool
+    let hasTaskThread: Bool
+    let canShowPlanShelf: Bool
+    let canShowTextShelf: Bool
+    let canShowBrowserShelf: Bool
+    let canShowQueryShelf: Bool
+    let activeCanvasItem: WorkspaceCanvasItem?
+    let isRightRailVisible: Bool
+
+    var isPlanShelfVisible: Bool { activeCanvasItem == .plan }
+    var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
+    var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
+    var isQueryShelfVisible: Bool { activeCanvasItem == .query }
+}
+
 private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
-    let hasWorkspace: Bool
-    let hasTaskThread: Bool
-    let hasCanvasContent: Bool
-    let isCanvasVisible: Bool
-    let hasMarkdownContent: Bool
-    let isMarkdownVisible: Bool
-    let isBrowserVisible: Bool
-    let isRightRailVisible: Bool
+    let actions: WorkspaceTopRightActions
     let onCheckForUpdates: () -> Void
     let onToggleCanvas: () -> Void
     let onToggleMarkdown: () -> Void
     let onToggleBrowser: () -> Void
+    let onToggleQuery: () -> Void
     let onToggleRightRail: () -> Void
 
     var body: some ToolbarContent {
@@ -1847,56 +2129,72 @@ private struct ContentToolbar: ToolbarContent {
             }
         }
 
-        if hasWorkspace {
-            if hasCanvasContent {
+        if actions.hasWorkspace {
+            if actions.canShowPlanShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleCanvas) {
                         toolbarToggleLabel(
-                            title: isCanvasVisible ? "Hide Plan" : "Show Plan",
+                            title: actions.isPlanShelfVisible ? "Hide Plan" : "Show Plan",
                             systemImage: "list.bullet.clipboard",
-                            isActive: isCanvasVisible
+                            isActive: actions.isPlanShelfVisible
                         )
                     }
-                    .help(isCanvasVisible ? "Hide plan shelf" : "Show plan shelf")
+                    .help(actions.isPlanShelfVisible ? "Hide plan shelf" : "Show plan shelf")
                     .accessibilityIdentifier("WorkspaceCanvasToggleButton")
                 }
             }
 
-            if hasTaskThread, hasMarkdownContent {
+            if actions.canShowTextShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleMarkdown) {
                         toolbarToggleLabel(
-                            title: isMarkdownVisible ? "Hide Text" : "Show Text",
+                            title: actions.isTextShelfVisible ? "Hide Text" : "Show Text",
                             systemImage: "doc.text",
-                            isActive: isMarkdownVisible
+                            isActive: actions.isTextShelfVisible
                         )
                     }
-                    .help(isMarkdownVisible ? "Hide text shelf" : "Show text shelf")
+                    .help(actions.isTextShelfVisible ? "Hide text shelf" : "Show text shelf")
                     .accessibilityIdentifier("ShelfMarkdownToggleButton")
                 }
+            }
 
+            if actions.canShowBrowserShelf {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onToggleBrowser) {
                         toolbarToggleLabel(
-                            title: isBrowserVisible ? "Hide Browser" : "Show Browser",
-                            systemImage: isBrowserVisible ? "globe.badge.chevron.backward" : "globe",
-                            isActive: isBrowserVisible
+                            title: actions.isBrowserShelfVisible ? "Hide Browser" : "Show Browser",
+                            systemImage: actions.isBrowserShelfVisible ? "globe.badge.chevron.backward" : "globe",
+                            isActive: actions.isBrowserShelfVisible
                         )
                     }
-                    .help(isBrowserVisible ? "Hide browser shelf" : "Show browser shelf")
+                    .help(actions.isBrowserShelfVisible ? "Hide browser shelf" : "Show browser shelf")
                     .accessibilityIdentifier("ShelfBrowserToggleButton")
+                }
+            }
+
+            if actions.canShowQueryShelf {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onToggleQuery) {
+                        toolbarToggleLabel(
+                            title: actions.isQueryShelfVisible ? "Hide Query" : "Show Query",
+                            systemImage: "cylinder.split.1x2",
+                            isActive: actions.isQueryShelfVisible
+                        )
+                    }
+                    .help(actions.isQueryShelfVisible ? "Hide query shelf" : "Show query shelf")
+                    .accessibilityIdentifier("ShelfQueryToggleButton")
                 }
             }
 
             ToolbarItem(placement: .primaryAction) {
                 Button(action: onToggleRightRail) {
                     toolbarToggleLabel(
-                        title: isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                        title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
                         systemImage: "sidebar.right",
-                        isActive: isRightRailVisible
+                        isActive: actions.isRightRailVisible
                     )
                 }
-                .help(isRightRailVisible ? "Hide control panel" : "Show control panel")
+                .help(actions.isRightRailVisible ? "Hide control panel" : "Show control panel")
             }
         }
     }
@@ -1927,6 +2225,8 @@ private struct ContentDetailAreaView: View {
     @Binding var isBrowserPinnedToTask: Bool
     @ObservedObject var markdownSession: ShelfMarkdownSession
     @Binding var isMarkdownPinnedToTask: Bool
+    @ObservedObject var querySession: ShelfQuerySession
+    let queryUtilityRuntime: AgentUtilityRuntimeConfiguration
     let sshReloadTrigger: Int
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
@@ -1935,6 +2235,7 @@ private struct ContentDetailAreaView: View {
     @AppStorage(AppStorageKeys.planShelfWidth) private var planShelfStoredWidth = Double(WorkspaceCanvasItem.plan.idealWidth)
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
     @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
+    @AppStorage(AppStorageKeys.queryShelfWidth) private var queryShelfStoredWidth = Double(WorkspaceCanvasItem.query.idealWidth)
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
     @State private var resizingShelfItem: WorkspaceCanvasItem?
@@ -2069,6 +2370,8 @@ private struct ContentDetailAreaView: View {
             storedWidth = CGFloat(markdownShelfStoredWidth)
         case .browser:
             storedWidth = CGFloat(browserShelfStoredWidth)
+        case .query:
+            storedWidth = CGFloat(queryShelfStoredWidth)
         }
         return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
     }
@@ -2095,6 +2398,8 @@ private struct ContentDetailAreaView: View {
             markdownShelfStoredWidth = Double(clampedWidth)
         case .browser:
             browserShelfStoredWidth = Double(clampedWidth)
+        case .query:
+            queryShelfStoredWidth = Double(clampedWidth)
         }
     }
 
@@ -2186,6 +2491,14 @@ private struct ContentDetailAreaView: View {
                 session: browserSession,
                 isPresented: canvasPresentedBinding(for: .browser),
                 isPinnedToTask: $isBrowserPinnedToTask
+            )
+        case .query:
+            ShelfQueryPanelView(
+                session: querySession,
+                workspace: effectiveWorkspace,
+                task: selectedTask,
+                utilityRuntime: queryUtilityRuntime,
+                isPresented: canvasPresentedBinding(for: .query)
             )
         }
     }

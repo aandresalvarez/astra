@@ -62,17 +62,20 @@ case "$ASTRA_CHANNEL" in
     ASTRA_CHANNEL="prod"
     APP_NAME="ASTRA"
     BUNDLE_ID="com.coral.ASTRA"
+    URL_SCHEME="astra"
     DEFAULT_SPARKLE_FEED_URL="https://github.com/susom/astra/releases/latest/download/appcast.xml"
     ;;
   dev|development)
     ASTRA_CHANNEL="dev"
     APP_NAME="ASTRA Dev"
     BUNDLE_ID="com.coral.ASTRA.dev"
+    URL_SCHEME="astra-dev"
     DEFAULT_SPARKLE_FEED_URL=""
     ;;
   beta)
     APP_NAME="ASTRA Beta"
     BUNDLE_ID="com.coral.ASTRA.beta"
+    URL_SCHEME="astra-beta"
     DEFAULT_SPARKLE_FEED_URL="https://github.com/susom/astra/releases/latest/download/appcast-beta.xml"
     ;;
   *)
@@ -172,6 +175,17 @@ cat >"$INFO_PLIST" <<PLIST
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>$BUNDLE_ID.external-route</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>$URL_SCHEME</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>

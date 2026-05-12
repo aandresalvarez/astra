@@ -76,6 +76,7 @@ struct TaskMainView: View {
     @State private var showScheduleEditor = false
     @State private var scheduleCreationTaskID: UUID?
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
+    @State private var isShowingFilesPopover = false
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -337,11 +338,7 @@ struct TaskMainView: View {
         )
     }
 
-    // MARK: - Toolbar Stats
-
-    private var taskIDString: String {
-        task.id.uuidString.prefix(8).lowercased()
-    }
+    // MARK: - Header Actions
 
     private var taskControlBar: some View {
         HStack(spacing: 10) {
@@ -353,66 +350,219 @@ struct TaskMainView: View {
 
     private var filesButton: some View {
         Button {
-            selectedTab = selectedTab == .files ? .summary : .files
+            isShowingFilesPopover.toggle()
         } label: {
-            Image(systemName: selectedTab == .files ? "doc.text.fill" : "doc.text")
-                .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(selectedTab == .files ? Stanford.lagunita : Stanford.coolGrey)
-                .frame(width: 28, height: 28)
+            HStack(spacing: 5) {
+                Image(systemName: selectedTab == .files ? "doc.text.fill" : "doc.text")
+                    .font(Stanford.ui(12, weight: .medium))
+                if headerFileCount > 0 {
+                    Text("Files \(headerFileCount)")
+                        .font(Stanford.caption(12).weight(.medium))
+                }
+            }
+            .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : Stanford.coolGrey)
+            .padding(.horizontal, headerFileCount > 0 ? 9 : 7)
+            .frame(height: 28)
+            .background(
+                Capsule()
+                    .fill((selectedTab == .files || isShowingFilesPopover) ? Stanford.lagunita.opacity(0.10) : .clear)
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(selectedTab == .files ? "Show chat" : "Show files")
-        .accessibilityLabel(selectedTab == .files ? "Show chat" : "Show files")
+        .popover(isPresented: $isShowingFilesPopover, arrowEdge: .top) {
+            taskFilesPopover
+                .frame(width: 340)
+        }
+        .help(headerFileCount == 0 ? "Task files" : "\(headerFileCount) task file\(headerFileCount == 1 ? "" : "s")")
+        .accessibilityLabel(headerFileCount == 0 ? "Task files" : "\(headerFileCount) task files")
     }
 
-    @ViewBuilder
-    private var toolbarStats: some View {
-        Button {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(task.id.uuidString, forType: .string)
-            showCopyConfirmation = true
-            Task {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                await MainActor.run { showCopyConfirmation = false }
+    private var headerFileCount: Int {
+        headerFileItems.count
+    }
+
+    private var headerFileItems: [TaskFileItem] {
+        TaskFileIndex.headerItems(
+            runs: currentThreadSnapshot.sortedRuns,
+            generatedFilePaths: threadViewModel.generatedFilePaths,
+            inputs: task.inputs
+        )
+    }
+
+    private var headerTextShelfFileItems: [TaskFileItem] {
+        headerFileItems.filter { $0.destination == .text }
+    }
+
+    private func openHeaderFileItem(_ item: TaskFileItem) {
+        isShowingFilesPopover = false
+        selectedTab = .summary
+        if item.destination != nil, let onOpenGeneratedFile {
+            onOpenGeneratedFile(item.path)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+        }
+    }
+
+    private func openHeaderTextFilesInShelf() {
+        guard let onOpenGeneratedFile else { return }
+        let items = headerTextShelfFileItems
+        guard !items.isEmpty else { return }
+        isShowingFilesPopover = false
+        selectedTab = .summary
+        for item in items {
+            onOpenGeneratedFile(item.path)
+        }
+    }
+
+    private func formatHeaderFileSize(_ size: Int64) -> String {
+        guard size > 0 else { return "" }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: size)
+    }
+
+    private var taskFilesPopover: some View {
+        let items = headerFileItems
+        let visibleItems = Array(items.prefix(8))
+        let hiddenCount = max(0, items.count - visibleItems.count)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Task Files")
+                    .font(Stanford.body(13).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Spacer()
+                if !items.isEmpty {
+                    Text("\(items.count)")
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
             }
-        } label: {
-            Text(showCopyConfirmation ? "Copied!" : taskIDString)
-                .font(Stanford.ui(11, design: .monospaced))
-                .foregroundStyle(showCopyConfirmation ? Stanford.paloAltoGreen : Stanford.coolGrey)
-        }
-        .buttonStyle(.plain)
-        .help("Copy task ID: \(task.id.uuidString)")
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
-        if task.tokensUsed > 0 {
-            Label(Formatters.formatTokens(task.tokensUsed), systemImage: "number")
-                .font(Stanford.caption(13))
-                .foregroundStyle(Stanford.coolGrey)
-        }
-        if task.costUSD > 0 {
-            Label(String(format: "$%.2f", task.costUSD), systemImage: "dollarsign.circle")
-                .font(Stanford.caption(13))
-                .foregroundStyle(Stanford.coolGrey)
-        }
+            Divider()
 
-        if let run = latestRun, let completed = run.completedAt {
-            let durationSec = Int(completed.timeIntervalSince(run.startedAt))
-            Label(formatDuration(durationSec), systemImage: "clock")
-                .font(Stanford.caption(13))
-                .foregroundStyle(Stanford.coolGrey)
-        }
+            if visibleItems.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("No files yet")
+                        .font(Stanford.body(13).weight(.medium))
+                        .foregroundStyle(Stanford.black)
+                    Text("Generated and attached files will appear here.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(visibleItems) { item in
+                        Button {
+                            openHeaderFileItem(item)
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: item.destination?.systemImage ?? Formatters.fileIcon(for: item.path))
+                                    .font(Stanford.ui(13))
+                                    .foregroundStyle(item.destination == nil ? Stanford.coolGrey : Stanford.lagunita)
+                                    .frame(width: 18)
 
-        if let run = latestRun, run.inputTokens > 0 {
-            contextGauge(inputTokens: run.inputTokens)
-        }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.name)
+                                        .font(Stanford.body(13).weight(.medium))
+                                        .foregroundStyle(Stanford.black)
+                                        .lineLimit(1)
+                                    Text(item.path)
+                                        .font(Stanford.caption(11))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
 
-        Button {
-            selectedTab = selectedTab == .files ? .summary : .files
-        } label: {
-            Label("Files", systemImage: "doc.text")
-                .font(Stanford.caption(13))
-                .foregroundStyle(selectedTab == .files ? Stanford.lagunita : Stanford.coolGrey)
+                                Spacer(minLength: 8)
+
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(item.source)
+                                        .font(Stanford.caption(10).weight(.medium))
+                                        .foregroundStyle(Stanford.lagunita)
+                                    let size = formatHeaderFileSize(item.size)
+                                    if !size.isEmpty {
+                                        Text(size)
+                                            .font(Stanford.caption(10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(item.destination?.title ?? "Open in default app")
+
+                        if item.id != visibleItems.last?.id {
+                            Divider().padding(.leading, 39)
+                        }
+                    }
+                }
+
+                if hiddenCount > 0 {
+                    Text("\(hiddenCount) more file\(hiddenCount == 1 ? "" : "s")")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button {
+                    openHeaderTextFilesInShelf()
+                } label: {
+                    Label("Open text in shelf", systemImage: "square.split.2x1")
+                        .font(Stanford.caption(12).weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil ? .secondary : Stanford.lagunita)
+                .disabled(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil)
+                .help("Open all text files as shelf tabs")
+
+                Spacer()
+
+                Button {
+                    selectedTab = selectedTab == .files ? .summary : .files
+                    isShowingFilesPopover = false
+                } label: {
+                    Text(selectedTab == .files ? "Show chat" : "View all")
+                        .font(Stanford.caption(12).weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Stanford.lagunita)
+
+                if !task.taskFolder.isEmpty {
+                    Button {
+                        isShowingFilesPopover = false
+                        NSWorkspace.shared.open(URL(fileURLWithPath: task.taskFolder))
+                    } label: {
+                        Image(systemName: "folder")
+                            .font(Stanford.ui(12, weight: .medium))
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Stanford.lagunita)
+                    .help("Open task folder")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .buttonStyle(.plain)
+        .background(Stanford.panelBackground)
     }
 
     @ViewBuilder
@@ -2755,35 +2905,6 @@ struct TaskMainView: View {
         return "\(seconds / 60)m \(seconds % 60)s"
     }
 
-    /// Context window limit per model (all current models use 200K)
-    private var contextWindowLimit: Int {
-        200_000
-    }
-
-    /// Compact context window gauge showing input tokens vs model limit
-    private func contextGauge(inputTokens: Int) -> some View {
-        let limit = contextWindowLimit
-        let pct = min(Double(inputTokens) / Double(limit), 1.0)
-        let color: Color = pct > 0.85 ? Stanford.cardinalRed : pct > 0.6 ? Stanford.poppy : Stanford.paloAltoGreen
-
-        return HStack(spacing: 4) {
-            // Mini progress arc
-            ZStack {
-                Circle()
-                    .stroke(Stanford.sandstone.opacity(0.2), lineWidth: 2)
-                Circle()
-                    .trim(from: 0, to: pct)
-                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 12, height: 12)
-
-            Text("\(Formatters.formatTokens(inputTokens))/\(Formatters.formatTokens(limit))")
-                .font(Stanford.caption(11).monospacedDigit())
-                .foregroundStyle(color)
-        }
-        .help("Context window: \(Formatters.formatTokens(inputTokens)) of \(Formatters.formatTokens(limit)) tokens used (\(Int(pct * 100))%)")
-    }
 }
 
 // MARK: - Markdown Text View

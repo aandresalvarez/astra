@@ -126,6 +126,65 @@ lower `CFBundleVersion` than the GitHub Release appcast. For example, a local
 `ASTRA 0.1.0 (1)` build can discover and install `ASTRA 0.1.1 (2)`, but a local
 `ASTRA 0.1.1 (2)` build correctly reports that it is already up to date.
 
+## Testing App Intents and Voice Commands
+
+ASTRA exposes in-app App Intents for opening workspaces and tasks, continuing
+the latest unfinished task in a named workspace, creating draft tasks, and
+explicitly creating and running a task. Test these against `ASTRA Dev` unless
+you are deliberately validating production behavior.
+
+First run the normal build and routing checks:
+
+```bash
+./script/build_and_run.sh --verify
+swift test --filter AstraExternalRoutingTests
+```
+
+The development bundle registers the `astra-dev` URL scheme. After launching
+`ASTRA Dev`, get a workspace ID from one dev workspace config:
+
+```bash
+WORKSPACE_CONFIG=$(find "$HOME/Documents/Astra Dev/Workspaces" -name .astra-workspace.json | head -n 1)
+WORKSPACE_ID=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$WORKSPACE_CONFIG")
+echo "$WORKSPACE_ID"
+```
+
+Then test direct routes:
+
+```bash
+open "astra-dev://workspace/$WORKSPACE_ID"
+open "astra-dev://create-task?workspace=$WORKSPACE_ID&goal=Test%20draft%20task%20from%20URL&run=0"
+open "astra-dev://continue?workspace=$WORKSPACE_ID"
+```
+
+Only test the run route in a safe development workspace, because it starts an
+agent run:
+
+```bash
+open "astra-dev://create-task?workspace=$WORKSPACE_ID&goal=Say%20hello%20and%20summarize%20the%20workspace%20without%20editing%20files&run=1"
+```
+
+To test Shortcuts or voice, open the macOS Shortcuts app, create a new
+shortcut, and search for `ASTRA` or `ASTRA Dev`. The expected actions are:
+
+- `Open ASTRA Workspace`
+- `Open ASTRA Task`
+- `Continue ASTRA Task`
+- `Create ASTRA Task`
+- `Create and Run ASTRA Task`
+
+Useful voice phrases:
+
+```text
+Create an ASTRA task in <workspace name>
+Create and run an ASTRA task in <workspace name>
+Continue my unfinished ASTRA task in <workspace name>
+Open my ASTRA task
+```
+
+If the actions do not appear in Shortcuts, launch `dist/ASTRA Dev.app` once,
+quit it, and reopen Shortcuts so macOS refreshes the app shortcut metadata.
+
 ## Development Cycle
 
 Use this cycle for normal feature work:

@@ -583,11 +583,13 @@ struct TaskThreadSnapshot: Sendable {
 enum TaskGeneratedFileShelfDestination: Equatable {
     case browser
     case text
+    case query
 
     var title: String {
         switch self {
         case .browser: "Open in Browser Shelf"
         case .text: "Open in Text Shelf"
+        case .query: "Open in Query Shelf"
         }
     }
 
@@ -595,6 +597,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
         switch self {
         case .browser: "Browser"
         case .text: "Text"
+        case .query: "Query"
         }
     }
 
@@ -602,6 +605,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
         switch self {
         case .browser: "globe"
         case .text: "doc.text"
+        case .query: "cylinder.split.1x2"
         }
     }
 }
@@ -648,6 +652,18 @@ enum TaskGeneratedFiles {
     }
 
     static func markdownFiles(inInputs inputs: [String], fileManager: FileManager = .default) -> [String] {
+        previewableFiles(inInputs: inputs, fileManager: fileManager, matches: isMarkdownFile)
+    }
+
+    static func sqlFiles(inInputs inputs: [String], fileManager: FileManager = .default) -> [String] {
+        previewableFiles(inInputs: inputs, fileManager: fileManager, matches: isSQLFile)
+    }
+
+    private static func previewableFiles(
+        inInputs inputs: [String],
+        fileManager: FileManager,
+        matches: (String) -> Bool
+    ) -> [String] {
         var paths: [String] = []
         var seen: Set<String> = []
 
@@ -658,8 +674,8 @@ enum TaskGeneratedFiles {
 
             let candidates: [String]
             if isDirectory.boolValue {
-                candidates = files(in: path, fileManager: fileManager).filter(isMarkdownFile)
-            } else if isMarkdownFile(path) {
+                candidates = files(in: path, fileManager: fileManager).filter(matches)
+            } else if matches(path) {
                 candidates = [path]
             } else {
                 candidates = []
@@ -692,12 +708,25 @@ enum TaskGeneratedFiles {
             .first
     }
 
+    static func preferredSQLFile(in paths: [String], taskFolder: String = "") -> String? {
+        paths
+            .filter(isSQLFile)
+            .sorted { lhs, rhs in
+                markdownPreviewScore(for: lhs, taskFolder: taskFolder) < markdownPreviewScore(for: rhs, taskFolder: taskFolder)
+            }
+            .first
+    }
+
     static func isHTMLFile(_ path: String) -> Bool {
         ["html", "htm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
     static func isMarkdownFile(_ path: String) -> Bool {
         markdownExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    static func isSQLFile(_ path: String) -> Bool {
+        URL(fileURLWithPath: path).pathExtension.lowercased() == "sql"
     }
 
     static func isTextShelfFile(_ path: String) -> Bool {
@@ -711,6 +740,7 @@ enum TaskGeneratedFiles {
 
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination? {
         if isHTMLFile(path) { return .browser }
+        if isSQLFile(path) { return .query }
         if isTextShelfFile(path) { return .text }
         return nil
     }
