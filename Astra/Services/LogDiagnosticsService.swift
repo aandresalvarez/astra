@@ -25,6 +25,18 @@ struct LogDiagnosticsNotice: Equatable, Identifiable {
     let lastSeenAt: Date
 }
 
+private struct LogDiagnosticsTraceSummary: Equatable {
+    let id: String
+    let count: Int
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+    let categories: [String]
+    let sources: [String]
+    let actions: [String]
+    let affectedTasks: [String]
+    let evidence: [String]
+}
+
 struct LogDiagnosticsReport: Equatable {
     let generatedAt: Date
     let scope: LogDiagnosticsScope
@@ -643,6 +655,16 @@ enum LogDiagnosticsService {
             }
         }
 
+        if lower.contains(AuditEvent.userAction.rawValue),
+           let action = field("action", in: message) {
+            return (
+                key: "user.action.\(action)",
+                title: "User action was captured",
+                signal: "user.action action=\(action)",
+                analysis: "ASTRA recorded a sanitized UI action breadcrumb. Use its `trace_id` to follow the related capability, connector, chat, or worker events in the Trace Timelines section."
+            )
+        }
+
         if lower.contains(AuditEvent.capabilityEnableStarted.rawValue) {
             return (
                 key: "capability.enable_started",
@@ -1080,6 +1102,7 @@ enum LogDiagnosticsService {
         let tasksSeen = Set(entries.compactMap(taskIdentifier(for:))).sorted()
         let issueTaskIDs = Set(issues.flatMap(\.affectedTasks)).sorted()
         let otherTaskIDs = tasksSeen.filter { !issueTaskIDs.contains($0) }
+        let traceSummaries = buildTraceSummaries(from: entries)
         let categories = Dictionary(grouping: entries, by: \.category)
             .mapValues(\.count)
             .sorted { lhs, rhs in
@@ -1096,6 +1119,7 @@ enum LogDiagnosticsService {
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
+            "Breadcrumb file: \(LogSanitizer.sanitize(AppLogger.breadcrumbLogFile.path))",
             "Scope: \(scope.label)",
             "Previous diagnostics: \(previousGeneratedAt.map(displayTimestamp) ?? "none")",
             "Analyzed window: \(analysisWindow(entries: entries))",
@@ -1107,15 +1131,16 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
+            "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
             "",
             "## Category Counts",
             "",
             categories.isEmpty ? "- none" : categories,
-            "",
-            "## Issues"
         ]
+        appendTraceSummaries(traceSummaries, to: &lines)
+        lines += ["", "## Issues"]
 
         if issues.isEmpty {
             lines += [
@@ -1204,6 +1229,95 @@ enum LogDiagnosticsService {
             ]
             lines += notice.evidence
             lines += ["```"]
+        }
+    }
+
+    private static func appendTraceSummaries(_ summaries: [LogDiagnosticsTraceSummary], to lines: inout [String]) {
+        guard !summaries.isEmpty else { return }
+        lines += [
+            "",
+            "## Trace Timelines",
+            "",
+            "Recent related log lines grouped by `trace_id`. Use these to reconstruct a single user action across UI, capability, connector, and worker logs."
+        ]
+        for summary in summaries.prefix(8) {
+            lines += [
+                "",
+                "### `\(summary.id)`",
+                "",
+                "- Count: \(summary.count)",
+                "- First seen in window: \(displayTimestamp(summary.firstSeenAt))",
+                "- Last seen in window: \(displayTimestamp(summary.lastSeenAt))",
+                "- Actions: \(summary.actions.isEmpty ? "none" : summary.actions.joined(separator: ", "))",
+                "- Sources: \(summary.sources.isEmpty ? "none" : summary.sources.joined(separator: ", "))",
+                "- Categories: \(summary.categories.joined(separator: ", "))",
+                "- Affected tasks: \(summary.affectedTasks.isEmpty ? "none" : summary.affectedTasks.joined(separator: ", "))",
+                "",
+                "Trace extract:",
+                "",
+                "```text"
+            ]
+            lines += summary.evidence
+            lines += ["```"]
+        }
+        if summaries.count > 8 {
+            lines += [
+                "",
+                "Additional trace groups omitted from this report: \(summaries.count - 8). Narrow the time window if more detail is needed."
+            ]
+        }
+    }
+
+    private static func buildTraceSummaries(from entries: [LogEntry]) -> [LogDiagnosticsTraceSummary] {
+        struct Accumulator {
+            var entries: [LogEntry] = []
+            var categories: Set<String> = []
+            var sources: Set<String> = []
+            var actions: Set<String> = []
+            var affectedTasks: Set<String> = []
+        }
+
+        var grouped: [String: Accumulator] = [:]
+        for entry in entries {
+            guard let traceID = field("trace_id", in: entry.message),
+                  !traceID.isEmpty,
+                  traceID.lowercased() != "none" else { continue }
+            var acc = grouped[traceID] ?? Accumulator()
+            acc.entries.append(entry)
+            acc.categories.insert(entry.category)
+            if let source = field("source", in: entry.message), !source.isEmpty {
+                acc.sources.insert(source)
+            }
+            if let action = field("action", in: entry.message), !action.isEmpty {
+                acc.actions.insert(action)
+            }
+            if let task = taskIdentifier(for: entry), !task.isEmpty {
+                acc.affectedTasks.insert(task)
+            }
+            grouped[traceID] = acc
+        }
+
+        return grouped.compactMap { traceID, acc in
+            let ordered = acc.entries.sorted { $0.timestamp < $1.timestamp }
+            guard let first = ordered.first, let last = ordered.last else { return nil }
+            let evidence = ordered
+                .suffix(8)
+                .map(sanitizedLine)
+            return LogDiagnosticsTraceSummary(
+                id: traceID,
+                count: ordered.count,
+                firstSeenAt: first.timestamp,
+                lastSeenAt: last.timestamp,
+                categories: acc.categories.sorted(),
+                sources: acc.sources.sorted(),
+                actions: acc.actions.sorted(),
+                affectedTasks: acc.affectedTasks.sorted(),
+                evidence: evidence
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.lastSeenAt != rhs.lastSeenAt { return lhs.lastSeenAt > rhs.lastSeenAt }
+            return lhs.id < rhs.id
         }
     }
 

@@ -612,8 +612,18 @@ struct WorkspaceRightRailView: View {
         switch item.source {
         case .package(let package):
             if enabled {
+                let traceID = AuditTrace.make("capability-enable")
+                AppLogger.breadcrumb(action: "enable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+                    "source": "right_rail",
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "workspace_id": workspace.id.uuidString,
+                    "readiness_level": String(describing: item.readiness.level),
+                    "requirement_count": String(item.requirementNames.count)
+                ])
                 AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: [
                     "source": "right_rail",
+                    "trace_id": traceID,
                     "package_id": package.id,
                     "package_name": package.name,
                     "package_version": package.version,
@@ -623,13 +633,14 @@ struct WorkspaceRightRailView: View {
                     "requirement_count": String(item.requirementNames.count)
                 ])
                 do {
-                    try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext)
+                    try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext, traceID: traceID)
                     refreshApprovedCapabilities()
                 } catch {
                     capabilityError = error.localizedDescription
                     AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                         "result": "failed",
                         "source": "right_rail",
+                        "trace_id": traceID,
                         "package_id": package.id,
                         "package_name": package.name,
                         "workspace_id": workspace.id.uuidString,
@@ -644,6 +655,13 @@ struct WorkspaceRightRailView: View {
             }
         case .skill(let skill):
             guard skill.isGlobal else { return }
+            let traceID = AuditTrace.make("skill-toggle")
+            AppLogger.breadcrumb(action: enabled ? "enable_skill_clicked" : "disable_skill_clicked", category: "Capabilities", traceID: traceID, fields: [
+                "source": "right_rail",
+                "skill_id": skill.id.uuidString,
+                "skill_name": skill.name,
+                "workspace_id": workspace.id.uuidString
+            ])
             let idString = skill.id.uuidString
             if enabled {
                 if !workspace.enabledGlobalSkillIDs.contains(idString) {
@@ -656,6 +674,7 @@ struct WorkspaceRightRailView: View {
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             AppLogger.audit(enabled ? .capabilityEnabled : .capabilityDisabled, category: "Capabilities", fields: [
                 "source": "skill",
+                "trace_id": traceID,
                 "skill_id": skill.id.uuidString,
                 "workspace_id": workspace.id.uuidString,
                 "readiness_level": String(describing: item.readiness.level),
@@ -670,8 +689,16 @@ struct WorkspaceRightRailView: View {
             workspace: workspace,
             capabilities: capabilities
         )
+        let traceID = AuditTrace.make("capability-disable")
+        AppLogger.breadcrumb(action: "disable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "right_rail",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
         AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
             "source": "right_rail",
+            "trace_id": traceID,
             "package_id": package.id,
             "package_name": package.name,
             "package_version": package.version,
@@ -693,6 +720,7 @@ struct WorkspaceRightRailView: View {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "package",
+            "trace_id": traceID,
             "package_id": package.id,
             "workspace_id": workspace.id.uuidString,
             "skills_count": String(state.skillIDStrings.count),

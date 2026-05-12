@@ -114,8 +114,14 @@ struct TaskMainView: View {
         return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
     }
 
-    private func logTaskCapabilityContext(source: String, level: LogLevel = .info, extraFields: [String: String] = [:]) {
+    private func logTaskCapabilityContext(
+        source: String,
+        level: LogLevel = .info,
+        traceID: String? = nil,
+        extraFields: [String: String] = [:]
+    ) {
         var fields = CapabilityAudit.taskContextFields(source: source, task: task)
+        if let traceID { fields["trace_id"] = traceID }
         for (key, value) in extraFields {
             fields[key] = value
         }
@@ -2235,6 +2241,7 @@ struct TaskMainView: View {
                     onStop: { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
+                        let previousRuntime = task.runtimeID
                         task.runtimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
                         task.model = RuntimeModelAvailability.normalizedModel(
@@ -2244,12 +2251,26 @@ struct TaskMainView: View {
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
                         task.updatedAt = Date()
+                        AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
+                            "source": "task_composer",
+                            "previous_runtime": previousRuntime ?? "none",
+                            "runtime": runtime,
+                            "model": task.model,
+                            "workspace_id": task.workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
                         task.skills.removeAll { $0.id == skill.id }
                         task.captureSkillSnapshots()
                         task.updatedAt = Date()
+                        AppLogger.breadcrumb(action: "task_skill_removed", category: "UI", taskID: task.id, fields: [
+                            "source": "task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": task.runtimeID ?? "none",
+                            "workspace_id": task.workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onToggleSkill: { skill, enabled in
                         if enabled {
@@ -2261,7 +2282,15 @@ struct TaskMainView: View {
                         }
                         task.captureSkillSnapshots()
                         task.updatedAt = Date()
-                        logTaskCapabilityContext(source: "task_skill_toggle", extraFields: [
+                        let traceID = AuditTrace.make("task-skill-toggle")
+                        AppLogger.breadcrumb(action: enabled ? "task_skill_enabled" : "task_skill_disabled", category: "UI", taskID: task.id, traceID: traceID, fields: [
+                            "source": "task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": task.runtimeID ?? "none",
+                            "workspace_id": task.workspace?.id.uuidString ?? "none"
+                        ])
+                        logTaskCapabilityContext(source: "task_skill_toggle", traceID: traceID, extraFields: [
                             "skill_id": skill.id.uuidString,
                             "skill_name": skill.name,
                             "skill_enabled": String(enabled)
@@ -2798,9 +2827,18 @@ struct TaskMainView: View {
             attachedFiles = []
         }
         messageText = ""
+        let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
+        AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
+            "source": isPlanMode ? "task_plan_chat" : "task_continue_chat",
+            "runtime": task.runtimeID ?? "none",
+            "model": task.model,
+            "workspace_id": task.workspace?.id.uuidString ?? "none",
+            "task_status": task.status.rawValue,
+            "message_length": String(msg.count)
+        ])
 
         if isPlanMode {
-            sendPlanningMessage(msg)
+            sendPlanningMessage(msg, traceID: traceID)
             return
         }
 
@@ -2833,7 +2871,7 @@ struct TaskMainView: View {
             task.status = .running
             task.updatedAt = Date()
             task.completedAt = nil
-            logTaskCapabilityContext(source: "task_continue_chat")
+            logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             Task {
                 await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
@@ -2843,7 +2881,7 @@ struct TaskMainView: View {
         }
     }
 
-    private func sendPlanningMessage(_ msg: String) {
+    private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
 
         shouldScrollAfterUserMessage = true
@@ -2857,7 +2895,7 @@ struct TaskMainView: View {
         let workspacePath = planningWorkspacePath
         let skillContext = planModeSkillContext()
         isPlanning = true
-        logTaskCapabilityContext(source: "task_plan_chat")
+        logTaskCapabilityContext(source: "task_plan_chat", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(

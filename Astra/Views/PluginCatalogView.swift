@@ -519,8 +519,16 @@ struct PluginCatalogView: View {
 
     private func disableCapability(_ package: PluginPackage) {
         let state = packageState(package)
+        let traceID = AuditTrace.make("capability-disable")
+        AppLogger.breadcrumb(action: "disable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "configure",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
         AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
             "source": "disable",
+            "trace_id": traceID,
             "package_id": package.id,
             "package_name": package.name,
             "package_version": package.version,
@@ -542,6 +550,7 @@ struct PluginCatalogView: View {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "configure",
+            "trace_id": traceID,
             "package_id": package.id,
             "package_name": package.name,
             "package_version": package.version,
@@ -564,6 +573,12 @@ struct PluginCatalogView: View {
 
         return Button {
             if package.requiresSetup {
+                AppLogger.breadcrumb(action: "open_capability_setup", category: "Capabilities", fields: [
+                    "source": "configure",
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "workspace_id": workspace.id.uuidString
+                ])
                 installingPackage = package
             } else {
                 installCapability(package)
@@ -594,6 +609,16 @@ struct PluginCatalogView: View {
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:]
     ) {
+        let traceID = AuditTrace.make("capability-enable")
+        AppLogger.breadcrumb(action: "enable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "configure",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "credential_input_count": String(credentialInputs.count),
+            "config_input_count": String(configInputs.count),
+            "base_url_override_count": String(baseURLOverrides.count)
+        ])
         do {
             try CapabilityInstaller().install(
                 package,
@@ -601,7 +626,8 @@ struct PluginCatalogView: View {
                 modelContext: modelContext,
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
-                baseURLOverrides: baseURLOverrides
+                baseURLOverrides: baseURLOverrides,
+                traceID: traceID
             )
             onInstall?(package)
             catalog.loadApprovedCapabilities()
@@ -610,6 +636,7 @@ struct PluginCatalogView: View {
             installError = error.localizedDescription
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": "configure",
+                "trace_id": traceID,
                 "package_id": package.id,
                 "package_name": package.name,
                 "package_version": package.version,
@@ -620,12 +647,20 @@ struct PluginCatalogView: View {
     }
 
     private func createCapability(_ package: PluginPackage, enableHere: Bool) {
+        let traceID = AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
+        AppLogger.breadcrumb(action: enableHere ? "create_and_enable_capability_clicked" : "create_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": enableHere ? "create_and_enable" : "create_install_only",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
         do {
             if enableHere {
                 try CapabilityInstaller().install(
                     package,
                     into: workspace,
-                    modelContext: modelContext
+                    modelContext: modelContext,
+                    traceID: traceID
                 )
                 onInstall?(package)
             } else {
@@ -637,6 +672,7 @@ struct PluginCatalogView: View {
             installError = error.localizedDescription
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": enableHere ? "create_and_enable" : "create_install_only",
+                "trace_id": traceID,
                 "package_id": package.id,
                 "package_name": package.name,
                 "package_version": package.version,
@@ -1194,6 +1230,16 @@ struct PluginInstallSheet: View {
     }
 
     private func installCapability() {
+        let traceID = AuditTrace.make("capability-setup")
+        AppLogger.breadcrumb(action: "enable_capability_setup_submitted", category: "Capabilities", traceID: traceID, fields: [
+            "source": "setup_sheet",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "credential_input_count": String(credentialValues.count),
+            "config_input_count": String(configValues.count),
+            "base_url_override_count": String(baseURLValues.count)
+        ])
         do {
             try CapabilityInstaller().install(
                 package,
@@ -1201,13 +1247,15 @@ struct PluginInstallSheet: View {
                 modelContext: modelContext,
                 credentialInputs: credentialValues,
                 configInputs: configValues,
-                baseURLOverrides: baseURLValues
+                baseURLOverrides: baseURLValues,
+                traceID: traceID
             )
             onInstalled(package)
         } catch {
             installError = error.localizedDescription
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": "setup_sheet",
+                "trace_id": traceID,
                 "package_id": package.id,
                 "package_name": package.name,
                 "package_version": package.version,

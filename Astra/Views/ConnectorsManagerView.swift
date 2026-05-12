@@ -207,12 +207,21 @@ struct ConnectorEditorView: View {
                         .font(Stanford.ui(12, design: .monospaced))
 
                         Button {
+                            let traceID = AuditTrace.make("connector-test")
+                            AppLogger.breadcrumb(action: "test_connector_clicked", category: "Keychain", traceID: traceID, fields: [
+                                "source": "configure_test_button",
+                                "connector_id": connector.id.uuidString,
+                                "connector_name": connector.name,
+                                "service_type": connector.serviceType,
+                                "workspace_id": workspace?.id.uuidString ?? "none"
+                            ])
                             isTesting = true
                             testResult = nil
                             Task {
                                 let result = await connector.testConnection(
                                     source: "configure_test_button",
-                                    workspaceID: workspace?.id
+                                    workspaceID: workspace?.id,
+                                    traceID: traceID
                                 )
                                 await MainActor.run {
                                     testResult = result
@@ -844,13 +853,22 @@ struct ConnectorEditorView: View {
     }
 
     private func testOutlookConnection() async {
+        let traceID = AuditTrace.make("connector-test")
+        AppLogger.breadcrumb(action: "test_connector_clicked", category: "Keychain", traceID: traceID, fields: [
+            "source": "configure_test_button",
+            "connector_id": connector.id.uuidString,
+            "connector_name": connector.name,
+            "service_type": connector.serviceType,
+            "workspace_id": workspace?.id.uuidString ?? "none"
+        ])
         await MainActor.run {
             isTesting = true
             testResult = nil
         }
         let result = await connector.testConnection(
             source: "configure_test_button",
-            workspaceID: workspace?.id
+            workspaceID: workspace?.id,
+            traceID: traceID
         )
         await MainActor.run {
             testResult = result

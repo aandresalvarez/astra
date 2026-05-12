@@ -1043,6 +1043,7 @@ struct ChatPanelView: View {
                     onSend: { submitComposer() },
                     onModelChange: { defaultModel = $0 },
                     onRuntimeChange: { runtime in
+                        let previousRuntime = defaultRuntimeID
                         defaultRuntimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
                         defaultModel = RuntimeModelAvailability.normalizedModel(
@@ -1051,15 +1052,38 @@ struct ChatPanelView: View {
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
+                        AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "previous_runtime": previousRuntime,
+                            "runtime": runtime,
+                            "model": defaultModel,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onBudgetChange: { defaultBudget = $0 },
-                    onRemoveSkill: { skill in excludedSkillIDs.insert(skill.id) },
+                    onRemoveSkill: { skill in
+                        excludedSkillIDs.insert(skill.id)
+                        AppLogger.breadcrumb(action: "new_task_skill_removed", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": defaultRuntimeID,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
+                    },
                     onToggleSkill: { skill, enable in
                         if enable {
                             excludedSkillIDs.remove(skill.id)
                         } else {
                             excludedSkillIDs.insert(skill.id)
                         }
+                        AppLogger.breadcrumb(action: enable ? "new_task_skill_enabled" : "new_task_skill_disabled", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": defaultRuntimeID,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onManageSkills: onManageSkills,
                     skipPermissions: $skipPermissions,
@@ -1134,7 +1158,7 @@ struct ChatPanelView: View {
         alignDefaultModelWithRuntime()
     }
 
-    private func logChatCapabilityContext(source: String, level: LogLevel = .info) {
+    private func logChatCapabilityContext(source: String, level: LogLevel = .info, traceID: String? = nil) {
         var fields = CapabilityAudit.chatContextFields(
             source: source,
             workspace: workspace,
@@ -1142,6 +1166,7 @@ struct ChatPanelView: View {
             selectedSkills: selectedSkills,
             excludedSkillIDs: excludedSkillIDs
         )
+        if let traceID { fields["trace_id"] = traceID }
         fields["runtime"] = defaultRuntimeID
         fields["model"] = defaultModel
         AppLogger.audit(.capabilityChatContext, category: "UI", fields: fields, level: level, fieldMaxLength: 240)
@@ -1255,6 +1280,7 @@ struct ChatPanelView: View {
         messageText = ""
         let planningDraft = saveDraft()
         isThinking = true
+        let traceID = AuditTrace.make(isPlanModeActive ? "new-task-plan-chat" : "new-task-chat")
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
         let ws = resolvedWorkspace
@@ -1274,7 +1300,15 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
 
-        logChatCapabilityContext(source: isPlanModeActive ? "new_task_plan_chat" : "new_task_chat")
+        AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
+            "source": isPlanModeActive ? "new_task_plan_chat" : "new_task_chat",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_length": String(input.count)
+        ])
+        logChatCapabilityContext(source: isPlanModeActive ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
@@ -1309,6 +1343,15 @@ struct ChatPanelView: View {
     private func quickRun() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
+        let traceID = AuditTrace.make("quick-run")
+        AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "quick_run",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_length": String(input.count)
+        ])
 
         let task = AgentTask(
             title: String(input.prefix(60)),
@@ -1336,6 +1379,7 @@ struct ChatPanelView: View {
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+        auditFields["trace_id"] = traceID
         auditFields["use_agent_team"] = String(useAgentTeam)
         auditFields["team_size"] = String(teamSize)
         AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
@@ -1348,6 +1392,15 @@ struct ChatPanelView: View {
         guard !messages.isEmpty else { return }
 
         isThinking = true
+        let traceID = AuditTrace.make("new-task-plan-generation")
+        AppLogger.breadcrumb(action: "new_task_plan_generation_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "new_task_plan_generation",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_count": String(messages.count)
+        ])
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) } + [
             (
                 role: "user",
@@ -1357,7 +1410,7 @@ struct ChatPanelView: View {
         let ws = resolvedWorkspace
         var skillContext = baseNewTaskSkillContext()
         skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
-        logChatCapabilityContext(source: "new_task_plan_generation")
+        logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
@@ -1440,6 +1493,16 @@ struct ChatPanelView: View {
     /// Create task from extracted spec
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
+        let traceID = AuditTrace.make("conversation-spec")
+        AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "conversation_spec",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "inputs_count": String(spec.inputs.count + attachedFiles.count),
+            "criteria_count": String(spec.acceptanceCriteria.count)
+        ])
 
         let task = AgentTask(
             title: spec.title,
@@ -1478,6 +1541,7 @@ struct ChatPanelView: View {
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+        auditFields["trace_id"] = traceID
         auditFields["inputs_count"] = String(task.inputs.count)
         auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
         AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)

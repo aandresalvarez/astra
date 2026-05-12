@@ -281,6 +281,45 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("connector.tested result=authenticated"))
     }
 
+    @Test("Trace IDs group capability and connector attempts")
+    func traceIDsGroupCapabilityAndConnectorAttempts() {
+        let traceID = "capability-enable-1234abcd"
+        let taskID = UUID(uuidString: "20DBCF1C-C0E6-42B1-BB70-BBE9F341C896")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Capabilities",
+                message: "user.action action=enable_capability_clicked package_id=jira package_name=Jira_Workflow source=configure trace_id=\(traceID) workspace_id=WS",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Capabilities",
+                message: "capability.enable_started package_id=jira package_name=Jira_Workflow source=install trace_id=\(traceID) workspace_id=WS",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested connector_id=JIRA result=started service_type=jira source=configure_test_button trace_id=\(traceID) workspace_id=WS",
+                timestamp: Date(timeIntervalSince1970: 1_002)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "UI",
+                message: "capability.chat_context source=new_task_plan_chat trace_id=\(traceID) workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=1 selected_skill_count=0 resolved_skill_count=0 connector_count=0 local_tool_count=0 workspace_id=WS",
+                taskID: taskID,
+                timestamp: Date(timeIntervalSince1970: 1_003)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.markdown.contains("## Trace Timelines"))
+        #expect(report.markdown.contains("`\(traceID)`"))
+        #expect(report.markdown.contains("enable_capability_clicked"))
+        #expect(report.markdown.contains("configure_test_button"))
+        #expect(report.markdown.contains("20DBCF1C"))
+    }
+
     @Test("Startup recovery interruption is reported as non-actionable")
     func startupRecoveryInterruptionIsNonActionable() {
         let report = LogDiagnosticsService.makeReport(entries: [

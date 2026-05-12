@@ -1831,7 +1831,9 @@ final class AgentRuntimeWorker {
             from: TaskCapabilityResolver(task: task).allConnectors,
             contextText: fullContext
         )
+        let traceID = AuditTrace.make("connector-preflight")
         var preflightFields = CapabilityAudit.taskContextFields(source: "connector_preflight_candidates", task: task)
+        preflightFields["trace_id"] = traceID
         preflightFields["phase"] = phase
         preflightFields["preflight_connector_count"] = String(connectors.count)
         AppLogger.audit(.capabilityChatContext, category: "Worker", taskID: task.id, fields: preflightFields, level: .debug, fieldMaxLength: 240)
@@ -1839,11 +1841,13 @@ final class AgentRuntimeWorker {
         guard let issue = await ConnectorPreflightService.firstBlockingIssue(
             connectors: connectors,
             contextText: fullContext,
-            workspaceID: task.workspace?.id
+            workspaceID: task.workspace?.id,
+            traceID: traceID
         ) else {
             if !connectors.isEmpty {
                 AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
                     "source": "task_preflight",
+                    "trace_id": traceID,
                     "phase": phase,
                     "workspace_id": task.workspace?.id.uuidString ?? "none",
                     "result": "preflight_passed",
@@ -1855,6 +1859,7 @@ final class AgentRuntimeWorker {
         }
 
         var fields = issue.auditFields
+        fields["trace_id"] = traceID
         fields["phase"] = phase
         AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
 

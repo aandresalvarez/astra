@@ -1632,6 +1632,16 @@ struct ContentView: View {
         let installer = CapabilityInstaller()
         for package in packages {
             let inputs = newWorkspaceDraft.capabilityConfiguration.installationInputs(for: package.id)
+            let traceID = AuditTrace.make("onboarding-capability")
+            AppLogger.breadcrumb(action: "onboarding_capability_enable_selected", category: "Capabilities", traceID: traceID, fields: [
+                "source": "onboarding",
+                "package_id": package.id,
+                "package_name": package.name,
+                "workspace_id": workspace.id.uuidString,
+                "credential_input_count": String(inputs.credentialInputs.count),
+                "config_input_count": String(inputs.configInputs.count),
+                "base_url_override_count": String(inputs.baseURLOverrides.count)
+            ])
             do {
                 try installer.install(
                     package,
@@ -1639,13 +1649,19 @@ struct ContentView: View {
                     modelContext: modelContext,
                     credentialInputs: inputs.credentialInputs,
                     configInputs: inputs.configInputs,
-                    baseURLOverrides: inputs.baseURLOverrides
+                    baseURLOverrides: inputs.baseURLOverrides,
+                    traceID: traceID
                 )
             } catch {
-                AppLogger.warning(
-                    "Failed to enable onboarding capability \(package.id): \(error.localizedDescription)",
-                    category: "Onboarding"
-                )
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                    "source": "onboarding",
+                    "trace_id": traceID,
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "package_version": package.version,
+                    "workspace_id": workspace.id.uuidString,
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
             }
         }
     }

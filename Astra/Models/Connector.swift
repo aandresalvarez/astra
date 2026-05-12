@@ -169,12 +169,14 @@ final class Connector {
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
         source: String = "manual",
         workspaceID: UUID? = nil,
-        packageID: String? = nil
+        packageID: String? = nil,
+        traceID: String? = nil
     ) async -> (Bool, String) {
         let auditContext = connectorTestAuditFields(
             source: source,
             workspaceID: workspaceID,
-            packageID: packageID
+            packageID: packageID,
+            traceID: traceID
         )
         AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
             "result": "started"
@@ -353,7 +355,8 @@ final class Connector {
     private func connectorTestAuditFields(
         source: String,
         workspaceID: UUID?,
-        packageID: String?
+        packageID: String?,
+        traceID: String?
     ) -> [String: String] {
         var fields = [
             "source": source,
@@ -370,6 +373,9 @@ final class Connector {
         }
         if let packageID, !packageID.isEmpty {
             fields["package_id"] = packageID
+        }
+        if let traceID, !traceID.isEmpty {
+            fields["trace_id"] = traceID
         }
         return fields
     }

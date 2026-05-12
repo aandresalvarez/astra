@@ -72,7 +72,8 @@ enum ConnectorPreflightService {
         store: SecretStore = KeychainSecretStore(),
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
         contextText: String = "",
-        workspaceID: UUID? = nil
+        workspaceID: UUID? = nil,
+        traceID: String? = nil
     ) async -> ConnectorPreflightIssue? {
         let candidates = rankedPreflightConnectors(
             connectors.filter(requiresPreflight),
@@ -86,7 +87,8 @@ enum ConnectorPreflightService {
                 store: store,
                 transport: transport,
                 source: "task_preflight",
-                workspaceID: workspaceID ?? connector.workspace?.id
+                workspaceID: workspaceID ?? connector.workspace?.id,
+                traceID: traceID
             )
             if result.0 {
                 return nil
