@@ -236,4 +236,41 @@ struct RuntimeReadinessServiceTests {
         #expect(report.checks.first?.id == "copilot-cli")
         #expect(report.checks.first?.state == .blocked)
     }
+
+    @Test("Provider availability exposes only ready runtimes")
+    func providerAvailabilityExposesOnlyReadyRuntimes() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "copilot 1.0\n", stderr: "")
+        )
+
+        let readiness = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in
+                switch binary {
+                case "claude": "/opt/claude"
+                case "copilot": "/opt/copilot"
+                default: ""
+                }
+            },
+            isExecutable: { $0 == "/opt/copilot" }
+        )
+        let service = RuntimeProviderAvailabilityService(readinessService: readiness)
+
+        let states = await service.states(configuration: RuntimeProviderAvailabilityConfiguration(
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(states[.claudeCode] == .blocked)
+        #expect(states[.copilotCLI] == .ready)
+        #expect(RuntimeProviderAvailabilityService.readyRuntimes(from: states) == [.copilotCLI])
+    }
 }

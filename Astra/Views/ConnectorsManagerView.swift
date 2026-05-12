@@ -210,7 +210,10 @@ struct ConnectorEditorView: View {
                             isTesting = true
                             testResult = nil
                             Task {
-                                let result = await connector.testConnection()
+                                let result = await connector.testConnection(
+                                    source: "configure_test_button",
+                                    workspaceID: workspace?.id
+                                )
                                 await MainActor.run {
                                     testResult = result
                                     isTesting = false
@@ -845,7 +848,10 @@ struct ConnectorEditorView: View {
             isTesting = true
             testResult = nil
         }
-        let result = await connector.testConnection()
+        let result = await connector.testConnection(
+            source: "configure_test_button",
+            workspaceID: workspace?.id
+        )
         await MainActor.run {
             testResult = result
             oauthStatus = result.1

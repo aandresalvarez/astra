@@ -612,14 +612,26 @@ struct WorkspaceRightRailView: View {
         switch item.source {
         case .package(let package):
             if enabled {
+                AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: [
+                    "source": "right_rail",
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "package_version": package.version,
+                    "workspace_id": workspace.id.uuidString,
+                    "readiness_level": String(describing: item.readiness.level),
+                    "readiness_messages_count": String(item.readiness.messages.count),
+                    "requirement_count": String(item.requirementNames.count)
+                ])
                 do {
                     try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext)
                     refreshApprovedCapabilities()
                 } catch {
                     capabilityError = error.localizedDescription
-                    AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
+                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                         "result": "failed",
+                        "source": "right_rail",
                         "package_id": package.id,
+                        "package_name": package.name,
                         "workspace_id": workspace.id.uuidString,
                         "readiness_level": String(describing: item.readiness.level),
                         "readiness_messages_count": String(item.readiness.messages.count),
@@ -658,6 +670,16 @@ struct WorkspaceRightRailView: View {
             workspace: workspace,
             capabilities: capabilities
         )
+        AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
+            "source": "right_rail",
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count)
+        ])
 
         workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
         workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }

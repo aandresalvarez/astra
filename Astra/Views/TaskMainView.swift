@@ -86,6 +86,7 @@ struct TaskMainView: View {
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
+    @State private var pendingInitialChatScrollTaskID: UUID?
     @State private var runtimeHealthNow = Date()
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
@@ -93,9 +94,16 @@ struct TaskMainView: View {
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -104,6 +112,14 @@ struct TaskMainView: View {
     private var availableSkills: [Skill] {
         guard let workspace = task.workspace else { return [] }
         return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
+
+    private func logTaskCapabilityContext(source: String, level: LogLevel = .info, extraFields: [String: String] = [:]) {
+        var fields = CapabilityAudit.taskContextFields(source: source, task: task)
+        for (key, value) in extraFields {
+            fields[key] = value
+        }
+        AppLogger.audit(.capabilityChatContext, category: "UI", taskID: task.id, fields: fields, level: level, fieldMaxLength: 240)
     }
 
     private var currentThreadSnapshot: TaskThreadSnapshot {
@@ -182,6 +198,32 @@ struct TaskMainView: View {
         }
     }
 
+    private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
+        RuntimeProviderAvailabilityConfiguration(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
+        )
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        [
+            claudePath,
+            copilotPath,
+            claudeProviderRaw,
+            claudeVertexProjectID,
+            claudeVertexRegion,
+            claudeVertexOpusModel,
+            claudeVertexSonnetModel,
+            claudeVertexHaikuModel
+        ].joined(separator: "|")
+    }
+
     private var threadScrollSignature: String {
         let itemCount = currentThreadSnapshot.conversationItems.count
         let lastItemID = currentThreadSnapshot.conversationItems.last?.id ?? "none"
@@ -239,20 +281,25 @@ struct TaskMainView: View {
                 )
             }
         }
+        .task(id: runtimeAvailabilitySignature) {
+            await refreshRuntimeAvailability()
+        }
         .onChange(of: task.id) {
             selectedTab = .summary
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
+            pendingInitialChatScrollTaskID = task.id
             runtimeHealthNow = Date()
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
             loadSSHConnections()
-            alignTaskModelWithRuntime()
+            alignTaskRuntimeWithAvailability()
         }
         .onAppear {
             alignTaskModelWithRuntime()
             runtimeHealthNow = Date()
+            pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
             logRuntimeHealthIfNeeded(reason: "appear")
@@ -336,6 +383,26 @@ struct TaskMainView: View {
             fields: health.telemetryFields(reason: reason),
             level: health.isAttentionState ? .warning : .debug
         )
+    }
+
+    private func refreshRuntimeAvailability() async {
+        let states = await RuntimeProviderAvailabilityService().states(
+            configuration: runtimeAvailabilityConfiguration
+        )
+        runtimeReadinessStates = states
+        alignTaskRuntimeWithAvailability()
+    }
+
+    private func alignTaskRuntimeWithAvailability() {
+        guard task.status != .running else { return }
+        let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
+        if !readyRuntimes.isEmpty {
+            if !readyRuntimes.contains(task.resolvedRuntimeID), let replacement = readyRuntimes.first {
+                task.runtimeID = replacement.rawValue
+                task.updatedAt = Date()
+            }
+        }
+        alignTaskModelWithRuntime()
     }
 
     // MARK: - Header Actions
@@ -1028,6 +1095,15 @@ struct TaskMainView: View {
     ) {
         guard oldSignature != newSignature else { return }
 
+        if pendingInitialChatScrollTaskID == task.id {
+            scrollChatToBottomAfterLayout(proxy, animated: false)
+            shouldScrollAfterUserMessage = false
+            if currentSnapshotMatchesTaskHistory {
+                pendingInitialChatScrollTaskID = nil
+            }
+            return
+        }
+
         if shouldScrollAfterUserMessage || isChatAtBottom {
             scrollChatToBottom(proxy)
             shouldScrollAfterUserMessage = false
@@ -1035,6 +1111,18 @@ struct TaskMainView: View {
         }
 
         hasUnseenChatActivity = true
+    }
+
+    private var currentSnapshotMatchesTaskHistory: Bool {
+        currentThreadSnapshot.totalEventCount >= task.events.count
+            && currentThreadSnapshot.totalRunCount >= task.runs.count
+    }
+
+    private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
+        scrollChatToBottom(proxy, animated: animated)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            scrollChatToBottom(proxy, animated: animated)
+        }
     }
 
     private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
@@ -2138,6 +2226,7 @@ struct TaskMainView: View {
                     skills: task.skills,
                     availableSkills: availableSkills,
                     workspace: task.workspace,
+                    runtimeReadinessStates: runtimeReadinessStates,
                     isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
@@ -2172,6 +2261,11 @@ struct TaskMainView: View {
                         }
                         task.captureSkillSnapshots()
                         task.updatedAt = Date()
+                        logTaskCapabilityContext(source: "task_skill_toggle", extraFields: [
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "skill_enabled": String(enabled)
+                        ])
                     },
                     onManageSkills: onManageSkills,
                     skipPermissions: $skipPermissions,
@@ -2739,6 +2833,7 @@ struct TaskMainView: View {
             task.status = .running
             task.updatedAt = Date()
             task.completedAt = nil
+            logTaskCapabilityContext(source: "task_continue_chat")
             Task {
                 await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
@@ -2762,6 +2857,7 @@ struct TaskMainView: View {
         let workspacePath = planningWorkspacePath
         let skillContext = planModeSkillContext()
         isPlanning = true
+        logTaskCapabilityContext(source: "task_plan_chat")
 
         Task {
             let result = await SpecEngine.chat(
@@ -2834,7 +2930,7 @@ struct TaskMainView: View {
     }
 
     private func planModeSkillContext() -> String {
-        """
+        var context = """
         PLAN MODE:
         You are planning a follow-up for an existing ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Use the visible conversation context to propose a safe execution plan.
         The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Plan Mode.
@@ -2844,6 +2940,48 @@ struct TaskMainView: View {
 
         Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. The user must confirm from the Plan panel before execution starts.
         """
+
+        let capabilityContext = taskCapabilitySkillContext()
+        if !capabilityContext.isEmpty {
+            context += "\n\n" + capabilityContext
+        }
+        return context
+    }
+
+    private func taskCapabilitySkillContext() -> String {
+        let resolver = TaskCapabilityResolver(task: task)
+        let skills = resolver.allBehaviorSkills
+        let connectors = resolver.allConnectors
+        let localTools = resolver.allLocalTools
+
+        var sections: [String] = []
+        if !skills.isEmpty {
+            sections.append(skills.map { skill in
+                var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
+                if !skill.connectors.isEmpty {
+                    desc += "\nConnectors: \(skill.connectorSummary)"
+                }
+                if !skill.localTools.isEmpty {
+                    desc += "\nLocal Tools: \(skill.localToolSummary)"
+                }
+                if !skill.environmentKeys.isEmpty {
+                    desc += "\nEnvironment Variables: \(skill.environmentKeys.joined(separator: ", "))"
+                }
+                if !skill.customTools.isEmpty {
+                    desc += "\nCustom Tools: \(skill.customTools.joined(separator: ", "))"
+                }
+                return desc
+            }.joined(separator: "\n\n"))
+        }
+        if !connectors.isEmpty {
+            let connectorList = connectors.map { "- \($0.name) (\($0.serviceType))" }.joined(separator: "\n")
+            sections.append("Enabled connectors for this task:\n\(connectorList)")
+        }
+        if !localTools.isEmpty {
+            let toolList = localTools.map { "- \($0.name) (\($0.toolType))" }.joined(separator: "\n")
+            sections.append("Enabled local tools for this task:\n\(toolList)")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "heic"]

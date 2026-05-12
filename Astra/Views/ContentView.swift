@@ -627,7 +627,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
-                .frame(width: 900, height: 500)
+                .frame(width: 980, height: 620)
         }
         .sheet(isPresented: $showingDashboard) {
             UsageDashboardView()

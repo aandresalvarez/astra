@@ -52,25 +52,15 @@ struct OnboardingWizardTests {
         }
     }
 
-    @Test("Required CLI checks follow the selected runtime")
-    func requiredCLIChecksFollowSelectedRuntime() {
+    @Test("Required CLI checks only require the selected AI runtime")
+    func requiredCLIChecksOnlyRequireSelectedAIRuntime() {
         let claudePrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .claudeCode)
-        #expect(claudePrerequisites.map(\.binary) == ["claude", "gh", "gh"])
-        #expect(claudePrerequisites.map(\.livenessArgs) == [
-            ["--version"],
-            ["--version"],
-            ["auth", "status", "--hostname", "github.com"]
-        ])
+        #expect(claudePrerequisites.map(\.binary) == ["claude"])
+        #expect(claudePrerequisites.map(\.livenessArgs) == [["--version"]])
 
         let copilotPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .copilotCLI)
-        #expect(copilotPrerequisites.map(\.binary) == ["copilot", "gh", "gh"])
-        #expect(copilotPrerequisites.map(\.livenessArgs) == [
-            ["--version"],
-            ["--version"],
-            ["auth", "status", "--hostname", "github.com"]
-        ])
-        #expect(copilotPrerequisites[1] == CommonCLIPrerequisites.githubCLI)
-        #expect(copilotPrerequisites[2] == CommonCLIPrerequisites.githubAuth)
+        #expect(copilotPrerequisites.map(\.binary) == ["copilot"])
+        #expect(copilotPrerequisites.map(\.livenessArgs) == [["--version"]])
     }
 
     @Test("Onboarding completion uses the Astra-specific storage key")

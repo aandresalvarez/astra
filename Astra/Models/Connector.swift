@@ -166,57 +166,61 @@ final class Connector {
     /// Returns (success, message) tuple.
     func testConnection(
         store: SecretStore = KeychainSecretStore(),
-        transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport()
+        transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
+        source: String = "manual",
+        workspaceID: UUID? = nil,
+        packageID: String? = nil
     ) async -> (Bool, String) {
+        let auditContext = connectorTestAuditFields(
+            source: source,
+            workspaceID: workspaceID,
+            packageID: packageID
+        )
+        AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            "result": "started"
+        ], uniquingKeysWith: { _, new in new }))
+
         if isStanfordOutlookMail {
             do {
                 let me = try await StanfordOutlookMailGraphService().testConnection(connector: self)
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                    "connector_id": id.uuidString,
-                    "service_type": serviceType,
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
                     "connector_updated_at": Self.auditTimestamp(updatedAt),
                     "result": "success"
-                ])
+                ], uniquingKeysWith: { _, new in new }))
                 let identity = me.mail ?? me.userPrincipalName ?? outlookEmail
                 return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
             } catch {
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                    "connector_id": id.uuidString,
-                    "service_type": serviceType,
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "failed",
                     "auth_verified": "false",
                     "connector_updated_at": Self.auditTimestamp(updatedAt),
                     "result": "oauth_failed",
                     "error_type": String(describing: type(of: error))
-                ], level: .warning)
+                ], uniquingKeysWith: { _, new in new }), level: .warning)
                 return (false, error.localizedDescription)
             }
         }
 
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                "connector_id": id.uuidString,
-                "service_type": serviceType,
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
                 "credential_key_count": String(credentialKeys.count),
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "missing_base_url"
-            ], level: .warning)
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "No base URL configured")
         }
 
         let creds = credentials(store: store)
         let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                "connector_id": id.uuidString,
-                "service_type": serviceType,
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "missing",
                 "auth_verified": "false",
@@ -224,7 +228,7 @@ final class Connector {
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "missing_credentials",
                 "missing_count": String(missingKeys.count)
-            ], level: .warning)
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "Missing Keychain value: \(missingKeys.joined(separator: ", "))")
         }
 
@@ -243,12 +247,10 @@ final class Connector {
             AppLogger.audit(
                 .connectorTested,
                 category: "Keychain",
-                fields: outcome.auditFields(adding: [
-                    "connector_id": id.uuidString,
-                    "service_type": serviceType,
+                fields: outcome.auditFields(adding: auditContext.merging([
                     "credential_key_count": String(credentialKeys.count),
                     "connector_updated_at": Self.auditTimestamp(updatedAt)
-                ]),
+                ], uniquingKeysWith: { _, new in new })),
                 level: outcome.level
             )
             return (outcome.success, outcome.message)
@@ -279,20 +281,19 @@ final class Connector {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
         }
 
-        return await executeTestRequest(request, transport: transport)
+        return await executeTestRequest(request, transport: transport, auditContext: auditContext)
     }
 
     private func executeTestRequest(
         _ request: URLRequest,
-        transport: any ConnectorHTTPTransport
+        transport: any ConnectorHTTPTransport,
+        auditContext: [String: String]
     ) async -> (Bool, String) {
         do {
             let (_, response) = try await transport.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if (200...299).contains(http.statusCode) {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                        "connector_id": id.uuidString,
-                        "service_type": serviceType,
+                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "authenticated",
                         "auth_verified": "true",
@@ -300,12 +301,10 @@ final class Connector {
                         "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "success",
                         "http_status": String(http.statusCode)
-                    ])
+                    ], uniquingKeysWith: { _, new in new }))
                     return (true, "HTTP \(http.statusCode) — connected successfully")
                 } else if http.statusCode == 401 || http.statusCode == 403 {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                        "connector_id": id.uuidString,
-                        "service_type": serviceType,
+                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -313,12 +312,10 @@ final class Connector {
                         "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "auth_failed",
                         "http_status": String(http.statusCode)
-                    ], level: .warning)
+                    ], uniquingKeysWith: { _, new in new }), level: .warning)
                     return (false, "HTTP \(http.statusCode) — authentication failed")
                 } else {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                        "connector_id": id.uuidString,
-                        "service_type": serviceType,
+                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "unknown",
                         "auth_verified": "false",
@@ -326,25 +323,21 @@ final class Connector {
                         "connector_updated_at": Self.auditTimestamp(updatedAt),
                         "result": "http_error",
                         "http_status": String(http.statusCode)
-                    ], level: .warning)
+                    ], uniquingKeysWith: { _, new in new }), level: .warning)
                     return (false, "HTTP \(http.statusCode)")
                 }
             }
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                "connector_id": id.uuidString,
-                "service_type": serviceType,
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
                 "credential_key_count": String(credentialKeys.count),
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "unknown_response"
-            ], level: .warning)
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "Unknown response")
         } catch {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: [
-                "connector_id": id.uuidString,
-                "service_type": serviceType,
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -352,9 +345,33 @@ final class Connector {
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "request_failed",
                 "error_type": String(describing: type(of: error))
-            ], level: .warning)
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, error.localizedDescription)
         }
+    }
+
+    private func connectorTestAuditFields(
+        source: String,
+        workspaceID: UUID?,
+        packageID: String?
+    ) -> [String: String] {
+        var fields = [
+            "source": source,
+            "connector_id": id.uuidString,
+            "connector_name": name,
+            "service_type": serviceType,
+            "is_global": String(isGlobal),
+            "auth_method": authMethod,
+            "credential_key_count": String(credentialKeys.count),
+            "config_key_count": String(configKeys.count)
+        ]
+        if let workspaceID = workspaceID ?? workspace?.id {
+            fields["workspace_id"] = workspaceID.uuidString
+        }
+        if let packageID, !packageID.isEmpty {
+            fields["package_id"] = packageID
+        }
+        return fields
     }
 
     private static func auditTimestamp(_ date: Date) -> String {

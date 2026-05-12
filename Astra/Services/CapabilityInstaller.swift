@@ -45,19 +45,33 @@ struct CapabilityInstaller {
     ) throws -> InstallationResult {
         let blockers = installBlockerMessages(for: package, in: workspace)
         guard blockers.isEmpty else {
+            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
+            fields["result"] = "blocked"
+            fields["blocker_count"] = String(blockers.count)
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
             throw InstallationError.blocked(blockers)
         }
-        try library.install(package)
+        do {
+            try library.install(package)
+        } catch {
+            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
+            fields["result"] = "library_install_failed"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
+            throw error
+        }
         let result = enable(
             package,
             in: workspace,
             modelContext: modelContext,
             credentialInputs: credentialInputs,
             configInputs: configInputs,
-            baseURLOverrides: baseURLOverrides
+            baseURLOverrides: baseURLOverrides,
+            auditSource: "install"
         )
         AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
             "package_id": package.id,
+            "package_name": package.name,
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString
         ])
@@ -71,8 +85,15 @@ struct CapabilityInstaller {
         modelContext: ModelContext,
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
-        baseURLOverrides: [String: String] = [:]
+        baseURLOverrides: [String: String] = [:],
+        auditSource: String = "enable"
     ) -> InstallationResult {
+        var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
+        startFields["credential_input_count"] = String(credentialInputs.count)
+        startFields["config_input_count"] = String(configInputs.count)
+        startFields["base_url_override_count"] = String(baseURLOverrides.count)
+        AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: startFields)
+
         var skillIDs: [UUID] = []
         var connectorIDs: [UUID] = []
         var localToolIDs: [UUID] = []
@@ -162,11 +183,14 @@ struct CapabilityInstaller {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
             "package_id": package.id,
+            "package_name": package.name,
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString,
             "skills_count": String(skillIDs.count),
             "connectors_count": String(connectorIDs.count),
-            "tools_count": String(localToolIDs.count)
+            "tools_count": String(localToolIDs.count),
+            "templates_count": String(templateIDs.count),
+            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
         ])
 
         return InstallationResult(
@@ -175,6 +199,24 @@ struct CapabilityInstaller {
             connectorIDs: connectorIDs,
             localToolIDs: localToolIDs,
             templateIDs: templateIDs
+        )
+    }
+
+    private func capabilityFields(
+        for package: PluginPackage,
+        workspace: Workspace,
+        source: String
+    ) -> [String: String] {
+        CapabilityAudit.packageFields(
+            packageID: package.id,
+            packageName: package.name,
+            packageVersion: package.version,
+            workspace: workspace,
+            source: source,
+            skillsCount: package.skills.count,
+            connectorsCount: package.connectors.count,
+            toolsCount: package.localTools.count,
+            templatesCount: package.templates.count
         )
     }
 

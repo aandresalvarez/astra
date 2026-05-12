@@ -220,6 +220,67 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("Fix the connector configuration"))
     }
 
+    @Test("Capability chat context gap is reported")
+    func capabilityChatContextGapIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "UI",
+                message: "capability.enabled package_id=jira package_name=Jira_Workflow workspace_id=WS skills_count=1 connectors_count=1 tools_count=0"
+            ),
+            LogEntry(
+                level: .info,
+                category: "UI",
+                message: "capability.chat_context source=new_task_plan_chat workspace_id=WS workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=1 workspace_enabled_global_tools_count=0 available_skill_count=0 selected_skill_count=0 excluded_skill_count=0"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Chat had no active capability context" })
+        #expect(report.notices.contains { $0.title == "Capability was enabled" })
+        #expect(report.markdown.contains("capability.chat_context"))
+        #expect(report.markdown.contains("workspace_enabled_capabilities_count=1"))
+    }
+
+    @Test("Successful capability interactions are retained as notices")
+    func successfulCapabilityInteractionsAreRetainedAsNotices() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "UI",
+                message: "capability.enable_started source=configure package_id=jira package_name=Jira_Workflow workspace_id=WS skills_count=1 connectors_count=1 tools_count=0"
+            ),
+            LogEntry(
+                level: .info,
+                category: "UI",
+                message: "capability.enabled source=configure package_id=jira package_name=Jira_Workflow workspace_id=WS skills_count=1 connectors_count=1 tools_count=0"
+            ),
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested source=configure_test_button result=started connector_id=JIRA service_type=jira workspace_id=WS"
+            ),
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested source=configure_test_button result=authenticated auth_verified=true credential_state=authenticated connector_id=JIRA service_type=jira workspace_id=WS"
+            ),
+            LogEntry(
+                level: .info,
+                category: "UI",
+                message: "capability.chat_context source=new_task_plan_chat workspace_id=WS workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=1 selected_skill_count=1 selected_skill_names=Jira_Workflow"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.contains { $0.title == "Capability enable was attempted" })
+        #expect(report.notices.contains { $0.title == "Capability was enabled" })
+        #expect(report.notices.contains { $0.title == "Connector test was attempted" })
+        #expect(report.notices.contains { $0.title == "Connector test succeeded" })
+        #expect(report.notices.contains { $0.title == "Chat capability context was captured" })
+        #expect(report.markdown.contains("## Resolved / Non-Actionable Events"))
+        #expect(report.markdown.contains("connector.tested result=authenticated"))
+    }
+
     @Test("Startup recovery interruption is reported as non-actionable")
     func startupRecoveryInterruptionIsNonActionable() {
         let report = LogDiagnosticsService.makeReport(entries: [

@@ -101,7 +101,8 @@ struct CopilotStreamEventParserTests {
             #"{"type":"user.message"}"#,
             #"{"type":"assistant.turn_start"}"#,
             #"{"type":"assistant.turn_end"}"#,
-            #"{"type":"assistant.reasoning_delta"}"#
+            #"{"type":"assistant.reasoning_delta"}"#,
+            #"{"type":"abort","data":{"reason":"user_initiated"}}"#
         ]
         for line in lines {
             #expect(CopilotStreamEventParser.parseAgentEvents(line: line).isEmpty)

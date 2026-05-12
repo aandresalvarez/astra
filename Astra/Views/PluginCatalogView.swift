@@ -519,6 +519,16 @@ struct PluginCatalogView: View {
 
     private func disableCapability(_ package: PluginPackage) {
         let state = packageState(package)
+        AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
+            "source": "disable",
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count)
+        ])
 
         workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
         workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
@@ -530,6 +540,17 @@ struct PluginCatalogView: View {
         }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+            "source": "configure",
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count),
+            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+        ])
         catalog.loadApprovedCapabilities()
         onCatalogChanged?()
     }
@@ -587,6 +608,14 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": "configure",
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
@@ -606,6 +635,14 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": enableHere ? "create_and_enable" : "create_install_only",
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
@@ -1169,6 +1206,14 @@ struct PluginInstallSheet: View {
             onInstalled(package)
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": "setup_sheet",
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
