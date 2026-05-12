@@ -254,6 +254,7 @@ struct ContentView: View {
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
+    @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -264,6 +265,8 @@ struct ContentView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
+    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
@@ -339,6 +342,10 @@ struct ContentView: View {
         workspaces
             .map { "\($0.id.uuidString)|\($0.primaryPath)" }
             .joined(separator: ",")
+    }
+
+    private var pendingExternalRouteID: UUID? {
+        externalRouteStore.pendingRoute?.id
     }
 
     private var executionSettingsSignature: String {
@@ -733,6 +740,9 @@ struct ContentView: View {
         }
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
+        }
+        .onChange(of: pendingExternalRouteID) {
+            handlePendingExternalRoute()
         }
         .onChange(of: selectedWorkspace) {
             handleSelectedWorkspaceChanged()
@@ -1319,6 +1329,126 @@ struct ContentView: View {
         isComposingTask = false
     }
 
+    private func handlePendingExternalRoute() {
+        guard let route = externalRouteStore.pendingRoute else { return }
+
+        let handled: Bool
+        switch route.destination {
+        case .workspace(let workspaceID):
+            handled = openWorkspaceFromExternalRoute(workspaceID)
+
+        case .task(let taskID):
+            handled = openTaskFromExternalRoute(taskID)
+
+        case .createTask(let workspaceID, let goal, let shouldRun):
+            handled = createTaskFromExternalRoute(
+                workspaceID: workspaceID,
+                goal: goal,
+                shouldRun: shouldRun
+            )
+
+        case .continueLatestUnfinishedTask(let workspaceID):
+            handled = continueLatestUnfinishedTaskFromExternalRoute(workspaceID)
+        }
+
+        guard handled else {
+            AppLogger.warning("Could not resolve external ASTRA route", category: "AppIntents")
+            externalRouteStore.clear(route)
+            return
+        }
+
+        externalRouteStore.clear(route)
+    }
+
+    private func openWorkspaceFromExternalRoute(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspace(for: workspaceID) else { return false }
+        selectedWorkspace = workspace
+        setSelectedTask(nil)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func openTaskFromExternalRoute(_ taskID: UUID) -> Bool {
+        guard let task = task(for: taskID) else { return false }
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func continueLatestUnfinishedTaskFromExternalRoute(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspace(for: workspaceID),
+              let task = AstraTaskIntentSupport.latestUnfinishedTask(in: workspace) else {
+            return false
+        }
+        selectedWorkspace = workspace
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+        return true
+    }
+
+    private func createTaskFromExternalRoute(
+        workspaceID: UUID,
+        goal: String,
+        shouldRun: Bool
+    ) -> Bool {
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedGoal.isEmpty,
+              let workspace = workspace(for: workspaceID) else {
+            return false
+        }
+
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let task = AgentTask(
+            title: AstraTaskIntentSupport.title(for: trimmedGoal),
+            goal: trimmedGoal,
+            workspace: workspace,
+            tokenBudget: defaultBudget,
+            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
+        )
+        task.runtimeID = runtime.rawValue
+        task.status = shouldRun ? .queued : .draft
+        modelContext.insert(task)
+        if shouldRun {
+            modelContext.insert(TaskEvent(task: task, type: "user.message", payload: trimmedGoal))
+        } else {
+            task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: trimmedGoal)
+        }
+        task.captureSkillSnapshots()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+
+        selectedWorkspace = workspace
+        setSelectedTask(task)
+        isComposingTask = false
+        presentRightRail()
+
+        AppLogger.audit(.taskCreated, category: "AppIntents", taskID: task.id, fields: [
+            "source": shouldRun ? "voice_create_and_run" : "voice_create_draft",
+            "workspace_id": workspace.id.uuidString
+        ])
+
+        if shouldRun {
+            runSingleTask(task)
+        }
+
+        return true
+    }
+
+    private func workspace(for id: UUID) -> Workspace? {
+        workspaces.first { $0.id == id }
+    }
+
+    private func task(for id: UUID) -> AgentTask? {
+        for workspace in workspaces {
+            if let task = workspace.tasks.first(where: { $0.id == id }) {
+                return task
+            }
+        }
+        return nil
+    }
+
     private func moveTaskToDraft(_ task: AgentTask) {
         isComposingTask = false
         setSelectedTask(nil)
@@ -1794,6 +1924,7 @@ struct ContentView: View {
     private func handleWorkspaceSelectionSignatureChanged() {
         restoreWorkspaceSelection()
         enterUITestComposerIfNeeded()
+        handlePendingExternalRoute()
     }
 
     private func handleAppear() {
@@ -1813,6 +1944,7 @@ struct ContentView: View {
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
+        handlePendingExternalRoute()
         refreshUpdateSafetyHooks()
         appUpdateController.probeForUpdatesOnce()
     }

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import AppIntents
 
 private let aboutAstraWindowID = "about-astra"
 
@@ -224,6 +225,7 @@ public struct ASTRAApp: App {
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         AppLogger.audit(.appActivated, category: "App")
+        AstraAppShortcuts.updateAppShortcutParameters()
 
         let schema = ASTRASchema.current
         BundledToolInstaller.installBundledTools(bundle: resourceBundle)
@@ -391,6 +393,10 @@ public struct ASTRAApp: App {
                 .frame(minWidth: 900, minHeight: 600)
                 .tint(Stanford.cardinalRed)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
+                .onOpenURL { url in
+                    guard let route = AstraExternalRouteCodec.route(from: url) else { return }
+                    AstraExternalRouteStore.shared.submit(route)
+                }
         }
         .modelContainer(modelContainer)
         .defaultSize(width: 1200, height: 750)
