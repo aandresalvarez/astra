@@ -1591,48 +1591,69 @@ private struct QueryResultGrid: View {
     var body: some View {
         VStack(spacing: 0) {
             resultSummary
+            Divider()
             GeometryReader { proxy in
-                let widths = columnWidths(availableWidth: max(proxy.size.width - 40, 320))
+                let availableWidth = max(proxy.size.width - QueryResultGridLayout.outerPadding * 2, 320)
+                let availableHeight = max(proxy.size.height - QueryResultGridLayout.outerPadding * 2, 0)
+                let widths = columnWidths(availableWidth: availableWidth)
+                let tableWidth = totalTableWidth(widths)
                 ScrollView([.horizontal, .vertical]) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        Section {
-                            ForEach(Array(result.rows.enumerated()), id: \.offset) { index, row in
-                                QueryResultRow(
-                                    rowNumber: index + 1,
-                                    row: row,
-                                    widths: widths,
-                                    isAlternate: index.isMultiple(of: 2)
-                                )
+                    VStack(alignment: .leading, spacing: 0) {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            Section {
+                                if result.rows.isEmpty {
+                                    QueryResultEmptyRow(width: tableWidth)
+                                } else {
+                                    ForEach(Array(result.rows.enumerated()), id: \.offset) { index, row in
+                                        QueryResultRow(
+                                            rowNumber: index + 1,
+                                            row: row,
+                                            widths: widths,
+                                            isAlternate: !index.isMultiple(of: 2)
+                                        )
+                                    }
+                                }
+                            } header: {
+                                QueryResultHeader(columns: result.columns, widths: widths)
                             }
-                        } header: {
-                            QueryResultHeader(columns: result.columns, widths: widths)
                         }
+                        .frame(width: tableWidth, alignment: .topLeading)
+                        .background(Stanford.cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: QueryResultGridLayout.cornerRadius, style: .continuous)
+                                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                        }
+                        .shadow(color: .black.opacity(0.025), radius: 6, x: 0, y: 2)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
+                    .frame(minWidth: availableWidth, minHeight: availableHeight, alignment: .topLeading)
+                    .padding(QueryResultGridLayout.outerPadding)
                 }
-                .background(Color.primary.opacity(0.018))
+                .background(Stanford.fog.opacity(0.42))
             }
         }
+        .background(Stanford.panelBackground)
     }
 
     private var resultSummary: some View {
         HStack(spacing: 12) {
-            Label(result.message, systemImage: "checkmark.circle")
+            Label(result.message, systemImage: "checkmark.circle.fill")
                 .foregroundStyle(Stanford.statusHealthy)
                 .lineLimit(1)
 
             Spacer(minLength: 8)
 
-            QueryResultMetric(value: "\(result.rowCount)", label: result.rowCount == 1 ? "row" : "rows")
-            QueryResultMetric(value: "\(result.columns.count)", label: result.columns.count == 1 ? "column" : "columns")
+            HStack(spacing: 6) {
+                QueryResultMetric(value: "\(result.rowCount)", label: result.rowCount == 1 ? "row" : "rows")
+                QueryResultMetric(value: "\(result.columns.count)", label: result.columns.count == 1 ? "column" : "columns")
 
-            if let bytes = result.bytesProcessed {
-                QueryResultMetric(value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file), label: "processed")
-            }
+                if let bytes = result.bytesProcessed {
+                    QueryResultMetric(value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file), label: "processed")
+                }
 
-            if let elapsed = result.elapsedMilliseconds {
-                QueryResultMetric(value: "\(elapsed) ms", label: "elapsed")
+                if let elapsed = result.elapsedMilliseconds {
+                    QueryResultMetric(value: "\(elapsed) ms", label: "elapsed")
+                }
             }
 
             Button {
@@ -1679,23 +1700,37 @@ private struct QueryResultGrid: View {
                 .max() ?? header.count
             let hasStructuredValue = samples.contains { $0.isLikelyStructuredValue }
             let hasLongValue = samples.contains { $0.count > 36 || $0.contains("\n") }
-            let base = CGFloat(longest * 7 + 34)
-            let maxWidth: CGFloat = hasStructuredValue ? 360 : (hasLongValue ? 300 : 240)
-            return min(max(base, 136), maxWidth)
+            let base = CGFloat(longest * 7 + 52)
+            let maxWidth: CGFloat = hasStructuredValue ? 420 : (hasLongValue ? 340 : 260)
+            return min(max(base, 148), maxWidth)
         }
 
-        let rowNumberWidth: CGFloat = 52
-        let total = rawWidths.reduce(rowNumberWidth, +)
-        guard total < availableWidth else { return rawWidths }
+        let contentWidth = rawWidths.reduce(0, +)
+        let targetContentWidth = max(availableWidth - QueryResultGridLayout.rowNumberWidth, contentWidth)
+        guard contentWidth < targetContentWidth else { return rawWidths }
 
-        let extra = (availableWidth - total) / CGFloat(rawWidths.count)
-        return rawWidths.map { min($0 + extra, 380) }
+        let extra = targetContentWidth - contentWidth
+        return rawWidths.map { width in
+            let share = width / contentWidth
+            return width + extra * share
+        }
+    }
+
+    private func totalTableWidth(_ widths: [CGFloat]) -> CGFloat {
+        widths.reduce(QueryResultGridLayout.rowNumberWidth, +)
     }
 
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
     }
+}
+
+private enum QueryResultGridLayout {
+    static let outerPadding: CGFloat = 16
+    static let rowNumberWidth: CGFloat = 58
+    static let cornerRadius: CGFloat = 8
+    static let rowMinHeight: CGFloat = 38
 }
 
 private struct QueryResultMetric: View {
@@ -1711,6 +1746,12 @@ private struct QueryResultMetric: View {
                 .foregroundStyle(.secondary)
         }
         .lineLimit(1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(0.055))
+        }
     }
 }
 
@@ -1721,9 +1762,9 @@ private struct QueryResultHeader: View {
     var body: some View {
         HStack(spacing: 0) {
             Text("#")
-                .frame(width: 52, alignment: .trailing)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 9)
+                .frame(width: QueryResultGridLayout.rowNumberWidth, alignment: .trailing)
                 .foregroundStyle(.secondary)
 
             ForEach(Array(columns.enumerated()), id: \.offset) { index, column in
@@ -1732,18 +1773,16 @@ private struct QueryResultHeader: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(width: widths[safe: index] ?? 160, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.08))
-                            .frame(width: 1)
-                    }
+                    .frame(width: widths[safe: index] ?? 160, alignment: .leading)
             }
         }
         .font(Stanford.caption(11))
-        .background(.regularMaterial)
+        .background(.thinMaterial)
+        .overlay(alignment: .leading) {
+            QueryResultColumnDividers(widths: widths, opacity: 0.08)
+        }
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.primary.opacity(0.12))
@@ -1763,18 +1802,23 @@ private struct QueryResultRow: View {
             Text(rowNumber.formatted())
                 .font(Stanford.ui(11, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 10)
+                .frame(width: QueryResultGridLayout.rowNumberWidth, alignment: .topTrailing)
+                .frame(minHeight: QueryResultGridLayout.rowMinHeight, alignment: .topTrailing)
 
-            ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+            ForEach(widths.indices, id: \.self) { index in
+                let value = row[safe: index] ?? ""
                 QueryResultCell(value: value, width: widths[safe: index] ?? 160)
             }
         }
-        .background(isAlternate ? Stanford.cardBackground.opacity(0.72) : Color.clear)
+        .background(isAlternate ? Stanford.fog.opacity(0.34) : Stanford.cardBackground)
+        .overlay(alignment: .leading) {
+            QueryResultColumnDividers(widths: widths, opacity: 0.055)
+        }
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.primary.opacity(0.055))
+                .fill(Color.primary.opacity(0.06))
                 .frame(height: 1)
         }
     }
@@ -1785,19 +1829,11 @@ private struct QueryResultCell: View {
     let width: CGFloat
 
     var body: some View {
-        Text(displayValue)
-            .font(Stanford.ui(12, design: value.isLikelyStructuredValue ? .monospaced : .default))
-            .foregroundStyle(value.isEmpty ? .secondary : .primary)
-            .lineLimit(value.isLikelyStructuredValue ? 5 : 3)
-            .textSelection(.enabled)
-            .frame(width: width, alignment: .leading)
+        cellContent
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.06))
-                    .frame(width: 1)
-            }
+            .padding(.vertical, value.isLikelyStructuredValue ? 9 : 10)
+            .frame(width: width, alignment: .topLeading)
+            .frame(minHeight: QueryResultGridLayout.rowMinHeight, alignment: .topLeading)
             .contextMenu {
                 Button("Copy Value") {
                     NSPasteboard.general.clearContents()
@@ -1807,8 +1843,68 @@ private struct QueryResultCell: View {
             .help(value)
     }
 
-    private var displayValue: String {
-        value.isEmpty ? "NULL" : value
+    @ViewBuilder
+    private var cellContent: some View {
+        if value.isEmpty {
+            Text("NULL")
+                .font(Stanford.ui(10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+                }
+                .textSelection(.enabled)
+        } else {
+            Text(value.sqlResultPreview)
+                .font(Stanford.ui(12, design: value.isLikelyStructuredValue ? .monospaced : .default))
+                .foregroundStyle(.primary)
+                .lineLimit(value.isLikelyStructuredValue ? 6 : 2)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private struct QueryResultColumnDividers: View {
+    let widths: [CGFloat]
+    let opacity: Double
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear
+                .frame(width: QueryResultGridLayout.rowNumberWidth)
+            divider
+            ForEach(Array(widths.dropLast().enumerated()), id: \.offset) { _, width in
+                Color.clear
+                    .frame(width: width)
+                divider
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(opacity))
+            .frame(width: 1)
+    }
+}
+
+private struct QueryResultEmptyRow: View {
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "tablecells")
+                .foregroundStyle(.secondary)
+            Text("Query returned no preview rows.")
+                .foregroundStyle(.secondary)
+        }
+        .font(Stanford.caption(11))
+        .frame(width: width)
+        .frame(minHeight: 72)
     }
 }
 
@@ -1833,6 +1929,19 @@ private extension String {
     var isLikelyStructuredValue: Bool {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.hasPrefix("{") || trimmed.hasPrefix("[") || contains("\n")
+    }
+
+    var sqlResultPreview: String {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isLikelyStructuredValue,
+              let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(object),
+              let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]),
+              let pretty = String(data: prettyData, encoding: .utf8) else {
+            return self
+        }
+        return pretty
     }
 }
 
