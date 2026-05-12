@@ -38,6 +38,56 @@ private func makeEvent(
     return event
 }
 
+private actor QueryStubRunner: StandardInputBinaryRunner {
+    var results: [RunResult]
+    private(set) var lastArgs: [String] = []
+    private(set) var lastStandardInput = ""
+    private(set) var allArgs: [[String]] = []
+    private(set) var allStandardInputs: [String] = []
+
+    init(result: RunResult) {
+        self.results = [result]
+    }
+
+    init(results: [RunResult]) {
+        self.results = results
+    }
+
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        lastArgs = args
+        lastStandardInput = ""
+        allArgs.append(args)
+        allStandardInputs.append("")
+        return nextResult()
+    }
+
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        standardInput: String
+    ) async -> RunResult {
+        lastArgs = args
+        lastStandardInput = standardInput
+        allArgs.append(args)
+        allStandardInputs.append(standardInput)
+        return nextResult()
+    }
+
+    private func nextResult() -> RunResult {
+        guard !results.isEmpty else {
+            return RunResult(outcome: .exited(code: 0), stdout: "", stderr: "")
+        }
+        return results.removeFirst()
+    }
+}
+
 // MARK: - Content Selection
 
 @Suite("Content selection")
@@ -983,6 +1033,7 @@ struct TaskThreadSnapshotTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
         try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let files = TaskFileIndex.scanTaskFolder(root.path)
@@ -990,6 +1041,7 @@ struct TaskThreadSnapshotTests {
 
         #expect(destinations["summary.md"] == .text)
         #expect(destinations["index.html"] == .browser)
+        #expect(destinations["query.sql"] == .query)
     }
 
     @Test("Task file index merges visible files without duplicates")
@@ -1071,6 +1123,7 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .text)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .text)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/query.sql") == .query)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .text)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .text)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .text)
@@ -1115,6 +1168,451 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/archive.zip") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/random-output") == nil)
+    }
+
+    @Test("Generated file preview finds attached SQL inputs")
+    func generatedFilePreviewFindsAttachedSQLInputs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-attached-sql-\(UUID().uuidString)")
+        let nested = root.appendingPathComponent("nested")
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
+        try "select 2".write(to: nested.appendingPathComponent("report.sql"), atomically: true, encoding: .utf8)
+        try "not sql".write(to: nested.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let paths = TaskGeneratedFiles.sqlFiles(inInputs: [
+            root.appendingPathComponent("query.sql").path,
+            root.path,
+            root.appendingPathComponent("notes.txt").path
+        ])
+
+        #expect(paths.contains(root.appendingPathComponent("query.sql").path))
+        #expect(paths.contains(nested.appendingPathComponent("report.sql").path))
+        #expect(!paths.contains(nested.appendingPathComponent("notes.txt").path))
+    }
+
+    @Test("SQL classifier separates reads from mutations and scripts")
+    func sqlClassifierSeparatesReadsFromMutationsAndScripts() {
+        #expect(SQLClassifier.classify("-- comment\nselect * from users") == .read)
+        #expect(SQLClassifier.classify("with x as (select 1) select * from x") == .read)
+        #expect(SQLClassifier.classify("update users set active = false") == .dml)
+        #expect(SQLClassifier.classify("create table backup as select * from users") == .ddl)
+        #expect(SQLClassifier.classify("select 1; select 2") == .script)
+    }
+
+    @Test("BigQuery dry run parses bytes processed")
+    func bigQueryDryRunParsesBytesProcessed() async throws {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: "",
+            stderr: "Query successfully validated. This query will process 12,345 bytes when run."
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let result = try await adapter.dryRun(QueryRequest(
+            sql: "-- leading comment\nselect 1",
+            connection: DatabaseConnection(
+                id: "bigquery-cli",
+                displayName: "BigQuery",
+                adapterID: "bigquery-cli",
+                dialect: .bigQueryStandard,
+                defaultNamespace: nil,
+                projectID: "demo"
+            ),
+            rowLimit: 100
+        ))
+
+        #expect(result.bytesProcessed == 12345)
+        #expect(result.message.contains("12,345 bytes"))
+        #expect(await runner.lastStandardInput == "-- leading comment\nselect 1")
+        #expect(!((await runner.lastArgs).contains { $0.contains("leading comment") }))
+    }
+
+    @Test("BigQuery run parses JSON preview rows")
+    func bigQueryRunParsesJSONPreviewRows() async throws {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: #"[{"name":"Ada","total":3}]"#,
+            stderr: #"totalBytesProcessed: "42""#
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let result = try await adapter.run(QueryRequest(
+            sql: "select 'Ada' as name, 3 as total",
+            connection: DatabaseConnection(
+                id: "bigquery-cli",
+                displayName: "BigQuery",
+                adapterID: "bigquery-cli",
+                dialect: .bigQueryStandard,
+                defaultNamespace: nil,
+                projectID: nil
+            ),
+            rowLimit: 100
+        ))
+
+        #expect(Set(result.columns.map(\.name)) == ["name", "total"])
+        #expect(Set(result.rows.first ?? []) == ["Ada", "3"])
+        #expect(result.bytesProcessed == 42)
+    }
+
+    @Test("BigQuery schema lists tables and columns")
+    func bigQuerySchemaListsTablesAndColumns() async throws {
+        let runner = QueryStubRunner(results: [
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"[{"tableReference":{"projectId":"demo","datasetId":"clinical","tableId":"person"},"type":"TABLE"}]"#,
+                stderr: ""
+            ),
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"{"schema":{"fields":[{"name":"person_id","type":"INT64","mode":"REQUIRED"},{"name":"birth_datetime","type":"TIMESTAMP","mode":"NULLABLE"}]}}"#,
+                stderr: ""
+            )
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        let catalog = try await adapter.schema(SchemaRequest(connection: connection, datasetID: nil))
+        let table = try #require(catalog.datasets.first?.tables.first)
+        let detailed = try await adapter.tableSchema(SchemaTableRequest(
+            connection: connection,
+            projectID: table.projectID,
+            datasetID: table.datasetID,
+            tableID: table.tableID
+        ))
+
+        #expect(table.fullName == "demo:clinical.person")
+        #expect(table.projectID == "demo")
+        #expect(detailed.columns.map(\.name) == ["person_id", "birth_datetime"])
+        #expect(await runner.allArgs == [
+            ["--project_id=demo", "ls", "--format=json", "demo:clinical"],
+            ["--project_id=demo", "show", "--format=json", "demo:clinical.person"]
+        ])
+    }
+
+    @Test("BigQuery schema uses datasets referenced by SQL first")
+    func bigQuerySchemaUsesDatasetsReferencedBySQLFirst() async throws {
+        let runner = QueryStubRunner(results: [
+            RunResult(outcome: .exited(code: 0), stdout: #"[]"#, stderr: ""),
+            RunResult(outcome: .exited(code: 0), stdout: #"[]"#, stderr: "")
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "som-rit-phi-starr-dev"
+        )
+
+        _ = try await adapter.schema(SchemaRequest(
+            connection: connection,
+            datasetID: nil,
+            sqlContext: """
+            SELECT * FROM `som-rit-phi-starr-dev.stet54_destination.visit_occurrence`
+            UNION ALL
+            SELECT * FROM `som-rit-phi-starr-dev.stet53_destination.visit_occurrence`
+            """
+        ))
+
+        #expect(await runner.allArgs == [
+            ["--project_id=som-rit-phi-starr-dev", "ls", "--format=json", "som-rit-phi-starr-dev:stet54_destination"],
+            ["--project_id=som-rit-phi-starr-dev", "ls", "--format=json", "som-rit-phi-starr-dev:stet53_destination"]
+        ])
+    }
+
+    @Test("BigQuery schema parser tolerates warning text around JSON")
+    func bigQuerySchemaParserToleratesWarningTextAroundJSON() async throws {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: """
+            Waiting on bq auth refresh...
+            [{"tableReference":{"projectId":"demo","datasetId":"clinical","tableId":"visit_occurrence"},"type":"TABLE"}]
+            trailing diagnostic
+            """,
+            stderr: ""
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let catalog = try await adapter.schema(SchemaRequest(
+            connection: DatabaseConnection(
+                id: "bigquery-cli",
+                displayName: "BigQuery",
+                adapterID: "bigquery-cli",
+                dialect: .bigQueryStandard,
+                defaultNamespace: "clinical",
+                projectID: "demo"
+            ),
+            datasetID: nil
+        ))
+
+        #expect(catalog.datasets.first?.tables.first?.tableID == "visit_occurrence")
+    }
+
+    @Test("BigQuery recovery creates copy backup for mutations")
+    func bigQueryRecoveryCreatesCopyBackupForMutations() async throws {
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: "",
+            stderr: ""
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let plan = try await adapter.prepareRecovery(QueryRequest(
+            sql: "UPDATE `demo.clinical.person` SET active = false WHERE person_id = 1",
+            connection: DatabaseConnection(
+                id: "bigquery-cli",
+                displayName: "BigQuery",
+                adapterID: "bigquery-cli",
+                dialect: .bigQueryStandard,
+                defaultNamespace: nil,
+                projectID: "demo"
+            ),
+            rowLimit: 100
+        ), classification: .dml)
+
+        #expect(plan.isPrepared)
+        #expect(plan.sourceTableID == "demo.clinical.person")
+        #expect(plan.backupTableID?.contains("demo.clinical.person__astra_backup_") == true)
+        #expect(plan.restoreSQL.contains("CREATE OR REPLACE TABLE `demo.clinical.person`"))
+        #expect((await runner.lastArgs).prefix(3) == ["--project_id=demo", "cp", "demo:clinical.person"])
+    }
+
+    @MainActor
+    @Test("Query session runs mutation after recovery is prepared")
+    func querySessionRunsMutationAfterRecoveryPrepared() async {
+        let runner = QueryStubRunner(results: [
+            RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""),
+            RunResult(outcome: .exited(code: 0), stdout: #"[]"#, stderr: "")
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        session.loadSQL("DELETE FROM `demo.clinical.person` WHERE person_id = 1", title: "delete.sql")
+        await session.prepareRecovery(connection: connection)
+        await session.run(connection: connection)
+
+        #expect(session.recoveryPlan?.isPrepared == true)
+        #expect(session.errorMessage == nil)
+        #expect(session.executionResult?.rowCount == 0)
+        #expect(session.history.first?.status == .succeeded)
+        #expect(await runner.allStandardInputs.last == "DELETE FROM `demo.clinical.person` WHERE person_id = 1")
+    }
+
+    @MainActor
+    @Test("Query session persists task scoped history")
+    func querySessionPersistsTaskScopedHistory() async {
+        let taskID = UUID()
+        let storageKey = "astra.queryShelf.history.\(taskID.uuidString)"
+        UserDefaults.standard.removeObject(forKey: storageKey)
+        defer { UserDefaults.standard.removeObject(forKey: storageKey) }
+
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: "",
+            stderr: "Query successfully validated. This query will process 1 bytes when run."
+        ))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "demo"
+        )
+
+        session.bindToTask(taskID)
+        session.loadSQL("select 1", title: "query.sql")
+        await session.dryRun(connection: connection)
+
+        let restored = ShelfQuerySession()
+        restored.bindToTask(taskID)
+
+        #expect(restored.history.first?.status == .dryRunSucceeded)
+        #expect(restored.history.first?.sql == "select 1")
+    }
+
+    @MainActor
+    @Test("Query session keeps schema browser when column loading fails")
+    func querySessionKeepsSchemaBrowserWhenColumnLoadingFails() async {
+        let runner = QueryStubRunner(results: [
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"[{"tableReference":{"projectId":"demo","datasetId":"clinical","tableId":"visit_occurrence"},"type":"TABLE"}]"#,
+                stderr: ""
+            ),
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: "not json",
+                stderr: ""
+            )
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: "clinical",
+            projectID: "demo"
+        )
+
+        await session.loadSchema(connection: connection)
+        let table = session.schemaCatalog?.datasets.first?.tables.first
+        if let table {
+            await session.loadTableSchema(table, connection: connection)
+        }
+
+        #expect(session.schemaCatalog?.datasets.first?.tables.first?.tableID == "visit_occurrence")
+        #expect(session.schemaErrorMessage == nil)
+        #expect(session.tableSchemaErrorTableID == "demo:clinical.visit_occurrence")
+        #expect(session.tableSchemaErrorMessage?.contains("without a JSON payload") == true)
+    }
+
+    @MainActor
+    @Test("Query session loads columns using table project instead of connection project")
+    func querySessionLoadsColumnsUsingTableProjectInsteadOfConnectionProject() async {
+        let runner = QueryStubRunner(results: [
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"[{"tableReference":{"projectId":"som-rit-phi-starr-dev","datasetId":"stet54_destination","tableId":"care_site"},"type":"TABLE"}]"#,
+                stderr: ""
+            ),
+            RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"{"schema":{"fields":[{"name":"care_site_id","type":"INT64"}]}}"#,
+                stderr: ""
+            )
+        ])
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: "/bin/echo")
+        let session = ShelfQuerySession(queryService: DatabaseQueryService(adapters: [
+            "bigquery-cli": adapter
+        ]))
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: "upo-nero-phi-su-deid-pa"
+        )
+
+        session.loadSQL("SELECT * FROM `som-rit-phi-starr-dev.stet54_destination.care_site`", title: "query.sql")
+        await session.loadSchema(connection: connection)
+        let table = session.schemaCatalog?.datasets.first?.tables.first
+        if let table {
+            await session.loadTableSchema(table, connection: connection)
+        }
+
+        #expect(session.tableSchemaErrorMessage == nil)
+        #expect(session.schemaCatalog?.datasets.first?.tables.first?.columns.map(\.name) == ["care_site_id"])
+        #expect(await runner.allArgs == [
+            [
+                "--project_id=upo-nero-phi-su-deid-pa",
+                "ls",
+                "--format=json",
+                "som-rit-phi-starr-dev:stet54_destination"
+            ],
+            [
+                "--project_id=upo-nero-phi-su-deid-pa",
+                "show",
+                "--format=json",
+                "som-rit-phi-starr-dev:stet54_destination.care_site"
+            ]
+        ])
+    }
+
+    @MainActor
+    @Test("Query session blocks mutations before execution")
+    func querySessionBlocksMutationsBeforeExecution() async {
+        let session = ShelfQuerySession()
+        session.loadSQL("delete from users where active = false", title: "Dangerous.sql")
+        await session.run(connection: DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: nil
+        ))
+
+        #expect(session.errorMessage == "Mutation and script execution is blocked until a prepared recovery plan exists.")
+        #expect(session.history.first?.status == .blocked)
+    }
+
+    @MainActor
+    @Test("Query session discovers BigQuery from skill-attached tools")
+    func querySessionDiscoversBigQueryFromSkillAttachedTools() {
+        let workspace = makeWorkspace(name: "BigQuery")
+        let skill = Skill(name: "GCloud Agent")
+        skill.workspace = workspace
+        let tool = LocalTool(name: "bq - BigQuery CLI", command: "bq", arguments: "")
+        tool.workspace = workspace
+        tool.skill = skill
+        skill.localTools = [tool]
+        workspace.skills = [skill]
+
+        let connections = ShelfQuerySession().availableConnections(for: workspace)
+
+        #expect(connections.contains { $0.adapterID == "bigquery-cli" })
+    }
+
+    @MainActor
+    @Test("Query session discovers BigQuery from enabled global tools")
+    func querySessionDiscoversBigQueryFromEnabledGlobalTools() {
+        let workspace = makeWorkspace(name: "BigQuery")
+        let tool = LocalTool(name: "bq - BigQuery CLI", command: "bq", arguments: "")
+        tool.isGlobal = true
+        workspace.enabledGlobalToolIDs = [tool.id.uuidString]
+
+        let connections = ShelfQuerySession().availableConnections(
+            for: workspace,
+            globalTools: [tool]
+        )
+
+        #expect(connections.contains { $0.adapterID == "bigquery-cli" })
+    }
+
+    @MainActor
+    @Test("Query session auto-selects runnable connection when available")
+    func querySessionAutoSelectsRunnableConnectionWhenAvailable() {
+        let session = ShelfQuerySession()
+        let connection = DatabaseConnection(
+            id: "bigquery-cli",
+            displayName: "BigQuery CLI",
+            adapterID: "bigquery-cli",
+            dialect: .bigQueryStandard,
+            defaultNamespace: nil,
+            projectID: nil
+        )
+
+        session.selectConnectionIfNeeded(from: [.editOnly, connection])
+
+        #expect(session.selectedConnectionID == "bigquery-cli")
+        #expect(session.selectedDialect == .bigQueryStandard)
     }
 
     @Test("Generated file preview finds attached Markdown inputs")
