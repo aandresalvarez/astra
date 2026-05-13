@@ -386,6 +386,12 @@ struct ChatPanelView: View {
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
+    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
@@ -401,6 +407,7 @@ struct ChatPanelView: View {
     @State private var pendingPlan: TaskPlanPayload?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
+    @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     // Random per session; a live-cycling prompt mutated while the user was reading it.
     @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
@@ -446,6 +453,32 @@ struct ChatPanelView: View {
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
+        RuntimeProviderAvailabilityConfiguration(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexProjectID: claudeVertexProjectID,
+            vertexRegion: claudeVertexRegion,
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
+        )
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        [
+            claudePath,
+            copilotPath,
+            claudeProviderRaw,
+            claudeVertexProjectID,
+            claudeVertexRegion,
+            claudeVertexOpusModel,
+            claudeVertexSonnetModel,
+            claudeVertexHaikuModel
+        ].joined(separator: "|")
     }
 
     private var showSlashMenu: Bool {
@@ -632,6 +665,9 @@ struct ChatPanelView: View {
         }
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
+        .task(id: runtimeAvailabilitySignature) {
+            await refreshRuntimeAvailability()
+        }
         .onAppear {
             alignDefaultModelWithRuntime()
             loadSSHConnections()
@@ -999,6 +1035,7 @@ struct ChatPanelView: View {
                     skills: selectedSkills,
                     availableSkills: availableSkills,
                     workspace: workspace,
+                    runtimeReadinessStates: runtimeReadinessStates,
                     isRunning: isThinking,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
@@ -1006,23 +1043,47 @@ struct ChatPanelView: View {
                     onSend: { submitComposer() },
                     onModelChange: { defaultModel = $0 },
                     onRuntimeChange: { runtime in
+                        let previousRuntime = defaultRuntimeID
                         defaultRuntimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        defaultModel = RuntimeModelAvailability.normalizedModel(
-                            defaultModel,
-                            for: resolved,
+                        defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                            currentModel: defaultModel,
+                            to: resolved,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
+                        AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "previous_runtime": previousRuntime,
+                            "runtime": runtime,
+                            "model": defaultModel,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onBudgetChange: { defaultBudget = $0 },
-                    onRemoveSkill: { skill in excludedSkillIDs.insert(skill.id) },
+                    onRemoveSkill: { skill in
+                        excludedSkillIDs.insert(skill.id)
+                        AppLogger.breadcrumb(action: "new_task_skill_removed", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": defaultRuntimeID,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
+                    },
                     onToggleSkill: { skill, enable in
                         if enable {
                             excludedSkillIDs.remove(skill.id)
                         } else {
                             excludedSkillIDs.insert(skill.id)
                         }
+                        AppLogger.breadcrumb(action: enable ? "new_task_skill_enabled" : "new_task_skill_disabled", category: "UI", fields: [
+                            "source": "new_task_composer",
+                            "skill_id": skill.id.uuidString,
+                            "skill_name": skill.name,
+                            "runtime": defaultRuntimeID,
+                            "workspace_id": workspace?.id.uuidString ?? "none"
+                        ])
                     },
                     onManageSkills: onManageSkills,
                     skipPermissions: $skipPermissions,
@@ -1076,6 +1137,79 @@ struct ChatPanelView: View {
         DispatchQueue.main.async {
             isComposerFocused = true
         }
+    }
+
+    private func refreshRuntimeAvailability() async {
+        let states = await RuntimeProviderAvailabilityService().states(
+            configuration: runtimeAvailabilityConfiguration
+        )
+        runtimeReadinessStates = states
+        alignDefaultRuntimeWithAvailability()
+    }
+
+    private func alignDefaultRuntimeWithAvailability() {
+        let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
+        if !readyRuntimes.isEmpty {
+            let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+            if !readyRuntimes.contains(runtime), let replacement = readyRuntimes.first {
+                defaultRuntimeID = replacement.rawValue
+            }
+        }
+        alignDefaultModelWithRuntime()
+    }
+
+    private func logChatCapabilityContext(source: String, level: LogLevel = .info, traceID: String? = nil) {
+        var fields = CapabilityAudit.chatContextFields(
+            source: source,
+            workspace: workspace,
+            availableSkills: availableSkills,
+            selectedSkills: selectedSkills,
+            excludedSkillIDs: excludedSkillIDs
+        )
+        if let traceID { fields["trace_id"] = traceID }
+        fields["runtime"] = defaultRuntimeID
+        fields["model"] = defaultModel
+        AppLogger.audit(.capabilityChatContext, category: "UI", fields: fields, level: level, fieldMaxLength: 240)
+    }
+
+    private func taskCreatedAuditFields(source: String, task: AgentTask) -> [String: String] {
+        var fields = CapabilityAudit.taskContextFields(source: source, task: task)
+        fields["model"] = task.model
+        return fields
+    }
+
+    private func baseNewTaskSkillContext() -> String {
+        var skillCtx = selectedSkills.map { skill in
+            var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
+            if !skill.connectors.isEmpty {
+                desc += "\nConnectors: \(skill.connectorSummary)"
+            }
+            if !skill.localTools.isEmpty {
+                desc += "\nLocal Tools: \(skill.localToolSummary)"
+            }
+            if !skill.environmentKeys.isEmpty {
+                desc += "\nEnvironment Variables: \(skill.environmentKeys.joined(separator: ", "))"
+            }
+            if !skill.customTools.isEmpty {
+                desc += "\nCustom Tools: \(skill.customTools.joined(separator: ", "))"
+            }
+            return desc
+        }.joined(separator: "\n\n")
+
+        if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
+            let pathList = wsObj.additionalPaths.map { path -> String in
+                let name = (path as NSString).lastPathComponent
+                return "- \(name): \(path)"
+            }.joined(separator: "\n")
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Additional workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
+        }
+
+        if !attachedFiles.isEmpty {
+            let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Attached files/folders (dragged by user):\n\(fileList)\n\nThe user has attached these paths. When they refer to \"this folder\" or \"this file\", they mean these paths."
+        }
+
+        return skillCtx
     }
 
     private func submitComposer() {
@@ -1146,40 +1280,11 @@ struct ChatPanelView: View {
         messageText = ""
         let planningDraft = saveDraft()
         isThinking = true
+        let traceID = AuditTrace.make(isPlanModeActive ? "new-task-plan-chat" : "new-task-chat")
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
         let ws = resolvedWorkspace
-        var skillCtx = selectedSkills.map { skill in
-            var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
-            if !skill.connectors.isEmpty {
-                desc += "\nConnectors: \(skill.connectorSummary)"
-            }
-            if !skill.localTools.isEmpty {
-                desc += "\nLocal Tools: \(skill.localToolSummary)"
-            }
-            if !skill.environmentKeys.isEmpty {
-                desc += "\nEnvironment Variables: \(skill.environmentKeys.joined(separator: ", "))"
-            }
-            if !skill.customTools.isEmpty {
-                desc += "\nCustom Tools: \(skill.customTools.joined(separator: ", "))"
-            }
-            return desc
-        }.joined(separator: "\n\n")
-
-        // Include workspace additional paths so the provider has them as context
-        if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
-            let pathList = wsObj.additionalPaths.map { path -> String in
-                let name = (path as NSString).lastPathComponent
-                return "- \(name): \(path)"
-            }.joined(separator: "\n")
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Additional workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
-        }
-
-        // Include attached file/folder paths so the provider has them as context
-        if !attachedFiles.isEmpty {
-            let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Attached files/folders (dragged by user):\n\(fileList)\n\nThe user has attached these paths. When they refer to \"this folder\" or \"this file\", they mean these paths."
-        }
+        var skillCtx = baseNewTaskSkillContext()
 
         // Inject slash command context if active
         if let slashCtx = activeSlashContext {
@@ -1194,6 +1299,16 @@ struct ChatPanelView: View {
         if activeSlashContext == nil, recapContext == nil {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
+
+        AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
+            "source": isPlanModeActive ? "new_task_plan_chat" : "new_task_chat",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_length": String(input.count)
+        ])
+        logChatCapabilityContext(source: isPlanModeActive ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
@@ -1228,6 +1343,15 @@ struct ChatPanelView: View {
     private func quickRun() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
+        let traceID = AuditTrace.make("quick-run")
+        AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "quick_run",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_length": String(input.count)
+        ])
 
         let task = AgentTask(
             title: String(input.prefix(60)),
@@ -1254,11 +1378,11 @@ struct ChatPanelView: View {
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: [
-            "source": "quick_run",
-            "use_agent_team": String(useAgentTeam),
-            "team_size": String(teamSize)
-        ])
+        var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+        auditFields["trace_id"] = traceID
+        auditFields["use_agent_team"] = String(useAgentTeam)
+        auditFields["team_size"] = String(teamSize)
+        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
 
         onQuickRun?(task)
     }
@@ -1268,6 +1392,15 @@ struct ChatPanelView: View {
         guard !messages.isEmpty else { return }
 
         isThinking = true
+        let traceID = AuditTrace.make("new-task-plan-generation")
+        AppLogger.breadcrumb(action: "new_task_plan_generation_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "new_task_plan_generation",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "message_count": String(messages.count)
+        ])
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) } + [
             (
                 role: "user",
@@ -1275,12 +1408,15 @@ struct ChatPanelView: View {
             )
         ]
         let ws = resolvedWorkspace
+        var skillContext = baseNewTaskSkillContext()
+        skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
+        logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
-                skillContext: newTaskPlanInstructions(),
+                skillContext: skillContext,
                 utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
@@ -1357,6 +1493,16 @@ struct ChatPanelView: View {
     /// Create task from extracted spec
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
+        let traceID = AuditTrace.make("conversation-spec")
+        AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
+            "source": "conversation_spec",
+            "runtime": defaultRuntimeID,
+            "model": defaultModel,
+            "workspace_id": workspace?.id.uuidString ?? "none",
+            "selected_skill_count": String(selectedSkills.count),
+            "inputs_count": String(spec.inputs.count + attachedFiles.count),
+            "criteria_count": String(spec.acceptanceCriteria.count)
+        ])
 
         let task = AgentTask(
             title: spec.title,
@@ -1394,11 +1540,11 @@ struct ChatPanelView: View {
         chainedGoal = ""
         isPlanMode = false
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: [
-            "source": "conversation_spec",
-            "inputs_count": String(task.inputs.count),
-            "criteria_count": String(task.acceptanceCriteria.count)
-        ])
+        var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+        auditFields["trace_id"] = traceID
+        auditFields["inputs_count"] = String(task.inputs.count)
+        auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
+        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
 
         onTaskCreated?(task)
     }

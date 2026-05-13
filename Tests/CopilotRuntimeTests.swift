@@ -101,7 +101,8 @@ struct CopilotStreamEventParserTests {
             #"{"type":"user.message"}"#,
             #"{"type":"assistant.turn_start"}"#,
             #"{"type":"assistant.turn_end"}"#,
-            #"{"type":"assistant.reasoning_delta"}"#
+            #"{"type":"assistant.reasoning_delta"}"#,
+            #"{"type":"abort","data":{"reason":"user_initiated"}}"#
         ]
         for line in lines {
             #expect(CopilotStreamEventParser.parseAgentEvents(line: line).isEmpty)
@@ -482,6 +483,34 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.environment["COPILOT_HOME"] == "/tmp/copilot-home")
         #expect(plan.environment["TOKEN"] == "secret")
+    }
+
+    @Test("Browser tool shim path is prepended before shared ASTRA tools")
+    func browserShimPathPrefix() throws {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Use browser",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:59638"],
+            copilotHome: "/tmp/copilot-home",
+            pathPrefix: ["/tmp/task-browser-bin"],
+            includeAstraToolsPath: true,
+            localToolCommands: ["astra-browser"]
+        )
+
+        let pathParts = plan.environment["PATH", default: ""].split(separator: ":").map(String.init)
+        let shimIndex = try #require(pathParts.firstIndex(of: "/tmp/task-browser-bin"))
+        let astraToolsIndex = try #require(pathParts.firstIndex(of: RuntimePathResolver.astraToolsPath))
+
+        #expect(shimIndex < astraToolsIndex)
     }
 
     @Test("Older CLI capabilities fall back to allow-all prompt mode")

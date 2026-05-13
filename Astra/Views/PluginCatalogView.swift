@@ -105,10 +105,6 @@ struct PluginCatalogView: View {
     @State private var removalCandidate: PluginPackage?
     @State private var removalError: String?
     @State private var showCreateWizard = false
-    /// Cached prereq status per package id, aggregated from the badges.
-    /// `nil` = not yet probed; `true` = all green; `false` = at least one
-    /// red/amber. Drives the install button's disabled state.
-    @State private var packagePrereqReady: [String: Bool] = [:]
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -396,6 +392,7 @@ struct PluginCatalogView: View {
         let state = packageState(package)
         let enabled = state.isEnabled
         let isExpanded = expandedPackageID == package.id
+        let needsSetup = requiresSetupFlow(package)
 
         return VStack(alignment: .leading, spacing: 0) {
             // Main card — tappable to expand
@@ -421,7 +418,7 @@ struct PluginCatalogView: View {
                                     .foregroundStyle(enabled ? .secondary : Stanford.black)
                                     .lineLimit(1)
 
-                                if package.requiresSetup {
+                                if needsSetup {
                                     Image(systemName: "key.fill")
                                         .font(Stanford.ui(10))
                                         .foregroundStyle(Stanford.poppy.opacity(0.7))
@@ -432,7 +429,7 @@ struct PluginCatalogView: View {
                             Text(package.description)
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(enabled ? Color.secondary.opacity(0.6) : .secondary)
-                                .lineLimit(2)
+                                .lineLimit(1)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -519,6 +516,24 @@ struct PluginCatalogView: View {
 
     private func disableCapability(_ package: PluginPackage) {
         let state = packageState(package)
+        let traceID = AuditTrace.make("capability-disable")
+        AppLogger.breadcrumb(action: "disable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "configure",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
+        AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
+            "source": "disable",
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count)
+        ])
 
         workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
         workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
@@ -530,41 +545,53 @@ struct PluginCatalogView: View {
         }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+            "source": "configure",
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "workspace_id": workspace.id.uuidString,
+            "skills_count": String(state.skillIDStrings.count),
+            "connectors_count": String(state.connectorIDStrings.count),
+            "tools_count": String(state.toolIDStrings.count),
+            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+        ])
         catalog.loadApprovedCapabilities()
         onCatalogChanged?()
     }
 
     private func installButton(for package: PluginPackage) -> some View {
-        // packagePrereqReady == nil means we haven't probed yet (or package
-        // has no prereqs); treat as "go ahead and install". Only block
-        // when we've proven a prereq is red/amber.
-        let ready = packagePrereqReady[package.id] ?? true
-        let prereqBlocks = !package.prerequisites.isEmpty && !ready
+        let needsSetup = requiresSetupFlow(package)
 
         return Button {
-            if package.requiresSetup {
+            if needsSetup {
+                AppLogger.breadcrumb(action: "open_capability_setup", category: "Capabilities", fields: [
+                    "source": "configure",
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "workspace_id": workspace.id.uuidString
+                ])
                 installingPackage = package
             } else {
                 installCapability(package)
             }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: prereqBlocks ? "exclamationmark.triangle.fill" : "plus.circle.fill")
+                Image(systemName: "plus.circle.fill")
                     .font(Stanford.ui(12))
-                Text(prereqBlocks ? "Enable anyway" : "Enable")
+                Text("Enable")
                     .font(Stanford.caption(12))
                     .fontWeight(.semibold)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(prereqBlocks ? Stanford.poppy : Stanford.lagunita)
+            .background(Stanford.lagunita)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(prereqBlocks
-              ? "Some prerequisites aren't ready. Enabling will still add the package, but tasks using it may fail until you fix them."
-              : "Enable \(package.name)")
+        .help(needsSetup ? "Configure and validate \(package.name)" : "Enable \(package.name)")
     }
 
     private func installCapability(
@@ -573,6 +600,16 @@ struct PluginCatalogView: View {
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:]
     ) {
+        let traceID = AuditTrace.make("capability-enable")
+        AppLogger.breadcrumb(action: "enable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "configure",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "credential_input_count": String(credentialInputs.count),
+            "config_input_count": String(configInputs.count),
+            "base_url_override_count": String(baseURLOverrides.count)
+        ])
         do {
             try CapabilityInstaller().install(
                 package,
@@ -580,23 +617,41 @@ struct PluginCatalogView: View {
                 modelContext: modelContext,
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
-                baseURLOverrides: baseURLOverrides
+                baseURLOverrides: baseURLOverrides,
+                traceID: traceID
             )
             onInstall?(package)
             catalog.loadApprovedCapabilities()
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": "configure",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
     private func createCapability(_ package: PluginPackage, enableHere: Bool) {
+        let traceID = AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
+        AppLogger.breadcrumb(action: enableHere ? "create_and_enable_capability_clicked" : "create_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": enableHere ? "create_and_enable" : "create_install_only",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
         do {
             if enableHere {
                 try CapabilityInstaller().install(
                     package,
                     into: workspace,
-                    modelContext: modelContext
+                    modelContext: modelContext,
+                    traceID: traceID
                 )
                 onInstall?(package)
             } else {
@@ -606,6 +661,15 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": enableHere ? "create_and_enable" : "create_install_only",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
@@ -645,47 +709,55 @@ struct PluginCatalogView: View {
                     PluginCatalogPrereqBadge(
                         prerequisite: prereq,
                         cache: preflightCache,
-                        onStatusChange: { status in
-                            updateAggregateStatus(package: package, prereq: prereq, status: status)
-                        }
+                        onStatusChange: { _ in }
                     )
                 }
             }
         }
     }
 
-    private func updateAggregateStatus(
-        package: PluginPackage,
-        prereq: CLIPrerequisite,
-        status: HealthStatus
-    ) {
-        // "Ready" iff every one of this package's prereqs is .healthy.
-        // We re-probe everything on each status change — this is O(n²)
-        // across renders but n is at most a handful. Keeping it simple is
-        // worth more than the cycles saved.
-        Task {
-            var allReady = true
-            for p in package.prerequisites {
-                let s = await preflightCache.cachedStatus(for: p)
-                switch s {
-                case .healthy: continue
-                case .none:
-                    // If we haven't probed this one yet but the current
-                    // callback IS for it, use the incoming status.
-                    if p.id == prereq.id {
-                        if case .healthy = status { continue }
-                        allReady = false
-                    } else {
-                        allReady = false
-                    }
-                default:
-                    allReady = false
+    private func setupSummarySection(_ package: PluginPackage) -> some View {
+        let credentialCount = package.connectors.reduce(0) { $0 + $1.credentialHints.count }
+        let configCount = package.connectors.reduce(0) { $0 + $1.configHints.count }
+        let checkCount = package.prerequisites.count
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "key.fill")
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(Stanford.poppy)
+                Text("Setup")
+                    .font(Stanford.caption(11))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Stanford.poppy)
+            }
+
+            FlowLayout(spacing: 5) {
+                if credentialCount > 0 {
+                    setupPill("\(credentialCount) credential\(credentialCount == 1 ? "" : "s")", icon: "key.fill")
+                }
+                if configCount > 0 {
+                    setupPill("\(configCount) setting\(configCount == 1 ? "" : "s")", icon: "slider.horizontal.3")
+                }
+                if checkCount > 0 {
+                    setupPill("\(checkCount) check\(checkCount == 1 ? "" : "s")", icon: "checkmark.shield")
                 }
             }
-            await MainActor.run {
-                packagePrereqReady[package.id] = allReady
-            }
         }
+    }
+
+    private func setupPill(_ text: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(Stanford.ui(9, weight: .semibold))
+            Text(text)
+                .font(Stanford.caption(10).weight(.medium))
+        }
+        .foregroundStyle(Stanford.coolGrey)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(Capsule())
     }
 
     // MARK: - Expanded Detail
@@ -698,20 +770,13 @@ struct PluginCatalogView: View {
                 .padding(.horizontal, 12)
 
             VStack(alignment: .leading, spacing: 10) {
-                // Prerequisite badges — render before the setup guide so
-                // "what you need on your Mac" is the first thing the user
-                // sees. Hidden when the package declares zero prereqs.
+                // Show local checks first when the package declares prerequisites.
                 if !package.prerequisites.isEmpty {
                     prerequisiteSection(package)
                 }
 
-                // Setup guide
-                if !package.setupGuide.isEmpty {
-                    Text(package.setupGuide)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .lineSpacing(2)
+                if requiresSetupFlow(package) {
+                    setupSummarySection(package)
                 }
 
                 // Author & version
@@ -732,7 +797,7 @@ struct PluginCatalogView: View {
                             .font(Stanford.caption(11))
                             .foregroundStyle(.secondary)
                     }
-                    if package.requiresSetup {
+                    if requiresSetupFlow(package) {
                         HStack(spacing: 4) {
                             Image(systemName: "key.fill")
                                 .font(Stanford.ui(10))
@@ -776,21 +841,6 @@ struct PluginCatalogView: View {
                     capabilityConfigurationLinks(state)
                 }
 
-                // Tags
-                if !package.tags.isEmpty {
-                    FlowLayout(spacing: 4) {
-                        ForEach(package.tags, id: \.self) { tag in
-                            Text(tag)
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.primary.opacity(0.04))
-                                .clipShape(Capsule())
-                        }
-                    }
-                }
-
                 capabilityRemovalSection(package)
 
                 // Enable button in expanded view too
@@ -804,6 +854,10 @@ struct PluginCatalogView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
         }
+    }
+
+    private func requiresSetupFlow(_ package: PluginPackage) -> Bool {
+        package.requiresSetup || !package.prerequisites.isEmpty
     }
 
     @ViewBuilder
@@ -977,6 +1031,37 @@ struct PluginCatalogView: View {
 
 // MARK: - Install Setup Sheet
 
+private struct PluginInstallValidationResult: Identifiable, Equatable {
+    let id = UUID()
+    var title: String
+    var detail: String
+    var passed: Bool
+}
+
+private struct PluginInstallValidationSecretStore: SecretStore {
+    var credentials: [String: String]
+
+    func load(key: String, entityID _: String) -> String? {
+        credentials[key] ?? credentials[key.uppercased()]
+    }
+
+    @discardableResult
+    func save(key _: String, value _: String, entityID _: String, label _: String?) -> Bool {
+        false
+    }
+
+    @discardableResult
+    func delete(key _: String, entityID _: String) -> Bool {
+        false
+    }
+
+    func deleteAll(entityID _: String) {}
+
+    func exists(key: String, entityID _: String) -> Bool {
+        load(key: key, entityID: "") != nil
+    }
+}
+
 struct PluginInstallSheet: View {
     let package: PluginPackage
     let workspace: Workspace
@@ -988,9 +1073,19 @@ struct PluginInstallSheet: View {
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
     @State private var installError: String?
+    @State private var validationResults: [PluginInstallValidationResult] = []
+    @State private var validationPassed = false
+    @State private var isValidatingSetup = false
+    @State private var lastValidationTraceID: String?
+
+    private let validationPreflightCache = PreflightCache()
 
     private var allConnectorHints: [(connector: PluginConnector, credentials: [PluginConnector.CredentialHint], configs: [PluginConnector.ConfigHint])] {
         package.connectors.map { ($0, $0.credentialHints, $0.configHints) }
+    }
+
+    private var requiresValidation: Bool {
+        package.requiresSetup || !package.prerequisites.isEmpty
     }
 
     private var hasRequiredEmpty: Bool {
@@ -1023,6 +1118,7 @@ struct PluginInstallSheet: View {
                     Text(package.description)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
                 Spacer()
@@ -1033,76 +1129,14 @@ struct PluginInstallSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Setup guide
-                    if !package.setupGuide.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(package.setupGuide)
-                                .font(Stanford.body(13))
-                                .foregroundStyle(.primary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .lineSpacing(3)
-                        }
-                    }
+                    setupStepperSection
 
                     // Configuration fields per connector
                     ForEach(package.connectors, id: \.name) { connector in
                         connectorSetupSection(connector)
                     }
 
-                    // Local tools summary
-                    if !package.localTools.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "terminal")
-                                    .font(Stanford.body(14))
-                                    .foregroundStyle(Stanford.poppy)
-                                    .frame(width: 26, height: 26)
-                                    .background(Stanford.poppy.opacity(0.1))
-                                    .clipShape(RoundedRectangle(cornerRadius: 7))
-
-                                Text("CLI Tools")
-                                    .font(Stanford.body(14))
-                                    .fontWeight(.semibold)
-
-                                Text("local")
-                                    .font(Stanford.caption(10))
-                                    .foregroundStyle(Stanford.coolGrey)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.primary.opacity(0.04))
-                                    .clipShape(Capsule())
-                            }
-
-                            VStack(spacing: 1) {
-                                ForEach(Array(package.localTools.enumerated()), id: \.offset) { index, tool in
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "chevron.right")
-                                            .font(Stanford.ui(9, weight: .bold))
-                                            .foregroundStyle(Stanford.coolGrey)
-                                        Text(tool.name)
-                                            .font(Stanford.body(13))
-                                            .fontWeight(.medium)
-                                        Spacer()
-                                        Text(tool.command + (tool.arguments.isEmpty ? "" : " \(tool.arguments)"))
-                                            .font(Stanford.mono(11))
-                                            .foregroundStyle(Stanford.coolGrey)
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    if index < package.localTools.count - 1 {
-                                        Divider().padding(.leading, 30)
-                                    }
-                                }
-                            }
-                            .background(Stanford.fog.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1))
-
-                            Text("These tools use CLI commands installed on your machine.")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                    validationStatusSection
                 }
                 .padding(20)
             }
@@ -1111,7 +1145,15 @@ struct PluginInstallSheet: View {
 
             // Actions
             HStack {
-                if hasRequiredEmpty {
+                if requiresValidation {
+                    HStack(spacing: 5) {
+                        Image(systemName: validationPassed ? "checkmark.circle.fill" : "info.circle")
+                            .font(Stanford.ui(12))
+                        Text(validationPassed ? "Ready to enable" : "Validate first")
+                            .font(Stanford.caption(11))
+                    }
+                    .foregroundStyle(validationPassed ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                } else if hasRequiredEmpty {
                     HStack(spacing: 5) {
                         Image(systemName: "info.circle")
                             .font(Stanford.ui(12))
@@ -1128,12 +1170,34 @@ struct PluginInstallSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
 
+                if requiresValidation {
+                    Button {
+                        Task { await validateSetup() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isValidatingSetup {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "checkmark.shield")
+                            }
+                            Text(isValidatingSetup ? "Validating" : "Validate Connection")
+                        }
+                    }
+                    .disabled(isValidatingSetup)
+                    .help("Run the same connector and CLI checks ASTRA uses before tasks run.")
+                }
+
                 Button("Enable") {
                     installCapability()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Stanford.lagunita)
                 .keyboardShortcut(.defaultAction)
+                .disabled(requiresValidation && !validationPassed)
+                .help(requiresValidation && !validationPassed
+                      ? "Validate the setup successfully before enabling this capability."
+                      : "Enable \(package.name)")
             }
             .padding(20)
         }
@@ -1157,6 +1221,28 @@ struct PluginInstallSheet: View {
     }
 
     private func installCapability() {
+        guard !requiresValidation || validationPassed else {
+            installError = "Validate the connection successfully before enabling this capability."
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": "setup_sheet",
+                "result": "validation_required",
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString
+            ], level: .warning)
+            return
+        }
+        let traceID = lastValidationTraceID ?? AuditTrace.make("capability-setup")
+        AppLogger.breadcrumb(action: "enable_capability_setup_submitted", category: "Capabilities", traceID: traceID, fields: [
+            "source": "setup_sheet",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "credential_input_count": String(credentialValues.count),
+            "config_input_count": String(configValues.count),
+            "base_url_override_count": String(baseURLValues.count)
+        ])
         do {
             try CapabilityInstaller().install(
                 package,
@@ -1164,12 +1250,319 @@ struct PluginInstallSheet: View {
                 modelContext: modelContext,
                 credentialInputs: credentialValues,
                 configInputs: configValues,
-                baseURLOverrides: baseURLValues
+                baseURLOverrides: baseURLValues,
+                traceID: traceID
             )
             onInstalled(package)
         } catch {
             installError = error.localizedDescription
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "source": "setup_sheet",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
+    }
+
+    private var setupStepperSection: some View {
+        HStack(spacing: 8) {
+            setupStep(number: "1", title: "Fill", detail: package.connectors.isEmpty ? "No fields" : "Required fields")
+            setupStep(number: "2", title: "Validate", detail: package.prerequisites.isEmpty ? "Connection" : "Setup checks")
+            setupStep(number: "3", title: "Enable", detail: "Ready for chat")
+        }
+    }
+
+    private func setupStep(number: String, title: String, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Text(number)
+                .font(Stanford.caption(10).weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Stanford.lagunita)
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(detail)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var validationStatusSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: validationPassed ? "checkmark.seal.fill" : "checkmark.shield")
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(validationPassed ? Stanford.paloAltoGreen : Stanford.lagunita)
+                    .frame(width: 26, height: 26)
+                    .background((validationPassed ? Stanford.paloAltoGreen : Stanford.lagunita).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Validation")
+                        .font(Stanford.body(14))
+                        .fontWeight(.semibold)
+                    Text("Run one quick check before enabling.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+            }
+
+            if validationResults.isEmpty {
+                Text("Fill required fields, then validate.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+            } else {
+                VStack(spacing: 1) {
+                    ForEach(validationResults) { result in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: result.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .font(Stanford.ui(12, weight: .semibold))
+                                .foregroundStyle(result.passed ? Stanford.paloAltoGreen : Stanford.cardinalRed)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.title)
+                                    .font(Stanford.caption(12).weight(.semibold))
+                                    .foregroundStyle(Stanford.black)
+                                Text(result.detail)
+                                    .font(Stanford.caption(11))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                }
+                .background(Stanford.fog.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.06), lineWidth: 1))
+            }
+        }
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(validationPassed ? Stanford.paloAltoGreen.opacity(0.24) : Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    @MainActor
+    private func validateSetup() async {
+        guard !isValidatingSetup else { return }
+        let traceID = AuditTrace.make("capability-validate")
+        isValidatingSetup = true
+        validationPassed = false
+        lastValidationTraceID = traceID
+        validationResults = []
+        AppLogger.breadcrumb(action: "validate_capability_setup_clicked", category: "Capabilities", traceID: traceID, fields: [
+            "source": "setup_sheet",
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "credential_input_count": String(filledCredentialInputCount),
+            "config_input_count": String(filledConfigInputCount),
+            "base_url_override_count": String(baseURLValues.count)
+        ])
+        AppLogger.audit(.validationStarted, category: "Capabilities", fields: [
+            "source": "setup_sheet",
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString
+        ])
+
+        var results: [PluginInstallValidationResult] = []
+
+        for prerequisite in package.prerequisites {
+            let status = await validationPreflightCache.status(for: prerequisite)
+            results.append(validationResult(for: prerequisite, status: status))
+        }
+
+        for connector in package.connectors {
+            results += await validateConnector(connector, traceID: traceID)
+        }
+
+        if results.isEmpty {
+            results.append(PluginInstallValidationResult(
+                title: "Setup check",
+                detail: "No external connection test is required for this capability.",
+                passed: true
+            ))
+        }
+
+        validationResults = results
+        validationPassed = results.allSatisfy(\.passed)
+        isValidatingSetup = false
+
+        AppLogger.audit(validationPassed ? .validationPassed : .validationFailed, category: "Capabilities", fields: [
+            "source": "setup_sheet",
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "workspace_id": workspace.id.uuidString,
+            "result": validationPassed ? "passed" : "failed",
+            "check_count": String(results.count),
+            "failed_count": String(results.filter { !$0.passed }.count)
+        ], level: validationPassed ? .info : .warning)
+    }
+
+    @MainActor
+    private func validateConnector(_ pluginConnector: PluginConnector, traceID: String) async -> [PluginInstallValidationResult] {
+        var results: [PluginInstallValidationResult] = []
+
+        let missingCredentials = pluginConnector.credentialHints.compactMap { hint -> String? in
+            let value = credentialValues[hint.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? hint.key : nil
+        }
+        if !missingCredentials.isEmpty {
+            results.append(PluginInstallValidationResult(
+                title: "\(pluginConnector.name) credentials",
+                detail: "Missing \(missingCredentials.joined(separator: ", ")). Add the required values, then validate again.",
+                passed: false
+            ))
+            return results
+        }
+
+        guard shouldRunConnectionTest(for: pluginConnector) else {
+            if package.prerequisites.isEmpty {
+                results.append(PluginInstallValidationResult(
+                    title: "\(pluginConnector.name) setup",
+                    detail: "No network connection test is defined for this connector. Required fields are present.",
+                    passed: true
+                ))
+            }
+            return results
+        }
+
+        let baseURL = resolvedBaseURL(for: pluginConnector)
+        if isPlaceholderBaseURL(baseURL) {
+            results.append(PluginInstallValidationResult(
+                title: "\(pluginConnector.name) base URL",
+                detail: "Replace the placeholder Base URL with your real service URL.",
+                passed: false
+            ))
+            return results
+        }
+
+        let connector = validationConnector(from: pluginConnector)
+        let store = PluginInstallValidationSecretStore(credentials: credentialValues)
+        let testResult = await connector.testConnection(
+            store: store,
+            source: "capability_setup_validation",
+            workspaceID: workspace.id,
+            packageID: package.id,
+            traceID: traceID
+        )
+
+        results.append(PluginInstallValidationResult(
+            title: "\(pluginConnector.name) connection",
+            detail: testResult.1,
+            passed: testResult.0
+        ))
+        return results
+    }
+
+    private func validationConnector(from pluginConnector: PluginConnector) -> Connector {
+        let connector = Connector(
+            name: pluginConnector.name,
+            serviceType: pluginConnector.serviceType,
+            icon: pluginConnector.icon,
+            connectorDescription: pluginConnector.description,
+            baseURL: resolvedBaseURL(for: pluginConnector),
+            authMethod: pluginConnector.authMethod
+        )
+        connector.notes = pluginConnector.notes
+        connector.credentialKeys = pluginConnector.credentialHints.map(\.key)
+        connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
+        connector.configKeys = pluginConnector.configHints.map(\.key)
+        connector.configValues = connector.configKeys.map { configValues[$0] ?? "" }
+        if connector.isStanfordOutlookMail {
+            connector.applyStanfordOutlookDefaults()
+        }
+        return connector
+    }
+
+    private func shouldRunConnectionTest(for connector: PluginConnector) -> Bool {
+        if connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gcloud" {
+            return false
+        }
+        if !resolvedBaseURL(for: connector).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        return connector.authMethod != "none" || !connector.credentialHints.isEmpty
+    }
+
+    private func resolvedBaseURL(for connector: PluginConnector) -> String {
+        baseURLValues[connector.name]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? connector.baseURL
+    }
+
+    private func isPlaceholderBaseURL(_ value: String) -> Bool {
+        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.isEmpty || lower.contains("yourcompany.") || lower.contains("your-company.")
+    }
+
+    private func validationResult(for prerequisite: CLIPrerequisite, status: HealthStatus) -> PluginInstallValidationResult {
+        switch status {
+        case .healthy(let path, let version):
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "\(path) \(version.trimmingCharacters(in: .whitespacesAndNewlines))".trimmingCharacters(in: .whitespacesAndNewlines),
+                passed: true
+            )
+        case .missingBinary:
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "Not installed. \(prerequisite.installHint)",
+                passed: false
+            )
+        case .unauthenticated(let detail):
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "Needs login: \(detail). \(prerequisite.authHint ?? "")",
+                passed: false
+            )
+        case .unresponsive(let detail):
+            PluginInstallValidationResult(
+                title: prerequisite.displayName,
+                detail: "Did not respond: \(detail)",
+                passed: false
+            )
+        }
+    }
+
+    private var filledCredentialInputCount: Int {
+        credentialValues.values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+    }
+
+    private var filledConfigInputCount: Int {
+        configValues.values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+    }
+
+    private func resetValidation() {
+        validationPassed = false
+        lastValidationTraceID = nil
+        validationResults = []
     }
 
     // MARK: - Connector Setup Section
@@ -1200,17 +1593,17 @@ struct PluginInstallSheet: View {
 
             // Base URL
             if !connector.baseURL.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Base URL")
-                        .font(Stanford.caption(11))
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                    TextField(connector.baseURL, text: Binding(
-                        get: { baseURLValues[connector.name] ?? connector.baseURL },
-                        set: { baseURLValues[connector.name] = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.ui(13, design: .monospaced))
+                if isPlaceholderBaseURL(connector.baseURL) {
+                    baseURLField(for: connector)
+                } else {
+                    DisclosureGroup {
+                        baseURLField(for: connector)
+                            .padding(.top, 4)
+                    } label: {
+                        Text("Advanced")
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -1235,15 +1628,16 @@ struct PluginInstallSheet: View {
                             Text(hint.key)
                                 .font(Stanford.ui(12, design: .monospaced))
                                 .fontWeight(.medium)
-                            SecureField(hint.hint, text: Binding(
+                            SecureField(credentialPlaceholder(for: hint), text: Binding(
                                 get: { credentialValues[hint.key] ?? "" },
-                                set: { credentialValues[hint.key] = $0 }
+                                set: {
+                                    credentialValues[hint.key] = $0
+                                    resetValidation()
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
                             .font(Stanford.ui(13, design: .monospaced))
-                            Text(hint.hint)
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.tertiary)
+                            .help(hint.hint)
                         }
                     }
                 }
@@ -1274,25 +1668,19 @@ struct PluginInstallSheet: View {
                             Text(hint.key)
                                 .font(Stanford.ui(12, design: .monospaced))
                                 .fontWeight(.medium)
-                            TextField(hint.hint, text: Binding(
+                            TextField(configPlaceholder(for: hint), text: Binding(
                                 get: { configValues[hint.key] ?? "" },
-                                set: { configValues[hint.key] = $0 }
+                                set: {
+                                    configValues[hint.key] = $0
+                                    resetValidation()
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
                             .font(Stanford.ui(13, design: .monospaced))
-                            Text(hint.hint)
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.tertiary)
+                            .help(hint.hint)
                         }
                     }
                 }
-            }
-
-            if !connector.notes.isEmpty {
-                Text(connector.notes)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
@@ -1302,5 +1690,48 @@ struct PluginInstallSheet: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.primary.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    private func baseURLField(for connector: PluginConnector) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Base URL")
+                .font(Stanford.caption(11))
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+            TextField(connector.baseURL, text: Binding(
+                get: { baseURLValues[connector.name] ?? connector.baseURL },
+                set: {
+                    baseURLValues[connector.name] = $0
+                    resetValidation()
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(Stanford.ui(13, design: .monospaced))
+        }
+    }
+
+    private func credentialPlaceholder(for hint: PluginConnector.CredentialHint) -> String {
+        let key = hint.key.lowercased()
+        if key.contains("email") {
+            return "name@company.com"
+        }
+        if key.contains("token") || key.contains("key") {
+            return "Paste API token"
+        }
+        return hint.hint
+    }
+
+    private func configPlaceholder(for hint: PluginConnector.ConfigHint) -> String {
+        let key = hint.key.lowercased()
+        if hint.isList || key.contains("projects") {
+            return "ENG, OPS"
+        }
+        if key.contains("region") {
+            return "us-central1"
+        }
+        if key.contains("project") {
+            return "Project ID"
+        }
+        return hint.hint
     }
 }

@@ -1703,6 +1703,7 @@ final class AgentRuntimeWorker {
 
         let completedWithoutOutput = exitCode == 0
             && run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && snapshot.completedEventCount == 0
         let parsedNoVisibleAnswer = snapshot.rawLineCount > 0
             && snapshot.textEventCount == 0
             && snapshot.completedEventCount == 0
@@ -1830,14 +1831,35 @@ final class AgentRuntimeWorker {
             from: TaskCapabilityResolver(task: task).allConnectors,
             contextText: fullContext
         )
+        let traceID = AuditTrace.make("connector-preflight")
+        var preflightFields = CapabilityAudit.taskContextFields(source: "connector_preflight_candidates", task: task)
+        preflightFields["trace_id"] = traceID
+        preflightFields["phase"] = phase
+        preflightFields["preflight_connector_count"] = String(connectors.count)
+        AppLogger.audit(.capabilityChatContext, category: "Worker", taskID: task.id, fields: preflightFields, level: .debug, fieldMaxLength: 240)
+
         guard let issue = await ConnectorPreflightService.firstBlockingIssue(
             connectors: connectors,
-            contextText: fullContext
+            contextText: fullContext,
+            workspaceID: task.workspace?.id,
+            traceID: traceID
         ) else {
+            if !connectors.isEmpty {
+                AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                    "source": "task_preflight",
+                    "trace_id": traceID,
+                    "phase": phase,
+                    "workspace_id": task.workspace?.id.uuidString ?? "none",
+                    "result": "preflight_passed",
+                    "connector_count": String(connectors.count),
+                    "connector_names": CapabilityAudit.compactNames(connectors.map(\.name))
+                ], level: .info, fieldMaxLength: 240)
+            }
             return true
         }
 
         var fields = issue.auditFields
+        fields["trace_id"] = traceID
         fields["phase"] = phase
         AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
 
@@ -1892,6 +1914,7 @@ final class AgentRuntimeWorker {
             "phase": phase,
             "workspace_id": task.workspace?.id.uuidString ?? "none",
             "workspace_enabled_capabilities_count": String(task.workspace?.enabledCapabilityIDs.count ?? 0),
+            "workspace_enabled_capability_ids": CapabilityAudit.compactNames(task.workspace?.enabledCapabilityIDs ?? []),
             "workspace_enabled_global_skills_count": String(task.workspace?.enabledGlobalSkillIDs.count ?? 0),
             "workspace_enabled_global_connectors_count": String(task.workspace?.enabledGlobalConnectorIDs.count ?? 0),
             "workspace_enabled_global_tools_count": String(task.workspace?.enabledGlobalToolIDs.count ?? 0),
@@ -1904,7 +1927,7 @@ final class AgentRuntimeWorker {
             "resolved_skill_names": compactNames(skills.map(\.name)),
             "connector_names": compactNames(connectors.map(\.name)),
             "local_tool_names": compactNames(tools.map(\.name))
-        ], level: .debug)
+        ], level: .debug, fieldMaxLength: 240)
     }
 
     @MainActor

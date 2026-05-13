@@ -99,7 +99,7 @@ public enum CopilotStreamEventParser {
             return []
         }
 
-        if normalized == "assistant.message_start" {
+        if normalized == "assistant.message_start" || normalized == "abort" {
             return []
         }
 

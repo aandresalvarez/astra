@@ -197,6 +197,7 @@ final class AgentRuntimeProcessRunner {
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
         let tokenBudget = Self.effectiveTokenBudget(for: task)
+        let pathPrefix = Self.pathPrefix(for: task, taskEnv: taskEnv)
 
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -230,6 +231,7 @@ final class AgentRuntimeProcessRunner {
                 capabilities: capabilities,
                 taskEnvironment: taskEnv,
                 copilotHome: copilotHome,
+                pathPrefix: pathPrefix,
                 includeAstraToolsPath: Self.hasActiveCLITools(task) || taskEnv["ASTRA_BROWSER_URL"] != nil,
                 localToolCommands: localToolCommands
             )
@@ -456,11 +458,14 @@ final class AgentRuntimeProcessRunner {
         includeClaudeTeamFlag: Bool
     ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        var pathParts = [env["PATH"] ?? ""]
+        pathParts.append(contentsOf: pathPrefix(for: task, taskEnv: taskEnv))
         var pathSuffix = RuntimePathResolver.shellPathSuffix
         if hasActiveCLITools(task) || taskEnv["ASTRA_BROWSER_URL"] != nil {
             pathSuffix += ":\(RuntimePathResolver.astraToolsPath)"
         }
-        env["PATH"] = (env["PATH"] ?? "") + ":\(pathSuffix)"
+        pathParts.append(pathSuffix)
+        env["PATH"] = pathParts.filter { !$0.isEmpty }.joined(separator: ":")
         if includeClaudeTeamFlag {
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         }
@@ -477,6 +482,68 @@ final class AgentRuntimeProcessRunner {
             ])
         }
         return env
+    }
+
+    @MainActor
+    private static func pathPrefix(for task: AgentTask, taskEnv: [String: String]) -> [String] {
+        guard let browserShimDirectory = prepareBrowserToolShimIfNeeded(task: task, taskEnv: taskEnv) else {
+            return []
+        }
+        return [browserShimDirectory]
+    }
+
+    @MainActor
+    static func prepareBrowserToolShimIfNeeded(
+        task: AgentTask,
+        taskEnv: [String: String],
+        fileManager: FileManager = .default,
+        realToolPath: String = (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-browser")
+    ) -> String? {
+        guard let endpoint = taskEnv["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !endpoint.isEmpty,
+              endpoint.rangeOfCharacter(from: .newlines) == nil else {
+            return nil
+        }
+
+        guard fileManager.isExecutableFile(atPath: realToolPath),
+              realToolPath.rangeOfCharacter(from: .newlines) == nil,
+              !task.taskFolder.isEmpty else {
+            return nil
+        }
+
+        let shimDirectory = (task.taskFolder as NSString).appendingPathComponent(".runtime-bin")
+        let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
+        let script = """
+        #!/bin/sh
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))
+        exec \(shellSingleQuoted(realToolPath)) "$@"
+        """
+
+        do {
+            try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
+            let existing = try? String(contentsOfFile: shimPath, encoding: .utf8)
+            if existing != script {
+                try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimPath)
+            AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: task.id, fields: [
+                "action": "browser_tool_shim",
+                "result": "ready",
+                "has_endpoint": "true"
+            ], level: .debug)
+            return shimDirectory
+        } catch {
+            AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: task.id, fields: [
+                "action": "browser_tool_shim",
+                "result": "failed",
+                "error": error.localizedDescription
+            ], level: .warning)
+            return nil
+        }
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     /// Resolves the Claude provider env vars from `@AppStorage` so the spawned

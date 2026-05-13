@@ -25,6 +25,18 @@ struct LogDiagnosticsNotice: Equatable, Identifiable {
     let lastSeenAt: Date
 }
 
+private struct LogDiagnosticsTraceSummary: Equatable {
+    let id: String
+    let count: Int
+    let firstSeenAt: Date
+    let lastSeenAt: Date
+    let categories: [String]
+    let sources: [String]
+    let actions: [String]
+    let affectedTasks: [String]
+    let evidence: [String]
+}
+
 struct LogDiagnosticsReport: Equatable {
     let generatedAt: Date
     let scope: LogDiagnosticsScope
@@ -621,29 +633,97 @@ enum LogDiagnosticsService {
         let message = entry.message
         let lower = message.lowercased()
 
-        guard lower.contains(AuditEvent.taskInterrupted.rawValue),
-              let source = field("source", in: message) else {
-            return nil
+        if lower.contains(AuditEvent.taskInterrupted.rawValue),
+           let source = field("source", in: message) {
+            switch source {
+            case TaskRunInterruptionSource.appRestart.auditSource:
+                return (
+                    key: "task.interrupted.startup_recovery",
+                    title: "Startup recovered stale running runs",
+                    signal: "task.interrupted source=startup_recovery",
+                    analysis: "ASTRA found run records left marked as running from a previous app session and marked those runs interrupted during startup recovery. This is expected after app restarts or local app updates and is not actionable unless paired with new task failures."
+                )
+            case TaskRunInterruptionSource.supersededByNewRun.auditSource:
+                return (
+                    key: "task.interrupted.superseded_by_new_run",
+                    title: "Previous run was superseded",
+                    signal: "task.interrupted source=superseded_by_new_run",
+                    analysis: "ASTRA interrupted an older run because the user retried or continued the task. This is an expected lifecycle transition and does not indicate a runtime failure by itself."
+                )
+            default:
+                break
+            }
         }
 
-        switch source {
-        case TaskRunInterruptionSource.appRestart.auditSource:
+        if lower.contains(AuditEvent.userAction.rawValue),
+           let action = field("action", in: message) {
             return (
-                key: "task.interrupted.startup_recovery",
-                title: "Startup recovered stale running runs",
-                signal: "task.interrupted source=startup_recovery",
-                analysis: "ASTRA found run records left marked as running from a previous app session and marked those runs interrupted during startup recovery. This is expected after app restarts or local app updates and is not actionable unless paired with new task failures."
+                key: "user.action.\(action)",
+                title: "User action was captured",
+                signal: "user.action action=\(action)",
+                analysis: "ASTRA recorded a sanitized UI action breadcrumb. Use its `trace_id` to follow the related capability, connector, chat, or worker events in the Trace Timelines section."
             )
-        case TaskRunInterruptionSource.supersededByNewRun.auditSource:
-            return (
-                key: "task.interrupted.superseded_by_new_run",
-                title: "Previous run was superseded",
-                signal: "task.interrupted source=superseded_by_new_run",
-                analysis: "ASTRA interrupted an older run because the user retried or continued the task. This is an expected lifecycle transition and does not indicate a runtime failure by itself."
-            )
-        default:
-            return nil
         }
+
+        if lower.contains(AuditEvent.capabilityEnableStarted.rawValue) {
+            return (
+                key: "capability.enable_started",
+                title: "Capability enable was attempted",
+                signal: AuditEvent.capabilityEnableStarted.rawValue,
+                analysis: "The user or UI started enabling a capability. This preserves the attempt even if a later configuration, credential, or installation step failed."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityEnabled.rawValue) {
+            return (
+                key: "capability.enabled",
+                title: "Capability was enabled",
+                signal: AuditEvent.capabilityEnabled.rawValue,
+                analysis: "A capability package was attached to the workspace. Compare its package and workspace fields with later chat-context or task-resolution events if the agent did not use it."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityDisabled.rawValue) {
+            return (
+                key: "capability.disabled",
+                title: "Capability was disabled",
+                signal: AuditEvent.capabilityDisabled.rawValue,
+                analysis: "A capability package was detached from the workspace. This is expected when the user disabled it from configuration or the right rail."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityChatContext.rawValue) {
+            guard !isCapabilityChatContextGap(message) else { return nil }
+            return (
+                key: "capability.chat_context.\(field("source", in: message) ?? "unknown")",
+                title: "Chat capability context was captured",
+                signal: AuditEvent.capabilityChatContext.rawValue,
+                analysis: "ASTRA recorded the capability context that was visible to a chat, plan-generation, or runtime-preflight path. This is non-actionable unless a related gap is reported under Issues."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityResolved.rawValue) {
+            guard !isCapabilityResolutionGap(message) else { return nil }
+            return (
+                key: "capability.resolved",
+                title: "Task capability context was resolved",
+                signal: AuditEvent.capabilityResolved.rawValue,
+                analysis: "The worker resolved the task's skills, connectors, and local tools before launching the runtime. This is useful when verifying that enabled workspace capabilities reached the agent."
+            )
+        }
+
+        if lower.contains(AuditEvent.connectorTested.rawValue),
+           let result = field("result", in: message),
+           connectorTestResultIsNonActionable(result) {
+            return (
+                key: "connector.tested.\(result).\(field("source", in: message) ?? "unknown")",
+                title: result == "started" ? "Connector test was attempted" : "Connector test succeeded",
+                signal: "connector.tested result=\(result)",
+                analysis: "A connector test path ran and did not report a blocking auth or permission failure. The source field indicates whether this came from a configuration test button, task preflight, or another path."
+            )
+        }
+
+        return nil
     }
 
     private static func classify(_ entry: LogEntry) -> (
@@ -718,6 +798,39 @@ enum LogDiagnosticsService {
                 severity: .warning,
                 signal: "runtime.unknown_event event_type=\(eventType)",
                 analysis: "The provider emitted a stream event shape ASTRA did not fully understand. Update the runtime parser if this event carries visible output, tool activity, usage, or failure details."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityEnableFailed.rawValue) {
+            let source = field("source", in: message) ?? "unknown"
+            return (
+                key: "capability.enable_failed.\(source)",
+                title: "Capability enable failed",
+                severity: maxSeverity(entry.logLevel, .warning),
+                signal: AuditEvent.capabilityEnableFailed.rawValue,
+                analysis: "ASTRA attempted to enable a capability but the install, credential, or configuration step failed. Check the source, package, and reason fields, then retry after fixing the missing requirement."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityChatContext.rawValue),
+           isCapabilityChatContextGap(message) {
+            return (
+                key: "capability.chat_context.missing",
+                title: "Chat had no active capability context",
+                severity: .warning,
+                signal: AuditEvent.capabilityChatContext.rawValue,
+                analysis: "The workspace had enabled capabilities, but this chat or planning path recorded no selected skills, resolved connectors, or local tools. The provider may not know about a capability the user expected to use."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityResolved.rawValue),
+           isCapabilityResolutionGap(message) {
+            return (
+                key: "capability.resolved.empty",
+                title: "Task resolved no capability resources",
+                severity: .warning,
+                signal: AuditEvent.capabilityResolved.rawValue,
+                analysis: "The workspace had enabled capabilities, but the worker resolved zero skills, connectors, and local tools for the task. Check whether the task was created before the capability was enabled or whether the capability package did not attach resources to the workspace."
             )
         }
 
@@ -989,6 +1102,7 @@ enum LogDiagnosticsService {
         let tasksSeen = Set(entries.compactMap(taskIdentifier(for:))).sorted()
         let issueTaskIDs = Set(issues.flatMap(\.affectedTasks)).sorted()
         let otherTaskIDs = tasksSeen.filter { !issueTaskIDs.contains($0) }
+        let traceSummaries = buildTraceSummaries(from: entries)
         let categories = Dictionary(grouping: entries, by: \.category)
             .mapValues(\.count)
             .sorted { lhs, rhs in
@@ -1005,6 +1119,7 @@ enum LogDiagnosticsService {
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
+            "Breadcrumb file: \(LogSanitizer.sanitize(AppLogger.breadcrumbLogFile.path))",
             "Scope: \(scope.label)",
             "Previous diagnostics: \(previousGeneratedAt.map(displayTimestamp) ?? "none")",
             "Analyzed window: \(analysisWindow(entries: entries))",
@@ -1016,15 +1131,16 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
+            "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
             "",
             "## Category Counts",
             "",
             categories.isEmpty ? "- none" : categories,
-            "",
-            "## Issues"
         ]
+        appendTraceSummaries(traceSummaries, to: &lines)
+        lines += ["", "## Issues"]
 
         if issues.isEmpty {
             lines += [
@@ -1081,6 +1197,7 @@ enum LogDiagnosticsService {
             "",
             "- Start with `runtime.failure_diagnostic` entries when present; they include classified provider failures and redacted stderr summaries.",
             "- Use the affected task IDs to open the matching `task-*.log` file for complete task-local context.",
+            "- Compare `capability.enabled`, `capability.chat_context`, and `capability.resolved` entries when a user says an enabled capability was missing from chat.",
             "- If `runtime.unknown_event` appears, compare the sample shape against the runtime parser before assuming the provider returned no output.",
             "- If the report shows no provider error summary, verify pipe-drain behavior and whether the CLI wrote errors outside stderr/stdout."
         ]
@@ -1112,6 +1229,95 @@ enum LogDiagnosticsService {
             ]
             lines += notice.evidence
             lines += ["```"]
+        }
+    }
+
+    private static func appendTraceSummaries(_ summaries: [LogDiagnosticsTraceSummary], to lines: inout [String]) {
+        guard !summaries.isEmpty else { return }
+        lines += [
+            "",
+            "## Trace Timelines",
+            "",
+            "Recent related log lines grouped by `trace_id`. Use these to reconstruct a single user action across UI, capability, connector, and worker logs."
+        ]
+        for summary in summaries.prefix(8) {
+            lines += [
+                "",
+                "### `\(summary.id)`",
+                "",
+                "- Count: \(summary.count)",
+                "- First seen in window: \(displayTimestamp(summary.firstSeenAt))",
+                "- Last seen in window: \(displayTimestamp(summary.lastSeenAt))",
+                "- Actions: \(summary.actions.isEmpty ? "none" : summary.actions.joined(separator: ", "))",
+                "- Sources: \(summary.sources.isEmpty ? "none" : summary.sources.joined(separator: ", "))",
+                "- Categories: \(summary.categories.joined(separator: ", "))",
+                "- Affected tasks: \(summary.affectedTasks.isEmpty ? "none" : summary.affectedTasks.joined(separator: ", "))",
+                "",
+                "Trace extract:",
+                "",
+                "```text"
+            ]
+            lines += summary.evidence
+            lines += ["```"]
+        }
+        if summaries.count > 8 {
+            lines += [
+                "",
+                "Additional trace groups omitted from this report: \(summaries.count - 8). Narrow the time window if more detail is needed."
+            ]
+        }
+    }
+
+    private static func buildTraceSummaries(from entries: [LogEntry]) -> [LogDiagnosticsTraceSummary] {
+        struct Accumulator {
+            var entries: [LogEntry] = []
+            var categories: Set<String> = []
+            var sources: Set<String> = []
+            var actions: Set<String> = []
+            var affectedTasks: Set<String> = []
+        }
+
+        var grouped: [String: Accumulator] = [:]
+        for entry in entries {
+            guard let traceID = field("trace_id", in: entry.message),
+                  !traceID.isEmpty,
+                  traceID.lowercased() != "none" else { continue }
+            var acc = grouped[traceID] ?? Accumulator()
+            acc.entries.append(entry)
+            acc.categories.insert(entry.category)
+            if let source = field("source", in: entry.message), !source.isEmpty {
+                acc.sources.insert(source)
+            }
+            if let action = field("action", in: entry.message), !action.isEmpty {
+                acc.actions.insert(action)
+            }
+            if let task = taskIdentifier(for: entry), !task.isEmpty {
+                acc.affectedTasks.insert(task)
+            }
+            grouped[traceID] = acc
+        }
+
+        return grouped.compactMap { traceID, acc in
+            let ordered = acc.entries.sorted { $0.timestamp < $1.timestamp }
+            guard let first = ordered.first, let last = ordered.last else { return nil }
+            let evidence = ordered
+                .suffix(8)
+                .map(sanitizedLine)
+            return LogDiagnosticsTraceSummary(
+                id: traceID,
+                count: ordered.count,
+                firstSeenAt: first.timestamp,
+                lastSeenAt: last.timestamp,
+                categories: acc.categories.sorted(),
+                sources: acc.sources.sorted(),
+                actions: acc.actions.sorted(),
+                affectedTasks: acc.affectedTasks.sorted(),
+                evidence: evidence
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.lastSeenAt != rhs.lastSeenAt { return lhs.lastSeenAt > rhs.lastSeenAt }
+            return lhs.id < rhs.id
         }
     }
 
@@ -1166,6 +1372,48 @@ enum LogDiagnosticsService {
         let remainder = message[range.upperBound...]
         let value = remainder.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
         return value.map(String.init)
+    }
+
+    private static func intField(_ name: String, in message: String) -> Int {
+        Int(field(name, in: message) ?? "0") ?? 0
+    }
+
+    private static func enabledCapabilityResourceCount(in message: String) -> Int {
+        intField("workspace_enabled_capabilities_count", in: message)
+            + intField("workspace_enabled_global_skills_count", in: message)
+            + intField("workspace_enabled_global_connectors_count", in: message)
+            + intField("workspace_enabled_global_tools_count", in: message)
+    }
+
+    private static func isCapabilityChatContextGap(_ message: String) -> Bool {
+        guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        let source = field("source", in: message)?.lowercased() ?? ""
+        guard source.contains("chat")
+                || source.contains("generation")
+                || source.contains("preflight")
+        else { return false }
+
+        let selectedSkills = intField("selected_skill_count", in: message)
+        let resolvedSkills = intField("resolved_skill_count", in: message)
+        let taskSkills = intField("task_skill_count", in: message)
+        let connectors = intField("connector_count", in: message)
+        let tools = intField("local_tool_count", in: message)
+        return selectedSkills == 0
+            && resolvedSkills == 0
+            && taskSkills == 0
+            && connectors == 0
+            && tools == 0
+    }
+
+    private static func isCapabilityResolutionGap(_ message: String) -> Bool {
+        guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        return intField("resolved_skill_count", in: message) == 0
+            && intField("connector_count", in: message) == 0
+            && intField("local_tool_count", in: message) == 0
+    }
+
+    private static func connectorTestResultIsNonActionable(_ result: String) -> Bool {
+        ["started", "success", "authenticated", "preflight_passed"].contains(result)
     }
 
     private static func taskIdentifier(for entry: LogEntry) -> String? {

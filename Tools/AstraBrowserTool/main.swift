@@ -41,6 +41,18 @@ struct AstraBrowserTool {
                 items.append(URLQueryItem(name: "limit", value: limit))
             }
             return try await request(endpoint: endpoint, method: "GET", path: "/snapshot", queryItems: items)
+        case "page", "read":
+            let endpoint = try browserEndpoint()
+            let query = args.value(after: "--query")
+            let limit = args.value(after: "--limit") ?? "2000"
+            var items = [
+                URLQueryItem(name: "mode", value: "text"),
+                URLQueryItem(name: "limit", value: limit)
+            ]
+            if let query, !query.isEmpty {
+                items.append(URLQueryItem(name: "query", value: query))
+            }
+            return try await request(endpoint: endpoint, method: "GET", path: "/snapshot", queryItems: items)
         case "navigate":
             let endpoint = try browserEndpoint()
             guard let url = args.next() ?? args.value(after: "--url") else {
@@ -50,34 +62,66 @@ struct AstraBrowserTool {
         case "click":
             let endpoint = try browserEndpoint()
             let selector = args.value(after: "--selector")
+            let label = args.value(after: "--label") ?? args.value(after: "--name")
+            let role = args.value(after: "--role")
+            let text = args.value(after: "--text")
+            let placeholder = args.value(after: "--placeholder")
+            let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
             let x = args.value(after: "--x").flatMap(Double.init)
             let y = args.value(after: "--y").flatMap(Double.init)
             var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
             if let selector { object["selector"] = selector }
+            if let label { object["label"] = label }
+            if let role { object["role"] = role }
+            if let text { object["text"] = text }
+            if let placeholder { object["placeholder"] = placeholder }
+            if let testID { object["testID"] = testID }
             if let x { object["x"] = x }
             if let y { object["y"] = y }
             return try await request(endpoint: endpoint, method: "POST", path: "/click", object: object)
-        case "type":
+        case "type", "fill":
             let endpoint = try browserEndpoint()
-            guard let selector = args.value(after: "--selector"),
-                  let text = args.value(after: "--text") ?? args.remainingText() else {
-                throw ToolError("type requires --selector and --text")
+            let selector = args.value(after: "--selector")
+            let label = args.value(after: "--label") ?? args.value(after: "--name")
+            let role = args.value(after: "--role")
+            let placeholder = args.value(after: "--placeholder")
+            let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
+            guard let text = args.value(after: "--text") ?? args.remainingText() else {
+                throw ToolError("\(command) requires --text")
             }
-            return try await request(endpoint: endpoint, method: "POST", path: "/type", object: [
-                "selector": selector,
+            guard selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
+                throw ToolError("\(command) requires --selector, --label, --role, --placeholder, or --testid")
+            }
+            var object: [String: Any] = [
                 "text": text,
                 "clear": !args.contains("--append")
-            ])
+            ]
+            if let selector { object["selector"] = selector }
+            if let label { object["label"] = label }
+            if let role { object["role"] = role }
+            if let placeholder { object["placeholder"] = placeholder }
+            if let testID { object["testID"] = testID }
+            return try await request(endpoint: endpoint, method: "POST", path: command.lowercased() == "fill" ? "/fill" : "/type", object: object)
         case "set-value", "setvalue":
             let endpoint = try browserEndpoint()
-            guard let selector = args.value(after: "--selector"),
-                  let text = args.value(after: "--text") ?? args.remainingText() else {
-                throw ToolError("set-value requires --selector and --text")
+            let selector = args.value(after: "--selector")
+            let label = args.value(after: "--label") ?? args.value(after: "--name")
+            let role = args.value(after: "--role")
+            let placeholder = args.value(after: "--placeholder")
+            let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
+            guard let text = args.value(after: "--text") ?? args.remainingText() else {
+                throw ToolError("set-value requires --text")
             }
-            return try await request(endpoint: endpoint, method: "POST", path: "/setValue", object: [
-                "selector": selector,
-                "text": text
-            ])
+            guard selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
+                throw ToolError("set-value requires --selector, --label, --role, --placeholder, or --testid")
+            }
+            var object: [String: Any] = ["text": text]
+            if let selector { object["selector"] = selector }
+            if let label { object["label"] = label }
+            if let role { object["role"] = role }
+            if let placeholder { object["placeholder"] = placeholder }
+            if let testID { object["testID"] = testID }
+            return try await request(endpoint: endpoint, method: "POST", path: "/setValue", object: object)
         case "replace-text", "replacetext":
             let endpoint = try browserEndpoint()
             guard let find = args.value(after: "--find") ?? args.value(after: "--old"),
@@ -93,10 +137,17 @@ struct AstraBrowserTool {
                 object["selector"] = selector
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/replaceText", object: object)
-        case "find-control", "findcontrol":
+        case "find-control", "findcontrol", "locator":
             let endpoint = try browserEndpoint()
-            guard let query = args.value(after: "--query") ?? args.value(after: "--label") ?? args.remainingText() else {
-                throw ToolError("find-control requires --query or label text")
+            guard let query = args.value(after: "--query")
+                ?? args.value(after: "--label")
+                ?? args.value(after: "--name")
+                ?? args.value(after: "--text")
+                ?? args.value(after: "--placeholder")
+                ?? args.value(after: "--testid")
+                ?? args.value(after: "--test-id")
+                ?? args.remainingText() else {
+                throw ToolError("\(command) requires --query or locator text")
             }
             var items = [URLQueryItem(name: "query", value: query)]
             if let role = args.value(after: "--role") {
@@ -105,7 +156,7 @@ struct AstraBrowserTool {
             if let limit = args.value(after: "--limit") {
                 items.append(URLQueryItem(name: "limit", value: limit))
             }
-            return try await request(endpoint: endpoint, method: "GET", path: "/findControl", queryItems: items)
+            return try await request(endpoint: endpoint, method: "GET", path: command.lowercased() == "locator" ? "/locator" : "/findControl", queryItems: items)
         case "click-control", "clickcontrol":
             let endpoint = try browserEndpoint()
             guard let label = args.value(after: "--label") ?? args.value(after: "--query") ?? args.remainingText() else {
@@ -146,6 +197,42 @@ struct AstraBrowserTool {
                 "replacement": replacement,
                 "all": !args.contains("--first")
             ])
+        case "google-docs-find", "googledocsfind":
+            let endpoint = try browserEndpoint()
+            guard let query = args.value(after: "--query") ?? args.value(after: "--text") ?? args.remainingText() else {
+                throw ToolError("google-docs-find requires --query")
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsFind", object: [
+                "query": query,
+                "closeFindBar": !args.contains("--keep-open")
+            ])
+        case "google-docs-insert", "googledocsinsert":
+            let endpoint = try browserEndpoint()
+            let verify = args.value(after: "--verify")
+            guard let text = args.value(after: "--text") ?? args.value(after: "--body") ?? args.remainingText() else {
+                throw ToolError("google-docs-insert requires --text")
+            }
+            var object: [String: Any] = [
+                "text": text,
+                "waitSaved": !args.contains("--no-wait-saved")
+            ]
+            if let verify {
+                object["verifyText"] = verify
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsInsert", object: object)
+        case "google-drive-open", "googledriveopen", "drive-open":
+            let endpoint = try browserEndpoint()
+            guard let name = args.value(after: "--name")
+                ?? args.value(after: "--title")
+                ?? args.value(after: "--text")
+                ?? args.remainingText() else {
+                throw ToolError("google-drive-open requires --name")
+            }
+            var object: [String: Any] = ["name": name]
+            if let timeout = args.value(after: "--timeout").flatMap(Double.init) {
+                object["timeoutSeconds"] = timeout
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDriveOpen", object: object)
         case "act":
             let endpoint = try browserEndpoint()
             var object: [String: Any] = [:]
@@ -279,12 +366,16 @@ struct AstraBrowserTool {
 
     private static func usageJSON() -> String {
         let usage: [String: Any] = [
-            "ok": true,
-            "usage": [
+                "ok": true,
+                "usage": [
                 "astra-browser health",
+                "astra-browser page [--query text] [--limit n]",
                 "astra-browser snapshot --mode summary|text|controls|full [--query text] [--limit n]",
+                "astra-browser locator --role button --name Save",
                 "astra-browser click --selector '#id'",
+                "astra-browser click --role button --name Save",
                 "astra-browser click --x 0.5 --y 0.5",
+                "astra-browser fill --label Email --text 'user@example.com'",
                 "astra-browser set-value --selector '#field' --text 'replacement text'",
                 "astra-browser replace-text --find 'old text' --with 'new text' [--selector '#field']",
                 "astra-browser find-control --label 'Replace all'",
@@ -292,6 +383,9 @@ struct AstraBrowserTool {
                 "astra-browser verify-text 'expected text' [--absent]",
                 "astra-browser wait-saved --timeout 8",
                 "astra-browser google-find-replace --find 'old text' --with 'new text'",
+                "astra-browser google-docs-find --query 'unique phrase'",
+                "astra-browser google-docs-insert --verify 'unique phrase' --text 'content to insert'",
+                "astra-browser google-drive-open --name 'Untitled document'",
                 "astra-browser act --find 'Replace with' --set 'new text' --click 'Replace all' --wait-saved --verify 'new text'",
                 "astra-browser keypress --key h --mod command --mod shift",
                 "astra-browser text 'replacement text'",

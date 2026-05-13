@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct LogViewerView: View {
     private static let maxVisibleEntries = 2000
@@ -8,6 +9,7 @@ struct LogViewerView: View {
         case clipboard
     }
 
+    @Environment(\.dismiss) private var dismiss
     @State private var entries: [LogEntry] = AppLogger.entries
     @State private var filteredEntries: [LogEntry] = []
     @State private var pendingLiveEntries: [LogEntry] = []
@@ -32,6 +34,13 @@ struct LogViewerView: View {
             selectedCategory != nil ||
             filterTaskID != nil ||
             !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var visibleEntrySummary: String {
+        if filteredEntries.count == entries.count {
+            return "\(filteredEntries.count) entries"
+        }
+        return "\(filteredEntries.count) of \(entries.count)"
     }
 
     private func filtered(_ sourceEntries: [LogEntry]) -> [LogEntry] {
@@ -90,77 +99,18 @@ struct LogViewerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
-
-            if AppLogger.isSensitiveMode {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield")
-                    Text("Sensitive Mode is on. Logs show sanitized audit metadata only; task history is governed separately.")
-                    Spacer()
-                }
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-            }
-
-            if let diagnosticsMessage {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.badge.gearshape")
-                    Text(diagnosticsMessage)
-                        .lineLimit(2)
-                    Spacer()
-                    if let diagnosticsReportURL {
-                        Button("Reveal") {
-                            NSWorkspace.shared.activateFileViewerSelecting([diagnosticsReportURL])
-                        }
-                    }
-                    Button {
-                        self.diagnosticsMessage = nil
-                        self.diagnosticsReportURL = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Dismiss")
-                }
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-            }
-
-            Divider()
-
-            // Log entries
-            if filteredEntries.isEmpty {
-                ContentUnavailableView("No Log Entries", systemImage: "doc.text",
-                    description: Text(selectedLevel != nil || selectedCategory != nil || !searchText.isEmpty
-                        ? "No entries match current filters."
-                        : "Log entries will appear here as the app runs."))
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 1) {
-                            ForEach(filteredEntries) { entry in
-                                LogEntryRow(entry: entry)
-                                    .id(entry.id)
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                    }
-                    .onChange(of: filteredEntries.count) {
-                        if autoScroll, let last = filteredEntries.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
-                    }
-                }
-            }
+            header
+            controls
+            notices
+            logTable
         }
-        .frame(minWidth: 600, minHeight: 300)
+        .frame(minWidth: 760, minHeight: 460)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             refreshFromLogger()
+        }
+        .onExitCommand {
+            dismiss()
         }
         .onChange(of: searchText) {
             flushPendingLiveEntries()
@@ -192,9 +142,62 @@ struct LogViewerView: View {
         }
     }
 
-    private var toolbar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(Stanford.ui(18, weight: .semibold))
+                .foregroundStyle(Stanford.sky)
+                .frame(width: 34, height: 34)
+                .background(Stanford.sky.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Logs")
+                    .font(Stanford.heading(22))
+                Text("Live sanitized audit stream and diagnostics")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 16)
+
+            Button {
+                refreshFromLogger()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh logs")
+
+            Button {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppLogger.mainLogFile.deletingLastPathComponent().path)
+            } label: {
+                Image(systemName: "folder")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .help("Open log folder in Finder")
+
+            Button {
+                dismiss()
+            } label: {
+                Label("Close", systemImage: "xmark")
+            }
+            .keyboardShortcut(.cancelAction)
+            .help("Close logs")
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+        .background(.regularMaterial)
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
+                searchField
+
                 Picker("Level", selection: $selectedLevel) {
                     Text("All Levels").tag(Optional<LogLevel>.none)
                     ForEach(LogLevel.allCases, id: \.self) { level in
@@ -202,7 +205,7 @@ struct LogViewerView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 126)
                 .help("Filter by minimum log level")
 
                 Picker("Category", selection: $selectedCategory) {
@@ -212,58 +215,33 @@ struct LogViewerView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 138)
+                .frame(width: 150)
                 .help("Filter by log category")
 
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search logs...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(Stanford.ui(12))
+                if hasActiveFilters {
+                    Button {
+                        clearFilters()
+                    } label: {
+                        Label("Clear", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear filters")
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .frame(minWidth: 140, maxWidth: .infinity)
-                .background(.quaternary)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                Text("\(filteredEntries.count) entries")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 68, alignment: .trailing)
-
-                Button {
-                    let latestEntries = AppLogger.entries
-                    entries = latestEntries
-                    recomputeFilteredEntries(from: latestEntries)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .frame(width: 20, height: 20)
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh")
-
-                Button {
-                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppLogger.mainLogFile.deletingLastPathComponent().path)
-                } label: {
-                    Image(systemName: "folder")
-                        .frame(width: 20, height: 20)
-                }
-                .buttonStyle(.borderless)
-                .help("Open log folder in Finder")
             }
 
-            HStack(spacing: 10) {
-                Toggle("Auto-scroll", isOn: $autoScroll)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .fixedSize()
+            HStack(spacing: 12) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(autoScroll ? Stanford.paloAltoGreen : Color.secondary.opacity(0.45))
+                        .frame(width: 7, height: 7)
+                    Toggle("Auto-scroll", isOn: $autoScroll)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .fixedSize()
+                }
 
-                Text("Diagnostics")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
+                Divider()
+                    .frame(height: 18)
 
                 Picker("Diagnostics scope", selection: $diagnosticsScopeRawValue) {
                     ForEach(LogDiagnosticsScope.allCases) { scope in
@@ -271,7 +249,7 @@ struct LogViewerView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 175)
+                .frame(width: 176)
                 .help("Choose how far back diagnostics should analyze")
 
                 Button {
@@ -298,10 +276,176 @@ struct LogViewerView: View {
                 .disabled(isGeneratingDiagnostics)
 
                 Spacer(minLength: 0)
+
+                Text(visibleEntrySummary)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search logs", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(Stanford.ui(13))
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.borderless)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(minWidth: 220, maxWidth: .infinity)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
+    }
+
+    private var notices: some View {
+        VStack(spacing: 8) {
+            if AppLogger.isSensitiveMode {
+                inlineNotice(
+                    icon: "lock.shield",
+                    tint: Stanford.paloAltoGreen,
+                    message: "Sensitive Mode is on. Logs show sanitized audit metadata only; task history is governed separately."
+                )
+            }
+
+            if let diagnosticsMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.badge.gearshape")
+                        .foregroundStyle(Stanford.sky)
+                    Text(diagnosticsMessage)
+                        .lineLimit(2)
+                    Spacer()
+                    if let diagnosticsReportURL {
+                        Button("Reveal") {
+                            NSWorkspace.shared.activateFileViewerSelecting([diagnosticsReportURL])
+                        }
+                    }
+                    Button {
+                        self.diagnosticsMessage = nil
+                        self.diagnosticsReportURL = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss")
+                }
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Stanford.sky.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
+    }
+
+    private func inlineNotice(icon: String, tint: Color, message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+            Text(message)
+            Spacer(minLength: 0)
+        }
+        .font(Stanford.caption(12))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+    }
+
+    private var logTable: some View {
+        VStack(spacing: 0) {
+            logTableHeader
+            Divider()
+            if filteredEntries.isEmpty {
+                emptyState
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(filteredEntries) { entry in
+                                LogEntryRow(entry: entry)
+                                    .id(entry.id)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .onChange(of: filteredEntries.count) {
+                        if autoScroll, let last = filteredEntries.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
+        .padding(.horizontal, 18)
+        .padding(.bottom, 18)
+    }
+
+    private var logTableHeader: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Time")
+                .frame(width: 92, alignment: .leading)
+            Text("Level")
+                .frame(width: 58, alignment: .leading)
+            Text("Category")
+                .frame(width: 96, alignment: .leading)
+            Text("Task")
+                .frame(width: 70, alignment: .leading)
+            Text("Message")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(Stanford.caption(11).weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.primary.opacity(0.035))
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView(
+            "No Log Entries",
+            systemImage: "doc.text",
+            description: Text(hasActiveFilters
+                ? "No entries match the current filters."
+                : "Log entries will appear here as the app runs.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 42)
+    }
+
+    private func clearFilters() {
+        selectedLevel = nil
+        selectedCategory = nil
+        filterTaskID = nil
+        searchText = ""
     }
 
     private func generateDiagnosticsReport(delivery: DiagnosticsDelivery) {
@@ -410,45 +554,42 @@ struct LogEntryRow: View {
     }()
 
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            // Timestamp
+        HStack(alignment: .top, spacing: 8) {
             Text(Self.timeFormatter.string(from: entry.timestamp))
                 .font(Stanford.ui(12, design: .monospaced))
                 .foregroundStyle(.tertiary)
-                .frame(width: 85, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
 
-            // Level badge
             Text(entry.level.uppercased())
                 .font(Stanford.ui(11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(levelColor)
-                .frame(width: 52, alignment: .leading)
+                .frame(width: 58, alignment: .leading)
 
-            // Category
             Text(entry.category)
                 .font(Stanford.ui(12, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: 96, alignment: .leading)
 
-            // Task ID (short)
             if let tid = entry.taskID {
                 Text(String(tid.uuidString.prefix(8)))
                     .font(Stanford.ui(11, design: .monospaced))
                     .foregroundStyle(.tertiary)
-                    .frame(width: 60, alignment: .leading)
+                    .frame(width: 70, alignment: .leading)
             } else {
                 Text("")
-                    .frame(width: 60, alignment: .leading)
+                    .frame(width: 70, alignment: .leading)
             }
 
-            // Message
             Text(entry.message)
                 .font(Stanford.ui(13, design: .monospaced))
                 .foregroundStyle(levelColor == .secondary ? .secondary : .primary)
                 .textSelection(.enabled)
                 .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 2)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
         .background(entry.logLevel == .error ? Stanford.cardinalRed.opacity(0.06) :
                      entry.logLevel == .warning ? Stanford.poppy.opacity(0.04) : .clear)
     }

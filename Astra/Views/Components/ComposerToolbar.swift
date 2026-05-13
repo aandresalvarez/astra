@@ -11,6 +11,7 @@ struct ComposerToolbar: View {
     var skills: [Skill] = []
     var availableSkills: [Skill] = []
     var workspace: Workspace?
+    var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     let isRunning: Bool
     let hasInput: Bool
     let onAttachFile: () -> Void
@@ -166,13 +167,22 @@ struct ComposerToolbar: View {
     private func modelBudgetPill(compact: Bool) -> some View {
         Menu {
             Menu {
-                ForEach(AgentRuntimeID.allCases) { runtime in
+                let runtimes = selectableRuntimes
+                if runtimes.isEmpty {
+                    Label(runtimeReadinessStates.isEmpty ? "Checking providers" : "No ready providers",
+                          systemImage: runtimeReadinessStates.isEmpty ? "clock" : "exclamationmark.triangle")
+                }
+                ForEach(runtimes) { runtime in
                     Button {
                         onRuntimeChange?(runtime.rawValue)
-                        let candidates = runtimeModels(for: runtime)
-                        if !candidates.contains(model) {
-                            onModelChange?(candidates.first ?? runtime.defaultModel)
-                        }
+                        onModelChange?(
+                            RuntimeModelAvailability.modelForRuntimeSwitch(
+                                currentModel: model,
+                                to: runtime,
+                                cachedClaudeModelsJSON: claudeAvailableModels,
+                                cachedCopilotModelsJSON: copilotAvailableModels
+                            )
+                        )
                     } label: {
                         HStack {
                             Text(runtime.displayName)
@@ -185,7 +195,13 @@ struct ComposerToolbar: View {
             }
 
             Menu {
-                ForEach(runtimeModels(for: resolvedRuntime), id: \.self) { candidate in
+                let candidates = runtimeModels(for: resolvedRuntime)
+                let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
+                    Label("Custom: \(modelDisplayName(trimmedModel))", systemImage: "pencil")
+                    Divider()
+                }
+                ForEach(candidates, id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
                         HStack {
                             Text(modelDisplayName(candidate))
@@ -195,15 +211,6 @@ struct ComposerToolbar: View {
                 }
             } label: {
                 Label("Model", systemImage: "cpu")
-            }
-            let candidates = runtimeModels(for: resolvedRuntime)
-            if !candidates.contains(model) {
-                let fallback = candidates.first ?? resolvedRuntime.defaultModel
-                Button { onModelChange?(fallback) } label: {
-                    HStack {
-                        Text("Use \(modelDisplayName(fallback))")
-                    }
-                }
             }
 
             Menu {
@@ -265,7 +272,7 @@ struct ComposerToolbar: View {
             .background((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.13 : 0.07))
             .clipShape(Capsule())
         }
-        .help("\(resolvedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)")
+        .help(runtimeStatusHelp)
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
     }
@@ -289,13 +296,13 @@ struct ComposerToolbar: View {
 
             switch style {
             case .full:
-                Text("\(shortRuntimeName(resolvedRuntime)) · \(shortModelDisplayName(model)) · \(budgetSummary(budget))")
+                Text(runtimeStatusText(includeRuntime: true))
                     .font(Stanford.caption(12).weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 260, alignment: .trailing)
             case .medium:
-                Text("\(shortModelDisplayName(model)) · \(budgetSummary(budget))")
+                Text(runtimeStatusText(includeRuntime: false))
                     .font(Stanford.caption(12).weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -605,14 +612,14 @@ struct ComposerToolbar: View {
                         .font(Stanford.body(15))
                         .fontWeight(.medium)
                 }
-                .foregroundStyle(hasInput ? .white : Color.primary.opacity(0.55))
+                .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.55))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
-                .background(hasInput ? submitColor : Color.primary.opacity(0.10))
+                .background(canSubmit ? submitColor : Color.primary.opacity(0.10))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(!hasInput)
+            .disabled(!canSubmit)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityIdentifier("ComposerSubmitButton")
         } else {
@@ -621,10 +628,10 @@ struct ComposerToolbar: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(Stanford.ui(28))
-                    .foregroundStyle(hasInput ? Stanford.cardinalRed : Color.primary.opacity(0.25))
+                    .foregroundStyle(canSubmit ? Stanford.cardinalRed : Color.primary.opacity(0.25))
             }
             .buttonStyle(.plain)
-            .disabled(!hasInput)
+            .disabled(!canSubmit)
             .keyboardShortcut(.return, modifiers: .command)
         }
     }
@@ -675,6 +682,44 @@ struct ComposerToolbar: View {
 
     private var resolvedRuntime: AgentRuntimeID {
         AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+    }
+
+    private var canSubmit: Bool {
+        hasInput && (runtimeReadinessStates.isEmpty || runtimeReadinessStates[resolvedRuntime] == .ready)
+    }
+
+    private var displayedRuntime: AgentRuntimeID? {
+        if runtimeReadinessStates[resolvedRuntime] == .ready {
+            return resolvedRuntime
+        }
+        return selectableRuntimes.first
+    }
+
+    private var selectableRuntimes: [AgentRuntimeID] {
+        RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
+    }
+
+    private var runtimeStatusHelp: String {
+        if runtimeReadinessStates.isEmpty {
+            return "Checking provider readiness"
+        }
+        guard let displayedRuntime else {
+            return "No ready provider. Finish CLI setup before running a task."
+        }
+        return "\(displayedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)"
+    }
+
+    private func runtimeStatusText(includeRuntime: Bool) -> String {
+        if runtimeReadinessStates.isEmpty {
+            return "Checking provider"
+        }
+        guard let displayedRuntime else {
+            return "Provider setup needed"
+        }
+        let modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
+        return includeRuntime
+            ? "\(shortRuntimeName(displayedRuntime)) · \(modelPart) · \(budgetSummary(budget))"
+            : "\(modelPart) · \(budgetSummary(budget))"
     }
 
     private func shortRuntimeName(_ runtime: AgentRuntimeID) -> String {

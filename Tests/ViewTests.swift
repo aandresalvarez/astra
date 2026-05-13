@@ -602,7 +602,7 @@ struct TaskThreadSnapshotTests {
     func taskRunSnapshotPrecomputesVPNWarningMarkers() {
         let task = makeTask()
         let run = TaskRun(task: task)
-        run.output = "Request is prohibited by organization's policy"
+        run.output = #"API Error: 403 {"message":"Request is prohibited by organization's policy.","details":[{"reason":"SECURITY_POLICY_VIOLATED","metadata":{"vpcServiceControlsUniqueIdentifier":"abc123"}}]}"#
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
@@ -1134,6 +1134,19 @@ struct TaskThreadSnapshotTests {
         ]
 
         #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths) == nil)
+    }
+
+    @Test("Generated HTML preview does not replace a user navigated page")
+    func generatedHTMLPreviewDoesNotReplaceUserNavigatedPage() {
+        let root = URL(fileURLWithPath: "/tmp/astra-generated-preview-autoload")
+        let index = root.appendingPathComponent("index.html").path
+        let about = root.appendingPathComponent("about.html").path
+
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "about:blank", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: index).absoluteString, targetPath: index))
+        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: about).absoluteString, targetPath: index))
+        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "https://example.com/current-page", targetPath: index))
     }
 
     @Test("Generated file preview prefers task README Markdown")

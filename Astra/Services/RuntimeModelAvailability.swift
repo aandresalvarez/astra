@@ -40,6 +40,18 @@ enum RuntimeModelAvailability {
         ).first ?? runtime.defaultModel
     }
 
+    static func hasCachedModels(
+        for runtime: AgentRuntimeID,
+        cachedClaudeModelsJSON: String,
+        cachedCopilotModelsJSON: String
+    ) -> Bool {
+        cachedModels(
+            for: runtime,
+            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+            cachedCopilotModelsJSON: cachedCopilotModelsJSON
+        ) != nil
+    }
+
     static func normalizedModel(
         _ model: String,
         for runtime: AgentRuntimeID,
@@ -67,6 +79,27 @@ enum RuntimeModelAvailability {
                 cachedCopilotModelsJSON: cachedCopilotModelsJSON
             )
         )
+    }
+
+    static func modelForRuntimeSwitch(
+        currentModel: String,
+        to runtime: AgentRuntimeID,
+        cachedClaudeModelsJSON: String,
+        cachedCopilotModelsJSON: String
+    ) -> String {
+        let trimmed = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suggestions = models(
+            for: runtime,
+            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+            cachedCopilotModelsJSON: cachedCopilotModelsJSON
+        )
+        if suggestions.contains(trimmed) {
+            return trimmed
+        }
+        if suggestions.contains(runtime.defaultModel) {
+            return runtime.defaultModel
+        }
+        return suggestions.first ?? runtime.defaultModel
     }
 
     static func persistAvailableModels(
@@ -138,23 +171,16 @@ enum RuntimeModelAvailability {
         for runtime: AgentRuntimeID,
         cachedModels: [String]?
     ) -> String {
+        // Model IDs are owned by the selected CLI/provider. Cached and
+        // built-in lists are suggestions, not an allow-list.
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         if let cachedModels {
             guard !cachedModels.isEmpty else { return runtime.defaultModel }
-            return cachedModels.contains(trimmed) ? trimmed : cachedModels[0]
+            guard !trimmed.isEmpty else { return cachedModels[0] }
+            return trimmed
         }
         guard !trimmed.isEmpty else { return runtime.defaultModel }
-        if modelLooksLikeAnotherRuntimeDefault(trimmed, runtime: runtime) {
-            return runtime.defaultModel
-        }
         return trimmed
-    }
-
-    private static func modelLooksLikeAnotherRuntimeDefault(_ model: String, runtime: AgentRuntimeID) -> Bool {
-        AgentRuntimeID.allCases
-            .filter { $0 != runtime }
-            .flatMap(\.defaultModels)
-            .contains(model)
     }
 
     private static func availableModelsKey(for runtime: AgentRuntimeID) -> String {

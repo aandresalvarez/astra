@@ -27,21 +27,17 @@ enum RuntimePathResolver {
             return path
         }
 
-        let which = Process()
-        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        which.arguments = [executableName]
-        let pipe = Pipe()
-        which.standardOutput = pipe
-        do {
-            try which.run()
-            which.waitUntilExit()
-        } catch {
-            return fallback
+        let pathCandidates = ProcessInfo.processInfo.environment["PATH", default: ""]
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+            .map { URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent(executableName).path }
+
+        for path in pathCandidates where fileManager.isExecutableFile(atPath: path) {
+            return path
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let path = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return path.isEmpty ? fallback : path
+
+        return fallback
     }
 
     static func detectClaudePath(fileManager: FileManager = .default) -> String {

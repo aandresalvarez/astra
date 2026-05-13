@@ -31,8 +31,9 @@ struct RuntimeModelAvailabilityTests {
             "future-model",
             "claude-sonnet-4.5"
         ])
-        #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4", for: .copilotCLI, defaults: defaults) == "gpt-5")
         #expect(RuntimeModelAvailability.normalizedModel("gpt-5", for: .copilotCLI, defaults: defaults) == "gpt-5")
+        #expect(RuntimeModelAvailability.normalizedModel("future-provider-model", for: .copilotCLI, defaults: defaults) == "future-provider-model")
+        #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4", for: .copilotCLI, defaults: defaults) == "claude-sonnet-4")
     }
 
     @Test("Cached Claude and Copilot models stay isolated")
@@ -54,7 +55,8 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.models(for: .copilotCLI, defaults: defaults) == [
             "claude-sonnet-4.5"
         ])
-        #expect(RuntimeModelAvailability.normalizedModel("gpt-5", for: .claudeCode, defaults: defaults) == "claude-sonnet-4-6")
+        #expect(RuntimeModelAvailability.normalizedModel("claude-custom-alias", for: .claudeCode, defaults: defaults) == "claude-custom-alias")
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5", for: .claudeCode, defaults: defaults) == "gpt-5")
     }
 
     @Test("Unverified custom model is preserved until provider availability is cached")
@@ -63,7 +65,34 @@ struct RuntimeModelAvailabilityTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         #expect(RuntimeModelAvailability.normalizedModel("custom-provider-model", for: .claudeCode, defaults: defaults) == "custom-provider-model")
-        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == AgentRuntimeID.claudeCode.defaultModel)
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == "gpt-5.2")
+    }
+
+    @Test("Runtime switches choose a provider suggestion without making normalization provider-specific")
+    func runtimeSwitchUsesProviderSuggestion() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        RuntimeModelAvailability.persistAvailableModels(
+            ["future-copilot-model", "gpt-5"],
+            for: .copilotCLI,
+            defaults: defaults
+        )
+        let cachedCopilot = defaults.string(forKey: AppStorageKeys.copilotAvailableModels) ?? ""
+
+        #expect(RuntimeModelAvailability.modelForRuntimeSwitch(
+            currentModel: "custom-claude-alias",
+            to: .copilotCLI,
+            cachedClaudeModelsJSON: "",
+            cachedCopilotModelsJSON: cachedCopilot
+        ) == "future-copilot-model")
+
+        #expect(RuntimeModelAvailability.modelForRuntimeSwitch(
+            currentModel: "gpt-5",
+            to: .copilotCLI,
+            cachedClaudeModelsJSON: "",
+            cachedCopilotModelsJSON: cachedCopilot
+        ) == "gpt-5")
     }
 
     private func makeDefaults() -> (UserDefaults, String) {

@@ -42,6 +42,7 @@ enum LogLevel: String, Comparable, CaseIterable {
 enum AuditEvent: String, CaseIterable {
     case appStarted = "app.started"
     case appActivated = "app.activated"
+    case userAction = "user.action"
     case dataStoreSelected = "data.store.selected"
     case dataStoreRecovered = "data.store.recovered"
     case diagnosticsGenerated = "diagnostics.generated"
@@ -122,8 +123,12 @@ enum AuditEvent: String, CaseIterable {
 
     case pluginInstalled = "plugin.installed"
     case capabilityInstalled = "capability.installed"
+    case capabilityEnableStarted = "capability.enable_started"
+    case capabilityEnableFailed = "capability.enable_failed"
     case capabilityEnabled = "capability.enabled"
+    case capabilityDisableStarted = "capability.disable_started"
     case capabilityDisabled = "capability.disabled"
+    case capabilityChatContext = "capability.chat_context"
     case capabilityResolved = "capability.resolved"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
@@ -151,6 +156,20 @@ enum AuditEvent: String, CaseIterable {
     case appUpdateBackupCreated = "app_update.backup_created"
     case appUpdateInstallRequested = "app_update.install_requested"
     case threadSnapshotBuilt = "thread.snapshot_built"
+    case shelfBrowserNavigation = "shelf.browser.navigation"
+    case shelfBrowserPreview = "shelf.browser.preview"
+    case shelfBrowserContext = "shelf.browser.context"
+    case shelfBrowserAction = "shelf.browser.action"
+}
+
+enum AuditTrace {
+    static func make(_ prefix: String) -> String {
+        let cleaned = prefix
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+            .lowercased()
+        let safePrefix = cleaned.isEmpty ? "trace" : cleaned
+        return "\(safePrefix)-\(UUID().uuidString.prefix(8).lowercased())"
+    }
 }
 
 // MARK: - Log Sanitizer
@@ -309,6 +328,7 @@ enum AppLogger {
     }()
 
     static let mainLogFile: URL = logDir.appendingPathComponent("astra.log")
+    static let breadcrumbLogFile: URL = logDir.appendingPathComponent("last-actions.jsonl")
 
     /// In-memory ring buffer of recent entries (last 2000)
     private static let bufferQueue = DispatchQueue(label: "com.astra.logbuffer")
@@ -357,6 +377,31 @@ enum AppLogger {
         emit(level, message, category: category, taskID: taskID)
     }
 
+    @discardableResult
+    static func breadcrumb(
+        action: String,
+        category: String = "UI",
+        taskID: UUID? = nil,
+        traceID: String = AuditTrace.make("ui"),
+        fields: [String: String] = [:],
+        level: LogLevel = .info,
+        fieldMaxLength: Int = 120
+    ) -> String {
+        var auditFields = fields
+        auditFields["action"] = action
+        auditFields["trace_id"] = traceID
+        audit(.userAction, category: category, taskID: taskID, fields: auditFields, level: level, fieldMaxLength: fieldMaxLength)
+        writeBreadcrumb(
+            action: action,
+            category: category,
+            taskID: taskID,
+            traceID: traceID,
+            level: level,
+            fields: LogSanitizer.sanitizeFields(auditFields, maxLength: fieldMaxLength)
+        )
+        return traceID
+    }
+
     /// Legacy compatibility — parses category from "[Category]" prefix
     static func log(_ message: String) {
         let (category, cleanMessage) = parseCategory(message)
@@ -372,6 +417,10 @@ enum AppLogger {
     static func readTaskLog(taskID: UUID) -> String {
         let path = taskLogFile(taskID: taskID)
         return (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+    }
+
+    static func readBreadcrumbs(maxLines: Int = 100) -> String {
+        tailLines(from: breadcrumbLogFile, maxLines: maxLines).joined(separator: "\n")
     }
 
     // MARK: - Log Rotation
@@ -448,6 +497,57 @@ enum AppLogger {
                 .posixPermissions: 0o600
             ])
         }
+    }
+
+    private static func writeBreadcrumb(
+        action: String,
+        category: String,
+        taskID: UUID?,
+        traceID: String,
+        level: LogLevel,
+        fields: [String: String]
+    ) {
+        var record: [String: Any] = [
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "level": level.rawValue,
+            "category": category,
+            "action": LogSanitizer.sanitize(action, maxLength: 80),
+            "trace_id": traceID,
+            "fields": fields
+        ]
+        if let taskID {
+            record["task_id"] = taskID.uuidString
+        }
+
+        fileQueue.async {
+            guard JSONSerialization.isValidJSONObject(record),
+                  let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
+                  let line = String(data: data, encoding: .utf8)
+            else { return }
+            appendToFile(line + "\n", at: breadcrumbLogFile)
+            trimFile(breadcrumbLogFile, maxLines: 100)
+        }
+    }
+
+    private static func tailLines(from url: URL, maxLines: Int) -> [String] {
+        guard maxLines > 0,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .suffix(maxLines)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    /// Trim a log-like file to the last N lines. Must be called on `fileQueue`.
+    private static func trimFile(_ url: URL, maxLines: Int) {
+        guard maxLines > 0,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > maxLines else { return }
+        let trimmed = lines.suffix(maxLines).map(String.init).joined(separator: "\n") + "\n"
+        try? trimmed.write(to: url, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     private static func ensureDirectory(at url: URL) {

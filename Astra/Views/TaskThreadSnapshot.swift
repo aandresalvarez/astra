@@ -87,9 +87,13 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     }
 
     private static func outputContainsVPNWarning(_ output: String) -> Bool {
-        output.contains("VPC_SERVICE_CONTROLS") ||
+        let normalized = output.lowercased()
+        return output.contains("VPC_SERVICE_CONTROLS") ||
             output.contains("SECURITY_POLICY_VIOLATED") ||
-            output.contains("Request is prohibited by organization's policy")
+            output.contains("Request is prohibited by organization's policy") ||
+            normalized.contains("vpcservicecontrolsuniqueidentifier") ||
+            normalized.contains("request is prohibited by organization's policy") ||
+            normalized.contains("security_policy_violated")
     }
 }
 
@@ -743,6 +747,21 @@ enum TaskGeneratedFiles {
         if isSQLFile(path) { return .query }
         if isTextShelfFile(path) { return .text }
         return nil
+    }
+
+    static func shouldAutoLoadHTMLPreview(currentBrowserURL: String, targetPath: String) -> Bool {
+        let trimmed = currentBrowserURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.lowercased() != "about:blank" else {
+            return true
+        }
+
+        guard let currentURL = URL(string: trimmed),
+              currentURL.isFileURL else {
+            return false
+        }
+
+        return currentURL.standardizedFileURL.path == URL(fileURLWithPath: targetPath).standardizedFileURL.path
     }
 
     static func htmlPreviewSignature(

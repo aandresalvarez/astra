@@ -103,7 +103,7 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
 
 @MainActor
 private final class ShelfBrowserSessionStore: ObservableObject {
-    private let sharedSession = ShelfBrowserSession()
+    private var sharedSession = ShelfBrowserSession()
     private var taskSessions: [UUID: ShelfBrowserSession] = [:]
 
     func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfBrowserSession {
@@ -121,6 +121,21 @@ private final class ShelfBrowserSessionStore: ObservableObject {
         session.bindToTask(taskID)
         taskSessions[taskID] = session
         return session
+    }
+
+    func promoteSharedSession(to taskID: UUID, pinnedToTask: Bool, isPresented: Bool) -> Bool {
+        guard pinnedToTask,
+              taskSessions[taskID] == nil,
+              sharedSession.hasDisplayablePage || sharedSession.isLoading else {
+            return false
+        }
+
+        sharedSession.bindToTask(taskID)
+        sharedSession.setPresented(isPresented)
+        taskSessions[taskID] = sharedSession
+        sharedSession = ShelfBrowserSession()
+        sharedSession.bindToTask(nil)
+        return true
     }
 
     func setPresented(_ isPresented: Bool, taskID: UUID?, pinnedToTask: Bool) {
@@ -627,7 +642,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingLogs) {
             LogViewerView()
-                .frame(width: 900, height: 500)
+                .frame(width: 980, height: 620)
         }
         .sheet(isPresented: $showingDashboard) {
             UsageDashboardView()
@@ -1156,15 +1171,52 @@ struct ContentView: View {
                     return
                 }
 
-                lastGeneratedHTMLPreviewSignature = signature
                 let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
-                session.load(URL(fileURLWithPath: path))
+                let shouldLoadPreview = TaskGeneratedFiles.shouldAutoLoadHTMLPreview(
+                    currentBrowserURL: session.currentURL,
+                    targetPath: path
+                )
+                lastGeneratedHTMLPreviewSignature = signature
+                guard shouldLoadPreview else {
+                    logGeneratedHTMLPreview(
+                        taskID: taskID,
+                        event: "auto_preview_skipped",
+                        reason: "browser_has_user_page",
+                        targetPath: path,
+                        currentURL: session.currentURL
+                    )
+                    return
+                }
+
+                session.load(URL(fileURLWithPath: path), source: "generated_html_preview")
+                logGeneratedHTMLPreview(
+                    taskID: taskID,
+                    event: "auto_preview_loaded",
+                    reason: "signature_changed",
+                    targetPath: path,
+                    currentURL: session.currentURL
+                )
                 if activeWorkspaceCanvasItem != .browser {
                     presentCanvas(.browser)
                 }
                 syncBrowserPresentation()
             }
         }
+    }
+
+    private func logGeneratedHTMLPreview(
+        taskID: UUID,
+        event: String,
+        reason: String,
+        targetPath: String,
+        currentURL: String
+    ) {
+        var fields = ShelfBrowserURLLogFields.fields(for: URL(fileURLWithPath: targetPath), prefix: "target")
+        fields.merge(ShelfBrowserURLLogFields.fields(for: currentURL, prefix: "current"), uniquingKeysWith: { current, _ in current })
+        fields["event"] = event
+        fields["reason"] = reason
+        fields["pinned_to_task"] = String(isBrowserPinnedToTask)
+        AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
     }
 
     private func previewGeneratedMarkdownForSelectedTaskIfNeeded() {
@@ -1212,7 +1264,7 @@ struct ContentView: View {
         case .browser?:
             let taskID = selectedTask?.id
             let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
-            session.load(url)
+            session.load(url, source: "generated_file")
             if let taskID {
                 lastGeneratedHTMLPreviewSignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
             }
@@ -1297,15 +1349,35 @@ struct ContentView: View {
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
+        promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
         isComposingTask = false
         runSingleTask(task)
     }
 
     private func handleTaskCreated(_ task: AgentTask) {
+        promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
         isComposingTask = false
         presentRightRail()
+    }
+
+    private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
+        guard selectedTask == nil || isComposingTask else { return }
+        let wasPresented = activeWorkspaceCanvasItem == .browser
+        let promoted = browserSessionStore.promoteSharedSession(
+            to: task.id,
+            pinnedToTask: isBrowserPinnedToTask,
+            isPresented: wasPresented
+        )
+        guard promoted else { return }
+
+        AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: task.id, fields: [
+            "event": "draft_browser_promoted",
+            "source": "new_task_handoff",
+            "pinned_to_task": String(isBrowserPinnedToTask),
+            "was_presented": String(wasPresented)
+        ])
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
@@ -1632,6 +1704,16 @@ struct ContentView: View {
         let installer = CapabilityInstaller()
         for package in packages {
             let inputs = newWorkspaceDraft.capabilityConfiguration.installationInputs(for: package.id)
+            let traceID = AuditTrace.make("onboarding-capability")
+            AppLogger.breadcrumb(action: "onboarding_capability_enable_selected", category: "Capabilities", traceID: traceID, fields: [
+                "source": "onboarding",
+                "package_id": package.id,
+                "package_name": package.name,
+                "workspace_id": workspace.id.uuidString,
+                "credential_input_count": String(inputs.credentialInputs.count),
+                "config_input_count": String(inputs.configInputs.count),
+                "base_url_override_count": String(inputs.baseURLOverrides.count)
+            ])
             do {
                 try installer.install(
                     package,
@@ -1639,13 +1721,19 @@ struct ContentView: View {
                     modelContext: modelContext,
                     credentialInputs: inputs.credentialInputs,
                     configInputs: inputs.configInputs,
-                    baseURLOverrides: inputs.baseURLOverrides
+                    baseURLOverrides: inputs.baseURLOverrides,
+                    traceID: traceID
                 )
             } catch {
-                AppLogger.warning(
-                    "Failed to enable onboarding capability \(package.id): \(error.localizedDescription)",
-                    category: "Onboarding"
-                )
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                    "source": "onboarding",
+                    "trace_id": traceID,
+                    "package_id": package.id,
+                    "package_name": package.name,
+                    "package_version": package.version,
+                    "workspace_id": workspace.id.uuidString,
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
             }
         }
     }

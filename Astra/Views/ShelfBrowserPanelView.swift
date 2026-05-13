@@ -9,6 +9,7 @@ struct ShelfBrowserPanelView: View {
     @State private var addressText = ""
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
+    @State private var isControlledTechnicalDetailsExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,7 +66,7 @@ struct ShelfBrowserPanelView: View {
 
             Divider()
 
-            Toggle(isOn: $session.isAgentBridgeEnabled) {
+            Toggle(isOn: agentControlOverflowBinding) {
                 Label(
                     "Agent control",
                     systemImage: session.isAgentBridgeEnabled ? "lock.open.fill" : "lock.fill"
@@ -90,6 +91,20 @@ struct ShelfBrowserPanelView: View {
         .buttonStyle(BrowserBarButtonStyle())
         .fixedSize()
         .help("Browser options")
+    }
+
+    private var agentControlOverflowBinding: Binding<Bool> {
+        Binding(
+            get: { session.isAgentBridgeEnabled },
+            set: { session.setAgentBridgeEnabled($0, source: "overflow_menu") }
+        )
+    }
+
+    private var agentControlPanelBinding: Binding<Bool> {
+        Binding(
+            get: { session.isAgentBridgeEnabled },
+            set: { session.setAgentBridgeEnabled($0, source: "controlled_panel") }
+        )
     }
 
     private var toolbar: some View {
@@ -319,12 +334,12 @@ struct ShelfBrowserPanelView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
-                    quickLink("Office", url: "https://www.office.com/", systemImage: "square.grid.2x2.fill", tint: Stanford.poppy)
+                    quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
 
                 VStack(spacing: 8) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
-                    quickLink("Office", url: "https://www.office.com/", systemImage: "square.grid.2x2.fill", tint: Stanford.poppy)
+                    quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
             }
         }
@@ -409,13 +424,13 @@ struct ShelfBrowserPanelView: View {
     private var controlledBrowserBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                controlledBrowserHeader
+                controlledBrowserHero
+                controlledAgentControlCard
                 controlledBrowserActions
                 if shouldShowControlledLaunchProgress {
                     controlledLaunchProgress
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                controlledBrowserDiagnostics
 
                 if let error = session.controlledBrowser.lastErrorMessage {
                     controlledBrowserNotice(
@@ -427,11 +442,7 @@ struct ShelfBrowserPanelView: View {
                 }
 
                 controlledCurrentPageCard
-
-                Text("Use this isolated profile for SSO-heavy sites such as Outlook, ServiceNow, Jira, Salesforce, or internal tools. The page opens in a separate Chromium window; the Shelf bridge remains local to this Mac and only exposes it to the linked task when Agent control is enabled.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                controlledTechnicalDetails
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -452,30 +463,155 @@ struct ShelfBrowserPanelView: View {
         }
     }
 
-    private var controlledBrowserHeader: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: session.controlledBrowser.runState.systemImage)
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(controlledBrowserTint)
-                .frame(width: 34, height: 34)
+    private var controlledBrowserHero: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                        .fill(controlledBrowserTint.opacity(0.12))
+                    Image(systemName: controlledHeroIcon)
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(controlledBrowserTint)
+                }
+                .frame(width: 44, height: 44)
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(session.controlledBrowser.browserName ?? "Controlled Chromium Profile")
-                        .font(Stanford.heading(18))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                    statusBadge(session.controlledBrowser.runState.label, tint: controlledBrowserTint)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(controlledHeroTitle)
+                            .font(Stanford.heading(18))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                        statusBadge(session.controlledBrowser.runState.label, tint: controlledBrowserTint)
+                    }
+
+                    Text(controlledHeroSubtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Text(session.controlledBrowser.statusMessage)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
             }
 
-            Spacer(minLength: 8)
+            controlledUserFlow
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
+                .stroke(controlledBrowserTint.opacity(Stanford.strokeActive), lineWidth: 1)
+        )
+    }
+
+    private var controlledAgentControlCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: session.isAgentBridgeEnabled ? "cursorarrow.rays" : "lock.fill")
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(controlledTaskFlowTint)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text("Agent control")
+                            .font(Stanford.caption(13).weight(.semibold))
+                        statusBadge(session.isAgentBridgeEnabled ? "On" : "Off", tint: controlledTaskFlowTint)
+                    }
+                    Text(agentControlCardMessage)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: agentControlPanelBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
+            }
+
+            if let issue = session.agentControlPermissionIssue {
+                controlledAgentControlPermissionGuide(issue: issue)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(controlledTaskFlowTint.opacity(Stanford.strokeActive), lineWidth: 1)
+        )
+    }
+
+    private func controlledAgentControlPermissionGuide(issue: MacOSPermissionIssue) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: issue.systemImage)
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.statusInfo)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(issue.title)
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text(issue.message)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    openPermissionSettingsButton(issue: issue)
+                    checkPermissionAgainButton
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    openPermissionSettingsButton(issue: issue)
+                    checkPermissionAgainButton
+                }
+            }
+        }
+        .padding(10)
+        .background(Stanford.statusInfo.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .stroke(Stanford.statusInfo.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
+    }
+
+    private func openPermissionSettingsButton(issue: MacOSPermissionIssue) -> some View {
+        Button {
+            session.openAgentControlPrivacySettings()
+        } label: {
+            Label(issue.actionTitle, systemImage: "gearshape")
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .buttonStyle(StanfordButtonStyle(isPrimary: false))
+        .controlSize(.small)
+    }
+
+    private var checkPermissionAgainButton: some View {
+        Button {
+            Task { await session.checkAgentControlPermissionAgain() }
+        } label: {
+            Label("Check Again", systemImage: "arrow.clockwise")
+                .lineLimit(1)
+        }
+        .buttonStyle(StanfordButtonStyle(isPrimary: true))
+        .controlSize(.small)
     }
 
     private var controlledBrowserActions: some View {
@@ -496,6 +632,73 @@ struct ShelfBrowserPanelView: View {
         }
     }
 
+    private var controlledUserFlow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                controlledFlowPill(
+                    "Browser",
+                    value: controlledBrowserFlowValue,
+                    systemImage: "macwindow",
+                    tint: controlledBrowserTint
+                )
+                controlledFlowPill(
+                    "Page",
+                    value: hasDisplayablePage ? "Open" : "No page",
+                    systemImage: "doc.text.magnifyingglass",
+                    tint: hasDisplayablePage ? Stanford.statusHealthy : .secondary
+                )
+                controlledFlowPill(
+                    "Task",
+                    value: controlledTaskFlowValue,
+                    systemImage: session.isAgentBridgeEnabled ? "cursorarrow.rays" : "lock.fill",
+                    tint: controlledTaskFlowTint
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                controlledFlowPill(
+                    "Browser",
+                    value: controlledBrowserFlowValue,
+                    systemImage: "macwindow",
+                    tint: controlledBrowserTint
+                )
+                controlledFlowPill(
+                    "Page",
+                    value: hasDisplayablePage ? "Open" : "No page",
+                    systemImage: "doc.text.magnifyingglass",
+                    tint: hasDisplayablePage ? Stanford.statusHealthy : .secondary
+                )
+                controlledFlowPill(
+                    "Task",
+                    value: controlledTaskFlowValue,
+                    systemImage: session.isAgentBridgeEnabled ? "cursorarrow.rays" : "lock.fill",
+                    tint: controlledTaskFlowTint
+                )
+            }
+        }
+    }
+
+    private func controlledFlowPill(_ title: String, value: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.08))
+        .clipShape(Capsule())
+    }
+
     private var controlledPrimaryButton: some View {
         Button(action: controlledPrimaryAction) {
             Label(controlledPrimaryActionTitle, systemImage: controlledPrimaryActionIcon)
@@ -510,7 +713,7 @@ struct ShelfBrowserPanelView: View {
         Button {
             Task { await session.refreshControlledBrowserStatus() }
         } label: {
-            Label(session.controlledBrowser.runState == .failed ? "Retry connection" : "Refresh status", systemImage: "arrow.clockwise")
+            Label(session.controlledBrowser.runState == .failed ? "Retry" : "Check status", systemImage: "arrow.clockwise")
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
@@ -522,7 +725,7 @@ struct ShelfBrowserPanelView: View {
         Button {
             session.stopControlledBrowser()
         } label: {
-            Label("Stop", systemImage: "stop.fill")
+            Label("Stop control", systemImage: "stop.fill")
                 .lineLimit(1)
         }
         .buttonStyle(StanfordButtonStyle(isPrimary: false))
@@ -663,10 +866,23 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledCurrentPageCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Current page", systemImage: "doc.text.magnifyingglass")
-                .font(Stanford.caption(12).weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(hasDisplayablePage ? Stanford.statusHealthy : .secondary)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(hasDisplayablePage ? "Browser context for this task" : "No page linked yet")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text(controlledCurrentPageMessage)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             Text(session.pageTitle.isEmpty ? "No page loaded yet" : session.pageTitle)
                 .font(Stanford.caption(13).weight(.semibold))
@@ -687,6 +903,53 @@ struct ShelfBrowserPanelView: View {
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
+    }
+
+    private var controlledTechnicalDetails: some View {
+        VStack(spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isControlledTechnicalDetailsExpanded.toggle()
+                }
+            } label: {
+                controlledTechnicalDetailsLabel
+            }
+            .buttonStyle(.plain)
+
+            if isControlledTechnicalDetailsExpanded {
+                controlledBrowserDiagnostics
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private var controlledTechnicalDetailsLabel: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wrench.and.screwdriver")
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            Text("Technical details")
+                .font(Stanford.caption(12).weight(.semibold))
+            Spacer(minLength: 8)
+            Text(controlledTechnicalSummary)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: isControlledTechnicalDetailsExpanded ? "chevron.up" : "chevron.down")
+                .font(Stanford.ui(10, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .help(isControlledTechnicalDetailsExpanded ? "Hide technical details" : "Show technical details")
     }
 
     private var diagnosticDivider: some View {
@@ -769,6 +1032,111 @@ struct ShelfBrowserPanelView: View {
             .clipShape(Capsule())
     }
 
+    private var controlledHeroIcon: String {
+        if session.controlledBrowser.runState == .failed {
+            return "exclamationmark.triangle.fill"
+        }
+        if session.controlledBrowser.isRunning {
+            return session.isAgentBridgeEnabled ? "cursorarrow.rays" : "macwindow"
+        }
+        if session.controlledBrowser.isLaunching {
+            return "arrow.triangle.2.circlepath"
+        }
+        return "globe.badge.chevron.backward"
+    }
+
+    private var controlledHeroTitle: String {
+        if session.controlledBrowser.runState == .failed {
+            return "Browser control needs attention"
+        }
+        if session.controlledBrowser.isRunning && session.isAgentBridgeEnabled {
+            return "ASTRA can use this browser"
+        }
+        if session.controlledBrowser.isRunning {
+            return "Browser is open"
+        }
+        if session.controlledBrowser.isLaunching {
+            return "Opening controlled browser"
+        }
+        return "Controlled browser is off"
+    }
+
+    private var controlledHeroSubtitle: String {
+        if session.controlledBrowser.runState == .failed {
+            return session.controlledBrowser.lastErrorMessage ?? session.controlledBrowser.statusMessage
+        }
+        if session.controlledBrowser.isRunning && session.isAgentBridgeEnabled {
+            return "The current task can read and act on the selected Chrome page."
+        }
+        if session.controlledBrowser.isRunning {
+            return "Turn on Agent control when you want the task to read or operate this page."
+        }
+        if session.controlledBrowser.isLaunching {
+            return "ASTRA is starting Chrome and linking it to this task."
+        }
+        return "Use this for signed-in or canvas-heavy pages like Google Docs, Jira, or internal tools."
+    }
+
+    private var controlledBrowserFlowValue: String {
+        switch session.controlledBrowser.runState {
+        case .running, .attached:
+            return "Ready"
+        case .launching:
+            return "Opening"
+        case .failed:
+            return "Failed"
+        case .idle:
+            return "Off"
+        case .stopped:
+            return "Stopped"
+        }
+    }
+
+    private var controlledTaskFlowValue: String {
+        guard session.isAgentBridgeEnabled else { return "Off" }
+        if session.boundTaskID != nil {
+            return session.bridgeEndpoint == nil ? "Starting" : "Linked"
+        }
+        return "Waiting"
+    }
+
+    private var controlledTaskFlowTint: Color {
+        guard session.isAgentBridgeEnabled else { return Stanford.statusWarn }
+        return session.boundTaskID == nil || session.bridgeEndpoint == nil ? Stanford.statusInfo : Stanford.statusHealthy
+    }
+
+    private var agentControlCardMessage: String {
+        guard session.isAgentBridgeEnabled else {
+            return "The page stays visible, but tasks cannot read or operate it."
+        }
+        if session.boundTaskID == nil {
+            return "The next task message will link to this page when it starts."
+        }
+        if session.bridgeEndpoint == nil {
+            return "ASTRA is preparing local browser access for this task."
+        }
+        return "This task can read and act on the current Chrome page."
+    }
+
+    private var controlledCurrentPageMessage: String {
+        if hasDisplayablePage && session.isAgentBridgeEnabled {
+            return "ASTRA can read this page. Use Show Chrome to bring the window forward."
+        }
+        if hasDisplayablePage {
+            return "The page is open in Chrome. Agent control is currently off."
+        }
+        return "Open a page in Chrome or enter a URL above."
+    }
+
+    private var controlledTechnicalSummary: String {
+        var readyCount = 0
+        if session.controlledBrowser.isRunning { readyCount += 1 }
+        if session.bridgeEndpoint != nil { readyCount += 1 }
+        if session.isAgentBridgeEnabled && session.boundTaskID != nil { readyCount += 1 }
+        if session.controlledBrowser.runState == .failed { return "Connection failed" }
+        return "\(readyCount)/3 ready"
+    }
+
     private func controlledPrimaryAction() {
         if session.controlledBrowser.isRunning {
             session.openExternal()
@@ -779,8 +1147,8 @@ struct ShelfBrowserPanelView: View {
 
     private var controlledPrimaryActionTitle: String {
         if session.controlledBrowser.isLaunching { return "Opening..." }
-        if session.controlledBrowser.isRunning { return "Show Browser" }
-        return "Launch Browser"
+        if session.controlledBrowser.isRunning { return "Show Chrome" }
+        return "Open Browser"
     }
 
     private var controlledPrimaryActionIcon: String {
@@ -1013,7 +1381,7 @@ struct ShelfBrowserPanelView: View {
     private func quickLink(_ title: String, url: String, systemImage: String, tint: Color) -> some View {
         Button {
             addressText = url
-            session.load(url)
+            session.load(url, source: "quick_link")
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
@@ -1030,7 +1398,7 @@ struct ShelfBrowserPanelView: View {
     }
 
     private func go() {
-        session.load(addressText)
+        session.load(addressText, source: "address_bar")
         isAddressFocused = false
     }
 }

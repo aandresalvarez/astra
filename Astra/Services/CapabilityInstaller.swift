@@ -41,26 +41,46 @@ struct CapabilityInstaller {
         modelContext: ModelContext,
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
-        baseURLOverrides: [String: String] = [:]
+        baseURLOverrides: [String: String] = [:],
+        traceID: String? = nil
     ) throws -> InstallationResult {
         let blockers = installBlockerMessages(for: package, in: workspace)
         guard blockers.isEmpty else {
+            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
+            if let traceID { fields["trace_id"] = traceID }
+            fields["result"] = "blocked"
+            fields["blocker_count"] = String(blockers.count)
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
             throw InstallationError.blocked(blockers)
         }
-        try library.install(package)
+        do {
+            try library.install(package)
+        } catch {
+            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
+            if let traceID { fields["trace_id"] = traceID }
+            fields["result"] = "library_install_failed"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
+            throw error
+        }
         let result = enable(
             package,
             in: workspace,
             modelContext: modelContext,
             credentialInputs: credentialInputs,
             configInputs: configInputs,
-            baseURLOverrides: baseURLOverrides
+            baseURLOverrides: baseURLOverrides,
+            auditSource: "install",
+            traceID: traceID
         )
-        AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+        var installedFields = [
             "package_id": package.id,
+            "package_name": package.name,
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString
-        ])
+        ]
+        if let traceID { installedFields["trace_id"] = traceID }
+        AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: installedFields)
         return result
     }
 
@@ -71,8 +91,17 @@ struct CapabilityInstaller {
         modelContext: ModelContext,
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
-        baseURLOverrides: [String: String] = [:]
+        baseURLOverrides: [String: String] = [:],
+        auditSource: String = "enable",
+        traceID: String? = nil
     ) -> InstallationResult {
+        var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
+        if let traceID { startFields["trace_id"] = traceID }
+        startFields["credential_input_count"] = String(credentialInputs.count)
+        startFields["config_input_count"] = String(configInputs.count)
+        startFields["base_url_override_count"] = String(baseURLOverrides.count)
+        AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: startFields)
+
         var skillIDs: [UUID] = []
         var connectorIDs: [UUID] = []
         var localToolIDs: [UUID] = []
@@ -160,14 +189,19 @@ struct CapabilityInstaller {
         appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
         workspace.recordInstalledPlugin(id: package.id, version: package.version)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
+        var enabledFields = [
             "package_id": package.id,
+            "package_name": package.name,
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString,
             "skills_count": String(skillIDs.count),
             "connectors_count": String(connectorIDs.count),
-            "tools_count": String(localToolIDs.count)
-        ])
+            "tools_count": String(localToolIDs.count),
+            "templates_count": String(templateIDs.count),
+            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+        ]
+        if let traceID { enabledFields["trace_id"] = traceID }
+        AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: enabledFields)
 
         return InstallationResult(
             packageID: package.id,
@@ -175,6 +209,24 @@ struct CapabilityInstaller {
             connectorIDs: connectorIDs,
             localToolIDs: localToolIDs,
             templateIDs: templateIDs
+        )
+    }
+
+    private func capabilityFields(
+        for package: PluginPackage,
+        workspace: Workspace,
+        source: String
+    ) -> [String: String] {
+        CapabilityAudit.packageFields(
+            packageID: package.id,
+            packageName: package.name,
+            packageVersion: package.version,
+            workspace: workspace,
+            source: source,
+            skillsCount: package.skills.count,
+            connectorsCount: package.connectors.count,
+            toolsCount: package.localTools.count,
+            templatesCount: package.templates.count
         )
     }
 

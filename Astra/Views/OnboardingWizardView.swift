@@ -226,9 +226,10 @@ enum OnboardingCapabilitySetup {
 ///
 /// Steps:
 ///   0. Welcome — what ASTRA is + what it needs
-///   1. Required CLIs — selected provider + GitHub CLI probes and install help
-///   2. Workspace root — pick where projects live
-///   3. Ready — "start your first workspace"
+///   1. Required CLI — Claude Code or GitHub Copilot CLI
+///   2. Permissions — macOS access needed for browser control
+///   3. Workspace root — pick where projects live
+///   4. Ready — "start your first workspace"
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
@@ -242,11 +243,7 @@ struct OnboardingWizardView: View {
     @Binding var capabilityConfiguration: OnboardingCapabilityConfiguration
 
     static func requiredCLIPrerequisites(for runtime: AgentRuntimeID) -> [CLIPrerequisite] {
-        [
-            runtimePrerequisite(for: runtime),
-            CommonCLIPrerequisites.githubCLI,
-            CommonCLIPrerequisites.githubAuth
-        ]
+        [runtimePrerequisite(for: runtime)]
     }
 
     static func runtimePrerequisite(for runtime: AgentRuntimeID) -> CLIPrerequisite {
@@ -273,6 +270,7 @@ struct OnboardingWizardView: View {
     enum Step: Int, CaseIterable, Identifiable {
         case welcome = 0
         case requiredCLIs
+        case permissions
         case workspaceRoot
         case ready
         var id: Int { rawValue }
@@ -280,19 +278,21 @@ struct OnboardingWizardView: View {
         var title: String {
             switch self {
             case .welcome:        "Welcome to ASTRA"
-            case .requiredCLIs:   "Required CLIs"
+            case .requiredCLIs:   "AI CLI"
+            case .permissions:    "macOS Access"
             case .workspaceRoot:  "Workspace Root"
             case .ready:          "You're Ready"
             }
         }
 
         /// Short label shown under each dot in the progress bar. Keep
-        /// under ~8 characters so the 5 labels fit without wrapping at
+        /// under ~8 characters so the labels fit without wrapping at
         /// the wizard's 720pt minimum width.
         var progressLabel: String {
             switch self {
             case .welcome:        "Welcome"
             case .requiredCLIs:   "CLIs"
+            case .permissions:    "Access"
             case .workspaceRoot:  "Setup"
             case .ready:          "Done"
             }
@@ -323,6 +323,9 @@ struct OnboardingWizardView: View {
     @State private var runtimeReadinessReport: RuntimeReadinessReport?
     @State private var isCheckingRuntimeReadiness = false
     @State private var showCLITechnicalDetails = false
+    @State private var installingRuntime: AgentRuntimeID?
+    @State private var cliInstallResult: RuntimeCLIInstallResult?
+    @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -416,6 +419,7 @@ struct OnboardingWizardView: View {
         switch currentStep {
         case .welcome:        welcomeStep
         case .requiredCLIs:   cliStep
+        case .permissions:    permissionsStep
         case .workspaceRoot:  workspaceStep
         case .ready:          readyStep
         }
@@ -435,13 +439,13 @@ struct OnboardingWizardView: View {
             bulletList([
                 ("square.stack.3d.up.fill", "Queue AI tasks across multiple workspaces"),
                 ("puzzlepiece.extension.fill", "Pick skills, connectors, and tools from a catalog"),
-                ("checkmark.shield.fill", "We'll verify your selected provider and GitHub CLI before anything runs")
+                ("checkmark.shield.fill", "We'll verify one AI CLI before anything runs")
             ])
 
             calloutBox(
                 icon: "info.circle.fill",
                 title: "What we'll check",
-                body: "This wizard checks the selected provider CLI, GitHub CLI, and GitHub login, then picks a home folder for your workspaces.",
+                body: "ASTRA needs Claude Code CLI or GitHub Copilot CLI. You only need one. GitHub CLI is optional unless you enable GitHub repository workflows.",
                 tint: Stanford.sky
             )
         }
@@ -451,8 +455,8 @@ struct OnboardingWizardView: View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "terminal.fill",
-                title: "Environment Check",
-                subtitle: "ASTRA checks the local tools it needs and shows fixes only when something is missing.",
+                title: "Choose an AI CLI",
+                subtitle: "ASTRA needs one local AI runtime: Claude Code CLI or GitHub Copilot CLI.",
                 tint: Stanford.lagunita
             )
 
@@ -469,6 +473,30 @@ struct OnboardingWizardView: View {
         }
         .task {
             await refreshCLIEnvironment(forceRefresh: false)
+        }
+    }
+
+    private var permissionsStep: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            stepHeader(
+                icon: "checkmark.shield.fill",
+                title: "macOS Access",
+                subtitle: "Check the local permissions ASTRA uses for browser control, credentials, and workspace files.",
+                tint: Stanford.lagunita
+            )
+
+            MacOSPermissionsSectionView(
+                context: .onboarding,
+                workspaceRoot: resolvedWorkspaceRoot,
+                model: macOSPermissions
+            )
+
+            calloutBox(
+                icon: "info.circle.fill",
+                title: "Why this matters",
+                body: "ASTRA checks global app access here. Capability-specific access is checked when you enable the capability that needs it.",
+                tint: Stanford.sky
+            )
         }
     }
 
@@ -526,7 +554,7 @@ struct OnboardingWizardView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 readinessRow(
-                    title: "\(selectedRuntime.displayName) CLI",
+                    title: "AI runtime",
                     status: selectedRuntimeStatusSummary,
                     ready: isSelectedRuntimeHealthy
                 )
@@ -534,6 +562,11 @@ struct OnboardingWizardView: View {
                     title: "GitHub CLI",
                     status: githubStatusSummary,
                     ready: isGitHubHealthy
+                )
+                readinessRow(
+                    title: "macOS access",
+                    status: macOSPermissions.onboardingSummary,
+                    ready: macOSPermissions.isReady
                 )
                 readinessRow(
                     title: "Workspace root",
@@ -553,7 +586,7 @@ struct OnboardingWizardView: View {
                 Image(systemName: "lightbulb.fill")
                     .font(Stanford.ui(11))
                     .foregroundStyle(Stanford.illuminating)
-                Text("Tip: reopen this wizard any time from Settings → Show Onboarding Again.")
+                Text("Tip: check macOS permissions any time from Settings -> Permissions.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
             }
@@ -565,7 +598,7 @@ struct OnboardingWizardView: View {
     private var cliSummaryCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 12) {
-                if isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub {
+                if isCheckingCLIEnvironment {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 30, height: 30)
@@ -594,8 +627,12 @@ struct OnboardingWizardView: View {
                     Label("Check Again", systemImage: "arrow.clockwise")
                         .font(Stanford.caption(12))
                 }
-                .disabled(isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub)
+                .disabled(isCheckingCLIEnvironment)
             }
+
+            Divider().opacity(0.45)
+
+            aiRuntimeChooser
 
             Divider().opacity(0.45)
 
@@ -641,6 +678,135 @@ struct OnboardingWizardView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(cliSummaryColor.opacity(0.24), lineWidth: 1)
         )
+    }
+
+    private var aiRuntimeChooser: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Pick one")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+                .textCase(.uppercase)
+
+            HStack(spacing: 8) {
+                runtimeChoiceCard(.claudeCode)
+                runtimeChoiceCard(.copilotCLI)
+            }
+
+            cliInstallStatusView
+        }
+    }
+
+    private func runtimeChoiceCard(_ runtime: AgentRuntimeID) -> some View {
+        let selected = runtime == selectedRuntime
+        let ready = runtimeIsInstalled(runtime)
+        let isInstalling = installingRuntime == runtime
+        let tint: Color = selected ? Stanford.lagunita : (ready ? Stanford.paloAltoGreen : Stanford.coolGrey)
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 9) {
+                if isInstalling {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: selected ? "largecircle.fill.circle" : (ready ? "checkmark.circle.fill" : "circle"))
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .frame(width: 18)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(runtime.displayName)
+                        .font(Stanford.body(12).weight(.semibold))
+                        .foregroundStyle(Stanford.black)
+                        .lineLimit(1)
+                    Text(runtimeChoiceSubtitle(runtime))
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                Button {
+                    selectRuntime(runtime)
+                } label: {
+                    Label(selected ? "Selected" : "Use", systemImage: selected ? "checkmark" : "arrow.right")
+                        .font(Stanford.caption(10).weight(.semibold))
+                }
+                .disabled(selected || installingRuntime != nil)
+
+                if !ready {
+                    Button {
+                        Task { await installRuntime(runtime) }
+                    } label: {
+                        Label(isInstalling ? "Installing" : "Install", systemImage: "square.and.arrow.down")
+                            .font(Stanford.caption(10).weight(.semibold))
+                    }
+                    .disabled(installingRuntime != nil)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 94, alignment: .topLeading)
+        .background(selected ? Stanford.lagunita.opacity(0.10) : Stanford.fog.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(selected ? Stanford.lagunita.opacity(0.35) : Stanford.sandstone.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var cliInstallStatusView: some View {
+        if let installingRuntime {
+            cliInstallStatusRow(
+                icon: "square.and.arrow.down",
+                message: "Installing \(installingRuntime.displayName). This can take a minute.",
+                detail: installDisplayCommand(for: installingRuntime),
+                tint: Stanford.lagunita
+            )
+        } else if let cliInstallResult {
+            cliInstallStatusRow(
+                icon: cliInstallResult.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                message: cliInstallResult.summary,
+                detail: cliInstallResult.detail,
+                tint: cliInstallResult.succeeded ? Stanford.paloAltoGreen : Stanford.poppy
+            )
+        }
+    }
+
+    private func cliInstallStatusRow(
+        icon: String,
+        message: String,
+        detail: String?,
+        tint: Color
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func cliStatusRow(
@@ -692,13 +858,13 @@ struct OnboardingWizardView: View {
     }
 
     private var cliSummaryTitle: String {
-        if isCheckingRuntimeReadiness || isProbingSelectedRuntime || isProbingGitHub {
+        if isCheckingCLIEnvironment {
             return "Checking this Mac"
         }
         if isCoreRuntimeReady {
             return "Ready to run tasks"
         }
-        return "Setup needed"
+        return "One AI CLI required"
     }
 
     private var cliSummarySubtitle: String {
@@ -706,9 +872,9 @@ struct OnboardingWizardView: View {
             if isGitHubHealthy {
                 return "\(selectedRuntime.displayName) is ready, and GitHub capabilities are available."
             }
-            return "\(selectedRuntime.displayName) is ready. GitHub can be connected later if you need repository capabilities."
+            return "\(selectedRuntime.displayName) is ready. GitHub CLI can be connected later for repository workflows."
         }
-        return "Complete the suggested fix, then check again."
+        return "Install or sign in to Claude Code CLI or GitHub Copilot CLI, then check again."
     }
 
     private var cliSummarySymbol: String {
@@ -730,7 +896,7 @@ struct OnboardingWizardView: View {
     private var githubCapabilitySummary: String {
         if isGitHubHealthy { return "Ready" }
         if case .missingBinary = githubStatus {
-            return "Optional unless you enable the GitHub capability."
+            return "Optional for repository workflows."
         }
         return githubStatusSummary
     }
@@ -753,12 +919,63 @@ struct OnboardingWizardView: View {
         }
     }
 
+    private var isCheckingCLIEnvironment: Bool {
+        isCheckingRuntimeReadiness || isProbingClaude || isProbingCopilot || isProbingGitHub || installingRuntime != nil
+    }
+
     private var selectedRuntimeSymbol: String {
         isCoreRuntimeReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
     }
 
     private var selectedRuntimeColor: Color {
         isCoreRuntimeReady ? Stanford.paloAltoGreen : Stanford.poppy
+    }
+
+    private func runtimeStatus(for runtime: AgentRuntimeID) -> HealthStatus? {
+        switch runtime {
+        case .claudeCode: claudeStatus
+        case .copilotCLI: copilotStatus
+        }
+    }
+
+    private func runtimeIsInstalled(_ runtime: AgentRuntimeID) -> Bool {
+        if case .healthy = runtimeStatus(for: runtime) { return true }
+        return false
+    }
+
+    private func runtimeChoiceSubtitle(_ runtime: AgentRuntimeID) -> String {
+        if installingRuntime == runtime {
+            return installDisplayCommand(for: runtime) ?? "Installing..."
+        }
+        if runtime == selectedRuntime, isCoreRuntimeReady {
+            return "Selected and ready"
+        }
+        switch runtimeStatus(for: runtime) {
+        case .healthy(_, let version): return "Installed - \(version)"
+        case .unauthenticated(let detail): return detail
+        case .unresponsive(let detail): return detail
+        case .missingBinary: return installDisplayCommand(for: runtime) ?? runtimeInstallHint(runtime)
+        case .none:
+            return isProbingRuntime(runtime) ? "Checking..." : "Not checked yet"
+        }
+    }
+
+    private func runtimeInstallHint(_ runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: "npm install -g @anthropic-ai/claude-code"
+        case .copilotCLI: "brew install copilot-cli"
+        }
+    }
+
+    private func isProbingRuntime(_ runtime: AgentRuntimeID) -> Bool {
+        switch runtime {
+        case .claudeCode: isProbingClaude
+        case .copilotCLI: isProbingCopilot
+        }
+    }
+
+    private func installDisplayCommand(for runtime: AgentRuntimeID) -> String? {
+        RuntimeCLIInstaller().plan(for: runtime)?.displayCommand
     }
 
     private var cliGitHubSymbol: String {
@@ -901,7 +1118,10 @@ struct OnboardingWizardView: View {
             return "ASTRA is running the full check now. If it stalls, use Re-check after installing or logging in."
         }
         if runtimeBlockers.isEmpty {
-            return "Core runtime is ready. GitHub is only required if you enable the GitHub capability."
+            return "Core runtime is ready. GitHub CLI is optional for repository workflows."
+        }
+        if !runtimeIsInstalled(.claudeCode), !runtimeIsInstalled(.copilotCLI) {
+            return "Install one AI CLI:\nClaude: npm install -g @anthropic-ai/claude-code\nCopilot: brew install copilot-cli"
         }
         return runtimeBlockers
             .prefix(2)
@@ -1510,18 +1730,15 @@ struct OnboardingWizardView: View {
     }
 
     private func refreshCLIEnvironment(forceRefresh: Bool) async {
-        await probeSelectedRuntime(forceRefresh: forceRefresh)
+        await probeAllRuntimes(forceRefresh: forceRefresh)
+        selectInstalledRuntimeIfNeeded()
         await probeGitHub(forceRefresh: forceRefresh)
         await refreshRuntimeReadiness()
     }
 
-    private func probeSelectedRuntime(forceRefresh: Bool) async {
-        switch selectedRuntime {
-        case .claudeCode:
-            await probeClaude(forceRefresh: forceRefresh)
-        case .copilotCLI:
-            await probeCopilot(forceRefresh: forceRefresh)
-        }
+    private func probeAllRuntimes(forceRefresh: Bool) async {
+        await probeClaude(forceRefresh: forceRefresh)
+        await probeCopilot(forceRefresh: forceRefresh)
     }
 
     private func probeClaude(forceRefresh: Bool) async {
@@ -1533,8 +1750,8 @@ struct OnboardingWizardView: View {
         }
         claudeStatus = await preflightCache.status(for: CommonCLIPrerequisites.claude)
 
-        // Opportunistically persist a resolved path so the worker benefits.
-        if case .healthy(let path, _) = claudeStatus, claudePath.isEmpty {
+        if case .healthy(let path, _) = claudeStatus,
+           shouldReplaceConfiguredPath(claudePath, with: path) {
             claudePath = path
         }
     }
@@ -1548,8 +1765,75 @@ struct OnboardingWizardView: View {
         }
         copilotStatus = await preflightCache.status(for: CommonCLIPrerequisites.copilot)
 
-        if case .healthy(let path, _) = copilotStatus, copilotPath.isEmpty {
+        if case .healthy(let path, _) = copilotStatus,
+           shouldReplaceConfiguredPath(copilotPath, with: path) {
             copilotPath = path
+        }
+    }
+
+    private func shouldReplaceConfiguredPath(_ configuredPath: String, with detectedPath: String) -> Bool {
+        let configured = configuredPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detectedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return configured.isEmpty || !FileManager.default.isExecutableFile(atPath: configured)
+    }
+
+    private func selectRuntime(_ runtime: AgentRuntimeID) {
+        guard runtime != selectedRuntime else { return }
+        defaultRuntimeID = runtime.rawValue
+        cliInstallResult = nil
+        runtimeReadinessReport = nil
+        Task {
+            await refreshRuntimeReadiness()
+        }
+    }
+
+    private func installRuntime(_ runtime: AgentRuntimeID) async {
+        guard installingRuntime == nil else { return }
+        defaultRuntimeID = runtime.rawValue
+        runtimeReadinessReport = nil
+        cliInstallResult = nil
+        installingRuntime = runtime
+
+        let result = await RuntimeCLIInstaller().install(runtime: runtime)
+        cliInstallResult = result
+
+        switch runtime {
+        case .claudeCode:
+            await probeClaude(forceRefresh: true)
+        case .copilotCLI:
+            await probeCopilot(forceRefresh: true)
+        }
+        installingRuntime = nil
+
+        if result.succeeded, runtimeIsInstalled(runtime) {
+            cliInstallResult = RuntimeCLIInstallResult(
+                runtime: runtime,
+                plan: result.plan,
+                succeeded: true,
+                summary: "\(runtime.displayName) is installed and ready.",
+                detail: "ASTRA selected it for new tasks."
+            )
+        } else if result.succeeded {
+            cliInstallResult = RuntimeCLIInstallResult(
+                runtime: runtime,
+                plan: result.plan,
+                succeeded: false,
+                summary: "\(runtime.displayName) install finished, but ASTRA could not find it yet.",
+                detail: "Restart ASTRA or configure the runtime path in Settings, then check again."
+            )
+        }
+
+        await refreshRuntimeReadiness()
+    }
+
+    private func selectInstalledRuntimeIfNeeded() {
+        guard !runtimeIsInstalled(selectedRuntime) else { return }
+        if runtimeIsInstalled(.copilotCLI) {
+            defaultRuntimeID = AgentRuntimeID.copilotCLI.rawValue
+            runtimeReadinessReport = nil
+        } else if runtimeIsInstalled(.claudeCode) {
+            defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+            runtimeReadinessReport = nil
         }
     }
 
@@ -1621,7 +1905,7 @@ struct OnboardingWizardView: View {
     private var continueBlocker: String? {
         switch currentStep {
         case .requiredCLIs:
-            return isCoreRuntimeReady ? nil : "Finish the runtime checks before continuing."
+            return isCoreRuntimeReady ? nil : "Finish AI CLI setup before continuing."
         default:
             return nil
         }
