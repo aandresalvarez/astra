@@ -105,6 +105,33 @@ struct TaskCapabilityResolver {
         return all.filter { seen.insert($0.id).inserted }
     }
 
+    var enabledBrowserAdapters: [String] {
+        Self.enabledBrowserAdapters(
+            for: task.workspace,
+            packages: CapabilityLibrary().installedPackages()
+        )
+    }
+
+    static func enabledBrowserAdapters(
+        for workspace: Workspace?,
+        packages: [PluginPackage]
+    ) -> [String] {
+        guard let workspace else { return [] }
+        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        guard !enabledPackageIDs.isEmpty else { return [] }
+
+        var seen = Set<String>()
+        var adapters: [String] = []
+        for package in packages where enabledPackageIDs.contains(package.id) {
+            for adapter in package.browserAdapters {
+                guard let normalized = BrowserSiteAdapterID.normalized(adapter),
+                      seen.insert(normalized).inserted else { continue }
+                adapters.append(normalized)
+            }
+        }
+        return adapters
+    }
+
     func promptScope(contextText: String = "") -> TaskCapabilityPromptScope {
         let connectors = allConnectors
         let tools = allLocalTools
@@ -279,6 +306,7 @@ struct TaskCapabilityResolver {
             behaviorSkills: skills,
             connectors: connectors,
             localTools: scopedTools,
+            enabledBrowserAdapters: enabledBrowserAdapters,
             prunedForBrowserTask: prunedForBrowserTask,
             excludedSkillNames: excludedSkillNames
         )
@@ -494,6 +522,7 @@ struct TaskCapabilityPromptScope {
     let behaviorSkills: [Skill]
     let connectors: [Connector]
     let localTools: [LocalTool]
+    let enabledBrowserAdapters: [String]
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
 }

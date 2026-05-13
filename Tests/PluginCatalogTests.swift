@@ -244,6 +244,28 @@ struct PluginCatalogIsInstalledTests {
         catalog.packages = [emptyPkg]
         #expect(catalog.isInstalled("empty", in: ws))
     }
+
+    @Test("Returns false for adapter-only package until explicitly enabled")
+    func adapterOnlyPackageIsNotImplicitlyInstalled() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/installed-test-adapter")
+        ctx.insert(ws)
+        try ctx.save()
+
+        let adapterPkg = PluginPackage(
+            id: "google-drive-browser", name: "Google Drive Browser", icon: "folder", description: "d",
+            author: "a", category: "Browser", tags: [], version: "1.0.0",
+            skills: [], connectors: [], localTools: [], templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive]
+        )
+        let catalog = PluginCatalog()
+        catalog.packages = [adapterPkg]
+
+        #expect(!catalog.isInstalled("google-drive-browser", in: ws))
+        ws.enabledCapabilityIDs = ["google-drive-browser"]
+        #expect(catalog.isInstalled("google-drive-browser", in: ws))
+    }
 }
 
 // MARK: - Install

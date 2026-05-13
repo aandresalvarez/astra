@@ -62,7 +62,12 @@ final class PluginCatalog {
         let connectorNames = Set(pkg.connectors.map(\.name))
         let hasSkill = workspace.skills.contains { skillNames.contains($0.name) }
         let hasConnector = workspace.connectors.contains { connectorNames.contains($0.name) }
-        return hasSkill || hasConnector || (skillNames.isEmpty && connectorNames.isEmpty)
+        let hasNoInstallablePayload = skillNames.isEmpty
+            && connectorNames.isEmpty
+            && pkg.localTools.isEmpty
+            && pkg.templates.isEmpty
+            && pkg.browserAdapters.isEmpty
+        return hasSkill || hasConnector || hasNoInstallablePayload
     }
 
     @MainActor
@@ -775,6 +780,31 @@ final class PluginCatalog {
                 CommonCLIPrerequisites.gcloud,
                 CommonCLIPrerequisites.gcloudAuth
             ]
+        ),
+
+        PluginPackage(
+            id: "google-drive-browser",
+            name: "Google Drive Browser",
+            icon: "folder.badge.gearshape",
+            description: "Adds Google Drive-specific browser open semantics to the Shelf browser",
+            author: "ASTRA",
+            category: "Browser",
+            tags: ["browser", "google-drive", "automation", "site-adapter"],
+            version: "1.0.0",
+            setupGuide: """
+            Enable this capability when a task needs to operate on Google Drive in the Shelf browser. \
+            It does not grant account access or store credentials; the user remains signed in directly in the browser.
+
+            What it adds:
+            - Google Drive file controls expose open-oriented analysis outcomes
+            - `astra-browser google-drive-open` opens a file by visible name and verifies editor navigation
+            - Drive row clicks are treated as selection unless an editor actually opens
+            """,
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive]
         ),
 
     ]

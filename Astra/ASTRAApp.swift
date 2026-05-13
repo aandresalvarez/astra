@@ -233,6 +233,9 @@ public struct ASTRAApp: App {
         // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
         let persistentStoreURL = isUITesting ? nil : WorkspaceRecoveryService.preparePersistentStoreURL()
+        if let persistentStoreURL, !isUITesting {
+            WorkspaceRecoveryService.repairLegacyStoreValues(at: persistentStoreURL)
+        }
         let config = persistentStoreURL.map { ModelConfiguration(url: $0) }
             ?? ModelConfiguration(isStoredInMemoryOnly: true)
         if isUITesting {

@@ -74,6 +74,10 @@ public struct PluginPackage: Codable, Identifiable {
     public var connectors: [PluginConnector]
     public var localTools: [PluginLocalTool]
     public var templates: [PluginTemplate]
+    /// Site-specific browser automation adapters this capability enables.
+    /// Keep generic browser controls outside this list; these IDs are for
+    /// web-app behaviors that are not portable across arbitrary websites.
+    public var browserAdapters: [String]
     public var minAppVersion: String?
     public var requires: [String]?
     public var conflicts: [String]?
@@ -103,6 +107,7 @@ public struct PluginPackage: Codable, Identifiable {
         connectors: [PluginConnector],
         localTools: [PluginLocalTool],
         templates: [PluginTemplate],
+        browserAdapters: [String] = [],
         prerequisites: [CLIPrerequisite] = [],
         sourceMetadata: CapabilitySourceMetadata? = nil
     ) {
@@ -120,6 +125,7 @@ public struct PluginPackage: Codable, Identifiable {
         self.connectors = connectors
         self.localTools = localTools
         self.templates = templates
+        self.browserAdapters = browserAdapters
         self.prerequisites = prerequisites
         self.sourceMetadata = sourceMetadata
     }
@@ -140,6 +146,7 @@ public struct PluginPackage: Codable, Identifiable {
         connectors = try c.decode([PluginConnector].self, forKey: .connectors)
         localTools = try c.decode([PluginLocalTool].self, forKey: .localTools)
         templates = try c.decode([PluginTemplate].self, forKey: .templates)
+        browserAdapters = try c.decodeIfPresent([String].self, forKey: .browserAdapters) ?? []
         minAppVersion = try c.decodeIfPresent(String.self, forKey: .minAppVersion)
         requires = try c.decodeIfPresent([String].self, forKey: .requires)
         conflicts = try c.decodeIfPresent([String].self, forKey: .conflicts)
@@ -194,6 +201,7 @@ public struct PluginPackage: Codable, Identifiable {
         if !connectors.isEmpty { parts.append("\(connectors.count) connector\(connectors.count == 1 ? "" : "s")") }
         if !localTools.isEmpty { parts.append("\(localTools.count) tool\(localTools.count == 1 ? "" : "s")") }
         if !templates.isEmpty { parts.append("\(templates.count) template\(templates.count == 1 ? "" : "s")") }
+        if !browserAdapters.isEmpty { parts.append("\(browserAdapters.count) browser adapter\(browserAdapters.count == 1 ? "" : "s")") }
         return parts
     }
 }

@@ -11,6 +11,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
     private var taskID: UUID?
     private var isPresented = false
     private var isEnabled = false
+    private var enabledBrowserAdapters: [String] = []
 
     private init() {}
 
@@ -21,7 +22,8 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         backend: String = "embedded WebKit",
         taskID: UUID?,
         isPresented: Bool,
-        isEnabled: Bool
+        isEnabled: Bool,
+        enabledBrowserAdapters: [String] = []
     ) {
         lock.lock()
         if !isPresented, taskID == nil, self.taskID != nil, self.isPresented {
@@ -53,6 +55,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         self.taskID = taskID
         self.isPresented = isPresented
         self.isEnabled = isEnabled
+        self.enabledBrowserAdapters = normalizedAdapterList(enabledBrowserAdapters)
         lock.unlock()
     }
 
@@ -65,6 +68,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         taskID = nil
         isPresented = false
         isEnabled = false
+        enabledBrowserAdapters = []
         lock.unlock()
     }
 
@@ -77,7 +81,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         ]
     }
 
-    func promptContext(for taskID: UUID) -> String? {
+    func promptContext(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> String? {
         lock.lock()
         let endpoint = endpoint
         let currentURL = currentURL
@@ -85,7 +89,10 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         let backend = backend
         let boundTaskID = self.taskID
         let shouldExpose = isPresented && isEnabled
+        let storedAdapterIDs = enabledBrowserAdapters
         lock.unlock()
+        let adapterIDs = override.map(normalizedAdapterList) ?? storedAdapterIDs
+        let hasGoogleDriveAdapter = adapterIDs.contains(BrowserSiteAdapterID.googleDrive)
 
         let isTaskBound = boundTaskID == taskID
         let isExposed = shouldExpose && isTaskBound && endpoint != nil
@@ -96,6 +103,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
             "is_task_bound": String(isTaskBound),
             "has_endpoint": String(endpoint != nil),
             "has_current_url": String(currentURL?.isEmpty == false),
+            "browser_adapter_ids": adapterIDs.isEmpty ? "none" : adapterIDs.joined(separator: ","),
             "backend": backend
         ])
 
@@ -106,16 +114,35 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
             pageLine = "Current page: \(currentTitle?.isEmpty == false ? "\(currentTitle!) — " : "")\(currentURL)"
         }
 
+        let driveCommandLine = hasGoogleDriveAdapter
+            ? "- For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`"
+            : ""
+        let driveSafetyLine = hasGoogleDriveAdapter
+            ? "- On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots. A Drive row click commonly selects a file without opening it; if `goalSatisfied` is false, follow `suggestedNextActions` instead of repeating the click."
+            : "- Site-specific helpers are capability-gated. If `analyze` reports an enabled `siteAdapters` entry, prefer its listed adapter actions; otherwise use generic control IDs and preflight."
+        let adapterLine = adapterIDs.isEmpty
+            ? "Enabled browser site adapters: none"
+            : "Enabled browser site adapters: \(adapterIDs.joined(separator: ", "))"
+
         return """
         Shelf Browser Session:
         A user-controlled browser is open in ASTRA's Shelf. It may contain authenticated pages the user opened manually.
         Backend: \(backend)
         Task thread: \(taskID.uuidString)
         Bridge endpoint: \(endpoint)
+        \(adapterLine)
         \(pageLine)
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
+        - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`
+        - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
+        - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
+        - Prefer control IDs from analyze when acting: `astra-browser click --analysis ana_... --control ctl_...`
+        - Open an analyzed control through its primary open behavior: `astra-browser open --analysis ana_... --control ctl_...`
+        - Double-click an analyzed control when that is the listed action: `astra-browser double-click --analysis ana_... --control ctl_...`
+        - After a controlID action, read `goalSatisfied`, `observedOutcome`, and `suggestedNextActions`; `ok` only means the browser command executed.
+        - Fill analyzed fields by ID: `astra-browser fill --analysis ana_... --control ctl_... --text 'user@example.com'`
         - Read current page content: `astra-browser page --limit 2000`
         - Snapshot compact page state: `astra-browser snapshot --mode summary`
         - Locate controls by role/name/text: `astra-browser locator --role button --name "Save"`
@@ -132,7 +159,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - For Google Docs/Sheets/Slides text replacement: `astra-browser google-find-replace --find '05/08/2027' --with '05/07/2026'`
         - For Google Docs insertion: `astra-browser google-docs-insert --verify 'A Gentle Morning' --text 'A Gentle Morning\n...'`
         - For Google Docs verification: `astra-browser google-docs-find --query 'A Gentle Morning'`
-        - For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`
+        \(driveCommandLine)
         - Combine common steps in one compact turn: `astra-browser act --find 'Replace with' --set '05/07/2026' --click 'Replace all' --wait-saved --verify '05/07/2026'`
         - Click a control: `astra-browser click --selector 'button.primary'`
         - Click by role/name: `astra-browser click --role button --name "Save"`
@@ -146,11 +173,22 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Use only this bridge for browser operation. Do not use osascript, System Events, AppleScript, macOS UI automation, or external browser automation as a fallback. If a needed browser action is missing, report the missing bridge capability.
         - Never ask the user for passwords, MFA codes, or OAuth secrets. Let the user enter those directly in the browser.
         - Do not send emails, submit tickets/forms, delete data, approve access, make purchases, or commit externally visible changes without explicit user confirmation in the chat.
-        - For questions about what is on the current page, start with `astra-browser page --limit 2000`; use controls snapshots only when you need to select, click, or fill a control.
-        - On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots.
-        - Prefer `locator` or `/snapshot` before acting, then use selectors, role/name locators, or bounds from the response.
+        - For questions about what is on the current page, start with `astra-browser page --limit 2000`; when you need to select, click, or fill a control, start with `astra-browser analyze` and use returned control IDs.
+        \(driveSafetyLine)
+        - Prefer `analyze` before acting, then use `analysisID` + `controlID`. Use `locator` or `/snapshot` only when analysis is too broad or you need raw evidence.
+        - When `analyze` reports `ambiguity`, compare labels, roles, bounds, file type, and folder/opened metadata before selecting a controlID.
         - When a selector or label is known, prefer `fill`, `set-value`, or `type` instead of click + Cmd+A + text. If a response includes loopWarning, stop repeating the same click/snapshot path and switch strategy.
+        - Cached analysis is a hint, not authority. If an action returns `stale_analysis`, `control_changed`, `target_obscured`, or `dangerous_confirmation_required`, stop and re-analyze or ask for confirmation as directed.
         - For Google Docs, Sheets, or Slides editing, prefer Controlled mode when available. For Google Docs writing, use `google-docs-insert` instead of manual click + text + Find verification. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Avoid AppleScript/System Events, repeated menu clicks, and synthetic selection shortcuts when snapshots are unchanged.
         """
+    }
+
+    private func normalizedAdapterList(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard let normalized = BrowserSiteAdapterID.normalized(value),
+                  seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
     }
 }

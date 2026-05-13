@@ -264,6 +264,73 @@ final class ControlledBrowserController: ObservableObject {
         return try Self.jsonString(target)
     }
 
+    func doubleClick(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        text: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let targetJSON = try await evaluate(script: BrowserAutomationScripts.clickTargetScript(
+            selector: selector,
+            x: x,
+            y: y,
+            allowDangerous: allowDangerous,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID
+        ))
+        var target = try Self.jsonObject(from: targetJSON)
+        guard Self.boolValue(target["ok"]) else {
+            return targetJSON
+        }
+        guard let targetX = Self.doubleValue(target["x"]),
+              let targetY = Self.doubleValue(target["y"]) else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        try await dispatchMouseClick(x: targetX, y: targetY, clickCount: 2)
+        try await refreshPageMetadata()
+        target["clicked"] = true
+        target["doubleClicked"] = true
+        target["url"] = currentURL
+        return try Self.jsonString(target)
+    }
+
+
+    func targetInfo(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        text: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let value = try await evaluate(script: BrowserAutomationScripts.targetInfoScript(
+            selector: selector,
+            x: x,
+            y: y,
+            allowDangerous: allowDangerous,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID
+        ))
+        try await refreshPageMetadata()
+        return value
+    }
+
     func type(
         selector: String?,
         text: String,
@@ -487,27 +554,32 @@ final class ControlledBrowserController: ObservableObject {
         try await refreshPageMetadata()
     }
 
-    private func dispatchMouseClick(x: Double, y: Double) async throws {
+    private func dispatchMouseClick(x: Double, y: Double, clickCount: Int = 1) async throws {
         try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
             "type": "mouseMoved",
             "x": x,
             "y": y,
             "button": "none"
         ])
-        try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        ])
-        try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        ])
+        for count in 1...max(1, clickCount) {
+            try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": count
+            ])
+            try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": count
+            ])
+            if count < clickCount {
+                try? await Task.sleep(nanoseconds: 90_000_000)
+            }
+        }
     }
 
     private func refreshPageMetadata() async throws {
