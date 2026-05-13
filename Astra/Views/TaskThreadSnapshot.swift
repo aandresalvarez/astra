@@ -745,6 +745,21 @@ enum TaskGeneratedFiles {
         return nil
     }
 
+    static func shouldAutoLoadHTMLPreview(currentBrowserURL: String, targetPath: String) -> Bool {
+        let trimmed = currentBrowserURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.lowercased() != "about:blank" else {
+            return true
+        }
+
+        guard let currentURL = URL(string: trimmed),
+              currentURL.isFileURL else {
+            return false
+        }
+
+        return currentURL.standardizedFileURL.path == URL(fileURLWithPath: targetPath).standardizedFileURL.path
+    }
+
     static func htmlPreviewSignature(
         for path: String,
         taskID: UUID,

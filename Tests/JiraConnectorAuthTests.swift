@@ -70,6 +70,36 @@ struct JiraConnectorAuthTests {
         #expect(transport.requests.first?.url?.query == "limit=1")
     }
 
+    @Test("REDCap connector validation uses form POST by default")
+    func redcapConnectorValidationUsesFormPostByDefault() async throws {
+        let connector = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            baseURL: "https://redcap.stanford.edu/api/",
+            authMethod: "api_key"
+        )
+        connector.credentialKeys = ["REDCAP_API_TOKEN"]
+        let store = MockSecretStore()
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "redcap-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+        let transport = MockConnectorHTTPTransport(stubs: [
+            .init(path: "/api/", queryContains: [], statusCode: 200, body: #"{"ok":true}"#),
+            .init(path: "/api", queryContains: [], statusCode: 200, body: #"{"ok":true}"#)
+        ])
+
+        let result = await connector.testConnection(store: store, transport: transport)
+
+        #expect(result.0)
+        #expect(transport.requests.first?.httpMethod == "POST")
+        let body = String(data: transport.requests.first?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        #expect(body.contains("content=version"))
+        #expect(body.contains("token=redcap-token"))
+    }
+
     @Test("Jira auth outcome includes redacted credential health evidence")
     func jiraOutcomeIncludesCredentialEvidence() async throws {
         let (connector, store) = makeConnector()

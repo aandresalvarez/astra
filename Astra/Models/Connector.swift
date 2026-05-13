@@ -234,8 +234,13 @@ final class Connector {
             return (false, "Missing Keychain value: \(missingKeys.joined(separator: ", "))")
         }
 
-        let method = testHTTPMethod.isEmpty ? "GET" : testHTTPMethod.uppercased()
         let normalizedServiceType = serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let method: String
+        if normalizedServiceType == "redcap", testHTTPMethod.isEmpty || testHTTPMethod.uppercased() == "GET" {
+            method = "POST"
+        } else {
+            method = testHTTPMethod.isEmpty ? "GET" : testHTTPMethod.uppercased()
+        }
 
         if normalizedServiceType == "jira" {
             let outcome = await JiraConnectorAuthTester(

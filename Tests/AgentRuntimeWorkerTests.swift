@@ -388,11 +388,53 @@ struct BuildPromptTests {
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))
         #expect(prompt.contains("Do not send emails"))
+        #expect(prompt.contains("astra-browser page --limit 2000"))
         #expect(prompt.contains("astra-browser snapshot --mode summary"))
         #expect(prompt.contains("astra-browser batch"))
         #expect(prompt.contains("astra-browser keypress"))
         #expect(prompt.contains("astra-browser text"))
+        #expect(prompt.contains("astra-browser google-docs-insert"))
+        #expect(prompt.contains("astra-browser google-docs-find"))
         #expect(prompt.contains("Do not use osascript"))
+    }
+
+    @Test("Prompt keeps promoted Shelf browser when inactive shared session starts")
+    func promptKeepsPromotedShelfBrowserAfterInactiveSharedSessionUpdate() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-promoted")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "List files in the page", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://drive.google.com/drive/home",
+            currentTitle: "Google Drive",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49153",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: nil,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("https://drive.google.com/drive/home"))
+        #expect(prompt.contains("Google Drive"))
+        #expect(prompt.contains("http://127.0.0.1:49152"))
+        #expect(!prompt.contains("http://127.0.0.1:49153"))
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 
     @Test("Prompt hides Shelf browser bridge when disabled")
@@ -539,6 +581,37 @@ struct ControlledBrowserTests {
         #expect(script.contains("normalized"))
     }
 
+    @Test("click script supports locator actionability checks")
+    func clickScriptSupportsLocatorActionabilityChecks() {
+        let script = BrowserAutomationScripts.clickScript(
+            selector: nil,
+            x: nil,
+            y: nil,
+            allowDangerous: false,
+            label: "Save",
+            role: "button"
+        )
+
+        #expect(script.contains("locatorLabel"))
+        #expect(script.contains("locatorRole"))
+        #expect(script.contains("target_obscured"))
+        #expect(script.contains("target_disabled"))
+    }
+
+    @Test("type script supports filling by label")
+    func typeScriptSupportsFillingByLabel() {
+        let script = BrowserAutomationScripts.typeScript(
+            selector: nil,
+            text: "alvaro@example.com",
+            clear: true,
+            label: "Email"
+        )
+
+        #expect(script.contains("locatorLabel"))
+        #expect(script.contains("target_not_editable"))
+        #expect(script.contains("insertReplacementText"))
+    }
+
     @Test("snapshot reports focus and bounds metadata")
     func snapshotReportsFocusAndBoundsMetadata() {
         let script = BrowserAutomationScripts.snapshotScript
@@ -546,6 +619,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("focusedElement"))
         #expect(script.contains("boundsFor"))
         #expect(script.contains("viewport"))
+        #expect(script.contains("actionable"))
+        #expect(script.contains("shadowRoot"))
     }
 
     @Test("existing controlled profile process parser finds DevTools port")

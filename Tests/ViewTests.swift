@@ -1136,6 +1136,19 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths) == nil)
     }
 
+    @Test("Generated HTML preview does not replace a user navigated page")
+    func generatedHTMLPreviewDoesNotReplaceUserNavigatedPage() {
+        let root = URL(fileURLWithPath: "/tmp/astra-generated-preview-autoload")
+        let index = root.appendingPathComponent("index.html").path
+        let about = root.appendingPathComponent("about.html").path
+
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "about:blank", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: index).absoluteString, targetPath: index))
+        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: about).absoluteString, targetPath: index))
+        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "https://example.com/current-page", targetPath: index))
+    }
+
     @Test("Generated file preview prefers task README Markdown")
     func generatedFilePreviewPrefersTaskReadmeMarkdown() {
         let root = URL(fileURLWithPath: "/tmp/astra-generated-files-markdown-preview")

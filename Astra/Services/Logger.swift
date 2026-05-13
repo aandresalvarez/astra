@@ -156,6 +156,10 @@ enum AuditEvent: String, CaseIterable {
     case appUpdateBackupCreated = "app_update.backup_created"
     case appUpdateInstallRequested = "app_update.install_requested"
     case threadSnapshotBuilt = "thread.snapshot_built"
+    case shelfBrowserNavigation = "shelf.browser.navigation"
+    case shelfBrowserPreview = "shelf.browser.preview"
+    case shelfBrowserContext = "shelf.browser.context"
+    case shelfBrowserAction = "shelf.browser.action"
 }
 
 enum AuditTrace {

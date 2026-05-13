@@ -226,13 +226,28 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
-    func click(selector: String?, x: Double?, y: Double?, allowDangerous: Bool) async throws -> String {
+    func click(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        text: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let targetJSON = try await evaluate(script: BrowserAutomationScripts.clickTargetScript(
             selector: selector,
             x: x,
             y: y,
-            allowDangerous: allowDangerous
+            allowDangerous: allowDangerous,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID
         ))
         var target = try Self.jsonObject(from: targetJSON)
         guard Self.boolValue(target["ok"]) else {
@@ -249,12 +264,24 @@ final class ControlledBrowserController: ObservableObject {
         return try Self.jsonString(target)
     }
 
-    func type(selector: String, text: String, clear: Bool) async throws -> String {
+    func type(
+        selector: String?,
+        text: String,
+        clear: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let value = try await evaluate(script: BrowserAutomationScripts.typeScript(
             selector: selector,
             text: text,
-            clear: clear
+            clear: clear,
+            label: label,
+            role: role,
+            placeholder: placeholder,
+            testID: testID
         ))
         try await refreshPageMetadata()
         return value
