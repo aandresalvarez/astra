@@ -73,6 +73,7 @@ struct TaskMainView: View {
     @State private var showDiffsSheet = false
     @State private var selectedTab: TaskMainTab = .summary
     @State private var expandedRunActivity: Set<UUID> = []
+    @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var showScheduleEditor = false
     @State private var scheduleCreationTaskID: UUID?
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
@@ -1366,27 +1367,8 @@ struct TaskMainView: View {
                 }
             }
 
-            // VPN warning
             if run.hasVPNWarning {
-                HStack(spacing: 10) {
-                    Image(systemName: "network.slash")
-                        .font(Stanford.ui(16))
-                        .foregroundStyle(Stanford.poppy)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN Connection Required")
-                            .font(Stanford.ui(14, weight: .semibold))
-                            .foregroundStyle(Stanford.black)
-                        Text("Please verify your VPN is active. This error typically occurs when you're not connected to the organization's network.")
-                            .font(Stanford.ui(13))
-                            .foregroundStyle(Stanford.black)
-                            .lineSpacing(3)
-                    }
-                    Spacer()
-                }
-                .padding(12)
-                .background(Stanford.poppy.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Stanford.poppy.opacity(0.3), lineWidth: 1))
+                networkAccessNotice()
             }
 
             if run.status == .cancelled {
@@ -1397,13 +1379,14 @@ struct TaskMainView: View {
                 agentCompletionPanel(protocolState)
             }
 
-            ForEach(activity.notices) { notice in
+            ForEach(runNoticesToDisplay(activity.notices, for: run)) { notice in
                 runNoticeView(notice)
             }
 
-            // Response text — flows directly, no card
             if !run.output.isEmpty {
-                if run.status == .running {
+                if run.hasVPNWarning {
+                    networkAccessTechnicalDetails(run)
+                } else if run.status == .running {
                     Text(run.output)
                         .font(Stanford.ui(15))
                         .foregroundStyle(Stanford.black)
@@ -1525,6 +1508,107 @@ struct TaskMainView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(presentation.color.opacity(0.25), lineWidth: 1)
         )
+    }
+
+    private func runNoticesToDisplay(_ notices: [TaskRunNotice], for run: TaskRunSnapshot) -> [TaskRunNotice] {
+        guard run.hasVPNWarning else { return notices }
+        return notices.filter { $0.type != "error" }
+    }
+
+    private func networkAccessNotice() -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.shield")
+                .font(Stanford.ui(17, weight: .semibold))
+                .foregroundStyle(Stanford.statusInfo)
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Network access needed")
+                        .font(Stanford.ui(14, weight: .semibold))
+                        .foregroundStyle(Stanford.black)
+                    Text("This task needs your organization's network. Connect to VPN, then retry.")
+                        .font(Stanford.ui(13))
+                        .foregroundStyle(Stanford.black)
+                        .lineSpacing(3)
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        networkAccessStep("Connect VPN", systemImage: "checkmark.shield")
+                        networkAccessStep("Press Retry", systemImage: "arrow.clockwise")
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        networkAccessStep("Connect VPN", systemImage: "checkmark.shield")
+                        networkAccessStep("Press Retry", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .background(Stanford.statusInfo.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Stanford.statusInfo.opacity(0.24), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Network access needed. Connect to VPN, then retry.")
+    }
+
+    private func networkAccessStep(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(Stanford.statusInfo)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Stanford.statusInfo.opacity(0.10))
+            .clipShape(Capsule())
+    }
+
+    private func networkAccessTechnicalDetails(_ run: TaskRunSnapshot) -> some View {
+        let isExpanded = expandedRunNetworkDetails.contains(run.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedRunNetworkDetails.remove(run.id)
+                    } else {
+                        expandedRunNetworkDetails.insert(run.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                    Text("Technical details")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Spacer(minLength: 8)
+                    Text("Google Cloud policy response")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Stanford.coolGrey)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(run.output)
+                    .font(Stanford.mono(11))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Stanford.fog.opacity(0.45))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
     private func runNoticePresentation(for type: String) -> (title: String, icon: String, color: Color) {

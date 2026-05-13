@@ -555,6 +555,54 @@ struct ControlledBrowserTests {
         #expect(names.contains("Chromium"))
     }
 
+    @Test("controlled browser handoff preserves embedded page URL")
+    @MainActor
+    func controlledBrowserHandoffPreservesEmbeddedPageURL() throws {
+        let webViewURL = try #require(URL(string: "https://drive.google.com/drive/home"))
+
+        let address = ShelfBrowserSession.controlledBrowserHandoffAddress(
+            currentURL: "about:blank",
+            webViewURL: webViewURL
+        )
+
+        #expect(address == "https://drive.google.com/drive/home")
+    }
+
+    @Test("controlled browser handoff ignores blank pages")
+    @MainActor
+    func controlledBrowserHandoffIgnoresBlankPages() throws {
+        let webViewURL = try #require(URL(string: "about:blank"))
+
+        let address = ShelfBrowserSession.controlledBrowserHandoffAddress(
+            currentURL: "",
+            webViewURL: webViewURL
+        )
+
+        #expect(address == nil)
+    }
+
+    @Test("embedded browser handoff preserves controlled page URL")
+    @MainActor
+    func embeddedBrowserHandoffPreservesControlledPageURL() {
+        let address = ShelfBrowserSession.embeddedBrowserHandoffAddress(
+            currentURL: "about:blank",
+            controlledURL: "https://docs.google.com/document/d/example/edit"
+        )
+
+        #expect(address == "https://docs.google.com/document/d/example/edit")
+    }
+
+    @Test("embedded browser handoff falls back to current URL")
+    @MainActor
+    func embeddedBrowserHandoffFallsBackToCurrentURL() {
+        let address = ShelfBrowserSession.embeddedBrowserHandoffAddress(
+            currentURL: "https://drive.google.com/drive/home",
+            controlledURL: "about:blank"
+        )
+
+        #expect(address == "https://drive.google.com/drive/home")
+    }
+
     @Test("dangerous clicks require explicit override")
     func dangerousClicksRequireOverride() {
         let script = BrowserAutomationScripts.clickScript(

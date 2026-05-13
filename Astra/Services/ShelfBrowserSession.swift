@@ -52,11 +52,25 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
 final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     @Published var engine: ShelfBrowserEngine = .embedded {
         didSet {
+            guard oldValue != engine else { return }
+            let controlledHandoffAddress = oldValue == .embedded && engine == .controlled
+                ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+                : nil
+            let embeddedHandoffAddress = oldValue == .controlled && engine == .embedded
+                ? Self.embeddedBrowserHandoffAddress(currentURL: currentURL, controlledURL: controlledBrowser.currentURL)
+                : nil
             Task { @MainActor [weak self] in
-                self?.syncDisplayedStateForEngine()
-                self?.publishBridgeState()
-                if self?.engine == .controlled {
-                    await self?.refreshControlledBrowserStatus()
+                guard let self else { return }
+                if self.engine == .controlled, let controlledHandoffAddress {
+                    await self.openControlledBrowser(initialAddress: controlledHandoffAddress)
+                } else if self.engine == .embedded, let embeddedHandoffAddress {
+                    self.openEmbeddedBrowser(address: embeddedHandoffAddress)
+                } else {
+                    self.syncDisplayedStateForEngine()
+                    self.publishBridgeState()
+                    if self.engine == .controlled {
+                        await self.refreshControlledBrowserStatus()
+                    }
                 }
             }
         }
@@ -187,6 +201,30 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return !normalizedURL.isEmpty && normalizedURL != "about:blank"
     }
 
+    static func controlledBrowserHandoffAddress(currentURL: String, webViewURL: URL?) -> String? {
+        let candidates = [
+            webViewURL?.absoluteString,
+            currentURL
+        ]
+
+        return firstDisplayableHandoffAddress(candidates)
+    }
+
+    static func embeddedBrowserHandoffAddress(currentURL: String, controlledURL: String) -> String? {
+        firstDisplayableHandoffAddress([controlledURL, currentURL])
+    }
+
+    private static func firstDisplayableHandoffAddress(_ candidates: [String?]) -> String? {
+        for candidate in candidates.compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) }) {
+            guard isDisplayablePageURL(candidate),
+                  let normalized = ShelfBrowserAddress.normalizedURL(from: candidate) else {
+                continue
+            }
+            return normalized.absoluteString
+        }
+        return nil
+    }
+
     func load(_ address: String, source: String = "app") {
         guard let url = ShelfBrowserAddress.normalizedURL(from: address) else { return }
         load(url, source: source)
@@ -237,13 +275,51 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func launchControlledBrowser() {
-        let initialAddress = currentURL
-        engine = .controlled
+        let initialAddress = Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+        guard engine == .controlled else {
+            engine = .controlled
+            return
+        }
+
         Task {
-            await controlledBrowser.launch(initialAddress: initialAddress.isEmpty ? nil : initialAddress)
+            await openControlledBrowser(initialAddress: initialAddress)
+        }
+    }
+
+    private func openControlledBrowser(initialAddress: String?) async {
+        if let initialAddress {
+            currentURL = initialAddress
+            if let url = URL(string: initialAddress) {
+                logNavigation(phase: "handoff", source: "controlled_browser", url: url)
+            }
+        }
+        isLoading = true
+        estimatedProgress = 0.1
+        canGoBack = false
+        canGoForward = false
+        engine = .controlled
+        await controlledBrowser.launch(initialAddress: initialAddress)
+        syncDisplayedStateForEngine()
+        publishBridgeState()
+    }
+
+    private func openEmbeddedBrowser(address: String) {
+        guard let url = ShelfBrowserAddress.normalizedURL(from: address) else {
             syncDisplayedStateForEngine()
             publishBridgeState()
+            return
         }
+
+        currentURL = url.absoluteString
+        isLoading = true
+        estimatedProgress = 0.1
+        logNavigation(phase: "handoff", source: "embedded_browser", url: url)
+        if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            webView.load(URLRequest(url: url))
+        }
+        publishBridgeState()
     }
 
     func stopControlledBrowser() {

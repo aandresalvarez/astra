@@ -602,7 +602,7 @@ struct TaskThreadSnapshotTests {
     func taskRunSnapshotPrecomputesVPNWarningMarkers() {
         let task = makeTask()
         let run = TaskRun(task: task)
-        run.output = "Request is prohibited by organization's policy"
+        run.output = #"API Error: 403 {"message":"Request is prohibited by organization's policy.","details":[{"reason":"SECURITY_POLICY_VIOLATED","metadata":{"vpcServiceControlsUniqueIdentifier":"abc123"}}]}"#
 
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,

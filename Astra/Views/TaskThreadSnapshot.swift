@@ -87,9 +87,13 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     }
 
     private static func outputContainsVPNWarning(_ output: String) -> Bool {
-        output.contains("VPC_SERVICE_CONTROLS") ||
+        let normalized = output.lowercased()
+        return output.contains("VPC_SERVICE_CONTROLS") ||
             output.contains("SECURITY_POLICY_VIOLATED") ||
-            output.contains("Request is prohibited by organization's policy")
+            output.contains("Request is prohibited by organization's policy") ||
+            normalized.contains("vpcservicecontrolsuniqueidentifier") ||
+            normalized.contains("request is prohibited by organization's policy") ||
+            normalized.contains("security_policy_violated")
     }
 }
 
