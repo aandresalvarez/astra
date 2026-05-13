@@ -200,8 +200,9 @@ public enum CopilotStreamEventParser {
             return .thinking(text: text)
         case .text(let text):
             return .text(text: text)
-        case .toolUse(let name, let id, _):
-            return .toolUse(name: name, id: id, input: nil)
+        case .toolUse(let name, let id, let inputSummary):
+            let input: [String: Any]? = inputSummary.map { ["summary": $0] }
+            return .toolUse(name: name, id: id, input: input)
         case .toolResult(let id, let content):
             return .toolResult(toolId: id, content: content)
         case .permissionRequested(let tool, let reason):
@@ -214,7 +215,14 @@ public enum CopilotStreamEventParser {
             return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
-        case .fileChange, .unknown:
+        case .fileChange(let path, let kind, let summary):
+            let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
+            var input: [String: Any] = ["file_path": path]
+            if let summary, !summary.isEmpty {
+                input["summary"] = summary
+            }
+            return .toolUse(name: toolName, id: "", input: input)
+        case .unknown:
             return nil
         }
     }

@@ -62,8 +62,10 @@ final class TaskQueue {
         defaultRuntimeID: AgentRuntimeID = .claudeCode,
         timeoutSeconds: TimeInterval,
         validationModel: String,
-        skipPermissions: Bool = false
+        skipPermissions: Bool = false,
+        defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
     ) {
+        let configuredPolicyLevel = skipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(defaultPolicyLevelRaw)
         for worker in workers {
             if let path = claudePath, !path.isEmpty {
                 worker.claudePath = path
@@ -78,7 +80,8 @@ final class TaskQueue {
             worker.timeoutSeconds = timeoutSeconds
             worker.validationModel = validationModel
             worker.skipPermissions = skipPermissions
-            worker.permissionPolicy = skipPermissions ? .autonomous : .restricted
+            worker.defaultAgentPolicyLevelRaw = configuredPolicyLevel.rawValue
+            worker.permissionPolicy = skipPermissions ? .autonomous : .fromAgentPolicyLevel(configuredPolicyLevel)
         }
     }
 

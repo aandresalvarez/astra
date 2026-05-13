@@ -75,9 +75,14 @@ enum AgentEventRecorder {
                 recordingState: recordingState
             )
 
-        case .toolUse(let name, _, _):
+        case .toolUse(let name, _, let input):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)", run: run))
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "tool.use",
+                payload: toolUsePayload(name: name, input: input),
+                run: run
+            ))
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
                 run.appendFileChange(StoredFileChange(from: fileChange))
                 let existingVersion = task.artifacts
@@ -260,9 +265,14 @@ enum AgentEventRecorder {
                 modelContext: modelContext,
                 recordingState: recordingState
             )
-        case .toolUse(let name, _, _):
+        case .toolUse(let name, _, let input):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)", run: run))
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "tool.use",
+                payload: toolUsePayload(name: name, input: input),
+                run: run
+            ))
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
                 run.appendFileChange(StoredFileChange(from: fileChange))
             }
@@ -435,8 +445,9 @@ enum AgentEventRecorder {
             return .thinking(text: text)
         case .text(let text):
             return .text(text: text)
-        case .toolUse(let name, let id, _):
-            return .toolUse(name: name, id: id, input: nil)
+        case .toolUse(let name, let id, let inputSummary):
+            let input: [String: Any]? = inputSummary.map { ["summary": $0] }
+            return .toolUse(name: name, id: id, input: input)
         case .toolResult(let id, let content):
             return .toolResult(toolId: id, content: content)
         case .permissionRequested(let tool, let reason):
@@ -449,7 +460,14 @@ enum AgentEventRecorder {
             return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
-        case .fileChange, .unknown:
+        case .fileChange(let path, let kind, let summary):
+            let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
+            var input: [String: Any] = ["file_path": path]
+            if let summary, !summary.isEmpty {
+                input["summary"] = summary
+            }
+            return .toolUse(name: toolName, id: "", input: input)
+        case .unknown:
             return nil
         }
     }
@@ -488,6 +506,38 @@ enum AgentEventRecorder {
             .prefix(18)
             .joined(separator: " ")
         return words.isEmpty ? "none" : words
+    }
+
+    private static func toolUsePayload(name: String, input: [String: Any]?) -> String {
+        let summary = toolInputSummary(name: name, input: input)
+        let base = "Using tool: \(name)"
+        guard let summary, !summary.isEmpty else { return base }
+        return "\(base): \(LogSanitizer.sanitize(summary, maxLength: 300))"
+    }
+
+    private static func toolInputSummary(name: String, input: [String: Any]?) -> String? {
+        guard let input else { return nil }
+        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "bash" || lower == "shell" {
+            return firstString(in: input, keys: ["command", "cmd", "summary"])
+        }
+        if ["read", "write", "edit", "multiedit"].contains(lower) {
+            return firstString(in: input, keys: ["file_path", "path", "target_path", "summary"])
+        }
+        if ["webfetch", "websearch"].contains(lower) {
+            return firstString(in: input, keys: ["url", "uri", "summary"])
+        }
+        return firstString(in: input, keys: ["summary"])
+    }
+
+    private static func firstString(in input: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = input[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
     }
 
     @MainActor

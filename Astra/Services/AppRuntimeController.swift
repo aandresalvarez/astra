@@ -30,7 +30,8 @@ final class AppRuntimeController {
         defaultRuntimeID: String,
         timeoutSeconds: Int,
         validationModel: String,
-        skipPermissions: Bool
+        skipPermissions: Bool,
+        defaultPolicyLevelRaw: String
     ) {
         let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
         taskQueue.applySettings(
@@ -40,7 +41,8 @@ final class AppRuntimeController {
             defaultRuntimeID: runtime,
             timeoutSeconds: TimeInterval(timeoutSeconds),
             validationModel: validationModel,
-            skipPermissions: skipPermissions
+            skipPermissions: skipPermissions,
+            defaultPolicyLevelRaw: defaultPolicyLevelRaw
         )
     }
 

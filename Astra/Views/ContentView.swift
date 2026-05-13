@@ -291,6 +291,7 @@ struct ContentView: View {
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
     @AppStorage(AppStorageKeys.browserPinnedToTask) private var isBrowserPinnedToTask = true
     @AppStorage(AppStorageKeys.markdownPinnedToTask) private var isMarkdownPinnedToTask = true
@@ -374,7 +375,8 @@ struct ContentView: View {
             claudeVertexHaikuModel,
             String(timeoutSeconds),
             validationModel,
-            String(skipPermissions)
+            String(skipPermissions),
+            defaultAgentPolicyLevelRaw
         ].joined(separator: "|")
     }
 
@@ -2120,7 +2122,8 @@ struct ContentView: View {
             defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
-            skipPermissions: skipPermissions
+            skipPermissions: skipPermissions,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw
         )
         refreshProviderModelsInBackground()
     }

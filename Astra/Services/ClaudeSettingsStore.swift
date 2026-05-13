@@ -1,6 +1,9 @@
 import Foundation
+import ASTRACore
 
 enum ClaudeSettingsStore {
+    private static let astraMetadataKey = "_astra_policy"
+
     static func settingsDirectory(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent(".claude")
@@ -23,8 +26,72 @@ enum ClaudeSettingsStore {
         guard let permissions = perms.first else { return false }
 
         var settings = loadSettings(workspacePath: workspacePath, fileManager: fileManager)
-        settings["permissions"] = permissions
+        var mergedPermissions = settings["permissions"] as? [String: Any] ?? [:]
+        for (key, value) in permissions {
+            mergedPermissions[key] = value
+        }
+        settings["permissions"] = mergedPermissions
+        settings[astraMetadataKey] = [
+            "version": 1,
+            "managedPermissions": true,
+            "updatedAt": ISO8601DateFormatter().string(from: Date())
+        ]
         return writeSettings(settings, workspacePath: workspacePath, fileManager: fileManager)
+    }
+
+    static func configOwnership(at workspacePath: String, fileManager: FileManager = .default) -> PolicyConfigOwnership {
+        let settings = loadSettings(workspacePath: workspacePath, fileManager: fileManager)
+        guard !settings.isEmpty else { return .generated }
+
+        let hasASTRAMetadata = settings[astraMetadataKey] != nil
+        let hasPermissions = settings["permissions"] != nil
+        let userOwnedKeys = Set(settings.keys).subtracting([astraMetadataKey, "permissions", "hooks"])
+
+        if hasASTRAMetadata {
+            return userOwnedKeys.isEmpty ? .generated : .mixed
+        }
+        if hasPermissions {
+            return userOwnedKeys.isEmpty ? .userOverride : .mixed
+        }
+        return .mixed
+    }
+
+    static func existingConfigSummary(at workspacePath: String, fileManager: FileManager = .default) -> String? {
+        let settings = loadSettings(workspacePath: workspacePath, fileManager: fileManager)
+        guard !settings.isEmpty else { return nil }
+
+        var parts: [String] = []
+        if let permissions = settings["permissions"] as? [String: Any] {
+            let allowCount = (permissions["allow"] as? [Any])?.count ?? 0
+            let denyCount = (permissions["deny"] as? [Any])?.count ?? 0
+            parts.append("permissions allow=\(allowCount) deny=\(denyCount)")
+        }
+        if let hooks = settings["hooks"] as? [String: Any] {
+            parts.append("hooks=\(hooks.keys.count)")
+        }
+        let extraKeys = settings.keys
+            .filter { ![astraMetadataKey, "permissions", "hooks"].contains($0) }
+            .sorted()
+        if !extraKeys.isEmpty {
+            parts.append("preserved keys: \(extraKeys.joined(separator: ", "))")
+        }
+        return parts.isEmpty ? "Existing Claude settings detected" : parts.joined(separator: "; ")
+    }
+
+    static func generatedConfigPreview(policy: PermissionPolicy, allowedTools: [String]) -> String {
+        let permissions = policy.subAgentPermissions(allowedTools: allowedTools).first ?? [:]
+        let settings: [String: Any] = [
+            "permissions": permissions,
+            astraMetadataKey: [
+                "version": 1,
+                "managedPermissions": true
+            ]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return string
     }
 
     static func injectTemplateHooks(
@@ -95,7 +162,7 @@ enum ClaudeSettingsStore {
         }
     }
 
-    private static func loadSettings(
+    static func loadSettings(
         workspacePath: String,
         fileManager: FileManager
     ) -> [String: Any] {

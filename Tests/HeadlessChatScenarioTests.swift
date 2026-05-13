@@ -331,7 +331,7 @@ struct HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -q -- '--allow-all-tools'; then
+                if printf '%s\\n' "$@" | grep -Fxq -- 'write'; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote the approved story"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
                   exit 0
@@ -369,13 +369,14 @@ struct HeadlessChatScenarioTests {
             task: task,
             message: "The user approved the blocked permission.",
             worker: worker,
-            executionPolicy: .approvedRuntimePermission(runtime: .copilotCLI)
+            executionPolicy: .approvedRuntimePermission(runtime: .copilotCLI, allowedTools: ["Write"])
         )
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(runs.count == 2)
-        #expect(args.contains("--allow-all-tools"))
+        #expect(!args.contains("--allow-all-tools"))
+        #expect(args.contains("write"))
         #expect(task.status == .completed)
         #expect(runs[1].output == "Wrote the approved story")
     }
@@ -390,7 +391,7 @@ struct HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -q -- '--allow-all-tools'; then
+                if printf '%s\\n' "$@" | grep -Fxq -- 'write'; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Approved through UI path"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
                   exit 0
@@ -432,7 +433,8 @@ struct HeadlessChatScenarioTests {
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(completed)
         #expect(runs.count == 2)
-        #expect(args.contains("--allow-all-tools"))
+        #expect(!args.contains("--allow-all-tools"))
+        #expect(args.contains("write"))
         #expect(runs.last?.output == "Approved through UI path")
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
     }
@@ -447,7 +449,7 @@ struct HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -q -- '--dangerously-skip-permissions'; then
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Write'; then
                   printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-approved-session","model":"claude-sonnet-4-6"}'
                   printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude continued after approval"}]}}'
                   printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude continued after approval","usage":{"input_tokens":3,"output_tokens":5}}'
@@ -486,13 +488,14 @@ struct HeadlessChatScenarioTests {
             task: task,
             message: "The user approved the blocked permission.",
             worker: worker,
-            executionPolicy: .approvedRuntimePermission(runtime: .claudeCode)
+            executionPolicy: .approvedRuntimePermission(runtime: .claudeCode, allowedTools: ["Write"])
         )
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(runs.count == 2)
-        #expect(args.contains("--dangerously-skip-permissions"))
+        #expect(!args.contains("--dangerously-skip-permissions"))
+        #expect(args.contains("Write"))
         #expect(task.status == .completed)
         #expect(runs[1].output == "Claude continued after approval")
     }
@@ -646,8 +649,9 @@ struct HeadlessChatScenarioTests {
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let state = TaskPlanService.reconstruct(for: task)
-        #expect(args.contains("--allow-all-tools"))
-        #expect(!args.contains("--allow-tool"))
+        #expect(!args.contains("--allow-all-tools"))
+        #expect(args.contains("--allow-tool"))
+        #expect(args.contains("write"))
         #expect(args.contains("ASTRA review mode approved only the next plan step"))
         #expect(args.contains("Execute exactly this approved step and stop: step-1"))
         #expect(args.contains("Do not execute later plan steps"))
@@ -757,6 +761,48 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "plan.execution.completed" })
         #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Plan step blocked") })
         #expect(!task.events.contains { $0.type == "system.info" && $0.payload.contains("Plan step complete") })
+    }
+
+    @Test("Plan mode runtime policy violation stops provider")
+    func planModeRuntimePolicyViolationStopsProvider() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Guarded review plan",
+            goal: "Execute a write-only approved step",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"])
+            ]
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"tool_call","tool":"shell","id":"call-1","command":"rm -rf build"}'
+            /bin/sleep 20
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let run = try #require(task.runs.first)
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "policy_violation")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("violated the run policy") })
+        #expect(!task.events.contains { $0.type == "plan.step.completed" })
+        #expect(state.plan?.steps.first?.status != .done)
     }
 
     @Test("Approved plan execution keeps Auto mode autonomous for Copilot")
@@ -903,6 +949,49 @@ struct HeadlessChatScenarioTests {
         let permissions = try #require(json["permissions"] as? [String: Any])
         let allow = try #require(permissions["allow"] as? [String])
         #expect(allow.contains("Write(*)"))
+    }
+
+    @Test("Claude plan mode runtime policy violation stops provider")
+    func claudePlanModeRuntimePolicyViolationStopsProvider() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Guarded Claude review plan",
+            goal: "Execute a write-only approved step with Claude",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Write artifact", likelyTools: ["Write"])
+            ]
+        )
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-guard-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_bad","input":{"command":"rm -rf build"}}]}}'
+            /bin/sleep 20
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: plan.goal, model: "claude-sonnet-4-6")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let run = try #require(task.runs.first)
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "policy_violation")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("violated the run policy") })
+        #expect(!task.events.contains { $0.type == "plan.step.completed" })
+        #expect(state.plan?.steps.first?.status != .done)
     }
 
     @Test("Blocked write permission enriches the next approved retry")

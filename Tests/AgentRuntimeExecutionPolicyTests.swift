@@ -47,33 +47,39 @@ struct AgentRuntimeExecutionPolicyTests {
         }
     }
 
-    @Test("Copilot review approval uses non-interactive provider policy")
-    func copilotReviewApprovalUsesNonInteractiveProviderPolicy() {
+    @Test("Copilot review approval stays scoped to approved tools")
+    func copilotReviewApprovalStaysScopedToApprovedTools() {
         let policy = AgentRuntimeExecutionPolicy.approvedPlan(
             runtime: .copilotCLI,
             currentPermissionPolicy: .restricted,
             allowedTools: ["Write"]
         )
 
-        #expect(policy.permissionPolicy(default: .restricted) == .autonomous)
+        #expect(policy.permissionPolicy(default: .restricted) == .restricted)
         #expect(policy.allowedTools(default: ["Read"]) == ["Write"])
     }
 
-    @Test("Copilot runtime permission approval uses one-shot autonomous policy")
-    func copilotRuntimePermissionApprovalUsesAutonomousPolicy() {
-        let policy = AgentRuntimeExecutionPolicy.approvedRuntimePermission(runtime: .copilotCLI)
+    @Test("Copilot runtime permission approval stays scoped to approved tools")
+    func copilotRuntimePermissionApprovalStaysScopedToApprovedTools() {
+        let policy = AgentRuntimeExecutionPolicy.approvedRuntimePermission(
+            runtime: .copilotCLI,
+            allowedTools: ["Read", "shell(rm:*)"]
+        )
 
-        #expect(policy.permissionPolicy(default: .restricted) == .autonomous)
-        #expect(policy.allowedTools(default: ["Read"]) == ["Read"])
+        #expect(policy.permissionPolicy(default: .restricted) == .restricted)
+        #expect(policy.allowedTools(default: ["Read"]) == ["Read", "shell(rm:*)"])
     }
 
     @Test("Runtime permission approval is provider agnostic")
     func runtimePermissionApprovalIsProviderAgnostic() {
         for runtime in AgentRuntimeID.allCases {
-            let policy = AgentRuntimeExecutionPolicy.approvedRuntimePermission(runtime: runtime)
+            let policy = AgentRuntimeExecutionPolicy.approvedRuntimePermission(
+                runtime: runtime,
+                allowedTools: ["Read", "Write"]
+            )
 
-            #expect(policy.permissionPolicy(default: .restricted) == .autonomous)
-            #expect(policy.allowedTools(default: ["Read", "Grep"]) == ["Read", "Grep"])
+            #expect(policy.permissionPolicy(default: .restricted) == .restricted)
+            #expect(policy.allowedTools(default: ["Read", "Grep"]) == ["Read", "Write"])
         }
     }
 

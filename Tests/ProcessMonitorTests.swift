@@ -482,6 +482,156 @@ struct ProcessMonitorTests {
     }
 }
 
+@Suite("Runtime Policy Guard")
+struct RuntimePolicyGuardTests {
+    @Test("Observed tools outside manifest allow-list stop the provider")
+    func unauthorizedToolStopsProvider() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Read", "Glob", "Grep"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
+    }
+
+    @Test("Denied shell command pattern stops the provider")
+    func deniedShellPatternStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedShellPatterns: ["git:*", "swift:*"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "rm -rf build"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("denied command pattern") == true)
+    }
+
+    @Test("Allowed shell command pattern continues")
+    func allowedShellPatternContinues() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedShellPatterns: ["git:*", "swift:*"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status --short"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Mutating file outside allowed paths stops the provider")
+    func outsidePathMutationStopsProvider() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Write"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Write", id: "t1", input: ["file_path": "/etc/passwd"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the workspace paths") == true)
+    }
+
+    @Test("Read outside allowed paths stops the provider when path is observable")
+    func outsidePathReadStopsProvider() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Read"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Read", id: "t1", input: ["file_path": "/private/tmp/outside.txt"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+    }
+}
+
+private func runtimePolicyManifest(
+    allowedTools: [String],
+    deniedTools: [String] = [],
+    allowedShellPatterns: [String] = [],
+    deniedShellPatterns: [String] = [],
+    allowedURLPatterns: [String] = [],
+    deniedURLPatterns: [String] = []
+) -> RunPermissionManifest {
+    let render = ProviderPolicyRender(
+        providerID: .claudeCode,
+        adapterVersion: 1,
+        policyLevel: .review,
+        configOwnership: .generated,
+        permissionMode: PermissionPolicy.restricted.rawValue,
+        allowedTools: allowedTools,
+        deniedTools: deniedTools,
+        allowedShellPatterns: allowedShellPatterns,
+        deniedShellPatterns: deniedShellPatterns,
+        allowedURLPatterns: allowedURLPatterns,
+        deniedURLPatterns: deniedURLPatterns,
+        cliArgumentsSummary: [],
+        settingsSummary: "test",
+        generatedConfigPreview: "",
+        enforcementTiers: [.providerNative, .astraBrokered],
+        diagnostics: [],
+        usesBroadProviderPermissions: false
+    )
+    let taskID = UUID()
+    return RunPermissionManifest(
+        taskID: taskID,
+        runID: UUID(),
+        phase: "test",
+        providerID: .claudeCode,
+        providerVersion: nil,
+        model: "test",
+        policyLevel: .review,
+        policyScope: .taskOverride,
+        providerRender: render,
+        workspacePath: "/tmp/astra-policy-guard",
+        additionalPaths: [],
+        environmentKeyNames: [],
+        credentialLabels: [],
+        approvalsGranted: []
+    )
+}
+
 @Suite("Budget Enforcement Preferences")
 struct BudgetEnforcementPreferenceTests {
     @Test("Configured enforcement defaults to warning and reads overrides")

@@ -15,6 +15,13 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         allowedToolsOverride ?? defaultTools
     }
 
+    func applyingProviderRender(_ render: ProviderPolicyRender) -> AgentRuntimeExecutionPolicy {
+        AgentRuntimeExecutionPolicy(
+            permissionPolicyOverride: PermissionPolicy(rawValue: render.permissionMode) ?? permissionPolicyOverride,
+            allowedToolsOverride: render.allowedTools
+        )
+    }
+
     static func approvedPlan(
         runtime: AgentRuntimeID,
         currentPermissionPolicy: PermissionPolicy,
@@ -28,10 +35,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
     }
 
-    static func approvedRuntimePermission(runtime: AgentRuntimeID) -> AgentRuntimeExecutionPolicy {
+    static func approvedRuntimePermission(runtime: AgentRuntimeID, allowedTools: [String]) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedRuntimePermission(),
-            allowedToolsOverride: nil
+            allowedToolsOverride: allowedTools
         )
     }
 }
@@ -42,21 +49,14 @@ private extension AgentRuntimeID {
         case .claudeCode:
             return current
         case .copilotCLI:
-            switch current {
-            case .restricted:
-                // Copilot can otherwise stop on a hidden provider approval prompt
-                // after ASTRA has already collected explicit user approval.
-                return .autonomous
-            case .autonomous, .interactive:
-                return current
-            }
+            return current
         }
     }
 
     func permissionPolicyAfterUserApprovedRuntimePermission() -> PermissionPolicy {
         switch self {
         case .claudeCode, .copilotCLI:
-            return .autonomous
+            return .restricted
         }
     }
 }

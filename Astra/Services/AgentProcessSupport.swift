@@ -757,6 +757,8 @@ struct AgentProcessResult {
     let exitCode: Int
     let error: String?
     let providerVersion: String?
+    let policyViolation: Bool
+    let policyViolationMessage: String?
     let budgetExceeded: Bool
     let budgetWarning: Bool
     let finalReportedBudgetExceededAfterCompletion: Bool
@@ -768,6 +770,8 @@ struct AgentProcessResult {
         exitCode: Int,
         error: String? = nil,
         providerVersion: String? = nil,
+        policyViolation: Bool = false,
+        policyViolationMessage: String? = nil,
         budgetExceeded: Bool = false,
         budgetWarning: Bool = false,
         finalReportedBudgetExceededAfterCompletion: Bool = false,
@@ -778,6 +782,8 @@ struct AgentProcessResult {
         self.exitCode = exitCode
         self.error = error
         self.providerVersion = providerVersion
+        self.policyViolation = policyViolation
+        self.policyViolationMessage = policyViolationMessage
         self.budgetExceeded = budgetExceeded
         self.budgetWarning = budgetWarning
         self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
@@ -796,6 +802,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
     let taskID: UUID
+    let policyGuard: AgentRuntimePolicyGuard?
 
     private let lock = NSLock()
 
@@ -807,6 +814,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _maxTurnsExceeded: Bool = false
     private var _timedOut: Bool = false
     private var _repetitionKilled: Bool = false
+    private var _policyViolation: Bool = false
+    private var _policyViolationMessage: String?
     private var _sawAstraComplete: Bool = false
 
     private var lastEventSignature: String = ""
@@ -822,6 +831,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var maxTurnsExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _maxTurnsExceeded }
     var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return _timedOut }
     var repetitionKilled: Bool { lock.lock(); defer { lock.unlock() }; return _repetitionKilled }
+    var policyViolation: Bool { lock.lock(); defer { lock.unlock() }; return _policyViolation }
+    var policyViolationMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyViolationMessage }
 
     init(
         tokenBudget: Int,
@@ -829,7 +840,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
-        taskID: UUID = UUID()
+        taskID: UUID = UUID(),
+        policyGuard: AgentRuntimePolicyGuard? = nil
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -837,6 +849,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.taskID = taskID
+        self.policyGuard = policyGuard
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -857,6 +870,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         if case .astraProtocol = parsed {
             return false
+        }
+
+        if let violation = policyGuard?.violation(for: parsed) {
+            return recordPolicyViolation(violation, process: process)
         }
 
         if case .result = parsed {
@@ -985,6 +1002,25 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private func recordPolicyViolation(_ violation: AgentRuntimePolicyViolation, process: AgentRuntimeProcessControl?) -> Bool {
+        guard !_policyViolation else { return false }
+        let redactedDetail = violation.detail.map { LogSanitizer.sanitize($0, maxLength: 240) }
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+            "reason": "runtime_policy_violation",
+            "tool": violation.toolName ?? "unknown",
+            "message": violation.reason,
+            "detail": redactedDetail ?? "none"
+        ], level: .error)
+        _policyViolation = true
+        _policyViolationMessage = AgentRuntimePolicyViolation(
+            reason: violation.reason,
+            toolName: violation.toolName,
+            detail: redactedDetail
+        ).userMessage
+        process?.terminate()
+        return true
     }
 
     private func recordBudgetOverage(reason: String, fields: [String: String], process: AgentRuntimeProcessControl?) -> Bool {

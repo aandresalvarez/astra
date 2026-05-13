@@ -147,7 +147,10 @@ final class TaskLifecycleCoordinator {
                 task: task,
                 message: Self.runtimePermissionApprovalResumeMessage,
                 modelContext: modelContext,
-                executionPolicy: .approvedRuntimePermission(runtime: runtime)
+                executionPolicy: .approvedRuntimePermission(
+                    runtime: runtime,
+                    allowedTools: Self.approvedRuntimePermissionTools(for: task)
+                )
             )
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
@@ -159,6 +162,81 @@ final class TaskLifecycleCoordinator {
     private static let runtimePermissionApprovalResumeMessage = """
     The user approved the blocked runtime permission in ASTRA. Continue the original task from where it stopped. Do not ask for another interactive CLI approval for the same operation; use the approved provider permissions for this run.
     """
+
+    private static func approvedRuntimePermissionTools(for task: AgentTask) -> [String] {
+        var tools = Set(AgentPolicy.preset(.review).allowedTools)
+        tools.formUnion(task.resolvedProviderAllowedTools)
+
+        if let requestedTool = latestRequestedPermissionTool(for: task) {
+            tools.formUnion(providerToolAliases(for: requestedTool, runtime: task.resolvedRuntimeID))
+        } else {
+            tools.formUnion(AgentPolicy.preset(.review).askFirstTools)
+        }
+
+        return tools.sorted()
+    }
+
+    private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
+        task.events
+            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+            .compactMap { permissionToolName(from: $0.payload) }
+            .first
+    }
+
+    private static func permissionToolName(from payload: String) -> String? {
+        let patterns = [
+            #"Permission (?:denied|requested) for tool: ([^.\n]+)"#,
+            #""tool"\s*:\s*"([^"]+)""#,
+            #""toolName"\s*:\s*"([^"]+)""#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
+                  let range = Range(match.range(at: 1), in: payload) else {
+                continue
+            }
+            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func providerToolAliases(for tool: String, runtime: AgentRuntimeID) -> [String] {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        switch runtime {
+        case .copilotCLI:
+            if trimmed.hasPrefix("shell(") || trimmed == "read" || trimmed == "write" {
+                return [trimmed]
+            }
+            return [trimmed, canonicalProviderToolName(trimmed)]
+        case .claudeCode:
+            return [canonicalProviderToolName(trimmed)]
+        }
+    }
+
+    private static func canonicalProviderToolName(_ tool: String) -> String {
+        let lower = tool.lowercased()
+        if lower.hasPrefix("shell(") { return "Bash" }
+        switch lower {
+        case "read": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit": return "MultiEdit"
+        case "bash": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default:
+            return tool
+        }
+    }
 
     private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
         let latestRequest = task.events

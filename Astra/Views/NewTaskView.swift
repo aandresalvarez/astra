@@ -11,6 +11,7 @@ struct NewTaskView: View {
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     var workspace: Workspace?
 
     @State private var title = ""
@@ -18,6 +19,7 @@ struct NewTaskView: View {
     @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
     @State private var model = TaskExecutionDefaults.model
     @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
+    @State private var policyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var isolationStrategy: IsolationStrategy = .sameDirectory
     @State private var validationStrategy: ValidationStrategy = .manual
     @State private var maxTurns = 0
@@ -106,6 +108,16 @@ struct NewTaskView: View {
                         }
                     }
 
+                    Picker("Agent Policy", selection: $policyLevelRaw) {
+                        ForEach(AgentPolicyLevel.allCases) { level in
+                            Label(level.displayName, systemImage: level.symbolName)
+                                .tag(level.rawValue)
+                        }
+                    }
+                    Text(AgentPolicyLevel.normalized(policyLevelRaw).shortDescription)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+
                     Picker("Max Turns", selection: $maxTurns) {
                         ForEach(turnPresets, id: \.self) { t in
                             Text(t == 0 ? "Unlimited" : "\(t) turns").tag(t)
@@ -189,6 +201,10 @@ struct NewTaskView: View {
                 cachedCopilotModelsJSON: copilotAvailableModels
             )
             tokenBudget = defaultBudget
+            policyLevelRaw = AgentPolicyDefaults.effectiveLevel(
+                workspace: workspace,
+                globalDefaultRaw: defaultAgentPolicyLevelRaw
+            ).rawValue
         }
         .onChange(of: claudeAvailableModels) {
             let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
@@ -310,6 +326,12 @@ struct NewTaskView: View {
         task.status = .queued
 
         modelContext.insert(task)
+        TaskPolicyStore.recordSelection(
+            level: AgentPolicyLevel.normalized(policyLevelRaw),
+            task: task,
+            modelContext: modelContext,
+            source: "new_task_sheet"
+        )
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         dismiss()
     }
