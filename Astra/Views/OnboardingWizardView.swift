@@ -325,6 +325,7 @@ struct OnboardingWizardView: View {
     @State private var showCLITechnicalDetails = false
     @State private var installingRuntime: AgentRuntimeID?
     @State private var cliInstallResult: RuntimeCLIInstallResult?
+    @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -480,16 +481,20 @@ struct OnboardingWizardView: View {
             stepHeader(
                 icon: "checkmark.shield.fill",
                 title: "macOS Access",
-                subtitle: "Check the local permission ASTRA uses when a task needs browser control.",
+                subtitle: "Check the local permissions ASTRA uses for browser control, credentials, and workspace files.",
                 tint: Stanford.lagunita
             )
 
-            MacOSPermissionsSectionView(context: .onboarding)
+            MacOSPermissionsSectionView(
+                context: .onboarding,
+                workspaceRoot: resolvedWorkspaceRoot,
+                model: macOSPermissions
+            )
 
             calloutBox(
                 icon: "info.circle.fill",
                 title: "Why this matters",
-                body: "Some web tasks use a separate controlled browser so ASTRA can read the page you opened and act on it. If macOS blocks that handoff, open App Management from here and check again.",
+                body: "ASTRA checks global app access here. Capability-specific access is checked when you enable the capability that needs it.",
                 tint: Stanford.sky
             )
         }
@@ -557,6 +562,11 @@ struct OnboardingWizardView: View {
                     title: "GitHub CLI",
                     status: githubStatusSummary,
                     ready: isGitHubHealthy
+                )
+                readinessRow(
+                    title: "macOS access",
+                    status: macOSPermissions.onboardingSummary,
+                    ready: macOSPermissions.isReady
                 )
                 readinessRow(
                     title: "Workspace root",

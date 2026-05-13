@@ -45,4 +45,30 @@ struct MacOSPermissionDiagnosticsTests {
 
         #expect(issue == nil)
     }
+
+    @Test("Keychain issue points to Keychain Access")
+    func keychainIssueMapsToAction() {
+        let issue = MacOSPermissionDiagnostics.keychainIssue(
+            appDisplayName: "ASTRA Dev",
+            detail: "User interaction is not allowed."
+        )
+
+        #expect(issue.kind == .keychain)
+        #expect(issue.title == "Allow ASTRA Dev to use Keychain")
+        #expect(issue.actionTitle == "Open Keychain Access")
+        #expect(issue.message.contains("Keychain"))
+    }
+
+    @Test("Workspace issue points to Files and Folders")
+    func workspaceIssueMapsToAction() {
+        let issue = MacOSPermissionDiagnostics.workspaceAccessIssue(
+            appDisplayName: "ASTRA Dev",
+            path: "/tmp/astra-workspaces",
+            detail: "Operation not permitted."
+        )
+
+        #expect(issue.kind == .filesAndFolders)
+        #expect(issue.actionTitle == "Open Files & Folders")
+        #expect(issue.message.contains("/tmp/astra-workspaces"))
+    }
 }

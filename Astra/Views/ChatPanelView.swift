@@ -1046,9 +1046,9 @@ struct ChatPanelView: View {
                         let previousRuntime = defaultRuntimeID
                         defaultRuntimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        defaultModel = RuntimeModelAvailability.normalizedModel(
-                            defaultModel,
-                            for: resolved,
+                        defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                            currentModel: defaultModel,
+                            to: resolved,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )

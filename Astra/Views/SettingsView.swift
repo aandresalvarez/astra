@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var readinessReport: RuntimeReadinessReport?
     @State private var isCheckingReadiness = false
     @State private var readinessCheckedAt: Date?
+    @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
     @MainActor
     init(appUpdateController: AppUpdateController) {
@@ -99,7 +100,7 @@ struct SettingsView: View {
                     }
                 }
                 .onChange(of: defaultRuntimeID) {
-                    alignDefaultModelsWithRuntime()
+                    alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: true)
                 }
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
                     .font(Stanford.caption(12))
@@ -241,7 +242,11 @@ struct SettingsView: View {
     private var permissionsSettingsTab: some View {
         Form {
             Section("macOS Permissions") {
-                MacOSPermissionsSectionView(context: .settings)
+                MacOSPermissionsSectionView(
+                    context: .settings,
+                    workspaceRoot: resolvedWorkspacesRoot,
+                    model: macOSPermissions
+                )
             }
         }
         .formStyle(.grouped)
@@ -250,11 +255,10 @@ struct SettingsView: View {
     private var defaultsSettingsTab: some View {
         Form {
             Section("Defaults") {
-                Picker("Model", selection: $defaultModel) {
-                    ForEach(runtimeModels, id: \.self) { m in
-                        Text(m).tag(m)
-                    }
-                }
+                modelSelectionRow(title: "Task Model", selection: $defaultModel)
+                Text("Used when ASTRA starts a new task. Suggestions come from \(modelSuggestionSourceText); you can type a custom model ID.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     TextField("Workspaces Root", text: $workspacesRoot,
@@ -272,30 +276,32 @@ struct SettingsView: View {
                 HStack {
                     Text("Timeout")
                     Spacer()
-                    TextField("Seconds", value: $timeoutSeconds, format: .number)
-                        .frame(width: 80)
+                    TextField("", value: $timeoutSeconds, format: .number, prompt: Text("600"))
+                        .labelsHidden()
+                        .frame(width: 90)
                         .multilineTextAlignment(.trailing)
                     Text("seconds")
                         .foregroundStyle(.secondary)
+                        .fixedSize()
                 }
 
-                Picker("Utility Model", selection: $validationModel) {
-                    ForEach(runtimeModels, id: \.self) { m in
-                        Text(m).tag(m)
-                    }
-                }
+                modelSelectionRow(title: "Utility Model", selection: $validationModel)
+                Text("Used for short internal jobs such as title generation and AI validation. Pick a fast, inexpensive model when your provider offers one.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Text("Parallel Workers")
                     Spacer()
-                    Picker("", selection: $workerPoolSize) {
-                        Text("1").tag(1)
-                        Text("2").tag(2)
-                        Text("3").tag(3)
-                        Text("4").tag(4)
-                        Text("5").tag(5)
+                    HStack(spacing: 10) {
+                        Text("\(workerPoolSize)")
+                            .font(Stanford.body(14).monospacedDigit())
+                            .foregroundStyle(.primary)
+                            .frame(width: 24, alignment: .trailing)
+                        Stepper("", value: $workerPoolSize, in: 1...5)
+                            .labelsHidden()
                     }
-                    .frame(width: 60)
+                    .fixedSize()
                 }
                 Text("Number of tasks that can run simultaneously. Restart app to apply.")
                     .font(Stanford.caption(12))
@@ -416,12 +422,25 @@ struct SettingsView: View {
         workspacesRoot.isEmpty ? AppChannel.current.defaultWorkspacesRoot : workspacesRoot
     }
 
+    private var selectedRuntime: AgentRuntimeID {
+        AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+    }
+
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
-            for: AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode,
+            for: selectedRuntime,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var modelSuggestionSourceText: String {
+        let source = RuntimeModelAvailability.hasCachedModels(
+            for: selectedRuntime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        ) ? "the latest \(selectedRuntime.displayName) check" : "built-in \(selectedRuntime.displayName) defaults"
+        return source
     }
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
@@ -454,6 +473,38 @@ struct SettingsView: View {
             claudeVertexSonnetModel,
             claudeVertexHaikuModel
         ].joined(separator: "\u{1F}")
+    }
+
+    private func modelSelectionRow(title: String, selection: Binding<String>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+            Spacer()
+            TextField("Model ID", text: selection, prompt: Text("Type or choose a model"))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(minWidth: 260, maxWidth: 360)
+                .textSelection(.enabled)
+            Menu {
+                ForEach(runtimeModels, id: \.self) { model in
+                    Button {
+                        selection.wrappedValue = model
+                    } label: {
+                        HStack {
+                            Text(model)
+                            if selection.wrappedValue == model {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(12).weight(.semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Choose \(title)")
+        }
     }
 
     private var readinessSummary: some View {
@@ -689,20 +740,35 @@ struct SettingsView: View {
         }
     }
 
-    private func alignDefaultModelsWithRuntime() {
+    private func alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: Bool = false) {
         let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
-        defaultModel = RuntimeModelAvailability.normalizedModel(
-            defaultModel,
-            for: runtime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
-        )
-        validationModel = RuntimeModelAvailability.normalizedModel(
-            validationModel,
-            for: runtime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
-        )
+        if resetToRuntimeSuggestion {
+            defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                currentModel: defaultModel,
+                to: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
+            validationModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                currentModel: validationModel,
+                to: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
+        } else {
+            defaultModel = RuntimeModelAvailability.normalizedModel(
+                defaultModel,
+                for: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
+            validationModel = RuntimeModelAvailability.normalizedModel(
+                validationModel,
+                for: runtime,
+                cachedClaudeModelsJSON: claudeAvailableModels,
+                cachedCopilotModelsJSON: copilotAvailableModels
+            )
+        }
     }
 }
 

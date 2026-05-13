@@ -2328,9 +2328,9 @@ struct TaskMainView: View {
                         let previousRuntime = task.runtimeID
                         task.runtimeID = runtime
                         let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        task.model = RuntimeModelAvailability.normalizedModel(
-                            task.model,
-                            for: resolved,
+                        task.model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                            currentModel: task.model,
+                            to: resolved,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )

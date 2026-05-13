@@ -81,19 +81,15 @@ struct NewTaskView: View {
                     }
                     .onChange(of: runtimeID) {
                         let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                        model = RuntimeModelAvailability.normalizedModel(
-                            model,
-                            for: runtime,
+                        model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                            currentModel: model,
+                            to: runtime,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
                     }
 
-                    Picker("Model", selection: $model) {
-                        ForEach(runtimeModels, id: \.self) { m in
-                            Text(m).tag(m)
-                        }
-                    }
+                    modelSelectionRow
 
                     Picker("Token Budget", selection: $tokenBudget) {
                         ForEach(budgetPresets, id: \.self) { b in
@@ -211,6 +207,38 @@ struct NewTaskView: View {
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var modelSelectionRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("Model")
+            Spacer()
+            TextField("Model ID", text: $model, prompt: Text("Type or choose a model"))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(minWidth: 220)
+                .textSelection(.enabled)
+            Menu {
+                ForEach(runtimeModels, id: \.self) { candidate in
+                    Button {
+                        model = candidate
+                    } label: {
+                        HStack {
+                            Text(candidate)
+                            if model == candidate {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(12).weight(.semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Choose Model")
+        }
     }
 
     private func addInputFile() {

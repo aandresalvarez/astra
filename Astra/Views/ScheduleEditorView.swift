@@ -326,9 +326,9 @@ struct ScheduleEditorView: View {
                                 .frame(width: 180)
                                 .onChange(of: runtimeID) {
                                     let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                                    model = RuntimeModelAvailability.normalizedModel(
-                                        model,
-                                        for: runtime,
+                                    model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                                        currentModel: model,
+                                        to: runtime,
                                         cachedClaudeModelsJSON: claudeAvailableModels,
                                         cachedCopilotModelsJSON: copilotAvailableModels
                                     )
@@ -338,13 +338,7 @@ struct ScheduleEditorView: View {
                             fieldRow {
                                 Text("Model").foregroundStyle(Stanford.coolGrey)
                                 Spacer()
-                                Picker("", selection: $model) {
-                                    ForEach(runtimeModels, id: \.self) { candidate in
-                                        Text(candidate).tag(candidate)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(width: 180)
+                                modelSelectionControl
                             }
                             Divider().padding(.leading, 16)
                             fieldRow {
@@ -548,6 +542,36 @@ struct ScheduleEditorView: View {
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var modelSelectionControl: some View {
+        HStack(spacing: 8) {
+            TextField("Model ID", text: $model, prompt: Text("Type or choose"))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 240)
+                .textSelection(.enabled)
+            Menu {
+                ForEach(runtimeModels, id: \.self) { candidate in
+                    Button {
+                        model = candidate
+                    } label: {
+                        HStack {
+                            Text(candidate)
+                            if model == candidate {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(12).weight(.semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Choose Model")
+        }
     }
 
     private func alignModelWithRuntime() {

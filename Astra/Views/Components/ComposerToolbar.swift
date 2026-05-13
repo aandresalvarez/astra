@@ -175,10 +175,14 @@ struct ComposerToolbar: View {
                 ForEach(runtimes) { runtime in
                     Button {
                         onRuntimeChange?(runtime.rawValue)
-                        let candidates = runtimeModels(for: runtime)
-                        if !candidates.contains(model) {
-                            onModelChange?(candidates.first ?? runtime.defaultModel)
-                        }
+                        onModelChange?(
+                            RuntimeModelAvailability.modelForRuntimeSwitch(
+                                currentModel: model,
+                                to: runtime,
+                                cachedClaudeModelsJSON: claudeAvailableModels,
+                                cachedCopilotModelsJSON: copilotAvailableModels
+                            )
+                        )
                     } label: {
                         HStack {
                             Text(runtime.displayName)
@@ -191,7 +195,13 @@ struct ComposerToolbar: View {
             }
 
             Menu {
-                ForEach(runtimeModels(for: resolvedRuntime), id: \.self) { candidate in
+                let candidates = runtimeModels(for: resolvedRuntime)
+                let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
+                    Label("Custom: \(modelDisplayName(trimmedModel))", systemImage: "pencil")
+                    Divider()
+                }
+                ForEach(candidates, id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
                         HStack {
                             Text(modelDisplayName(candidate))
@@ -201,15 +211,6 @@ struct ComposerToolbar: View {
                 }
             } label: {
                 Label("Model", systemImage: "cpu")
-            }
-            let candidates = runtimeModels(for: resolvedRuntime)
-            if !candidates.contains(model) {
-                let fallback = candidates.first ?? resolvedRuntime.defaultModel
-                Button { onModelChange?(fallback) } label: {
-                    HStack {
-                        Text("Use \(modelDisplayName(fallback))")
-                    }
-                }
             }
 
             Menu {
