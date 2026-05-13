@@ -220,6 +220,19 @@ struct AstraBrowserTool {
                 object["verifyText"] = verify
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsInsert", object: object)
+        case "google-drive-open", "googledriveopen", "drive-open":
+            let endpoint = try browserEndpoint()
+            guard let name = args.value(after: "--name")
+                ?? args.value(after: "--title")
+                ?? args.value(after: "--text")
+                ?? args.remainingText() else {
+                throw ToolError("google-drive-open requires --name")
+            }
+            var object: [String: Any] = ["name": name]
+            if let timeout = args.value(after: "--timeout").flatMap(Double.init) {
+                object["timeoutSeconds"] = timeout
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDriveOpen", object: object)
         case "act":
             let endpoint = try browserEndpoint()
             var object: [String: Any] = [:]
@@ -372,6 +385,7 @@ struct AstraBrowserTool {
                 "astra-browser google-find-replace --find 'old text' --with 'new text'",
                 "astra-browser google-docs-find --query 'unique phrase'",
                 "astra-browser google-docs-insert --verify 'unique phrase' --text 'content to insert'",
+                "astra-browser google-drive-open --name 'Untitled document'",
                 "astra-browser act --find 'Replace with' --set 'new text' --click 'Replace all' --wait-saved --verify 'new text'",
                 "astra-browser keypress --key h --mod command --mod shift",
                 "astra-browser text 'replacement text'",

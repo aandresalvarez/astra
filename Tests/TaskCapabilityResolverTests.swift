@@ -134,4 +134,148 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("https://yourcompany.atlassian.net"))
         #expect(prompt.contains("[Jira Agent]:"))
     }
+
+    @Test("Browser task prompt prunes unrelated selected capabilities")
+    func browserTaskPromptPrunesUnrelatedSelectedCapabilities() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Browser Workspace", primaryPath: "/tmp/browser-workspace")
+        context.insert(workspace)
+
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Manage GCP resources and deployments",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "GCloud must inspect projects and deployment regions before doing cloud work.",
+            environmentVariables: ["GCP_PROJECT": "prod-project"]
+        )
+        gcloudSkill.workspace = workspace
+        context.insert(gcloudSkill)
+
+        let gcloudTool = LocalTool(
+            name: "gcloud",
+            toolDescription: "Google Cloud CLI",
+            command: "gcloud"
+        )
+        gcloudTool.skill = gcloudSkill
+        context.insert(gcloudTool)
+
+        let mailSkill = Skill(
+            name: "Stanford Mail via Apple Mail Agent",
+            skillDescription: "Read Stanford email through Apple Mail",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Stanford mail tasks must use the Apple Mail mailbox bridge."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let task = AgentTask(
+            title: "Open the untitled document",
+            goal: "Open the untitled document",
+            workspace: workspace
+        )
+        task.skills = [gcloudSkill, mailSkill]
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://drive.google.com/drive/home",
+            currentTitle: "Google Drive",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+        #expect(scope.excludedSkillNames.contains("Stanford Mail via Apple Mail Agent"))
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("astra-browser google-drive-open"))
+        #expect(!prompt.contains("[GCloud Agent]:"))
+        #expect(!prompt.contains("GCloud must inspect projects"))
+        #expect(!prompt.contains("Available CLI/Script Tools"))
+        #expect(!prompt.contains("`gcloud`"))
+        #expect(!prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
+        #expect(!prompt.contains("Apple Mail mailbox bridge"))
+        #expect(!prompt.contains("GCP_PROJECT"))
+    }
+
+    @Test("Browser task prompt keeps capability referenced by the user goal")
+    func browserTaskPromptKeepsReferencedCapability() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira Browser Workspace", primaryPath: "/tmp/jira-browser-workspace")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Work with Jira tickets and issues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST APIs for ticket lookup before summarizing issue state."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.configKeys = ["JIRA_PROJECTS"]
+        jiraConnector.configValues = ["STAR"]
+        context.insert(jiraConnector)
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString]
+
+        let mailSkill = Skill(
+            name: "Stanford Mail via Apple Mail Agent",
+            skillDescription: "Read Stanford email through Apple Mail",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Stanford mail tasks must use the Apple Mail mailbox bridge."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let task = AgentTask(
+            title: "Open Jira ticket STAR-123",
+            goal: "Open Jira ticket STAR-123 and summarize it",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.atlassian.net/browse/STAR-123",
+            currentTitle: "STAR-123 - Jira",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.connectors.map(\.id) == [jiraConnector.id])
+        #expect(scope.excludedSkillNames.contains("Stanford Mail via Apple Mail Agent"))
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("[Jira Agent]:"))
+        #expect(prompt.contains("https://example.atlassian.net"))
+        #expect(prompt.contains("JIRA_PROJECTS: STAR"))
+        #expect(!prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
+        #expect(!prompt.contains("Apple Mail mailbox bridge"))
+    }
 }

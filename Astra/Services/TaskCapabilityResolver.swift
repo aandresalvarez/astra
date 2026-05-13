@@ -105,6 +105,71 @@ struct TaskCapabilityResolver {
         return all.filter { seen.insert($0.id).inserted }
     }
 
+    func promptScope(contextText: String = "") -> TaskCapabilityPromptScope {
+        let connectors = allConnectors
+        let tools = allLocalTools
+        let skills = allBehaviorSkills(connectors: connectors)
+
+        guard Self.shouldPruneForBrowserTask(task: task, contextText: contextText) else {
+            return makePromptScope(
+                skills: skills,
+            connectors: connectors,
+            localTools: tools,
+            prunedForBrowserTask: false,
+            excludedSkillNames: [],
+            contextText: contextText
+        )
+        }
+
+        let searchableText = Self.searchableTaskText(task: task, contextText: contextText)
+        var includedSkills: [Skill] = []
+        var includedSkillIDs = Set<UUID>()
+
+        func includeSkill(_ skill: Skill?) {
+            guard let skill, includedSkillIDs.insert(skill.id).inserted else { return }
+            includedSkills.append(skill)
+        }
+
+        for skill in skills where Self.shouldKeepSkill(skill, taskText: searchableText) {
+            includeSkill(skill)
+        }
+
+        let relevantConnectors = connectors.filter { connector in
+            Self.matchesConnector(connector, taskText: searchableText)
+        }
+        for connector in relevantConnectors {
+            includeSkill(connector.skill)
+        }
+
+        let includedConnectors = connectors.filter { connector in
+            if relevantConnectors.contains(where: { $0.id == connector.id }) {
+                return true
+            }
+            guard let skill = connector.skill else { return false }
+            return includedSkillIDs.contains(skill.id) && Self.matchesConnector(connector, taskText: searchableText)
+        }
+
+        let includedLocalTools = tools.filter { tool in
+            if let skill = tool.skill {
+                return includedSkillIDs.contains(skill.id)
+            }
+            return Self.matchesLocalTool(tool, taskText: searchableText)
+        }
+
+        let excludedNames = skills
+            .filter { !includedSkillIDs.contains($0.id) }
+            .map(\.name)
+
+        return makePromptScope(
+            skills: includedSkills,
+            connectors: includedConnectors,
+            localTools: includedLocalTools,
+            prunedForBrowserTask: true,
+            excludedSkillNames: excludedNames,
+            contextText: contextText
+        )
+    }
+
     private var effectiveSkillSnapshots: [SkillSnapshotConfig] {
         let liveSnapshots = allBehaviorSkills.map(SkillSnapshotConfig.init(skill:))
         guard !task.skillSnapshots.isEmpty else { return liveSnapshots }
@@ -143,4 +208,292 @@ struct TaskCapabilityResolver {
             return !liveNames.contains(snapshot.name.lowercased())
         }
     }
+
+    private func makePromptScope(
+        skills: [Skill],
+        connectors: [Connector],
+        localTools: [LocalTool],
+        prunedForBrowserTask: Bool,
+        excludedSkillNames: [String],
+        contextText: String
+    ) -> TaskCapabilityPromptScope {
+        let skillIDs = Set(skills.map(\.id))
+        let liveSnapshots = skills.map(SkillSnapshotConfig.init(skill:))
+        let liveSnapshotIDs = Set(liveSnapshots.compactMap(\.id))
+        let liveSnapshotNames = Set(liveSnapshots.map { $0.name.lowercased() })
+        let standaloneTools = localTools.filter { $0.skill == nil }
+        let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
+        let liveCLICommands = Set(
+            localTools
+                .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
+                .map(\.command)
+        )
+
+        var detachedSnapshots = task.skillSnapshots.filter { snapshot in
+            if let id = snapshot.id, liveSnapshotIDs.contains(id) {
+                return false
+            }
+            guard !liveSnapshotNames.contains(snapshot.name.lowercased()) else {
+                return false
+            }
+            if !prunedForBrowserTask {
+                return true
+            }
+            return Self.matchesSnapshot(snapshot, taskText: Self.searchableTaskText(task: task, contextText: contextText))
+        }
+
+        if !prunedForBrowserTask {
+            detachedSnapshots = self.detachedSkillSnapshots
+        }
+
+        var liveEnvVars: [String: String] = [:]
+        for skill in skills {
+            for (key, value) in skill.environmentVariables {
+                liveEnvVars[key] = value
+            }
+        }
+
+        var connectorEnvVars: [String: String] = [:]
+        for connector in connectors {
+            for (key, value) in connector.allEnvironmentVariables {
+                connectorEnvVars[key] = value
+            }
+        }
+
+        let resolver = SkillResolver(
+            effectiveSnapshots: liveSnapshots + detachedSnapshots,
+            detachedSnapshots: detachedSnapshots,
+            standaloneToolSnapshots: standaloneSnapshots,
+            liveLocalToolCommands: liveCLICommands,
+            liveSkillEnvVars: liveEnvVars,
+            connectorEnvVars: connectorEnvVars
+        )
+
+        let scopedTools = localTools.filter { tool in
+            guard let skill = tool.skill else { return true }
+            return skillIDs.contains(skill.id)
+        }
+
+        return TaskCapabilityPromptScope(
+            resolver: resolver,
+            behaviorSkills: skills,
+            connectors: connectors,
+            localTools: scopedTools,
+            prunedForBrowserTask: prunedForBrowserTask,
+            excludedSkillNames: excludedSkillNames
+        )
+    }
+
+    private static func shouldPruneForBrowserTask(task: AgentTask, contextText: String) -> Bool {
+        let hasBrowserBridge = !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty
+        guard hasBrowserBridge else { return false }
+        let text = searchableTaskText(task: task, contextText: contextText)
+        return browserIntentTerms.contains { text.contains($0) }
+    }
+
+    private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {
+        if skill.isSystemBuiltIn || !skill.disallowedTools.isEmpty {
+            return true
+        }
+        return matchesSkill(skill, taskText: taskText)
+    }
+
+    private static func matchesSkill(_ skill: Skill, taskText: String) -> Bool {
+        return matchesCapabilityText(
+            [
+                skill.name,
+                skill.skillDescription,
+                skill.behaviorInstructions,
+                skill.environmentKeys.joined(separator: " "),
+                skill.localTools.map { "\($0.name) \($0.command) \($0.toolDescription)" }.joined(separator: " "),
+                skill.connectors.map { "\($0.name) \($0.serviceType) \($0.connectorDescription) \($0.baseURL)" }.joined(separator: " ")
+            ].joined(separator: " "),
+            taskText: taskText
+        )
+    }
+
+    private static func matchesConnector(_ connector: Connector, taskText: String) -> Bool {
+        matchesCapabilityText(
+            [
+                connector.name,
+                connector.serviceType,
+                connector.connectorDescription,
+                connector.baseURL,
+                connector.configKeys.joined(separator: " "),
+                connector.credentialKeys.joined(separator: " ")
+            ].joined(separator: " "),
+            taskText: taskText
+        )
+    }
+
+    private static func matchesLocalTool(_ tool: LocalTool, taskText: String) -> Bool {
+        matchesCapabilityText(
+            [
+                tool.name,
+                tool.command,
+                tool.toolDescription,
+                tool.arguments
+            ].joined(separator: " "),
+            taskText: taskText
+        )
+    }
+
+    private static func matchesSnapshot(_ snapshot: SkillSnapshotConfig, taskText: String) -> Bool {
+        let connectorText = snapshot.connectorSnapshots?
+            .map { connector in
+                [
+                    connector.name,
+                    connector.serviceType,
+                    connector.description,
+                    connector.baseURL
+                ].joined(separator: " ")
+            }
+            .joined(separator: " ") ?? ""
+        let localToolText = snapshot.localToolSnapshots?
+            .map { tool in
+                [
+                    tool.name,
+                    tool.command,
+                    tool.description
+                ].joined(separator: " ")
+            }
+            .joined(separator: " ") ?? ""
+
+        return matchesCapabilityText(
+            [
+                snapshot.name,
+                snapshot.description,
+                snapshot.behaviorInstructions,
+                snapshot.environmentKeys.joined(separator: " "),
+                connectorText,
+                localToolText
+            ].joined(separator: " "),
+            taskText: taskText
+        )
+    }
+
+    private static func matchesCapabilityText(_ capabilityText: String, taskText: String) -> Bool {
+        let capability = normalizedSearchText(capabilityText)
+        guard !capability.isEmpty else { return false }
+        let taskTokens = searchTokens(taskText)
+        guard !taskTokens.isEmpty else { return false }
+        let capabilityTokens = searchTokens(capability)
+        if !taskTokens.isDisjoint(with: capabilityTokens) {
+            return true
+        }
+        return capabilityTokens.contains { token in
+            token.count >= 4 && taskText.contains(token)
+        }
+    }
+
+    private static func searchableTaskText(task: AgentTask, contextText: String) -> String {
+        normalizedSearchText([
+            task.title,
+            task.goal,
+            task.inputs.joined(separator: " "),
+            task.constraints.joined(separator: " "),
+            task.acceptanceCriteria.joined(separator: " "),
+            contextText
+        ].joined(separator: " "))
+    }
+
+    private static func normalizedSearchText(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func searchTokens(_ text: String) -> Set<String> {
+        let normalized = normalizedSearchText(text)
+        var tokens = Set<String>()
+        for token in normalized.split(separator: " ").map(String.init) {
+            guard token.count >= 3, !genericCapabilityTokens.contains(token) else { continue }
+            tokens.insert(token)
+            if token.count > 4, token.hasSuffix("s") {
+                tokens.insert(String(token.dropLast()))
+            }
+        }
+        return tokens
+    }
+
+    private static let browserIntentTerms: [String] = [
+        "browser",
+        "page",
+        "website",
+        "webpage",
+        "web page",
+        "current site",
+        "current tab",
+        "link",
+        "url",
+        "google docs",
+        "google drive",
+        "drive",
+        "document",
+        "doc",
+        "open "
+    ]
+
+    private static let genericCapabilityTokens: Set<String> = [
+        "agent",
+        "api",
+        "app",
+        "browser",
+        "capability",
+        "check",
+        "cloud",
+        "code",
+        "content",
+        "current",
+        "data",
+        "doc",
+        "document",
+        "drive",
+        "file",
+        "files",
+        "for",
+        "from",
+        "get",
+        "google",
+        "inspect",
+        "list",
+        "local",
+        "look",
+        "manage",
+        "open",
+        "page",
+        "project",
+        "query",
+        "read",
+        "resource",
+        "resources",
+        "search",
+        "service",
+        "shared",
+        "show",
+        "summarize",
+        "summary",
+        "task",
+        "the",
+        "this",
+        "tool",
+        "tools",
+        "use",
+        "user",
+        "web",
+        "workflow",
+        "workspace",
+        "write"
+    ]
+}
+
+struct TaskCapabilityPromptScope {
+    let resolver: SkillResolver
+    let behaviorSkills: [Skill]
+    let connectors: [Connector]
+    let localTools: [LocalTool]
+    let prunedForBrowserTask: Bool
+    let excludedSkillNames: [String]
 }

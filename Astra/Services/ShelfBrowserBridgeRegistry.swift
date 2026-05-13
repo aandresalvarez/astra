@@ -132,6 +132,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - For Google Docs/Sheets/Slides text replacement: `astra-browser google-find-replace --find '05/08/2027' --with '05/07/2026'`
         - For Google Docs insertion: `astra-browser google-docs-insert --verify 'A Gentle Morning' --text 'A Gentle Morning\n...'`
         - For Google Docs verification: `astra-browser google-docs-find --query 'A Gentle Morning'`
+        - For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`
         - Combine common steps in one compact turn: `astra-browser act --find 'Replace with' --set '05/07/2026' --click 'Replace all' --wait-saved --verify '05/07/2026'`
         - Click a control: `astra-browser click --selector 'button.primary'`
         - Click by role/name: `astra-browser click --role button --name "Save"`
@@ -146,6 +147,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Never ask the user for passwords, MFA codes, or OAuth secrets. Let the user enter those directly in the browser.
         - Do not send emails, submit tickets/forms, delete data, approve access, make purchases, or commit externally visible changes without explicit user confirmation in the chat.
         - For questions about what is on the current page, start with `astra-browser page --limit 2000`; use controls snapshots only when you need to select, click, or fill a control.
+        - On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots.
         - Prefer `locator` or `/snapshot` before acting, then use selectors, role/name locators, or bounds from the response.
         - When a selector or label is known, prefer `fill`, `set-value`, or `type` instead of click + Cmd+A + text. If a response includes loopWarning, stop repeating the same click/snapshot path and switch strategy.
         - For Google Docs, Sheets, or Slides editing, prefer Controlled mode when available. For Google Docs writing, use `google-docs-insert` instead of manual click + text + Find verification. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Avoid AppleScript/System Events, repeated menu clicks, and synthetic selection shortcuts when snapshots are unchanged.

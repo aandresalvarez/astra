@@ -342,6 +342,23 @@ final class ControlledBrowserController: ObservableObject {
         return try Self.jsonString(["ok": true, "textLength": text.count])
     }
 
+    func showWindow() async {
+        do {
+            let initialURL = ShelfBrowserAddress.normalizedURL(from: currentURL) ?? URL(string: "about:blank")
+            try await ensureLaunched(initialURL: initialURL)
+            try await restoreCurrentPageWindow()
+            try await sendCDPCommand(method: "Page.bringToFront", params: [:])
+            activateRunningBrowser()
+            try await refreshPageMetadata()
+            statusMessage = "\(browserName ?? "Controlled browser") shown"
+            lastErrorMessage = nil
+        } catch {
+            openWindow()
+            statusMessage = "Opened \(browserName ?? "controlled browser")"
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
     func openWindow() {
         let executablePath = process?.executableURL?.path
             ?? ControlledBrowserCandidate.firstAvailable()?.executablePath
@@ -351,6 +368,38 @@ final class ControlledBrowserController: ObservableObject {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         NSWorkspace.shared.open(appURL)
+    }
+
+    private func activateRunningBrowser() {
+        let targetProcessID = processID ?? attachedProcessID ?? process?.processIdentifier
+        guard let targetProcessID,
+              let app = NSRunningApplication(processIdentifier: targetProcessID) else {
+            openWindow()
+            return
+        }
+        app.activate(options: [.activateAllWindows])
+    }
+
+    private func restoreCurrentPageWindow() async throws {
+        let page = try await currentPage()
+        var params: [String: Any] = [:]
+        if let id = page.id {
+            params["targetId"] = id
+        }
+
+        let response = try await sendCDPCommand(method: "Browser.getWindowForTarget", params: params)
+        guard let result = response["result"] as? [String: Any],
+              let windowID = Self.intValue(result["windowId"]) else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+
+        try await sendCDPCommand(
+            method: "Browser.setWindowBounds",
+            params: [
+                "windowId": windowID,
+                "bounds": ["windowState": "normal"]
+            ]
+        )
     }
 
     private func ensureLaunched(initialURL: URL?) async throws {
@@ -800,6 +849,19 @@ final class ControlledBrowserController: ObservableObject {
         return nil
     }
 
+    private nonisolated static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let string = value as? String {
+            return Int(string)
+        }
+        return nil
+    }
+
     private nonisolated static func cdpModifierMask(for modifiers: [String]) -> Int {
         let normalized = Set(modifiers.map { $0.lowercased() })
         var mask = 0
@@ -890,12 +952,14 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     private struct DevToolsPage: Decodable {
+        let id: String?
         let type: String
         let title: String
         let url: String
         let webSocketDebuggerURL: String
 
         enum CodingKeys: String, CodingKey {
+            case id
             case type
             case title
             case url

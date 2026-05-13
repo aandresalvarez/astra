@@ -4,6 +4,7 @@ import ASTRACore
 enum AgentPromptBuilder {
     static func buildPrompt(for task: AgentTask) -> String {
         var parts: [String] = []
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
 
         if let instructions = task.workspace?.instructions,
            !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -45,9 +46,9 @@ enum AgentPromptBuilder {
 
         appendInputs(for: task, to: &parts)
         appendConstraints(for: task, to: &parts)
-        appendSkillInstructions(for: task, to: &parts)
-        appendConnectorContext(for: task, to: &parts)
-        appendToolContext(for: task, to: &parts)
+        appendSkillInstructions(from: capabilityScope, to: &parts)
+        appendConnectorContext(from: capabilityScope, to: &parts)
+        appendToolContext(from: capabilityScope, to: &parts)
         appendShelfBrowserContext(for: task, to: &parts)
         appendDocumentReaderContext(to: &parts)
         if task.resolvedRuntimeID.supportsAstraRunProtocol {
@@ -192,16 +193,16 @@ enum AgentPromptBuilder {
         }
     }
 
-    private static func appendSkillInstructions(for task: AgentTask, to parts: inout [String]) {
-        let behaviorBlock = task.resolvedBehaviorInstructions
+    private static func appendSkillInstructions(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+        let behaviorBlock = capabilityScope.resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
             parts.append("Behavioral Instructions (from Skills):\n\(behaviorBlock)")
         }
     }
 
-    private static func appendConnectorContext(for task: AgentTask, to parts: inout [String]) {
-        let resolvedEnv = task.resolvedEnvironmentVariables
-        let connectorDescriptions = task.allConnectors.map { conn in
+    private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+        let resolvedEnv = capabilityScope.resolver.resolvedEnvironmentVariables
+        let connectorDescriptions = capabilityScope.connectors.map { conn in
             var desc = "[\(conn.name)] \(conn.serviceType) — \(conn.connectorDescription)"
             if !conn.baseURL.isEmpty { desc += "\n  Base URL: \(conn.baseURL)" }
             if !conn.configKeys.isEmpty {
@@ -237,8 +238,8 @@ enum AgentPromptBuilder {
         """)
     }
 
-    private static func appendToolContext(for task: AgentTask, to parts: inout [String]) {
-        let allLocalTools = task.allLocalTools.filter { !$0.command.isEmpty }
+    private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+        let allLocalTools = capabilityScope.localTools.filter { !$0.command.isEmpty }
         let cliTools = allLocalTools.filter { $0.toolType != "mcp" }
         let mcpTools = allLocalTools.filter { $0.toolType == "mcp" }
 
@@ -275,6 +276,7 @@ enum AgentPromptBuilder {
 
     static func buildFreshFollowUpPrompt(message: String, task: AgentTask) -> String {
         var parts: [String] = []
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
 
         parts.append("You are continuing work on a task. Here is the original goal:")
         parts.append("Goal: \(task.goal)")
@@ -320,14 +322,14 @@ enum AgentPromptBuilder {
             }
         }
 
-        let contextLine = buildFollowUpMessage(message: "", task: task)
+        let contextLine = buildFollowUpMessage(message: "", task: task, capabilityScope: capabilityScope)
         if contextLine != "",
            let bracketEnd = contextLine.range(of: "]\n\n") {
             parts.append(String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]))
         }
 
-        let resolvedEnv = task.resolvedEnvironmentVariables
-        let connectorDescs = task.allConnectors.map { conn -> String in
+        let resolvedEnv = capabilityScope.resolver.resolvedEnvironmentVariables
+        let connectorDescs = capabilityScope.connectors.map { conn -> String in
             var desc = "[\(conn.name)] \(conn.serviceType)"
             if !conn.baseURL.isEmpty { desc += " — Base URL: \(conn.baseURL)" }
             let availableKeys = conn.credentialKeys.filter { resolvedEnv[$0] != nil }
@@ -361,6 +363,11 @@ enum AgentPromptBuilder {
     }
 
     static func buildFollowUpMessage(message: String, task: AgentTask) -> String {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
+        return buildFollowUpMessage(message: message, task: task, capabilityScope: capabilityScope)
+    }
+
+    private static func buildFollowUpMessage(message: String, task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> String {
         var contextParts: [String] = []
 
         if let ws = task.workspace {
@@ -379,7 +386,7 @@ enum AgentPromptBuilder {
             }
         }
 
-        let behaviorBlock = task.resolvedBehaviorInstructions
+        let behaviorBlock = capabilityScope.resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
             contextParts.append("Skills: \(String(behaviorBlock.prefix(500)))")
         }

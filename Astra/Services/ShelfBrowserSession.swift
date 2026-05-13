@@ -61,6 +61,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 : nil
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if self.engine == .controlled, self.isAgentBridgeEnabled {
+                    self.presentAgentControlPermissionGuide(source: "engine_switch")
+                }
                 if self.engine == .controlled, let controlledHandoffAddress {
                     await self.openControlledBrowser(initialAddress: controlledHandoffAddress)
                 } else if self.engine == .embedded, let embeddedHandoffAddress {
@@ -86,6 +89,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published var isAgentBridgeEnabled = true {
         didSet { publishBridgeState() }
     }
+    @Published private(set) var isAgentControlPermissionGuideVisible = false
 
     let webView: WKWebView
     let controlledBrowser = ControlledBrowserController()
@@ -145,6 +149,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "google.find.replace",
             "google.docs.find",
             "google.docs.insert",
+            "google.drive.open",
             "act",
             "keypress",
             "text.focused",
@@ -268,7 +273,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func openExternal() {
         if isUsingControlledBrowser {
-            controlledBrowser.openWindow()
+            Task { await controlledBrowser.showWindow() }
         } else if let url = webView.url {
             NSWorkspace.shared.open(url)
         }
@@ -276,6 +281,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func launchControlledBrowser() {
         let initialAddress = Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+        if isAgentBridgeEnabled {
+            presentAgentControlPermissionGuide(source: "launch_controlled_browser")
+        }
         guard engine == .controlled else {
             engine = .controlled
             return
@@ -338,6 +346,84 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         guard let bridgeEndpoint else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(bridgeEndpoint, forType: .string)
+    }
+
+    func setAgentBridgeEnabled(_ isEnabled: Bool, source: String = "ui") {
+        guard isAgentBridgeEnabled != isEnabled else {
+            if isEnabled {
+                presentAgentControlPermissionGuide(source: "\(source)_repeat")
+            }
+            return
+        }
+
+        isAgentBridgeEnabled = isEnabled
+        logAgentControlState(isEnabled: isEnabled, source: source)
+        if isEnabled {
+            presentAgentControlPermissionGuide(source: source)
+        } else {
+            isAgentControlPermissionGuideVisible = false
+        }
+    }
+
+    func presentAgentControlPermissionGuide(source: String) {
+        guard isAgentBridgeEnabled else { return }
+        if !isAgentControlPermissionGuideVisible {
+            isAgentControlPermissionGuideVisible = true
+        }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "action": "agent_control_permission_guide",
+                "phase": "shown",
+                "source": source,
+                "engine": engine.rawValue,
+                "controlled_browser_state": controlledBrowser.runState.rawValue
+            ],
+            level: .info
+        )
+    }
+
+    func dismissAgentControlPermissionGuide(source: String = "user") {
+        guard isAgentControlPermissionGuideVisible else { return }
+        isAgentControlPermissionGuideVisible = false
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "action": "agent_control_permission_guide",
+                "phase": "dismissed",
+                "source": source,
+                "engine": engine.rawValue,
+                "controlled_browser_state": controlledBrowser.runState.rawValue
+            ],
+            level: .info
+        )
+    }
+
+    func openAgentControlPrivacySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AppManagement",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+            "x-apple.systempreferences:com.apple.preference.security"
+        ]
+        let opened = candidates
+            .compactMap(URL.init(string:))
+            .contains { NSWorkspace.shared.open($0) }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "action": "agent_control_privacy_settings",
+                "result": opened ? "opened" : "failed",
+                "engine": engine.rawValue,
+                "controlled_browser_state": controlledBrowser.runState.rawValue
+            ],
+            level: opened ? .info : .warning
+        )
     }
 
     func webView(
@@ -463,6 +549,22 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             category: "Browser",
             taskID: boundTaskID,
             fields: fields,
+            level: .info
+        )
+    }
+
+    private func logAgentControlState(isEnabled: Bool, source: String) {
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "action": "agent_control",
+                "enabled": String(isEnabled),
+                "source": source,
+                "engine": engine.rawValue,
+                "controlled_browser_state": controlledBrowser.runState.rawValue
+            ],
             level: .info
         )
     }
@@ -630,6 +732,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     ],
                     [
                         "method": "POST",
+                        "path": "/googleDriveOpen",
+                        "body": ["name": "Untitled document", "timeoutSeconds": 12],
+                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Prefer this over manual Drive row clicks."
+                    ],
+                    [
+                        "method": "POST",
                         "path": "/act",
                         "body": ["find": "Replace with", "set": "05/07/2026", "click": "Replace all", "waitSaved": true, "verify": "05/07/2026"],
                         "description": "Run a compact multi-step browser action: find and set a control, click a control, wait for save, and verify text."
@@ -792,6 +900,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     text: command.text,
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
+                ))
+            case ("POST", "/googleDriveOpen"):
+                let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
+                return .json(try await googleDriveOpen(
+                    name: command.normalizedName,
+                    timeoutSeconds: command.timeoutSeconds ?? 12,
+                    intervalMilliseconds: command.intervalMilliseconds ?? 500
                 ))
             case ("POST", "/act"):
                 let command = try request.decodeJSON(ActCommand.self)
@@ -1497,6 +1612,238 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
+    private func googleDriveOpen(
+        name: String,
+        timeoutSeconds: Double,
+        intervalMilliseconds: Int
+    ) async throws -> [String: Any] {
+        let started = Date()
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        logBrowserAction(
+            phase: "requested",
+            action: "googleDriveOpen",
+            selector: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil,
+            fields: [
+                "name_length": String(trimmedName.count),
+                "timeout_seconds": String(timeoutSeconds)
+            ]
+        )
+
+        guard !trimmedName.isEmpty else {
+            let result: [String: Any] = [
+                "ok": false,
+                "error": "missing_name"
+            ]
+            logBrowserAction(
+                phase: "completed",
+                action: "googleDriveOpen",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                resultJSON: try Self.jsonString(result),
+                started: started
+            )
+            return result
+        }
+
+        do {
+            if Self.isOpenedDriveTarget(urlString: currentURL, title: pageTitle, name: trimmedName, startURL: nil) {
+                let result: [String: Any] = [
+                    "ok": true,
+                    "opened": true,
+                    "alreadyOpen": true,
+                    "name": trimmedName,
+                    "url": currentURL,
+                    "title": pageTitle,
+                    "elapsedSeconds": Date().timeIntervalSince(started)
+                ]
+                logBrowserAction(
+                    phase: "completed",
+                    action: "googleDriveOpen",
+                    selector: nil,
+                    label: nil,
+                    role: nil,
+                    text: nil,
+                    placeholder: nil,
+                    testID: nil,
+                    resultJSON: try Self.jsonString(result),
+                    started: started
+                )
+                return result
+            }
+
+            let startURL = currentURL
+            let fillResult = try await fillGoogleDriveSearch(with: trimmedName)
+            guard Self.boolValue(fillResult["ok"]) else {
+                let result: [String: Any] = [
+                    "ok": false,
+                    "opened": false,
+                    "error": "drive_search_field_not_found",
+                    "name": trimmedName,
+                    "url": currentURL,
+                    "title": pageTitle,
+                    "elapsedSeconds": Date().timeIntervalSince(started)
+                ]
+                logBrowserAction(
+                    phase: "completed",
+                    action: "googleDriveOpen",
+                    selector: nil,
+                    label: nil,
+                    role: nil,
+                    text: nil,
+                    placeholder: nil,
+                    testID: nil,
+                    resultJSON: try Self.jsonString(result),
+                    started: started
+                )
+                return result
+            }
+
+            _ = try await keypress(key: "Enter", modifiers: [])
+            var result = try await waitForGoogleDriveOpen(
+                name: trimmedName,
+                startURL: startURL,
+                started: started,
+                timeoutSeconds: timeoutSeconds,
+                intervalMilliseconds: intervalMilliseconds
+            )
+            result["searchMethod"] = fillResult["method"] as? String ?? "unknown"
+            logBrowserAction(
+                phase: "completed",
+                action: "googleDriveOpen",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: [
+                    "opened": String(Self.boolValue(result["opened"])),
+                    "search_method": result["searchMethod"] as? String ?? "unknown"
+                ],
+                resultJSON: try Self.jsonString(result),
+                started: started
+            )
+            return result
+        } catch {
+            logBrowserAction(
+                phase: "failed",
+                action: "googleDriveOpen",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                started: started,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    private func fillGoogleDriveSearch(with name: String) async throws -> [String: Any] {
+        struct SearchTarget {
+            let method: String
+            let selector: String?
+            let label: String?
+            let placeholder: String?
+        }
+
+        let targets = [
+            SearchTarget(method: "label", selector: nil, label: "Search in Drive", placeholder: nil),
+            SearchTarget(method: "placeholder", selector: nil, label: nil, placeholder: "Search in Drive"),
+            SearchTarget(method: "selector", selector: #"input[aria-label="Search in Drive"], input[placeholder="Search in Drive"]"#, label: nil, placeholder: nil)
+        ]
+
+        var lastResult: [String: Any] = [
+            "ok": false,
+            "error": "not_attempted"
+        ]
+
+        for target in targets {
+            let json = try await type(
+                selector: target.selector,
+                text: name,
+                clear: true,
+                label: target.label,
+                role: nil,
+                placeholder: target.placeholder,
+                testID: nil
+            )
+            var result = try Self.jsonObject(from: json)
+            result["method"] = target.method
+            lastResult = result
+            if Self.boolValue(result["ok"]) {
+                return result
+            }
+        }
+
+        return lastResult
+    }
+
+    private func waitForGoogleDriveOpen(
+        name: String,
+        startURL: String,
+        started: Date,
+        timeoutSeconds: Double,
+        intervalMilliseconds: Int
+    ) async throws -> [String: Any] {
+        let timeout = max(0.5, min(timeoutSeconds, 30))
+        let interval = UInt64(max(100, min(intervalMilliseconds, 2_000))) * 1_000_000
+        var lastURL = currentURL
+        var lastTitle = pageTitle
+        var lastMatchCount = 0
+        var retriedOpenKey = false
+
+        while Date().timeIntervalSince(started) <= timeout {
+            try await Task.sleep(nanoseconds: interval)
+
+            let json = try await snapshot(mode: .text, query: name, limit: 1_500)
+            let object = try Self.jsonObject(from: json)
+            lastURL = object["url"] as? String ?? currentURL
+            lastTitle = object["title"] as? String ?? pageTitle
+            let matches = object["matches"] as? [[String: Any]] ?? []
+            lastMatchCount = matches.count
+
+            if Self.isOpenedDriveTarget(urlString: lastURL, title: lastTitle, name: name, startURL: startURL) {
+                return [
+                    "ok": true,
+                    "opened": true,
+                    "name": name,
+                    "url": lastURL,
+                    "title": lastTitle,
+                    "matchedName": lastMatchCount > 0 || Self.containsNormalized(lastTitle, name),
+                    "elapsedSeconds": Date().timeIntervalSince(started)
+                ]
+            }
+
+            if !retriedOpenKey, Date().timeIntervalSince(started) >= 2.0 {
+                _ = try? await keypress(key: "Enter", modifiers: [])
+                retriedOpenKey = true
+            }
+        }
+
+        return [
+            "ok": false,
+            "opened": false,
+            "error": "drive_file_not_opened",
+            "name": name,
+            "url": lastURL,
+            "title": lastTitle,
+            "matchedName": lastMatchCount > 0 || Self.containsNormalized(lastTitle, name),
+            "elapsedSeconds": Date().timeIntervalSince(started)
+        ]
+    }
+
     private func findControl(query: String, role: String?, limit: Int) async throws -> [String: Any] {
         let json = try await snapshot(mode: .controls, query: query, limit: max(1, min(limit, 50)))
         let object = try Self.jsonObject(from: json)
@@ -2030,6 +2377,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     waitSaved: action.waitSaved ?? true
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledriveopen", "google-drive-open", "drive-open":
+                guard let name = action.name ?? action.query ?? action.text else {
+                    results.append(["ok": false, "action": action.action, "error": "missing_name"])
+                    continue
+                }
+                let result = try await googleDriveOpen(
+                    name: name,
+                    timeoutSeconds: action.timeoutSeconds ?? 12,
+                    intervalMilliseconds: action.intervalMilliseconds ?? 500
+                )
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "act":
                 let result = try await act(ActCommand(
                     find: action.find ?? action.query,
@@ -2240,6 +2598,37 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return matches
     }
 
+    private static func isOpenedDriveTarget(urlString: String, title: String, name: String, startURL: String?) -> Bool {
+        guard let url = URL(string: urlString),
+              let host = url.host?.lowercased() else {
+            return false
+        }
+        if host == "docs.google.com" {
+            guard url.path.hasPrefix("/document/")
+                || url.path.hasPrefix("/spreadsheets/")
+                || url.path.hasPrefix("/presentation/") else {
+                return false
+            }
+            if let startURL, !startURL.isEmpty, urlString != startURL {
+                return true
+            }
+            return containsNormalized(title, name)
+        }
+        guard host != "drive.google.com" else {
+            return false
+        }
+        if let startURL, !startURL.isEmpty, urlString == startURL {
+            return false
+        }
+        return url.scheme == "https" || url.scheme == "http"
+    }
+
+    private static func containsNormalized(_ text: String, _ query: String) -> Bool {
+        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !normalizedQuery.isEmpty && normalizedText.contains(normalizedQuery)
+    }
+
     private static func googleFindCountText(in text: String) -> String? {
         guard let range = text.range(
             of: #"(?i)\b\d+\s+of\s+\d+\b"#,
@@ -2442,6 +2831,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private struct GoogleDriveOpenCommand: Decodable {
+        let name: String
+        let timeoutSeconds: Double?
+        let intervalMilliseconds: Int?
+
+        var normalizedName: String {
+            name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
     private struct ActCommand: Decodable {
         let find: String?
         let set: String?
@@ -2495,6 +2894,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let x: Double?
         let y: Double?
         let allowDangerous: Bool?
+        let name: String?
         let text: String?
         let find: String?
         let replacement: String?

@@ -66,7 +66,7 @@ struct ShelfBrowserPanelView: View {
 
             Divider()
 
-            Toggle(isOn: $session.isAgentBridgeEnabled) {
+            Toggle(isOn: agentControlOverflowBinding) {
                 Label(
                     "Agent control",
                     systemImage: session.isAgentBridgeEnabled ? "lock.open.fill" : "lock.fill"
@@ -91,6 +91,20 @@ struct ShelfBrowserPanelView: View {
         .buttonStyle(BrowserBarButtonStyle())
         .fixedSize()
         .help("Browser options")
+    }
+
+    private var agentControlOverflowBinding: Binding<Bool> {
+        Binding(
+            get: { session.isAgentBridgeEnabled },
+            set: { session.setAgentBridgeEnabled($0, source: "overflow_menu") }
+        )
+    }
+
+    private var agentControlPanelBinding: Binding<Bool> {
+        Binding(
+            get: { session.isAgentBridgeEnabled },
+            set: { session.setAgentBridgeEnabled($0, source: "controlled_panel") }
+        )
     }
 
     private var toolbar: some View {
@@ -411,6 +425,7 @@ struct ShelfBrowserPanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 controlledBrowserHero
+                controlledAgentControlCard
                 controlledBrowserActions
                 if shouldShowControlledLaunchProgress {
                     controlledLaunchProgress
@@ -489,6 +504,115 @@ struct ShelfBrowserPanelView: View {
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
                 .stroke(controlledBrowserTint.opacity(Stanford.strokeActive), lineWidth: 1)
         )
+    }
+
+    private var controlledAgentControlCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: session.isAgentBridgeEnabled ? "cursorarrow.rays" : "lock.fill")
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(controlledTaskFlowTint)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text("Agent control")
+                            .font(Stanford.caption(13).weight(.semibold))
+                        statusBadge(session.isAgentBridgeEnabled ? "On" : "Off", tint: controlledTaskFlowTint)
+                    }
+                    Text(agentControlCardMessage)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: agentControlPanelBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
+            }
+
+            if session.isAgentControlPermissionGuideVisible {
+                controlledAgentControlPermissionGuide
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(controlledTaskFlowTint.opacity(Stanford.strokeActive), lineWidth: 1)
+        )
+    }
+
+    private var controlledAgentControlPermissionGuide: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "switch.2")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.statusInfo)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Finish macOS permission")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text("If System Settings opened, turn on \(applicationDisplayName) and return here.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    openAppManagementButton
+                    doneWithPermissionButton
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    openAppManagementButton
+                    doneWithPermissionButton
+                }
+            }
+        }
+        .padding(10)
+        .background(Stanford.statusInfo.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                .stroke(Stanford.statusInfo.opacity(Stanford.strokeRest), lineWidth: 1)
+        )
+    }
+
+    private var openAppManagementButton: some View {
+        Button {
+            session.openAgentControlPrivacySettings()
+        } label: {
+            Label("Open App Management", systemImage: "gearshape")
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .buttonStyle(StanfordButtonStyle(isPrimary: false))
+        .controlSize(.small)
+    }
+
+    private var doneWithPermissionButton: some View {
+        Button {
+            session.dismissAgentControlPermissionGuide()
+            Task { await session.refreshControlledBrowserStatus() }
+        } label: {
+            Label("Done", systemImage: "checkmark")
+                .lineLimit(1)
+        }
+        .buttonStyle(StanfordButtonStyle(isPrimary: true))
+        .controlSize(.small)
     }
 
     private var controlledBrowserActions: some View {
@@ -751,7 +875,7 @@ struct ShelfBrowserPanelView: View {
                     .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(hasDisplayablePage ? "Page linked to this task" : "No page linked yet")
+                    Text(hasDisplayablePage ? "Browser context for this task" : "No page linked yet")
                         .font(Stanford.caption(12).weight(.semibold))
                     Text(controlledCurrentPageMessage)
                         .font(Stanford.caption(12))
@@ -943,7 +1067,7 @@ struct ShelfBrowserPanelView: View {
             return session.controlledBrowser.lastErrorMessage ?? session.controlledBrowser.statusMessage
         }
         if session.controlledBrowser.isRunning && session.isAgentBridgeEnabled {
-            return "The current task can read and act on the page shown in Chrome."
+            return "The current task can read and act on the selected Chrome page."
         }
         if session.controlledBrowser.isRunning {
             return "Turn on Agent control when you want the task to read or operate this page."
@@ -982,9 +1106,28 @@ struct ShelfBrowserPanelView: View {
         return session.boundTaskID == nil || session.bridgeEndpoint == nil ? Stanford.statusInfo : Stanford.statusHealthy
     }
 
+    private var agentControlCardMessage: String {
+        guard session.isAgentBridgeEnabled else {
+            return "The page stays visible, but tasks cannot read or operate it."
+        }
+        if session.boundTaskID == nil {
+            return "The next task message will link to this page when it starts."
+        }
+        if session.bridgeEndpoint == nil {
+            return "ASTRA is preparing local browser access for this task."
+        }
+        return "This task can read and act on the current Chrome page."
+    }
+
+    private var applicationDisplayName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "ASTRA"
+    }
+
     private var controlledCurrentPageMessage: String {
         if hasDisplayablePage && session.isAgentBridgeEnabled {
-            return "Questions in this task will use this page as browser context."
+            return "ASTRA can read this page. Use Show Chrome to bring the window forward."
         }
         if hasDisplayablePage {
             return "The page is open in Chrome. Agent control is currently off."

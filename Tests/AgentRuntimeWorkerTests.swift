@@ -395,6 +395,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("astra-browser text"))
         #expect(prompt.contains("astra-browser google-docs-insert"))
         #expect(prompt.contains("astra-browser google-docs-find"))
+        #expect(prompt.contains("astra-browser google-drive-open"))
         #expect(prompt.contains("Do not use osascript"))
     }
 
