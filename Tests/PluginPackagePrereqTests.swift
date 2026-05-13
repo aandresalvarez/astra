@@ -20,6 +20,7 @@ struct PluginPackagePrereqTests {
             skills: [], connectors: [], localTools: [], templates: []
         )
         #expect(pkg.prerequisites.isEmpty)
+        #expect(pkg.browserAdapters.isEmpty)
     }
 
     @Test("Legacy JSON without prerequisites decodes with empty array")
@@ -46,7 +47,31 @@ struct PluginPackagePrereqTests {
         let pkg = try JSONDecoder().decode(PluginPackage.self, from: legacy)
         #expect(pkg.id == "legacy-pkg")
         #expect(pkg.prerequisites.isEmpty)
+        #expect(pkg.browserAdapters.isEmpty)
         #expect(pkg.sourceMetadata == nil)
+    }
+
+    @Test("Encoded JSON round-trips browser adapters")
+    func roundTripWithBrowserAdapters() throws {
+        let pkg = PluginPackage(
+            id: "browser-adapter",
+            name: "Browser Adapter",
+            icon: "globe",
+            description: "d",
+            author: "a",
+            category: "Browser",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive]
+        )
+        let data = try JSONEncoder().encode(pkg)
+        let decoded = try JSONDecoder().decode(PluginPackage.self, from: data)
+        #expect(decoded.browserAdapters == [BrowserSiteAdapterID.googleDrive])
+        #expect(decoded.contentSummary == "1 browser adapter")
     }
 
     @Test("Encoded JSON round-trips with prerequisites preserved")
@@ -95,6 +120,17 @@ struct PluginPackagePrereqTests {
         #expect(gcp?.prerequisites.count == 2)
         #expect(gcp?.prerequisites.first?.binary == "gcloud")
         #expect(gcp?.prerequisites.last?.semantic == .stdoutNonEmpty)
+    }
+
+    @Test("Built-in Google Drive browser package exposes adapter only")
+    func builtInGoogleDriveBrowserHasAdapter() {
+        let drive = PluginCatalog.builtInPackages.first { $0.id == "google-drive-browser" }
+        #expect(drive != nil)
+        #expect(drive?.category == "Browser")
+        #expect(drive?.browserAdapters == [BrowserSiteAdapterID.googleDrive])
+        #expect(drive?.skills.isEmpty == true)
+        #expect(drive?.connectors.isEmpty == true)
+        #expect(drive?.localTools.isEmpty == true)
     }
 
     @Test("Built-in GitHub package is CLI-only and requires gh")

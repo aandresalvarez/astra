@@ -106,24 +106,32 @@ private final class ShelfBrowserSessionStore: ObservableObject {
     private var sharedSession = ShelfBrowserSession()
     private var taskSessions: [UUID: ShelfBrowserSession] = [:]
 
-    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfBrowserSession {
+    func session(for taskID: UUID?, pinnedToTask: Bool, enabledBrowserAdapters: [String] = []) -> ShelfBrowserSession {
         guard pinnedToTask, let taskID else {
             sharedSession.bindToTask(taskID)
+            sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
             return sharedSession
         }
 
         if let session = taskSessions[taskID] {
             session.bindToTask(taskID)
+            session.setEnabledBrowserAdapters(enabledBrowserAdapters)
             return session
         }
 
         let session = ShelfBrowserSession()
         session.bindToTask(taskID)
+        session.setEnabledBrowserAdapters(enabledBrowserAdapters)
         taskSessions[taskID] = session
         return session
     }
 
-    func promoteSharedSession(to taskID: UUID, pinnedToTask: Bool, isPresented: Bool) -> Bool {
+    func promoteSharedSession(
+        to taskID: UUID,
+        pinnedToTask: Bool,
+        isPresented: Bool,
+        enabledBrowserAdapters: [String] = []
+    ) -> Bool {
         guard pinnedToTask,
               taskSessions[taskID] == nil,
               sharedSession.hasDisplayablePage || sharedSession.isLoading else {
@@ -131,6 +139,7 @@ private final class ShelfBrowserSessionStore: ObservableObject {
         }
 
         sharedSession.bindToTask(taskID)
+        sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
         sharedSession.setPresented(isPresented)
         taskSessions[taskID] = sharedSession
         sharedSession = ShelfBrowserSession()
@@ -138,14 +147,23 @@ private final class ShelfBrowserSessionStore: ObservableObject {
         return true
     }
 
-    func setPresented(_ isPresented: Bool, taskID: UUID?, pinnedToTask: Bool) {
+    func setPresented(
+        _ isPresented: Bool,
+        taskID: UUID?,
+        pinnedToTask: Bool,
+        enabledBrowserAdapters: [String] = []
+    ) {
         sharedSession.setPresented(false)
         for session in taskSessions.values {
             session.setPresented(false)
         }
 
         guard isPresented else { return }
-        session(for: taskID, pinnedToTask: pinnedToTask).setPresented(true)
+        session(
+            for: taskID,
+            pinnedToTask: pinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapters
+        ).setPresented(true)
     }
 }
 
@@ -388,7 +406,8 @@ struct ContentView: View {
     private var currentBrowserSession: ShelfBrowserSession {
         browserSessionStore.session(
             for: selectedTask?.id,
-            pinnedToTask: isBrowserPinnedToTask
+            pinnedToTask: isBrowserPinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
         )
     }
 
@@ -397,6 +416,11 @@ struct ContentView: View {
             for: selectedTask?.id,
             pinnedToTask: isMarkdownPinnedToTask
         )
+    }
+
+    private func enabledBrowserAdapterIDs(for task: AgentTask?) -> [String] {
+        guard let task else { return [] }
+        return TaskCapabilityResolver(task: task).enabledBrowserAdapters
     }
 
     private var browserPinnedToTaskBinding: Binding<Bool> {
@@ -1301,7 +1325,8 @@ struct ContentView: View {
         browserSessionStore.setPresented(
             activeWorkspaceCanvasItem == .browser,
             taskID: selectedTask?.id,
-            pinnedToTask: isBrowserPinnedToTask
+            pinnedToTask: isBrowserPinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
         )
     }
 
@@ -1368,7 +1393,8 @@ struct ContentView: View {
         let promoted = browserSessionStore.promoteSharedSession(
             to: task.id,
             pinnedToTask: isBrowserPinnedToTask,
-            isPresented: wasPresented
+            isPresented: wasPresented,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: task)
         )
         guard promoted else { return }
 

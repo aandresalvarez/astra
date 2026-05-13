@@ -53,6 +53,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published var engine: ShelfBrowserEngine = .embedded {
         didSet {
             guard oldValue != engine else { return }
+            browserAnalysisCache.invalidate()
             let controlledHandoffAddress = oldValue == .embedded && engine == .controlled
                 ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
                 : nil
@@ -102,11 +103,21 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var bridgeServer: BrowserBridgeServer?
     private var isPresented = false
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
+    private let browserAnalysisCache = BrowserAnalysisCache()
+    private var enabledBrowserAdapters: Set<String> = []
     private var lastPageFingerprint: String?
     private var lastLoggedURL = ""
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
+    }
+
+    var isGoogleDriveAdapterEnabled: Bool {
+        GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+    }
+
+    var activeBrowserSiteAdapters: [[String: Any]] {
+        [GoogleDriveBrowserAdapter.activeMetadata(pageURL: currentURL, enabledAdapterIDs: enabledBrowserAdapters)].compactMap { $0 }
     }
 
     var isAgentControlPermissionGuideVisible: Bool {
@@ -136,15 +147,22 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     var bridgeCapabilities: [String] {
-        [
+        var capabilities = [
             "health",
             "actions",
+            "analyze",
+            "preflight",
             "snapshot",
             "locator",
             "navigate",
+            "control.id",
+            "analysis.cache",
+            "analysis.preflight",
             "click.selector",
             "click.locator",
             "click.coordinates",
+            "open.control",
+            "double.click",
             "type.selector",
             "fill.locator",
             "set.value",
@@ -156,7 +174,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "google.find.replace",
             "google.docs.find",
             "google.docs.insert",
-            "google.drive.open",
             "act",
             "keypress",
             "text.focused",
@@ -166,6 +183,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "wait.text",
             "wait.selector"
         ]
+        if isGoogleDriveAdapterEnabled {
+            capabilities.append(contentsOf: [
+                "browser.adapter.googleDrive",
+                "google.drive.open"
+            ])
+        }
+        return capabilities
     }
 
     override init() {
@@ -208,6 +232,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         publishBridgeState()
     }
 
+    func setEnabledBrowserAdapters(_ adapterIDs: [String]) {
+        let normalized = BrowserSiteAdapterID.normalizedSet(adapterIDs)
+        guard normalized != enabledBrowserAdapters else { return }
+        enabledBrowserAdapters = normalized
+        browserAnalysisCache.invalidate()
+        publishBridgeState()
+    }
+
     static func isDisplayablePageURL(_ value: String) -> Bool {
         let normalizedURL = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return !normalizedURL.isEmpty && normalizedURL != "about:blank"
@@ -243,6 +275,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func load(_ url: URL, source: String = "app") {
+        browserAnalysisCache.invalidate()
         logNavigation(phase: "requested", source: source, url: url)
         if isUsingControlledBrowser {
             Task { await navigateControlledBrowser(to: url.absoluteString) }
@@ -492,6 +525,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 Task { @MainActor in
                     guard let self else { return }
                     let nextURL = webView.url?.absoluteString ?? ""
+                    if nextURL != self.currentURL {
+                        self.browserAnalysisCache.invalidate()
+                    }
                     self.currentURL = nextURL
                     self.logObservedURLChange(nextURL)
                     self.publishBridgeState()
@@ -550,7 +586,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             backend: engine.bridgeBackendLabel,
             taskID: boundTaskID,
             isPresented: isPresented,
-            isEnabled: isAgentBridgeEnabled
+            isEnabled: isAgentBridgeEnabled,
+            enabledBrowserAdapters: Array(enabledBrowserAdapters).sorted()
         )
     }
 
@@ -654,6 +691,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "controlledBrowserStatus": controlledBrowser.statusMessage,
                 "controlledBrowserProfilePath": controlledBrowser.profilePath,
                 "bridgeEnabled": isAgentBridgeEnabled,
+                "enabledBrowserAdapters": Array(enabledBrowserAdapters).sorted(),
+                "activeSiteAdapters": activeBrowserSiteAdapters,
                 "capabilities": bridgeCapabilities
             ]
             if let debugPort = controlledBrowser.debugPort {
@@ -686,6 +725,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "GET",
                         "path": "/actions",
                         "description": "List supported browser bridge actions."
+                    ],
+                    [
+                        "method": "GET",
+                        "path": "/analyze",
+                        "query": ["query": "optional text", "full": "optional true|false", "limit": "optional number", "debug": "optional true|false"],
+                        "description": "Deterministically scan the current rendered page and return a cached action map with analysisID, controlIDs, valid actions, primary action, expected outcomes, ambiguity hints, risk, confidence, and concise evidence."
+                    ],
+                    [
+                        "method": "POST",
+                        "path": "/preflight",
+                        "body": ["analysisID": "ana_...", "controlID": "ctl_...", "action": "click", "allowDangerous": false],
+                        "description": "Validate a cached control action against the live page without executing it. Mutating controlID actions run this check automatically."
                     ],
                     [
                         "method": "GET",
@@ -769,7 +820,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/googleDriveOpen",
                         "body": ["name": "Untitled document", "timeoutSeconds": 12],
-                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Prefer this over manual Drive row clicks."
+                        "enabled": isGoogleDriveAdapterEnabled,
+                        "adapterID": BrowserSiteAdapterID.googleDrive,
+                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Requires the Google Drive Browser capability."
                     ],
                     [
                         "method": "POST",
@@ -781,7 +834,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/click",
                         "body": ["selector": "button.primary", "label": "Save", "role": "button", "x": 0.5, "y": 0.5, "allowDangerous": false],
-                        "description": "Click a selector, locator, or viewport point after visibility, enabled, viewport, and obstruction checks. Submit/send/delete/payment-style controls require explicit allowDangerous true after user confirmation."
+                        "description": "Click a selector, locator, viewport point, or analyzed controlID after visibility, enabled, viewport, and obstruction checks. Submit/send/delete/payment-style controls require explicit allowDangerous true after user confirmation. controlID responses include outcome fields; ok means the command executed, while goalSatisfied means the expected page outcome was observed."
+                    ],
+                    [
+                        "method": "POST",
+                        "path": "/open",
+                        "body": ["analysisID": "ana_...", "controlID": "ctl_...", "allowDangerous": false],
+                        "description": "Open an analyzed controlID using the control's primary open behavior. Enabled site adapters may provide specialized open behavior."
+                    ],
+                    [
+                        "method": "POST",
+                        "path": "/doubleClick",
+                        "body": ["analysisID": "ana_...", "controlID": "ctl_...", "allowDangerous": false],
+                        "description": "Double-click a selector, locator, point, or analyzed controlID and return outcome fields for controlID usage."
                     ],
                     [
                         "method": "POST",
@@ -818,12 +883,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "path": "/batch",
                         "body": [
                             "actions": [
-                                ["action": "keypress", "key": "h", "modifiers": ["command", "shift"]],
-                                ["action": "set-value", "selector": "#c7", "text": "05/09/2026"]
+                                ["action": "analyze"],
+                                ["action": "set-value", "analysisID": "ana_...", "controlID": "ctl_...", "text": "05/09/2026"]
                             ],
                             "snapshotMode": "summary"
                         ],
-                        "description": "Run multiple browser actions in one bridge request, then optionally return a compact snapshot."
+                        "description": "Run multiple browser actions in one bridge request, including controlID actions. Each mutating controlID step preflights live state, returns outcome fields, and stops on stale, blocked, or dangerous failures."
                     ]
                 ]
             ])
@@ -835,6 +900,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
         do {
             switch (request.method, request.path) {
+            case ("GET", "/analyze"):
+                let query = request.queryValue("query")
+                let full = Self.boolQueryValue(request.queryValue("full")) ?? false
+                let debug = Self.boolQueryValue(request.queryValue("debug")) ?? false
+                let limit = request.queryValue("limit").flatMap(Int.init)
+                return .json(try await analyze(query: query, full: full, limit: limit, debug: debug))
+            case ("POST", "/preflight"):
+                let command = try request.decodeJSON(BrowserPreflightCommand.self)
+                return .json(try await preflightResponse(command))
             case ("GET", "/snapshot"):
                 let mode = SnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
                 let query = request.queryValue("query")
@@ -850,7 +924,94 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .json(["ok": true, "url": url.absoluteString])
             case ("POST", "/click"):
                 let command = try request.decodeJSON(ClickCommand.self)
+                if command.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: BrowserActionKind.click.rawValue,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await click(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: command.allowDangerous ?? false,
+                        label: nil,
+                        role: nil,
+                        text: nil,
+                        placeholder: nil,
+                        testID: nil
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    object["summary"] = "Clicked \(browserControlDescription(control))."
+                    return .json(object)
+                }
                 let json = try await click(
+                    selector: command.normalizedSelector,
+                    x: command.x,
+                    y: command.y,
+                    allowDangerous: command.allowDangerous ?? false,
+                    label: command.normalizedLabel,
+                    role: command.normalizedRole,
+                    text: command.normalizedText,
+                    placeholder: command.normalizedPlaceholder,
+                    testID: command.normalizedTestID
+                )
+                return .rawJSON(json)
+            case ("POST", "/open"):
+                let command = try request.decodeJSON(ClickCommand.self)
+                guard command.hasAnalysisControl else {
+                    return .json(["ok": false, "error": "missing_analysis_or_control"])
+                }
+                let resolved = try await resolvePreflight(
+                    analysisID: command.analysisID,
+                    controlID: command.controlID,
+                    action: BrowserActionKind.open.rawValue,
+                    allowDangerous: command.allowDangerous ?? false
+                )
+                guard resolved.ok, let control = resolved.currentControl else {
+                    return .json(resolved.response)
+                }
+                var object = try await openControl(
+                    control,
+                    allowDangerous: command.allowDangerous ?? false
+                )
+                object["preflight"] = resolved.response
+                return .json(object)
+            case ("POST", "/doubleClick"):
+                let command = try request.decodeJSON(ClickCommand.self)
+                if command.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: BrowserActionKind.doubleClick.rawValue,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await doubleClick(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .doubleClick, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    object["summary"] = "Double-clicked \(browserControlDescription(control))."
+                    return .json(object)
+                }
+                let json = try await doubleClick(
                     selector: command.normalizedSelector,
                     x: command.x,
                     y: command.y,
@@ -864,6 +1025,34 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .rawJSON(json)
             case ("POST", "/type"), ("POST", "/fill"):
                 let command = try request.decodeJSON(TypeCommand.self)
+                if command.hasAnalysisControl {
+                    let action = request.path == "/type" ? BrowserActionKind.fill.rawValue : BrowserActionKind.fill.rawValue
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: action,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await type(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        text: command.text,
+                        clear: command.clear ?? true,
+                        label: control.selector.isEmpty ? control.label : nil,
+                        role: control.selector.isEmpty ? control.role : nil,
+                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
+                        testID: control.selector.isEmpty ? control.testID : nil
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .fill, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    object["summary"] = "Filled \(browserControlDescription(control))."
+                    return .json(object)
+                }
                 let json = try await type(
                     selector: command.normalizedSelector,
                     text: command.text,
@@ -876,6 +1065,33 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .rawJSON(json)
             case ("POST", "/setValue"):
                 let command = try request.decodeJSON(TypeCommand.self)
+                if command.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: BrowserActionKind.setValue.rawValue,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await type(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        text: command.text,
+                        clear: true,
+                        label: control.selector.isEmpty ? control.label : nil,
+                        role: control.selector.isEmpty ? control.role : nil,
+                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
+                        testID: control.selector.isEmpty ? control.testID : nil
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .setValue, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    object["summary"] = "Set \(browserControlDescription(control))."
+                    return .json(object)
+                }
                 let json = try await type(
                     selector: command.normalizedSelector,
                     text: command.text,
@@ -888,12 +1104,37 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .rawJSON(json)
             case ("POST", "/replaceText"):
                 let command = try request.decodeJSON(ReplaceTextCommand.self)
+                var selector = command.normalizedSelector
+                var preflight: [String: Any]?
+                var matchedControl: BrowserControl?
+                if command.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: BrowserActionKind.setValue.rawValue,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    selector = control.selector.isEmpty ? selector : control.selector
+                    preflight = resolved.response
+                    matchedControl = control
+                }
+                let before = command.hasAnalysisControl ? (try? await rawSnapshotObject()) : nil
                 let json = try await replaceText(
                     find: command.find,
                     replacement: command.replacement,
-                    selector: command.normalizedSelector,
+                    selector: selector,
                     all: command.all ?? true
                 )
+                if let preflight {
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .setValue, control: matchedControl, before: before, after: after)
+                    object["preflight"] = preflight
+                    return .json(object)
+                }
                 return .rawJSON(json)
             case ("GET", "/findControl"), ("GET", "/locator"):
                 let query = request.queryValue("query") ?? ""
@@ -902,8 +1143,35 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .json(try await findControl(query: query, role: role, limit: limit))
             case ("POST", "/clickControl"):
                 let command = try request.decodeJSON(ClickControlCommand.self)
+                if command.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: command.analysisID,
+                        controlID: command.controlID,
+                        action: BrowserActionKind.click.rawValue,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        return .json(resolved.response)
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await click(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: command.allowDangerous ?? false
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    object["summary"] = "Clicked \(browserControlDescription(control))."
+                    return .json(object)
+                }
+                guard let label = command.normalizedLabel else {
+                    return .json(["ok": false, "error": "missing_label"])
+                }
                 return .json(try await clickControl(
-                    label: command.label,
+                    label: label,
                     role: command.role,
                     allowDangerous: command.allowDangerous ?? false
                 ))
@@ -986,17 +1254,24 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private func rawSnapshotJSON() async throws -> String {
+        if isUsingControlledBrowser {
+            let json = try await controlledBrowser.snapshot()
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+            return json
+        }
+        return try await evaluateJavaScriptString(BrowserAutomationScripts.snapshotScript)
+    }
+
+    private func rawSnapshotObject() async throws -> [String: Any] {
+        try Self.jsonObject(from: try await rawSnapshotJSON())
+    }
+
     private func snapshot(mode: SnapshotMode = .full, query: String? = nil, limit: Int? = nil) async throws -> String {
         let started = Date()
         do {
-            let json: String
-            if isUsingControlledBrowser {
-                json = try await controlledBrowser.snapshot()
-                syncDisplayedStateForEngine()
-                publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.snapshotScript)
-            }
+            let json = try await rawSnapshotJSON()
 
             let result: String
             if mode == .full && (query ?? "").isEmpty && limit == nil {
@@ -1029,6 +1304,416 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 error: error
             )
             throw error
+        }
+    }
+
+    private func analyze(query: String?, full: Bool, limit: Int?, debug: Bool) async throws -> [String: Any] {
+        let started = Date()
+        let snapshot = try await rawSnapshotObject()
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: snapshot,
+            backend: engine.bridgeBackendLabel,
+            engine: engine.rawValue,
+            enabledBrowserAdapters: Array(enabledBrowserAdapters)
+        )
+        browserAnalysisCache.store(analysis)
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "phase": "completed",
+                "action": "analyze",
+                "analysis_id": analysis.analysisID,
+                "fingerprint": analysis.fingerprint.value,
+                "page_type": analysis.pageType,
+                "control_count": String(analysis.controls.count),
+                "browser_adapter_ids": enabledBrowserAdapters.isEmpty ? "none" : Array(enabledBrowserAdapters).sorted().joined(separator: ","),
+                "has_query": String(query?.isEmpty == false),
+                "full": String(full),
+                "elapsed_ms": String(Int(Date().timeIntervalSince(started) * 1000))
+            ],
+            level: .info
+        )
+        return analysis.responseObject(query: query, full: full, limit: limit, debug: debug)
+    }
+
+    private func preflightResponse(_ command: BrowserPreflightCommand) async throws -> [String: Any] {
+        let started = Date()
+        let result = try await resolvePreflight(
+            analysisID: command.analysisID,
+            controlID: command.controlID,
+            action: command.action,
+            allowDangerous: command.allowDangerous ?? false
+        )
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "phase": "completed",
+                "action": "preflight",
+                "analysis_id_length": String(command.analysisID?.count ?? 0),
+                "control_id_length": String(command.controlID?.count ?? 0),
+                "preflight_action": command.action,
+                "ok": String(Self.boolValue(result.response["ok"])),
+                "error": result.response["error"] as? String ?? "",
+                "risk": result.response["risk"] as? String ?? "",
+                "elapsed_ms": String(Int(Date().timeIntervalSince(started) * 1000))
+            ],
+            level: Self.boolValue(result.response["ok"]) ? .info : .warning
+        )
+        return result.response
+    }
+
+    private func resolvePreflight(
+        analysisID: String?,
+        controlID: String?,
+        action: String,
+        allowDangerous: Bool
+    ) async throws -> BrowserPreflightExecution {
+        guard let analysisID = Self.normalized(analysisID),
+              let controlID = Self.normalized(controlID) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: nil,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "missing_analysis_or_control",
+                    analysisID: analysisID ?? "",
+                    controlID: controlID ?? "",
+                    action: action,
+                    summary: "Preflight requires analysisID and controlID."
+                )
+            )
+        }
+        guard let actionKind = BrowserActionKind.normalized(action) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: nil,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "unsupported_action",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: action,
+                    summary: "The requested browser action is not supported by controlID preflight."
+                )
+            )
+        }
+        guard let cachedAnalysis = browserAnalysisCache.lookup(analysisID),
+              let cachedControl = cachedAnalysis.control(id: controlID) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: nil,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "stale_analysis",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The cached browser analysis is no longer available. Run astra-browser analyze again."
+                )
+            )
+        }
+        guard cachedAnalysis.isFresh() else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "stale_analysis",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The cached browser analysis expired. Run astra-browser analyze again.",
+                    cachedControl: cachedControl
+                )
+            )
+        }
+
+        let liveSnapshot = try await rawSnapshotObject()
+        let liveAnalysis = BrowserAnalysisBuilder.build(
+            snapshot: liveSnapshot,
+            backend: engine.bridgeBackendLabel,
+            engine: engine.rawValue,
+            analysisID: "live_\(cachedAnalysis.analysisID)",
+            enabledBrowserAdapters: Array(enabledBrowserAdapters)
+        )
+        guard BrowserAnalysisBuilder.fingerprintsCompatible(cachedAnalysis.fingerprint, liveAnalysis.fingerprint) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "stale_analysis",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The page structure changed since analysis. Run astra-browser analyze again.",
+                    cachedControl: cachedControl,
+                    checks: [
+                        ["name": "analysisFresh", "status": "passed"],
+                        ["name": "fingerprintCompatible", "status": "failed", "expected": cachedAnalysis.fingerprint.value, "actual": liveAnalysis.fingerprint.value]
+                    ]
+                )
+            )
+        }
+
+        guard let currentControl = matchingLiveControl(for: cachedControl, in: liveAnalysis) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: nil,
+                response: preflightFailure(
+                    code: "control_changed",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The analyzed control is no longer present on the live page.",
+                    cachedControl: cachedControl
+                )
+            )
+        }
+
+        guard currentControl.supports(actionKind) else {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: currentControl,
+                response: preflightFailure(
+                    code: "unsupported_action",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The live control does not support \(actionKind.rawValue).",
+                    cachedControl: cachedControl,
+                    currentControl: currentControl
+                )
+            )
+        }
+
+        if [.fill, .setValue, .insertText].contains(actionKind), currentControl.risk == .credentialInput {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: currentControl,
+                response: preflightFailure(
+                    code: "credential_input_blocked",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
+                    cachedControl: cachedControl,
+                    currentControl: currentControl
+                )
+            )
+        }
+
+        if [.fill, .setValue, .insertText].contains(actionKind), currentControl.risk == .mfaInput {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: currentControl,
+                response: preflightFailure(
+                    code: "mfa_input_blocked",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser.",
+                    cachedControl: cachedControl,
+                    currentControl: currentControl
+                )
+            )
+        }
+
+        if currentControl.requiresUserConfirmation && !allowDangerous {
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: currentControl,
+                response: preflightFailure(
+                    code: "dangerous_confirmation_required",
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "This \(currentControl.risk.rawValue) action requires explicit user confirmation before execution.",
+                    cachedControl: cachedControl,
+                    currentControl: currentControl
+                )
+            )
+        }
+
+        let targetJSON = try await targetInfo(for: currentControl, allowDangerous: true)
+        let target = try Self.jsonObject(from: targetJSON)
+        guard Self.boolValue(target["ok"]) else {
+            let code = target["error"] as? String ?? "target_not_actionable"
+            return BrowserPreflightExecution(
+                ok: false,
+                cachedControl: cachedControl,
+                currentControl: currentControl,
+                response: preflightFailure(
+                    code: code,
+                    analysisID: analysisID,
+                    controlID: controlID,
+                    action: actionKind.rawValue,
+                    summary: "The live target failed actionability preflight: \(code).",
+                    cachedControl: cachedControl,
+                    currentControl: currentControl,
+                    checks: [
+                        ["name": "analysisFresh", "status": "passed"],
+                        ["name": "fingerprintCompatible", "status": "passed"],
+                        ["name": "targetActionable", "status": "failed", "error": code]
+                    ]
+                )
+            )
+        }
+
+        let response: [String: Any] = [
+            "ok": true,
+            "analysisID": analysisID,
+            "controlID": controlID,
+            "action": actionKind.rawValue,
+            "matched": true,
+            "risk": currentControl.risk.rawValue,
+            "requiresUserConfirmation": currentControl.requiresUserConfirmation,
+            "matchedControl": currentControl.jsonObject(debug: false),
+            "checks": [
+                ["name": "analysisFresh", "status": "passed"],
+                ["name": "fingerprintCompatible", "status": "passed"],
+                ["name": "controlResolved", "status": "passed"],
+                ["name": "actionSupported", "status": "passed"],
+                ["name": "visible", "status": "passed"],
+                ["name": "enabled", "status": "passed"],
+                ["name": "unobscured", "status": "passed"]
+            ],
+            "summary": "Ready to \(actionKind.rawValue) \(browserControlDescription(currentControl))."
+        ]
+        return BrowserPreflightExecution(
+            ok: true,
+            cachedControl: cachedControl,
+            currentControl: currentControl,
+            response: response
+        )
+    }
+
+    private func matchingLiveControl(for cachedControl: BrowserControl, in liveAnalysis: BrowserAnalysis) -> BrowserControl? {
+        if let exact = liveAnalysis.control(id: cachedControl.controlID) {
+            return exact
+        }
+        if let identity = liveAnalysis.controls.first(where: { $0.identityHash == cachedControl.identityHash }) {
+            return identity
+        }
+        if !cachedControl.selector.isEmpty,
+           let selector = liveAnalysis.controls.first(where: {
+               $0.selector == cachedControl.selector
+                   && ($0.label == cachedControl.label || cachedControl.label.isEmpty || $0.label.isEmpty)
+                   && ($0.role == cachedControl.role || cachedControl.role.isEmpty || $0.role.isEmpty)
+           }) {
+            return selector
+        }
+        return nil
+    }
+
+    private func targetInfo(for control: BrowserControl, allowDangerous: Bool) async throws -> String {
+        let bounds = control.bounds
+        let x = control.selector.isEmpty ? Self.doubleValue(bounds["centerX"]) : nil
+        let y = control.selector.isEmpty ? Self.doubleValue(bounds["centerY"]) : nil
+        if isUsingControlledBrowser {
+            return try await controlledBrowser.targetInfo(
+                selector: control.selector.isEmpty ? nil : control.selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: control.label.isEmpty ? nil : control.label,
+                role: control.role.isEmpty ? nil : control.role,
+                text: nil,
+                placeholder: control.placeholder.isEmpty ? nil : control.placeholder,
+                testID: control.testID.isEmpty ? nil : control.testID
+            )
+        }
+        return try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
+            selector: control.selector.isEmpty ? nil : control.selector,
+            x: x,
+            y: y,
+            allowDangerous: allowDangerous,
+            label: control.label.isEmpty ? nil : control.label,
+            role: control.role.isEmpty ? nil : control.role,
+            text: nil,
+            placeholder: control.placeholder.isEmpty ? nil : control.placeholder,
+            testID: control.testID.isEmpty ? nil : control.testID
+        ))
+    }
+
+    private func preflightFailure(
+        code: String,
+        analysisID: String,
+        controlID: String,
+        action: String,
+        summary: String,
+        cachedControl: BrowserControl? = nil,
+        currentControl: BrowserControl? = nil,
+        checks: [[String: Any]] = []
+    ) -> [String: Any] {
+        var response: [String: Any] = [
+            "ok": false,
+            "error": code,
+            "analysisID": analysisID,
+            "controlID": controlID,
+            "action": action,
+            "summary": summary,
+            "checks": checks
+        ]
+        if let cachedControl {
+            response["cachedControl"] = cachedControl.jsonObject(debug: false)
+        }
+        if let currentControl {
+            response["matchedControl"] = currentControl.jsonObject(debug: false)
+        }
+        return response
+    }
+
+    private func browserControlDescription(_ control: BrowserControl) -> String {
+        let label = control.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty {
+            return "\(control.role.isEmpty ? control.tag : control.role) \"\(label)\""
+        }
+        return control.role.isEmpty ? control.tag : control.role
+    }
+
+    private func snapshotAfterActionDelay() async -> [String: Any]? {
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        return try? await rawSnapshotObject()
+    }
+
+    private func addOutcomeFields(
+        to object: inout [String: Any],
+        action: BrowserActionKind,
+        control: BrowserControl?,
+        before: [String: Any]?,
+        after: [String: Any]?
+    ) {
+        let outcome = BrowserActionOutcomeVerifier.outcome(
+            action: action,
+            control: control,
+            result: object,
+            before: before,
+            after: after,
+            enabledBrowserAdapters: Array(enabledBrowserAdapters)
+        )
+        object["outcome"] = outcome
+        for key in [
+            "executed",
+            "expectedOutcome",
+            "observedOutcome",
+            "goalSatisfied",
+            "outcomeVerified",
+            "outcomeReason",
+            "suggestedNextActions"
+        ] {
+            if let value = outcome[key] {
+                object[key] = value
+            }
         }
     }
 
@@ -1142,6 +1827,168 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             throw error
         }
+    }
+
+    private func doubleClick(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        text: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) async throws -> String {
+        let started = Date()
+        let action = "doubleClick"
+        logBrowserAction(
+            phase: "requested",
+            action: action,
+            selector: selector,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID,
+            fields: [
+                "has_point": String(x != nil && y != nil),
+                "allow_dangerous": String(allowDangerous)
+            ]
+        )
+
+        do {
+            if !isUsingControlledBrowser {
+                _ = try await waitForEmbeddedActionableTarget(
+                    selector: selector,
+                    x: x,
+                    y: y,
+                    allowDangerous: allowDangerous,
+                    label: label,
+                    role: role,
+                    text: text,
+                    placeholder: placeholder,
+                    testID: testID
+                )
+            }
+
+            let json: String
+            if isUsingControlledBrowser {
+                json = try await controlledBrowser.doubleClick(
+                    selector: selector,
+                    x: x,
+                    y: y,
+                    allowDangerous: allowDangerous,
+                    label: label,
+                    role: role,
+                    text: text,
+                    placeholder: placeholder,
+                    testID: testID
+                )
+                syncDisplayedStateForEngine()
+                publishBridgeState()
+            } else {
+                json = try await evaluateJavaScriptString(BrowserAutomationScripts.doubleClickScript(
+                    selector: selector,
+                    x: x,
+                    y: y,
+                    allowDangerous: allowDangerous,
+                    label: label,
+                    role: role,
+                    text: text,
+                    placeholder: placeholder,
+                    testID: testID
+                ))
+            }
+
+            let annotated = try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+                selector: selector,
+                x: x,
+                y: y,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            ))
+            logBrowserAction(
+                phase: "completed",
+                action: action,
+                selector: selector,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID,
+                resultJSON: annotated,
+                started: started
+            )
+            return annotated
+        } catch {
+            logBrowserAction(
+                phase: "failed",
+                action: action,
+                selector: selector,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID,
+                started: started,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    private func openControl(
+        _ control: BrowserControl,
+        allowDangerous: Bool,
+        timeoutSeconds: Double = 12,
+        intervalMilliseconds: Int = 500
+    ) async throws -> [String: Any] {
+        let before = try? await rawSnapshotObject()
+        let pageURL = (before?["url"] as? String) ?? currentURL
+        var object: [String: Any]
+
+        if isGoogleDriveAdapterEnabled, GoogleDriveBrowserAdapter.isFileControl(
+            pageURL: pageURL,
+            selector: control.selector,
+            label: control.label,
+            name: control.name,
+            role: control.role,
+            tag: control.tag,
+            href: control.href
+        ) {
+            let nameHintSource = control.label.isEmpty ? control.name : control.label
+            let nameHint = GoogleDriveBrowserAdapter.nameHint(from: nameHintSource)
+            object = try await googleDriveOpen(
+                name: nameHint.isEmpty ? nameHintSource : nameHint,
+                timeoutSeconds: timeoutSeconds,
+                intervalMilliseconds: intervalMilliseconds
+            )
+        } else if !control.href.isEmpty, let url = ShelfBrowserAddress.normalizedURL(from: control.href) {
+            load(url, source: "bridge_open_control")
+            object = [
+                "ok": true,
+                "opened": true,
+                "url": url.absoluteString
+            ]
+        } else {
+            let json = try await doubleClick(
+                selector: control.selector.isEmpty ? nil : control.selector,
+                x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                allowDangerous: allowDangerous
+            )
+            object = try Self.jsonObject(from: json)
+        }
+
+        let after = await snapshotAfterActionDelay()
+        addOutcomeFields(to: &object, action: .open, control: control, before: before, after: after)
+        object["matchedControl"] = control.jsonObject(debug: false)
+        object["summary"] = "Opened \(browserControlDescription(control))."
+        return object
     }
 
     private func type(
@@ -1647,6 +2494,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
+    private func browserAdapterDisabledResponse(adapterID: String, action: String) -> [String: Any] {
+        [
+            "ok": false,
+            "error": "browser_adapter_disabled",
+            "adapterID": adapterID,
+            "action": action,
+            "enabledBrowserAdapters": Array(enabledBrowserAdapters).sorted(),
+            "capabilities": bridgeCapabilities,
+            "summary": "Enable the matching browser capability for this workspace before using this site-specific action."
+        ]
+    }
+
     private func googleDriveOpen(
         name: String,
         timeoutSeconds: Double,
@@ -1668,6 +2527,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "timeout_seconds": String(timeoutSeconds)
             ]
         )
+
+        guard isGoogleDriveAdapterEnabled else {
+            let result = browserAdapterDisabledResponse(
+                adapterID: BrowserSiteAdapterID.googleDrive,
+                action: "googleDriveOpen"
+            )
+            logBrowserAction(
+                phase: "completed",
+                action: "googleDriveOpen",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                resultJSON: try Self.jsonString(result),
+                started: started
+            )
+            return result
+        }
 
         guard !trimmedName.isEmpty else {
             let result: [String: Any] = [
@@ -2235,7 +3114,39 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
 
-        if let find = command.find, let set = command.set {
+        let setAnalysisID = command.setAnalysisID ?? command.analysisID
+        let setControlID = command.setControlID ?? command.controlID
+        if let set = command.set,
+           Self.normalized(setAnalysisID) != nil,
+           Self.normalized(setControlID) != nil {
+            let resolved = try await resolvePreflight(
+                analysisID: setAnalysisID,
+                controlID: setControlID,
+                action: BrowserActionKind.setValue.rawValue,
+                allowDangerous: command.allowDangerous ?? false
+            )
+            guard resolved.ok, let control = resolved.currentControl else {
+                results.append(resolved.response.merging(["action": "set"], uniquingKeysWith: { current, _ in current }))
+                return ["ok": false, "results": results]
+            }
+            let before = try? await rawSnapshotObject()
+            let json = try await type(
+                selector: control.selector.isEmpty ? nil : control.selector,
+                text: set,
+                clear: true,
+                label: control.selector.isEmpty ? control.label : nil,
+                role: control.selector.isEmpty ? control.role : nil,
+                placeholder: control.selector.isEmpty ? control.placeholder : nil,
+                testID: control.selector.isEmpty ? control.testID : nil
+            )
+            var object = try Self.jsonObject(from: json)
+            let after = await snapshotAfterActionDelay()
+            addOutcomeFields(to: &object, action: .setValue, control: control, before: before, after: after)
+            object["action"] = "set"
+            object["matchedControl"] = control.jsonObject(debug: false)
+            object["preflight"] = resolved.response
+            results.append(object)
+        } else if let find = command.find, let set = command.set {
             let matches = try await findControl(query: find, role: command.role, limit: 8)
             let controls = matches["controls"] as? [[String: Any]] ?? []
             let editable = controls.first { control in
@@ -2254,7 +3165,35 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ], uniquingKeysWith: { current, _ in current }))
         }
 
-        if let click = command.click {
+        let clickAnalysisID = command.clickAnalysisID ?? command.analysisID
+        let clickControlID = command.clickControlID ?? command.controlID
+        if Self.normalized(clickAnalysisID) != nil,
+           Self.normalized(clickControlID) != nil {
+            let resolved = try await resolvePreflight(
+                analysisID: clickAnalysisID,
+                controlID: clickControlID,
+                action: BrowserActionKind.click.rawValue,
+                allowDangerous: command.allowDangerous ?? false
+            )
+            guard resolved.ok, let control = resolved.currentControl else {
+                results.append(resolved.response.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
+                return ["ok": false, "results": results]
+            }
+            let before = try? await rawSnapshotObject()
+            let json = try await click(
+                selector: control.selector.isEmpty ? nil : control.selector,
+                x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                allowDangerous: command.allowDangerous ?? false
+            )
+            var object = try Self.jsonObject(from: json)
+            let after = await snapshotAfterActionDelay()
+            addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
+            object["action"] = "click"
+            object["matchedControl"] = control.jsonObject(debug: false)
+            object["preflight"] = resolved.response
+            results.append(object)
+        } else if let click = command.click {
             let result = try await clickControl(
                 label: click,
                 role: command.clickRole,
@@ -2289,8 +3228,34 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func runBatch(_ command: BatchCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
-        for action in command.actions.prefix(20) {
+        var stopReason: String?
+        batchLoop: for action in command.actions.prefix(20) {
             switch action.normalizedAction {
+            case "analyze":
+                let result = try await analyze(
+                    query: action.query,
+                    full: action.full ?? (action.mode?.lowercased() == "full"),
+                    limit: action.limit,
+                    debug: action.debug ?? false
+                )
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "preflight":
+                guard action.hasAnalysisControl else {
+                    results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
+                    stopReason = "missing_analysis_or_control"
+                    break batchLoop
+                }
+                let result = try await preflightResponse(BrowserPreflightCommand(
+                    analysisID: action.analysisID,
+                    controlID: action.controlID,
+                    action: action.preflightAction ?? action.action,
+                    allowDangerous: action.allowDangerous
+                ))
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                if !Self.boolValue(result["ok"]) {
+                    stopReason = result["error"] as? String ?? "preflight_failed"
+                    break batchLoop
+                }
             case "navigate":
                 guard let urlText = action.url,
                       let url = ShelfBrowserAddress.normalizedURL(from: urlText) else {
@@ -2300,61 +3265,236 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 load(url, source: "bridge_batch")
                 results.append(["ok": true, "action": action.action, "url": url.absoluteString])
             case "click":
-                let json = try await click(
-                    selector: action.normalizedSelector,
-                    x: action.x,
-                    y: action.y,
-                    allowDangerous: action.allowDangerous ?? false,
-                    label: action.normalizedLabel,
-                    role: action.normalizedRole,
-                    text: action.text,
-                    placeholder: action.normalizedPlaceholder,
-                    testID: action.normalizedTestID
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: BrowserActionKind.click.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await click(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                } else {
+                    let json = try await click(
+                        selector: action.normalizedSelector,
+                        x: action.x,
+                        y: action.y,
+                        allowDangerous: action.allowDangerous ?? false,
+                        label: action.normalizedLabel,
+                        role: action.normalizedRole,
+                        text: action.text,
+                        placeholder: action.normalizedPlaceholder,
+                        testID: action.normalizedTestID
+                    )
+                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                }
+            case "open":
+                guard action.hasAnalysisControl else {
+                    results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
+                    stopReason = "missing_analysis_or_control"
+                    break batchLoop
+                }
+                let resolved = try await resolvePreflight(
+                    analysisID: action.analysisID,
+                    controlID: action.controlID,
+                    action: BrowserActionKind.open.rawValue,
+                    allowDangerous: action.allowDangerous ?? false
                 )
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                guard resolved.ok, let control = resolved.currentControl else {
+                    results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                    break batchLoop
+                }
+                var object = try await openControl(
+                    control,
+                    allowDangerous: action.allowDangerous ?? false,
+                    timeoutSeconds: action.timeoutSeconds ?? 12,
+                    intervalMilliseconds: action.intervalMilliseconds ?? 500
+                )
+                object["preflight"] = resolved.response
+                results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "doubleclick", "double-click", "double_click":
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: BrowserActionKind.doubleClick.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await doubleClick(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .doubleClick, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                } else {
+                    let json = try await doubleClick(
+                        selector: action.normalizedSelector,
+                        x: action.x,
+                        y: action.y,
+                        allowDangerous: action.allowDangerous ?? false,
+                        label: action.normalizedLabel,
+                        role: action.normalizedRole,
+                        text: action.text,
+                        placeholder: action.normalizedPlaceholder,
+                        testID: action.normalizedTestID
+                    )
+                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                }
             case "type":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
                 }
-                let json = try await type(
-                    selector: action.normalizedSelector,
-                    text: text,
-                    clear: action.clear ?? true,
-                    label: action.normalizedLabel,
-                    role: action.normalizedRole,
-                    placeholder: action.normalizedPlaceholder,
-                    testID: action.normalizedTestID
-                )
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: BrowserActionKind.fill.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await type(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        text: text,
+                        clear: action.clear ?? true,
+                        label: control.selector.isEmpty ? control.label : nil,
+                        role: control.selector.isEmpty ? control.role : nil,
+                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
+                        testID: control.selector.isEmpty ? control.testID : nil
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .fill, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                } else {
+                    let json = try await type(
+                        selector: action.normalizedSelector,
+                        text: text,
+                        clear: action.clear ?? true,
+                        label: action.normalizedLabel,
+                        role: action.normalizedRole,
+                        placeholder: action.normalizedPlaceholder,
+                        testID: action.normalizedTestID
+                    )
+                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                }
             case "setvalue", "set-value", "fill":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
                 }
-                let json = try await type(
-                    selector: action.normalizedSelector,
-                    text: text,
-                    clear: true,
-                    label: action.normalizedLabel,
-                    role: action.normalizedRole,
-                    placeholder: action.normalizedPlaceholder,
-                    testID: action.normalizedTestID
-                )
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: action.normalizedAction == "fill" ? BrowserActionKind.fill.rawValue : BrowserActionKind.setValue.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    let browserAction = action.normalizedAction == "fill" ? BrowserActionKind.fill : BrowserActionKind.setValue
+                    let before = try? await rawSnapshotObject()
+                    let json = try await type(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        text: text,
+                        clear: true,
+                        label: control.selector.isEmpty ? control.label : nil,
+                        role: control.selector.isEmpty ? control.role : nil,
+                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
+                        testID: control.selector.isEmpty ? control.testID : nil
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: browserAction, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                } else {
+                    let json = try await type(
+                        selector: action.normalizedSelector,
+                        text: text,
+                        clear: true,
+                        label: action.normalizedLabel,
+                        role: action.normalizedRole,
+                        placeholder: action.normalizedPlaceholder,
+                        testID: action.normalizedTestID
+                    )
+                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                }
             case "replacetext", "replace-text":
                 guard let find = action.find,
                       let replacement = action.replacement ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_find_or_replacement"])
                     continue
                 }
+                var selector = action.normalizedSelector
+                var preflight: [String: Any]?
+                var matchedControl: BrowserControl?
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: BrowserActionKind.setValue.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    selector = control.selector.isEmpty ? selector : control.selector
+                    preflight = resolved.response
+                    matchedControl = control
+                }
+                let before = matchedControl == nil ? nil : (try? await rawSnapshotObject())
                 let json = try await replaceText(
                     find: find,
                     replacement: replacement,
-                    selector: action.normalizedSelector,
+                    selector: selector,
                     all: action.all ?? true
                 )
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                var object = try Self.jsonObject(from: json)
+                if let preflight {
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .setValue, control: matchedControl, before: before, after: after)
+                    object["preflight"] = preflight
+                }
+                results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "findcontrol", "find-control":
                 let result = try await findControl(
                     query: action.query ?? action.label ?? "",
@@ -2363,6 +3503,32 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "clickcontrol", "click-control":
+                if action.hasAnalysisControl {
+                    let resolved = try await resolvePreflight(
+                        analysisID: action.analysisID,
+                        controlID: action.controlID,
+                        action: BrowserActionKind.click.rawValue,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    guard resolved.ok, let control = resolved.currentControl else {
+                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
+                        break batchLoop
+                    }
+                    let before = try? await rawSnapshotObject()
+                    let json = try await click(
+                        selector: control.selector.isEmpty ? nil : control.selector,
+                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
+                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        allowDangerous: action.allowDangerous ?? false
+                    )
+                    var object = try Self.jsonObject(from: json)
+                    let after = await snapshotAfterActionDelay()
+                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
+                    object["preflight"] = resolved.response
+                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    break
+                }
                 guard let label = action.label ?? action.query else {
                     results.append(["ok": false, "action": action.action, "error": "missing_label"])
                     continue
@@ -2425,6 +3591,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "act":
                 let result = try await act(ActCommand(
+                    analysisID: action.analysisID,
+                    controlID: action.controlID,
+                    setAnalysisID: nil,
+                    setControlID: nil,
+                    clickAnalysisID: nil,
+                    clickControlID: nil,
                     find: action.find ?? action.query,
                     set: action.set ?? action.text,
                     role: action.role,
@@ -2487,9 +3659,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         var response: [String: Any] = [
-            "ok": results.allSatisfy { Self.boolValue($0["ok"]) },
+            "ok": stopReason == nil && results.allSatisfy { Self.boolValue($0["ok"]) },
             "results": results
         ]
+        if let stopReason {
+            response["stopped"] = true
+            response["stopReason"] = stopReason
+        }
         if let snapshotMode = command.snapshotMode {
             let snapshotJSON = try await snapshot(
                 mode: SnapshotMode(rawValue: snapshotMode) ?? .summary,
@@ -2768,6 +3944,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return nil
     }
 
+    private static func boolQueryValue(_ value: String?) -> Bool? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else {
+            return nil
+        }
+        if ["1", "true", "yes", "y"].contains(value) { return true }
+        if ["0", "false", "no", "n"].contains(value) { return false }
+        return nil
+    }
+
     private enum SnapshotMode: String {
         case full
         case summary
@@ -2780,6 +3966,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private struct ClickCommand: Decodable {
+        let analysisID: String?
+        let controlID: String?
         let selector: String?
         let label: String?
         let role: String?
@@ -2800,9 +3988,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         var normalizedText: String? { ShelfBrowserSession.normalized(text) }
         var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
         var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
+        var hasAnalysisControl: Bool {
+            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
+        }
     }
 
     private struct TypeCommand: Decodable {
+        let analysisID: String?
+        let controlID: String?
         let selector: String?
         let text: String
         let clear: Bool?
@@ -2810,29 +4003,63 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let role: String?
         let placeholder: String?
         let testID: String?
+        let allowDangerous: Bool?
 
         var normalizedSelector: String? { ShelfBrowserSession.normalized(selector) }
         var normalizedLabel: String? { ShelfBrowserSession.normalized(label) }
         var normalizedRole: String? { ShelfBrowserSession.normalized(role) }
         var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
         var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
+        var hasAnalysisControl: Bool {
+            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
+        }
     }
 
     private struct ReplaceTextCommand: Decodable {
+        let analysisID: String?
+        let controlID: String?
         let find: String
         let replacement: String
         let selector: String?
         let all: Bool?
+        let allowDangerous: Bool?
 
         var normalizedSelector: String? {
             ShelfBrowserSession.normalized(selector)
         }
+        var hasAnalysisControl: Bool {
+            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
+        }
     }
 
     private struct ClickControlCommand: Decodable {
-        let label: String
+        let analysisID: String?
+        let controlID: String?
+        let label: String?
         let role: String?
         let allowDangerous: Bool?
+
+        var normalizedLabel: String? {
+            ShelfBrowserSession.normalized(label)
+        }
+
+        var hasAnalysisControl: Bool {
+            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
+        }
+    }
+
+    private struct BrowserPreflightCommand: Decodable {
+        let analysisID: String?
+        let controlID: String?
+        let action: String
+        let allowDangerous: Bool?
+    }
+
+    private struct BrowserPreflightExecution {
+        let ok: Bool
+        let cachedControl: BrowserControl?
+        let currentControl: BrowserControl?
+        let response: [String: Any]
     }
 
     private struct VerifyTextCommand: Decodable {
@@ -2877,6 +4104,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private struct ActCommand: Decodable {
+        let analysisID: String?
+        let controlID: String?
+        let setAnalysisID: String?
+        let setControlID: String?
+        let clickAnalysisID: String?
+        let clickControlID: String?
         let find: String?
         let set: String?
         let role: String?
@@ -2920,6 +4153,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private struct BatchActionCommand: Decodable {
         let action: String
+        let analysisID: String?
+        let controlID: String?
         let url: String?
         let selector: String?
         let label: String?
@@ -2950,6 +4185,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let query: String?
         let limit: Int?
         let closeFindBar: Bool?
+        let full: Bool?
+        let debug: Bool?
+        let preflightAction: String?
 
         var normalizedAction: String {
             action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2963,6 +4201,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         var normalizedRole: String? { ShelfBrowserSession.normalized(role) }
         var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
         var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
+        var hasAnalysisControl: Bool {
+            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
+        }
     }
 
     nonisolated private static func normalized(_ value: String?) -> String? {

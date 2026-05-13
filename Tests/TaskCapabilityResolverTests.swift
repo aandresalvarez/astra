@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 private func makeTaskCapabilityResolverContainer() throws -> ModelContainer {
     let schema = ASTRASchema.current
@@ -196,7 +197,7 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("astra-browser google-drive-open"))
+        #expect(!prompt.contains("astra-browser google-drive-open"))
         #expect(!prompt.contains("[GCloud Agent]:"))
         #expect(!prompt.contains("GCloud must inspect projects"))
         #expect(!prompt.contains("Available CLI/Script Tools"))
@@ -204,6 +205,61 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
         #expect(!prompt.contains("Apple Mail mailbox bridge"))
         #expect(!prompt.contains("GCP_PROJECT"))
+    }
+
+    @Test("Browser prompt exposes enabled site adapter commands")
+    func browserPromptExposesEnabledSiteAdapterCommands() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Drive Browser Workspace", primaryPath: "/tmp/drive-browser-workspace")
+        workspace.enabledCapabilityIDs = ["google-drive-browser"]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Open Drive file",
+            goal: "Open the Drive file named Untitled document",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let adapters = TaskCapabilityResolver.enabledBrowserAdapters(
+            for: workspace,
+            packages: [
+                PluginPackage(
+                    id: "google-drive-browser",
+                    name: "Google Drive Browser",
+                    icon: "folder",
+                    description: "Drive browser adapter",
+                    author: "ASTRA",
+                    category: "Browser",
+                    tags: [],
+                    version: "1.0.0",
+                    skills: [],
+                    connectors: [],
+                    localTools: [],
+                    templates: [],
+                    browserAdapters: [BrowserSiteAdapterID.googleDrive]
+                )
+            ]
+        )
+        #expect(adapters == [BrowserSiteAdapterID.googleDrive])
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://drive.google.com/drive/home",
+            currentTitle: "Google Drive",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true,
+            enabledBrowserAdapters: adapters
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
+        #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
+        #expect(prompt?.contains("astra-browser google-drive-open") == true)
     }
 
     @Test("Browser task prompt keeps capability referenced by the user goal")

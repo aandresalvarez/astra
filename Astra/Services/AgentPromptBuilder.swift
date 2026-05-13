@@ -49,7 +49,7 @@ enum AgentPromptBuilder {
         appendSkillInstructions(from: capabilityScope, to: &parts)
         appendConnectorContext(from: capabilityScope, to: &parts)
         appendToolContext(from: capabilityScope, to: &parts)
-        appendShelfBrowserContext(for: task, to: &parts)
+        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
         appendDocumentReaderContext(to: &parts)
         if task.resolvedRuntimeID.supportsAstraRunProtocol {
             appendAstraRunProtocolInstructions(to: &parts)
@@ -269,8 +269,16 @@ enum AgentPromptBuilder {
         """)
     }
 
-    private static func appendShelfBrowserContext(for task: AgentTask, to parts: inout [String]) {
-        guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id) else { return }
+    private static func appendShelfBrowserContext(
+        for task: AgentTask,
+        enabledBrowserAdapters: [String],
+        to parts: inout [String]
+    ) {
+        let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
+        guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
+            for: task.id,
+            enabledBrowserAdapters: override
+        ) else { return }
         parts.append(browserContext)
     }
 
@@ -342,7 +350,7 @@ enum AgentPromptBuilder {
             parts.append("Available Connectors (use these URLs, NOT any URLs from prior conversation):\n" + connectorDescs.joined(separator: "\n") + "\n\nIMPORTANT: Use Bash with curl to call APIs using env var credentials. Do NOT use WebFetch for authenticated APIs.")
         }
 
-        appendShelfBrowserContext(for: task, to: &parts)
+        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
 
         if let memories = task.workspace?.memories, !memories.isEmpty {
             let memoriesBlock = """

@@ -201,6 +201,45 @@ enum BrowserAutomationScripts {
         """
     }
 
+    static func doubleClickScript(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String? = nil,
+        role: String? = nil,
+        text: String? = nil,
+        placeholder: String? = nil,
+        testID: String? = nil
+    ) -> String {
+        """
+        (() => {
+          \(targetResolutionPrelude(selector: selector, x: x, y: y, allowDangerous: allowDangerous, label: label, role: role, text: text, placeholder: placeholder, testID: testID))
+          const target = resolveTarget();
+          if (!target.ok) return JSON.stringify(publicTarget(target));
+          const el = target.el;
+          const point = target.point;
+          try { el.focus({ preventScroll: true }); } catch (_) { try { el.focus(); } catch (_) {} }
+          const base = { bubbles: true, cancelable: true, view: window, clientX: point.x, clientY: point.y, button: 0, buttons: 1 };
+          const dispatchMouse = (name, detail) => {
+            const init = Object.assign({}, base, { detail });
+            el.dispatchEvent(new MouseEvent(name, init));
+          };
+          for (const name of ["pointerover", "pointermove", "mouseover"]) dispatchMouse(name, 0);
+          for (const detail of [1, 2]) {
+            for (const name of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) dispatchMouse(name, detail);
+          }
+          dispatchMouse("dblclick", 2);
+          const result = publicTarget(target);
+          result.ok = true;
+          result.clicked = true;
+          result.doubleClicked = true;
+          result.url = location.href;
+          return JSON.stringify(result);
+        })()
+        """
+    }
+
     static func clickTargetScript(
         selector: String?,
         x: Double?,

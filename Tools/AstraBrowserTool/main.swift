@@ -28,6 +28,35 @@ struct AstraBrowserTool {
         case "actions":
             let endpoint = try browserEndpoint()
             return try await request(endpoint: endpoint, method: "GET", path: "/actions")
+        case "analyze", "analyse":
+            let endpoint = try browserEndpoint()
+            var items: [URLQueryItem] = []
+            if args.contains("--full") {
+                items.append(URLQueryItem(name: "full", value: "true"))
+            }
+            if args.contains("--debug") {
+                items.append(URLQueryItem(name: "debug", value: "true"))
+            }
+            if let limit = args.value(after: "--limit") {
+                items.append(URLQueryItem(name: "limit", value: limit))
+            }
+            if let query = args.value(after: "--query") ?? args.value(after: "--label") ?? args.value(after: "--text") ?? args.remainingText() {
+                items.append(URLQueryItem(name: "query", value: query))
+            }
+            return try await request(endpoint: endpoint, method: "GET", path: "/analyze", queryItems: items)
+        case "preflight":
+            let endpoint = try browserEndpoint()
+            guard let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id"),
+                  let controlID = args.value(after: "--control") ?? args.value(after: "--control-id") else {
+                throw ToolError("preflight requires --analysis and --control")
+            }
+            let action = args.value(after: "--action") ?? args.value(after: "--kind") ?? "click"
+            return try await request(endpoint: endpoint, method: "POST", path: "/preflight", object: [
+                "analysisID": analysisID,
+                "controlID": controlID,
+                "action": action,
+                "allowDangerous": args.contains("--dangerous")
+            ])
         case "snapshot":
             let endpoint = try browserEndpoint()
             let mode = args.value(after: "--mode") ?? "summary"
@@ -59,8 +88,48 @@ struct AstraBrowserTool {
                 throw ToolError("navigate requires a URL or search phrase")
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/navigate", object: ["url": url])
+        case "open":
+            let endpoint = try browserEndpoint()
+            guard let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id"),
+                  let controlID = args.value(after: "--control") ?? args.value(after: "--control-id") else {
+                throw ToolError("open requires --analysis and --control")
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/open", object: [
+                "analysisID": analysisID,
+                "controlID": controlID,
+                "allowDangerous": args.contains("--dangerous")
+            ])
+        case "double-click", "doubleclick", "double_click":
+            let endpoint = try browserEndpoint()
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
+            let selector = args.value(after: "--selector")
+            let label = args.value(after: "--label") ?? args.value(after: "--name")
+            let role = args.value(after: "--role")
+            let text = args.value(after: "--text")
+            let placeholder = args.value(after: "--placeholder")
+            let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
+            let x = args.value(after: "--x").flatMap(Double.init)
+            let y = args.value(after: "--y").flatMap(Double.init)
+            guard (analysisID != nil && controlID != nil) || selector != nil || label != nil || role != nil || placeholder != nil || testID != nil || (x != nil && y != nil) else {
+                throw ToolError("double-click requires --analysis/--control, --selector, --label, --role, --placeholder, --testid, or --x/--y")
+            }
+            var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
+            if let selector { object["selector"] = selector }
+            if let label { object["label"] = label }
+            if let role { object["role"] = role }
+            if let text { object["text"] = text }
+            if let placeholder { object["placeholder"] = placeholder }
+            if let testID { object["testID"] = testID }
+            if let x { object["x"] = x }
+            if let y { object["y"] = y }
+            return try await request(endpoint: endpoint, method: "POST", path: "/doubleClick", object: object)
         case "click":
             let endpoint = try browserEndpoint()
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
             let selector = args.value(after: "--selector")
             let label = args.value(after: "--label") ?? args.value(after: "--name")
             let role = args.value(after: "--role")
@@ -70,6 +139,8 @@ struct AstraBrowserTool {
             let x = args.value(after: "--x").flatMap(Double.init)
             let y = args.value(after: "--y").flatMap(Double.init)
             var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
             if let label { object["label"] = label }
             if let role { object["role"] = role }
@@ -81,6 +152,8 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/click", object: object)
         case "type", "fill":
             let endpoint = try browserEndpoint()
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
             let selector = args.value(after: "--selector")
             let label = args.value(after: "--label") ?? args.value(after: "--name")
             let role = args.value(after: "--role")
@@ -89,13 +162,16 @@ struct AstraBrowserTool {
             guard let text = args.value(after: "--text") ?? args.remainingText() else {
                 throw ToolError("\(command) requires --text")
             }
-            guard selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
-                throw ToolError("\(command) requires --selector, --label, --role, --placeholder, or --testid")
+            guard (analysisID != nil && controlID != nil) || selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
+                throw ToolError("\(command) requires --analysis/--control, --selector, --label, --role, --placeholder, or --testid")
             }
             var object: [String: Any] = [
                 "text": text,
-                "clear": !args.contains("--append")
+                "clear": !args.contains("--append"),
+                "allowDangerous": args.contains("--dangerous")
             ]
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
             if let label { object["label"] = label }
             if let role { object["role"] = role }
@@ -104,6 +180,8 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: command.lowercased() == "fill" ? "/fill" : "/type", object: object)
         case "set-value", "setvalue":
             let endpoint = try browserEndpoint()
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
             let selector = args.value(after: "--selector")
             let label = args.value(after: "--label") ?? args.value(after: "--name")
             let role = args.value(after: "--role")
@@ -112,10 +190,15 @@ struct AstraBrowserTool {
             guard let text = args.value(after: "--text") ?? args.remainingText() else {
                 throw ToolError("set-value requires --text")
             }
-            guard selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
-                throw ToolError("set-value requires --selector, --label, --role, --placeholder, or --testid")
+            guard (analysisID != nil && controlID != nil) || selector != nil || label != nil || role != nil || placeholder != nil || testID != nil else {
+                throw ToolError("set-value requires --analysis/--control, --selector, --label, --role, --placeholder, or --testid")
             }
-            var object: [String: Any] = ["text": text]
+            var object: [String: Any] = [
+                "text": text,
+                "allowDangerous": args.contains("--dangerous")
+            ]
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
             if let label { object["label"] = label }
             if let role { object["role"] = role }
@@ -124,6 +207,8 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/setValue", object: object)
         case "replace-text", "replacetext":
             let endpoint = try browserEndpoint()
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
             guard let find = args.value(after: "--find") ?? args.value(after: "--old"),
                   let replacement = args.value(after: "--with") ?? args.value(after: "--replacement") ?? args.value(after: "--text") else {
                 throw ToolError("replace-text requires --find and --with")
@@ -131,8 +216,11 @@ struct AstraBrowserTool {
             var object: [String: Any] = [
                 "find": find,
                 "replacement": replacement,
-                "all": !args.contains("--first")
+                "all": !args.contains("--first"),
+                "allowDangerous": args.contains("--dangerous")
             ]
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
             if let selector = args.value(after: "--selector") {
                 object["selector"] = selector
             }
@@ -159,13 +247,18 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "GET", path: command.lowercased() == "locator" ? "/locator" : "/findControl", queryItems: items)
         case "click-control", "clickcontrol":
             let endpoint = try browserEndpoint()
-            guard let label = args.value(after: "--label") ?? args.value(after: "--query") ?? args.remainingText() else {
-                throw ToolError("click-control requires --label or label text")
+            let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id")
+            let controlID = args.value(after: "--control") ?? args.value(after: "--control-id")
+            let label = args.value(after: "--label") ?? args.value(after: "--query") ?? args.remainingText()
+            guard label != nil || (analysisID != nil && controlID != nil) else {
+                throw ToolError("click-control requires --label or --analysis/--control")
             }
             var object: [String: Any] = [
-                "label": label,
                 "allowDangerous": args.contains("--dangerous")
             ]
+            if let label { object["label"] = label }
+            if let analysisID { object["analysisID"] = analysisID }
+            if let controlID { object["controlID"] = controlID }
             if let role = args.value(after: "--role") {
                 object["role"] = role
             }
@@ -236,6 +329,24 @@ struct AstraBrowserTool {
         case "act":
             let endpoint = try browserEndpoint()
             var object: [String: Any] = [:]
+            if let analysisID = args.value(after: "--analysis") ?? args.value(after: "--analysis-id") {
+                object["analysisID"] = analysisID
+            }
+            if let controlID = args.value(after: "--control") ?? args.value(after: "--control-id") {
+                object["controlID"] = controlID
+            }
+            if let analysisID = args.value(after: "--set-analysis") ?? args.value(after: "--set-analysis-id") {
+                object["setAnalysisID"] = analysisID
+            }
+            if let controlID = args.value(after: "--set-control") ?? args.value(after: "--set-control-id") {
+                object["setControlID"] = controlID
+            }
+            if let analysisID = args.value(after: "--click-analysis") ?? args.value(after: "--click-analysis-id") {
+                object["clickAnalysisID"] = analysisID
+            }
+            if let controlID = args.value(after: "--click-control") ?? args.value(after: "--click-control-id") {
+                object["clickControlID"] = controlID
+            }
             if let find = args.value(after: "--find") {
                 object["find"] = find
             }
@@ -369,13 +480,20 @@ struct AstraBrowserTool {
                 "ok": true,
                 "usage": [
                 "astra-browser health",
+                "astra-browser analyze [--query text] [--full] [--debug] [--limit n]",
+                "astra-browser preflight --analysis ana_... --control ctl_... --action click",
                 "astra-browser page [--query text] [--limit n]",
                 "astra-browser snapshot --mode summary|text|controls|full [--query text] [--limit n]",
                 "astra-browser locator --role button --name Save",
+                "astra-browser open --analysis ana_... --control ctl_...",
+                "astra-browser double-click --analysis ana_... --control ctl_...",
+                "astra-browser click --analysis ana_... --control ctl_...",
                 "astra-browser click --selector '#id'",
                 "astra-browser click --role button --name Save",
                 "astra-browser click --x 0.5 --y 0.5",
+                "astra-browser fill --analysis ana_... --control ctl_... --text 'user@example.com'",
                 "astra-browser fill --label Email --text 'user@example.com'",
+                "astra-browser set-value --analysis ana_... --control ctl_... --text 'replacement text'",
                 "astra-browser set-value --selector '#field' --text 'replacement text'",
                 "astra-browser replace-text --find 'old text' --with 'new text' [--selector '#field']",
                 "astra-browser find-control --label 'Replace all'",
@@ -385,7 +503,7 @@ struct AstraBrowserTool {
                 "astra-browser google-find-replace --find 'old text' --with 'new text'",
                 "astra-browser google-docs-find --query 'unique phrase'",
                 "astra-browser google-docs-insert --verify 'unique phrase' --text 'content to insert'",
-                "astra-browser google-drive-open --name 'Untitled document'",
+                "astra-browser google-drive-open --name 'Untitled document'  # requires Google Drive Browser capability",
                 "astra-browser act --find 'Replace with' --set 'new text' --click 'Replace all' --wait-saved --verify 'new text'",
                 "astra-browser keypress --key h --mod command --mod shift",
                 "astra-browser text 'replacement text'",
