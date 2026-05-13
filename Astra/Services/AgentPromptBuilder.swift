@@ -2,6 +2,15 @@ import Foundation
 import ASTRACore
 
 enum AgentPromptBuilder {
+    private static let recentSessionOutputFileLimit = 6
+    private static let recentSessionFullOutputFileLimit = 4
+    private static let recentSessionFullOutputMaxCharacters = 8_000
+    private static let olderSessionOutputMaxCharacters = 2_000
+    private static let fallbackRunResponseLimit = 8
+    private static let fallbackRecentRunResponseLimit = 3
+    private static let fallbackRecentRunResponseMaxCharacters = 8_000
+    private static let fallbackOlderRunResponseMaxCharacters = 1_500
+
     static func buildPrompt(for task: AgentTask) -> String {
         var parts: [String] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
@@ -290,29 +299,36 @@ enum AgentPromptBuilder {
         parts.append("Goal: \(task.goal)")
 
         let folder = task.taskFolder
+        var includedExactSessionTranscript = false
         if !folder.isEmpty {
-            let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
-            if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
-                let trimmed = String(history.suffix(4000))
-                parts.append("Session History (prior turns):\n\(trimmed)")
+            if let transcript = buildRecentConversationTranscript(for: task) {
+                parts.append("Recent conversation transcript (exact recent turns from this task):\n\(transcript)")
+                includedExactSessionTranscript = true
+            } else {
+                let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+                if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
+                    let trimmed = recentSessionHistorySummary(from: history)
+                    parts.append("Session History (prior turns):\n\(trimmed)")
+                }
             }
         }
 
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
-        if !sortedRuns.isEmpty {
+        let sortedRuns = followUpContextRuns(for: task)
+        if !includedExactSessionTranscript, !sortedRuns.isEmpty {
             var answersBlock = "Previous responses (your final answers from each turn):"
             for (i, run) in sortedRuns.enumerated() where !run.output.isEmpty {
                 let turnLabel = "Turn \(i + 1)"
-                let maxLen = (i == sortedRuns.count - 1) ? 3000 : 1000
-                let snippet = run.output.count > maxLen
-                    ? String(run.output.suffix(maxLen))
-                    : run.output
+                let recentIndex = sortedRuns.count - i
+                let maxLen = recentIndex <= fallbackRecentRunResponseLimit
+                    ? fallbackRecentRunResponseMaxCharacters
+                    : fallbackOlderRunResponseMaxCharacters
+                let snippet = boundedText(run.output, maxCharacters: maxLen, keeping: .suffix)
                 answersBlock += "\n\n--- \(turnLabel) ---\n\(snippet)"
             }
             parts.append(answersBlock)
         }
 
-        let allChanges = task.runs.flatMap { $0.fileChanges }
+        let allChanges = sortedRuns.flatMap { $0.fileChanges }
         if !allChanges.isEmpty {
             let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
             let changeList = uniquePaths.map { path -> String in
@@ -368,6 +384,92 @@ enum AgentPromptBuilder {
         parts.append("User's follow-up request:\n\(message)")
 
         return parts.joined(separator: "\n\n")
+    }
+
+    static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
+        let folder = task.taskFolder
+        guard !folder.isEmpty else { return nil }
+        return recentSessionOutputTranscript(taskFolder: folder)
+    }
+
+    private enum TextBound {
+        case prefix
+        case suffix
+    }
+
+    private static func recentSessionOutputTranscript(taskFolder: String) -> String? {
+        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: outputDirectory),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        let turnFiles = urls
+            .filter { url in
+                let name = url.lastPathComponent
+                return name.hasPrefix("turn_") && name.hasSuffix(".md")
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .suffix(recentSessionOutputFileLimit)
+
+        guard !turnFiles.isEmpty else { return nil }
+
+        let sections = turnFiles.enumerated().compactMap { offset, url -> String? in
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            let recentIndex = turnFiles.count - offset
+            let maxCharacters = recentIndex <= recentSessionFullOutputFileLimit
+                ? recentSessionFullOutputMaxCharacters
+                : olderSessionOutputMaxCharacters
+            let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
+            return "--- \(url.lastPathComponent) ---\n\(excerpt)"
+        }
+
+        guard !sections.isEmpty else { return nil }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private static func recentSessionHistorySummary(from history: String) -> String {
+        let marker = "\n## Turn "
+        let pieces = history.components(separatedBy: marker)
+        guard pieces.count > 1 else {
+            return boundedText(history, maxCharacters: 4_000, keeping: .suffix)
+        }
+
+        let header = pieces[0]
+        let recentTurns = pieces.dropFirst().suffix(recentSessionOutputFileLimit).map { "## Turn " + $0 }
+        let summary = ([header] + recentTurns).joined(separator: "\n")
+        return boundedText(summary, maxCharacters: 8_000, keeping: .suffix)
+    }
+
+    private static func followUpContextRuns(for task: AgentTask) -> [TaskRun] {
+        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        guard !sortedRuns.isEmpty else { return [] }
+
+        let activeRuns: [TaskRun]
+        if task.forkedFromID != nil,
+           task.forkedAtRunIndex > 0,
+           task.forkedAtRunIndex < sortedRuns.count {
+            activeRuns = Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
+        } else {
+            activeRuns = sortedRuns
+        }
+
+        let runsWithOutput = activeRuns.filter { !$0.output.isEmpty }
+        return Array(runsWithOutput.suffix(fallbackRunResponseLimit))
+    }
+
+    private static func boundedText(_ text: String, maxCharacters: Int, keeping bound: TextBound) -> String {
+        guard text.count > maxCharacters else { return text }
+        switch bound {
+        case .prefix:
+            return String(text.prefix(maxCharacters)) + "\n... (truncated)"
+        case .suffix:
+            return "... (truncated)\n" + String(text.suffix(maxCharacters))
+        }
     }
 
     static func buildFollowUpMessage(message: String, task: AgentTask) -> String {

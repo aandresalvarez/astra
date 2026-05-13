@@ -740,27 +740,86 @@ struct TaskMainView: View {
     /// Snapshot the conversation at routine creation time.
     /// Captures user messages and agent responses chronologically.
     private var scheduleConversationContext: String {
-        var lines: [String] = []
+        if let exactContext = exactRecentTaskConversationContext() {
+            return exactContext
+        }
 
-        for item in currentThreadSnapshot.conversationItems {
+        return snapshotConversationContext(includePlanningAndSystem: true)
+    }
+
+    private func exactRecentTaskConversationContext(
+        includePlanningAndSystem: Bool = true
+    ) -> String? {
+        guard let transcript = AgentPromptBuilder.buildRecentConversationTranscript(for: task) else {
+            return nil
+        }
+
+        var sections = [
+            "Current task goal:\n\(task.goal)",
+            "Recent task conversation transcript:\n\(transcript)"
+        ]
+
+        if includePlanningAndSystem {
+            let supplemental = supplementalPlanningAndSystemContext()
+            if !supplemental.isEmpty {
+                sections.append("Recent planning and system context:\n\(supplemental)")
+            }
+        }
+
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func supplementalPlanningAndSystemContext() -> String {
+        currentThreadSnapshot.conversationItems.compactMap { item in
+            switch item {
+            case .planUserMessage(let text, _):
+                return "User planning: \(text)"
+            case .planAssistantMessage(let text, _):
+                return "Planning assistant: \(text)"
+            case .scheduleResult(let text, _):
+                return "Routine result: \(text)"
+            case .systemInfo(let text, _):
+                return "System: \(text)"
+            case .recapResult(let text, _):
+                return "Recap: \(text)"
+            case .userMessage, .agentResponse:
+                return nil
+            }
+        }.joined(separator: "\n\n")
+    }
+
+    private func snapshotConversationContext(includePlanningAndSystem: Bool) -> String {
+        var lines: [String] = ["Current task goal:\n\(task.goal)"]
+
+        for item in currentThreadSnapshot.conversationItems.dropFirst().suffix(24) {
             switch item {
             case .userMessage(let text, _):
                 lines.append("User: \(text)")
             case .planUserMessage(let text, _):
-                lines.append("User planning: \(text)")
+                if includePlanningAndSystem {
+                    lines.append("User planning: \(text)")
+                }
             case .planAssistantMessage(let text, _):
-                lines.append("Planning assistant: \(text)")
+                if includePlanningAndSystem {
+                    lines.append("Planning assistant: \(text)")
+                }
             case .agentResponse(let run):
                 let protocolState = currentThreadSnapshot.protocolState(for: run)
                 let response = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
                 let output = String(response.prefix(3000))
                 lines.append("Agent: \(output)")
             case .scheduleResult(let text, _):
-                lines.append("Routine result: \(text)")
+                if includePlanningAndSystem {
+                    lines.append("Routine result: \(text)")
+                }
             case .systemInfo(let text, _):
-                lines.append("System: \(text)")
+                if includePlanningAndSystem {
+                    lines.append("System: \(text)")
+                }
             case .recapResult(let text, _):
-                lines.append("Recap: \(text)")
+                if includePlanningAndSystem {
+                    lines.append("Recap: \(text)")
+                }
             }
         }
 
@@ -3223,7 +3282,28 @@ struct TaskMainView: View {
     }
 
     private func planningConversationHistory(appendingUserMessage _: String) -> [(role: String, content: String)] {
-        currentThreadSnapshot.conversationItems.compactMap { item in
+        if let exactContext = exactRecentTaskConversationContext(includePlanningAndSystem: false) {
+            var messages: [(role: String, content: String)] = [
+                (role: "user", content: exactContext)
+            ]
+            messages.append(contentsOf: currentThreadSnapshot.conversationItems.compactMap { item in
+                switch item {
+                case .planUserMessage(let text, _):
+                    return (role: "user", content: text)
+                case .planAssistantMessage(let text, _):
+                    return (role: "assistant", content: text)
+                case .userMessage, .agentResponse, .scheduleResult, .systemInfo, .recapResult:
+                    return nil
+                }
+            })
+            return messages
+        }
+
+        let recentSnapshotItems = currentThreadSnapshot.conversationItems.dropFirst().suffix(24)
+        var messages: [(role: String, content: String)] = [
+            (role: "user", content: "Current task goal:\n\(task.goal)")
+        ]
+        messages.append(contentsOf: recentSnapshotItems.compactMap { item in
             switch item {
             case .userMessage(let text, _), .planUserMessage(let text, _):
                 return (role: "user", content: text)
@@ -3237,7 +3317,8 @@ struct TaskMainView: View {
             case .scheduleResult, .systemInfo, .recapResult:
                 return nil
             }
-        }
+        })
+        return messages
     }
 
     private func planModeSkillContext() -> String {

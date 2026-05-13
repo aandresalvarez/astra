@@ -342,6 +342,80 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
     }
 
+    @Test("Follow-up prompt includes exact recent session output")
+    func followUpPromptIncludesExactRecentSessionOutput() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-history-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Revise an email draft", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        let folder = try task.ensureTaskFolder()
+        let filler = String(repeating: "setup context before the draft. ", count: 80)
+        let exactDraft = "EXACT_ACTIVE_DRAFT_FOR_TEST: keep this current draft text available for revision."
+        SessionHistoryManager.recordTurn(
+            taskFolder: folder,
+            taskTitle: task.title,
+            turnMessage: "Please update the draft",
+            output: filler + "\n\n" + exactDraft,
+            tokensUsed: 0,
+            costUSD: 0,
+            fileChanges: []
+        )
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "revise the draft", task: task)
+
+        #expect(prompt.contains("Recent conversation transcript"))
+        #expect(prompt.contains(exactDraft))
+        #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
+    }
+
+    @Test("Follow-up prompt ignores stale copied fork runs")
+    func followUpPromptIgnoresStaleCopiedForkRuns() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(title: "Fork", goal: "Continue current branch")
+        task.forkedFromID = UUID()
+        task.forkedAtRunIndex = 5
+        ctx.insert(task)
+
+        for index in 0..<10 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(index))
+            run.completedAt = run.startedAt.addingTimeInterval(1)
+            run.status = .completed
+            run.output = index < 5 ? "STALE_COPIED_RUN_\(index)" : "ACTIVE_FORK_RUN_\(index)"
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: index < 5 ? "/tmp/stale-copied-\(index).txt" : "/tmp/active-fork-\(index).txt",
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: run.completedAt ?? run.startedAt
+            )))
+            task.runs.append(run)
+            ctx.insert(run)
+        }
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "continue", task: task)
+
+        #expect(!prompt.contains("STALE_COPIED_RUN_0"))
+        #expect(!prompt.contains("STALE_COPIED_RUN_4"))
+        #expect(!prompt.contains("/tmp/stale-copied-0.txt"))
+        #expect(!prompt.contains("/tmp/stale-copied-4.txt"))
+        #expect(prompt.contains("ACTIVE_FORK_RUN_5"))
+        #expect(prompt.contains("ACTIVE_FORK_RUN_9"))
+        #expect(prompt.contains("/tmp/active-fork-5.txt"))
+        #expect(prompt.contains("/tmp/active-fork-9.txt"))
+    }
+
     @Test("Copilot prompt includes Astra Run Protocol instructions through runtime capability")
     func copilotPromptIncludesAstraRunProtocol() throws {
         let container = try makeContainer()
