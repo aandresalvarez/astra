@@ -110,15 +110,24 @@ enum WorkspaceCommandService {
         modelContext: ModelContext,
         source: String
     ) -> TemplateTaskCreation {
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
+            defaultModel,
+            for: runtime
+        )
         let mainGoal = template.resolveGoal(template.mainGoal, with: variables)
+        let mainModel = RuntimeModelAvailability.normalizedModel(
+            template.mainModel.isEmpty ? normalizedDefaultModel : template.mainModel,
+            for: runtime
+        )
         let mainTask = AgentTask(
             title: taskTitle,
             goal: mainGoal,
             workspace: workspace,
             tokenBudget: template.mainBudget,
-            model: template.mainModel.isEmpty ? defaultModel : template.mainModel
+            model: mainModel
         )
-        mainTask.runtimeID = defaultRuntimeID
+        mainTask.runtimeID = runtime.rawValue
         mainTask.status = .queued
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
@@ -135,14 +144,18 @@ enum WorkspaceCommandService {
         var beforeTask: AgentTask?
         if template.hasBeforePhase {
             let beforeGoal = template.resolveGoal(template.beforeGoal, with: variables)
+            let beforeModel = RuntimeModelAvailability.normalizedModel(
+                template.beforeModel.isEmpty ? normalizedDefaultModel : template.beforeModel,
+                for: runtime
+            )
             let task = AgentTask(
                 title: "\(taskTitle) — Before",
                 goal: beforeGoal,
                 workspace: workspace,
                 tokenBudget: template.beforeBudget,
-                model: template.beforeModel.isEmpty ? defaultModel : template.beforeModel
+                model: beforeModel
             )
-            task.runtimeID = defaultRuntimeID
+            task.runtimeID = runtime.rawValue
             task.status = .queued
             task.templateID = template.id
             task.templateHooksJSON = template.hooksJSON

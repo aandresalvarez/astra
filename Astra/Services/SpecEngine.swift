@@ -245,7 +245,7 @@ enum SpecEngine {
         userInput: String,
         workspacePath: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6",
+        model: String = TaskExecutionDefaults.model,
         utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<TaskSpec, SpecEngineError> {
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
@@ -304,7 +304,7 @@ enum SpecEngine {
         workspacePath: String,
         skillContext: String = "",
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6",
+        model: String = TaskExecutionDefaults.model,
         utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<String, SpecEngineError> {
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
@@ -440,7 +440,7 @@ enum SpecEngine {
         messages: [(role: String, content: String)],
         workspacePath: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6",
+        model: String = TaskExecutionDefaults.model,
         utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<TaskSpec, SpecEngineError> {
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
@@ -573,7 +573,7 @@ enum SpecEngine {
     static func generateSkill(
         userIntent: String,
         claudePath: String = SpecEngine.detectedClaudePath,
-        model: String = "claude-sonnet-4-6",
+        model: String = TaskExecutionDefaults.model,
         utilityRuntime: AgentUtilityRuntimeConfiguration? = nil
     ) async -> Result<GeneratedSkill, SpecEngineError> {
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)

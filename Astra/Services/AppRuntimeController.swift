@@ -32,7 +32,7 @@ final class AppRuntimeController {
         validationModel: String,
         skipPermissions: Bool
     ) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
         taskQueue.applySettings(
             claudePath: claudePath.isEmpty ? nil : claudePath,
             copilotPath: copilotPath.isEmpty ? nil : copilotPath,

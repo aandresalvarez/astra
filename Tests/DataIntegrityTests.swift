@@ -101,6 +101,22 @@ struct AgentTaskDefaultTests {
         #expect(task.status == .draft)
     }
 
+    @Test("New AgentTask defaults to shared execution settings")
+    func taskDefaultsExecutionSettings() {
+        let task = AgentTask(title: "Test", goal: "test")
+        #expect(task.tokenBudget == TaskExecutionDefaults.tokenBudget)
+        #expect(task.model == TaskExecutionDefaults.model)
+        #expect(task.resolvedRuntimeID == TaskExecutionDefaults.runtime)
+    }
+
+    @Test("New TaskTemplate phases default to shared token budget")
+    func taskTemplateDefaultsExecutionBudget() {
+        let template = TaskTemplate(name: "Template", mainGoal: "Do work")
+        #expect(template.beforeBudget == TaskExecutionDefaults.tokenBudget)
+        #expect(template.mainBudget == TaskExecutionDefaults.tokenBudget)
+        #expect(template.afterBudget == TaskExecutionDefaults.tokenBudget)
+    }
+
     @Test("budgetProgress returns 0 for zero tokenBudget")
     func budgetProgressZeroBudget() {
         let task = AgentTask(title: "Test", goal: "test", tokenBudget: 0)

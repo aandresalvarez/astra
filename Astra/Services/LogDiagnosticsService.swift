@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct LogDiagnosticsIssue: Equatable, Identifiable {
     let id: String
@@ -128,12 +129,12 @@ enum LogDiagnosticsService {
         scope: LogDiagnosticsScope = .allRetained,
         history: LogDiagnosticsHistory = .empty
     ) -> LogDiagnosticsReport {
-        let orderedEntries = filteredEntries(
+        let orderedEntries = uniqueDiagnosticEntries(filteredEntries(
             entries,
             scope: scope,
             generatedAt: generatedAt,
             previousGeneratedAt: history.lastGeneratedAt
-        ).sorted { $0.timestamp < $1.timestamp }
+        ).sorted { $0.timestamp < $1.timestamp })
         let issueGroups = buildIssueGroups(
             from: orderedEntries,
             generatedAt: generatedAt,
@@ -602,7 +603,10 @@ enum LogDiagnosticsService {
     private static func isGenericRuntimeWarningCoveredBySpecificFailure(_ entry: LogEntry, entries: [LogEntry]) -> Bool {
         guard entry.logLevel == .warning else { return false }
         let lower = entry.message.lowercased()
-        guard lower.contains(AuditEvent.workerExited.rawValue) else { return false }
+        let isCoveredSymptom = lower.contains(AuditEvent.workerExited.rawValue) ||
+            lower.contains(AuditEvent.runtimeStreamSummary.rawValue) ||
+            lower.contains(AuditEvent.runtimeEmptyOutput.rawValue)
+        guard isCoveredSymptom else { return false }
         guard let task = taskIdentifier(for: entry) else { return false }
 
         return entries.contains { candidate in
@@ -720,6 +724,38 @@ enum LogDiagnosticsService {
                 title: result == "started" ? "Connector test was attempted" : "Connector test succeeded",
                 signal: "connector.tested result=\(result)",
                 analysis: "A connector test path ran and did not report a blocking auth or permission failure. The source field indicates whether this came from a configuration test button, task preflight, or another path."
+            )
+        }
+
+        if lower.contains(AuditEvent.localToolTested.rawValue),
+           let result = field("result", in: message),
+           localToolTestResultIsNonActionable(result) {
+            return (
+                key: "local_tool.tested.\(field("command", in: message) ?? "tool").\(result)",
+                title: "Local tool preflight succeeded",
+                signal: "local_tool.tested result=\(result)",
+                analysis: "A local CLI tool required by the active capability passed a task preflight check. This helps prove that the capability was not only visible to the agent, but also locally usable."
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeModelSelection.rawValue) {
+            let runtime = field("runtime", in: message) ?? "unknown"
+            let reason = field("selection_reason", in: message) ?? "unknown"
+            return (
+                key: "runtime.model_selection.\(runtime).\(reason)",
+                title: "Runtime model selection was recorded",
+                signal: AuditEvent.runtimeModelSelection.rawValue,
+                analysis: "ASTRA recorded the selected runtime, requested model, resolved model, model-source, and provider availability-cache state before launching the provider."
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeModelAvailability.rawValue),
+           field("result", in: message) == "available" {
+            return (
+                key: "runtime.model_availability.available.\(field("runtime", in: message) ?? "unknown")",
+                title: "Runtime model availability was refreshed",
+                signal: "runtime.model_availability result=available",
+                analysis: "ASTRA refreshed the provider-specific model list and persisted it for future model pickers and runtime normalization."
             )
         }
 
@@ -918,6 +954,30 @@ enum LogDiagnosticsService {
             }
         }
 
+        if lower.contains(AuditEvent.localToolTested.rawValue) {
+            let command = field("command", in: message) ?? "local tool"
+            let result = field("result", in: message) ?? "failed"
+            return (
+                key: "local_tool.tested.\(command).\(result)",
+                title: "Local tool preflight failed",
+                severity: .warning,
+                signal: "local_tool.tested result=\(result)",
+                analysis: "A local CLI tool required by the active capability did not pass preflight. For GitHub workflows, verify that `gh` is installed and authenticated with `gh auth status` before retrying."
+            )
+        }
+
+        if lower.contains(AuditEvent.runtimeModelAvailability.rawValue),
+           field("result", in: message) == "unavailable" {
+            let runtime = field("runtime", in: message) ?? "runtime"
+            return (
+                key: "runtime.model_availability.unavailable.\(runtime)",
+                title: "Runtime model availability could not be refreshed",
+                severity: .warning,
+                signal: "runtime.model_availability result=unavailable",
+                analysis: "ASTRA could not refresh the provider-specific model list, so the UI may fall back to cached or built-in suggestions. Check the reason field and provider auth state."
+            )
+        }
+
         if lower.contains(AuditEvent.workspaceStoreBackedUp.rawValue) {
             if lower.contains("result=failed") {
                 return (
@@ -1102,6 +1162,7 @@ enum LogDiagnosticsService {
         let tasksSeen = Set(entries.compactMap(taskIdentifier(for:))).sorted()
         let issueTaskIDs = Set(issues.flatMap(\.affectedTasks)).sorted()
         let otherTaskIDs = tasksSeen.filter { !issueTaskIDs.contains($0) }
+        let taskIDMap = fullTaskIDMap(from: entries)
         let traceSummaries = buildTraceSummaries(from: entries)
         let categories = Dictionary(grouping: entries, by: \.category)
             .mapValues(\.count)
@@ -1118,6 +1179,7 @@ enum LogDiagnosticsService {
             "",
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
+            "App build: \(AppBuildInfo.current.installedBuildSummary)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
             "Breadcrumb file: \(LogSanitizer.sanitize(AppLogger.breadcrumbLogFile.path))",
             "Scope: \(scope.label)",
@@ -1134,10 +1196,15 @@ enum LogDiagnosticsService {
             "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
+            "- Full task IDs: \(taskIDMap.isEmpty ? "none captured" : taskIDMap.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))",
             "",
             "## Category Counts",
             "",
             categories.isEmpty ? "- none" : categories,
+            "",
+            "## Settings Snapshot",
+            "",
+            settingsSnapshotLines().joined(separator: "\n"),
         ]
         appendTraceSummaries(traceSummaries, to: &lines)
         lines += ["", "## Issues"]
@@ -1261,9 +1328,13 @@ enum LogDiagnosticsService {
             lines += ["```"]
         }
         if summaries.count > 8 {
+            let omitted = summaries.dropFirst(8).prefix(12).map { summary in
+                let actionText = summary.actions.isEmpty ? "none" : summary.actions.joined(separator: ",")
+                return "`\(summary.id)` actions=\(actionText) tasks=\(summary.affectedTasks.isEmpty ? "none" : summary.affectedTasks.joined(separator: ","))"
+            }.joined(separator: "; ")
             lines += [
                 "",
-                "Additional trace groups omitted from this report: \(summaries.count - 8). Narrow the time window if more detail is needed."
+                "Additional trace groups omitted from this report: \(summaries.count - 8). Omitted index: \(omitted). Narrow the time window if more detail is needed."
             ]
         }
     }
@@ -1300,7 +1371,7 @@ enum LogDiagnosticsService {
         return grouped.compactMap { traceID, acc in
             let ordered = acc.entries.sorted { $0.timestamp < $1.timestamp }
             guard let first = ordered.first, let last = ordered.last else { return nil }
-            let evidence = ordered
+            let evidence = uniqueDiagnosticEntries(Array(ordered.suffix(12)))
                 .suffix(8)
                 .map(sanitizedLine)
             return LogDiagnosticsTraceSummary(
@@ -1326,6 +1397,35 @@ enum LogDiagnosticsService {
             return "no matching log entries"
         }
         return "\(displayTimestamp(first)) to \(displayTimestamp(last))"
+    }
+
+    private static func fullTaskIDMap(from entries: [LogEntry]) -> [String: String] {
+        var map: [String: String] = [:]
+        for entry in entries {
+            guard let taskID = entry.taskID else { continue }
+            map[String(taskID.uuidString.prefix(8))] = taskID.uuidString
+        }
+        return map
+    }
+
+    private static func settingsSnapshotLines(defaults: UserDefaults = .standard) -> [String] {
+        let runtime = AgentRuntimeID(rawValue: defaults.string(forKey: "defaultRuntimeID") ?? "") ?? TaskExecutionDefaults.runtime
+        let defaultModel = defaults.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model
+        let validationModel = defaults.string(forKey: "validationModel") ?? "claude-haiku-4-5-20251001"
+        let budget = defaults.object(forKey: AppStorageKeys.defaultTokenBudget) as? Int ?? TaskExecutionDefaults.tokenBudget
+        let enforcement = BudgetEnforcementMode.configuredDefault(in: defaults)
+        let claudeCache = RuntimeModelAvailability.cacheSummary(for: .claudeCode, defaults: defaults)
+        let copilotCache = RuntimeModelAvailability.cacheSummary(for: .copilotCLI, defaults: defaults)
+
+        return [
+            "- Default runtime: \(runtime.rawValue)",
+            "- Default task model: \(defaultModel)",
+            "- Utility / validation model: \(validationModel)",
+            "- Default task budget: \(budget)",
+            "- Budget enforcement: \(enforcement.rawValue)",
+            "- Claude model suggestions: \(claudeCache.count) (\(claudeCache.checkedAt.map { "checked \(displayTimestamp($0))" } ?? "built-in defaults"))",
+            "- Copilot model suggestions: \(copilotCache.count) (\(copilotCache.checkedAt.map { "checked \(displayTimestamp($0))" } ?? "built-in defaults"))"
+        ]
     }
 
     private static func runtimeFailureTitle(_ category: String) -> String {
@@ -1414,6 +1514,10 @@ enum LogDiagnosticsService {
 
     private static func connectorTestResultIsNonActionable(_ result: String) -> Bool {
         ["started", "success", "authenticated", "preflight_passed"].contains(result)
+    }
+
+    private static func localToolTestResultIsNonActionable(_ result: String) -> Bool {
+        ["success", "authenticated"].contains(result)
     }
 
     private static func taskIdentifier(for entry: LogEntry) -> String? {
@@ -1527,6 +1631,21 @@ enum LogDiagnosticsService {
 
     private static func entrySignature(_ entry: LogEntry) -> String {
         "\(entry.level)|\(entry.category)|\(entry.taskID?.uuidString ?? "none")|\(entry.message)"
+    }
+
+    private static func uniqueDiagnosticEntries(_ entries: [LogEntry]) -> [LogEntry] {
+        var seen: Set<String> = []
+        return entries.filter { entry in
+            let timestampSecond = Int(entry.timestamp.timeIntervalSince1970)
+            let signature = [
+                entry.level,
+                entry.category,
+                taskIdentifier(for: entry) ?? "none",
+                String(timestampSecond),
+                canonicalMessage(entry.message)
+            ].joined(separator: "|")
+            return seen.insert(signature).inserted
+        }
     }
 
     private static func modificationDate(_ url: URL) -> Date {

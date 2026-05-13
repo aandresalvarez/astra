@@ -49,7 +49,7 @@ struct ComposerToolbar: View {
 
     var sshConnections: [SSHConnection] = []
 
-    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = BudgetEnforcementMode.hardStop.rawValue
+    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @State private var isPlusHovered = false
@@ -214,7 +214,7 @@ struct ComposerToolbar: View {
             }
 
             Menu {
-                ForEach([10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0], id: \.self) { b in
+                ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { b in
                     Button { onBudgetChange?(b) } label: {
                         HStack {
                             Text(budgetSummary(b))
@@ -681,7 +681,7 @@ struct ComposerToolbar: View {
     }
 
     private var resolvedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+        AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
     }
 
     private var canSubmit: Bool {
@@ -734,7 +734,7 @@ struct ComposerToolbar: View {
     }
 
     private var budgetEnforcementMode: BudgetEnforcementMode {
-        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? .hardStop
+        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
     }
 
     private var budgetEnforcementSummary: String {

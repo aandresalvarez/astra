@@ -50,8 +50,22 @@ struct CopilotModelAvailabilityService {
 
     func refreshAndPersist(defaults: UserDefaults = .standard) async -> CopilotModelAvailabilityResult {
         let result = await availableModels()
-        if case .available(let models) = result {
+        switch result {
+        case .available(let models):
             RuntimeModelAvailability.persistAvailableModels(models, for: .copilotCLI, defaults: defaults)
+            AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "result": "available",
+                "model_count": String(models.count),
+                "checked_at": String(Int(Date().timeIntervalSince1970))
+            ], level: .debug)
+        case .unavailable(let reason):
+            AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
+                "runtime": AgentRuntimeID.copilotCLI.rawValue,
+                "result": "unavailable",
+                "reason": reason,
+                "checked_at": String(Int(Date().timeIntervalSince1970))
+            ], level: .warning, fieldMaxLength: 220)
         }
         return result
     }

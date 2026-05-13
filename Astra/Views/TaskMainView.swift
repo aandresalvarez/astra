@@ -2326,20 +2326,24 @@ struct TaskMainView: View {
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
                         let previousRuntime = task.runtimeID
+                        let previousModel = task.model
                         task.runtimeID = runtime
-                        let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        task.model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                        let resolved = AgentRuntimeID(rawValue: runtime) ?? TaskExecutionDefaults.runtime
+                        let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: task.model,
                             to: resolved,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
+                        task.model = resolvedModel
                         task.updatedAt = Date()
                         AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
                             "source": "task_composer",
                             "previous_runtime": previousRuntime ?? "none",
                             "runtime": runtime,
-                            "model": task.model,
+                            "previous_model": previousModel,
+                            "model": resolvedModel,
+                            "model_changed": String(previousModel != resolvedModel),
                             "workspace_id": task.workspace?.id.uuidString ?? "none"
                         ])
                     },

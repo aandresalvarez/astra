@@ -382,8 +382,8 @@ struct ChatPanelView: View {
     @State private var pasteMonitor: Any?
     @State private var isDragOver = false
     @State private var sshConnections: [SSHConnection] = []
-    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
@@ -394,7 +394,7 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
@@ -428,17 +428,23 @@ struct ChatPanelView: View {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
-        let model = RuntimeModelAvailability.normalizedModel(
+    private var defaultRuntime: AgentRuntimeID {
+        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+    }
+
+    private var normalizedDefaultModel: String {
+        RuntimeModelAvailability.normalizedModel(
             defaultModel,
-            for: runtime,
+            for: defaultRuntime,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
         return AgentUtilityRuntimeConfiguration(
-            runtime: runtime,
-            model: model,
+            runtime: defaultRuntime,
+            model: normalizedDefaultModel,
             claudePath: claudePath,
             copilotPath: copilotPath,
             copilotHome: CopilotCLIRuntime.channelHome()
@@ -446,10 +452,9 @@ struct ChatPanelView: View {
     }
 
     private func alignDefaultModelWithRuntime() {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
         defaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
-            for: runtime,
+            for: defaultRuntime,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -1044,19 +1049,23 @@ struct ChatPanelView: View {
                     onModelChange: { defaultModel = $0 },
                     onRuntimeChange: { runtime in
                         let previousRuntime = defaultRuntimeID
+                        let previousModel = defaultModel
                         defaultRuntimeID = runtime
-                        let resolved = AgentRuntimeID(rawValue: runtime) ?? .claudeCode
-                        defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                        let resolved = AgentRuntimeID(rawValue: runtime) ?? TaskExecutionDefaults.runtime
+                        let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: defaultModel,
                             to: resolved,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
+                        defaultModel = resolvedModel
                         AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
                             "source": "new_task_composer",
                             "previous_runtime": previousRuntime,
                             "runtime": runtime,
-                            "model": defaultModel,
+                            "previous_model": previousModel,
+                            "model": resolvedModel,
+                            "model_changed": String(previousModel != resolvedModel),
                             "workspace_id": workspace?.id.uuidString ?? "none"
                         ])
                     },
@@ -1150,7 +1159,7 @@ struct ChatPanelView: View {
     private func alignDefaultRuntimeWithAvailability() {
         let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
         if !readyRuntimes.isEmpty {
-            let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+            let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
             if !readyRuntimes.contains(runtime), let replacement = readyRuntimes.first {
                 defaultRuntimeID = replacement.rawValue
             }
@@ -1344,10 +1353,12 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let traceID = AuditTrace.make("quick-run")
+        let runtime = defaultRuntime
+        let model = normalizedDefaultModel
         AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
             "source": "quick_run",
-            "runtime": defaultRuntimeID,
-            "model": defaultModel,
+            "runtime": runtime.rawValue,
+            "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
             "selected_skill_count": String(selectedSkills.count),
             "message_length": String(input.count)
@@ -1358,9 +1369,9 @@ struct ChatPanelView: View {
             goal: input,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: defaultModel
+            model: model
         )
-        task.runtimeID = defaultRuntimeID
+        task.runtimeID = runtime.rawValue
         task.status = .queued
         task.inputs = attachedFiles
         task.skills = selectedSkills
@@ -1494,10 +1505,12 @@ struct ChatPanelView: View {
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
         let traceID = AuditTrace.make("conversation-spec")
+        let runtime = defaultRuntime
+        let model = normalizedDefaultModel
         AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
             "source": "conversation_spec",
-            "runtime": defaultRuntimeID,
-            "model": defaultModel,
+            "runtime": runtime.rawValue,
+            "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
             "selected_skill_count": String(selectedSkills.count),
             "inputs_count": String(spec.inputs.count + attachedFiles.count),
@@ -1509,9 +1522,9 @@ struct ChatPanelView: View {
             goal: spec.goal,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: defaultModel
+            model: model
         )
-        task.runtimeID = defaultRuntimeID
+        task.runtimeID = runtime.rawValue
         task.status = .queued
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
@@ -1719,8 +1732,8 @@ struct ChatPanelView: View {
                 taskTitle: taskTitle,
                 variables: values,
                 selectedSkills: selectedSkills,
-                defaultModel: defaultModel,
-                defaultRuntimeID: defaultRuntimeID,
+                defaultModel: normalizedDefaultModel,
+                defaultRuntimeID: defaultRuntime.rawValue,
                 workspace: ws,
                 modelContext: modelContext,
                 source: "wizard_template"
@@ -2156,8 +2169,8 @@ struct ChatPanelView: View {
                 taskTitle: taskTitle,
                 variables: variables,
                 selectedSkills: selectedSkills,
-                defaultModel: defaultModel,
-                defaultRuntimeID: defaultRuntimeID,
+                defaultModel: normalizedDefaultModel,
+                defaultRuntimeID: defaultRuntime.rawValue,
                 workspace: ws,
                 modelContext: modelContext,
                 source: "template"
@@ -2172,7 +2185,9 @@ struct ChatPanelView: View {
             let scheduleTypeRaw = json["scheduleType"] as? String ?? "daily"
             let scheduleType = ScheduleType(rawValue: scheduleTypeRaw) ?? .daily
 
-            let schedule = TaskSchedule(name: name, goal: goal, workspace: ws, runtimeID: defaultRuntimeID, scheduleType: scheduleType)
+            let runtime = defaultRuntime
+            let model = normalizedDefaultModel
+            let schedule = TaskSchedule(name: name, goal: goal, workspace: ws, runtimeID: runtime.rawValue, scheduleType: scheduleType)
             schedule.routineDescription = description
 
             // Configure based on type
@@ -2219,7 +2234,7 @@ struct ChatPanelView: View {
                 schedule.skillIDs = matchedIDs
             }
 
-            schedule.model = defaultModel
+            schedule.model = model
             schedule.tokenBudget = defaultBudget
 
             modelContext.insert(schedule)
@@ -2254,13 +2269,15 @@ struct ChatPanelView: View {
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
+            let runtime = defaultRuntime
+            let model = normalizedDefaultModel
             // Update existing draft
             draft.draftMessages = json
             draft.title = String(messages.first?.content.prefix(60) ?? "Draft")
             draft.goal = messages.first?.content ?? draft.goal
             draft.tokenBudget = defaultBudget
-            draft.model = defaultModel
-            draft.runtimeID = defaultRuntimeID
+            draft.model = model
+            draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
             draft.skills = selectedSkills
             draft.captureSkillSnapshots()
@@ -2269,6 +2286,8 @@ struct ChatPanelView: View {
             draft.updatedAt = Date()
             return draft
         } else {
+            let runtime = defaultRuntime
+            let model = normalizedDefaultModel
             // Create new draft
             let title = String(messages.first?.content.prefix(60) ?? "Draft")
             let draft = AgentTask(
@@ -2276,9 +2295,9 @@ struct ChatPanelView: View {
                 goal: messages.first?.content ?? "",
                 workspace: workspace,
                 tokenBudget: defaultBudget,
-                model: defaultModel
+                model: model
             )
-            draft.runtimeID = defaultRuntimeID
+            draft.runtimeID = runtime.rawValue
             draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles

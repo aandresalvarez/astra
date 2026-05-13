@@ -11,9 +11,9 @@ private func makeTask(
     status: TaskStatus = .queued,
     workspace: Workspace? = nil,
     tokensUsed: Int = 0,
-    tokenBudget: Int = 50000,
+    tokenBudget: Int = TaskExecutionDefaults.tokenBudget,
     costUSD: Double = 0,
-    model: String = "claude-sonnet-4-6"
+    model: String = TaskExecutionDefaults.model
 ) -> AgentTask {
     let task = AgentTask(title: title, goal: goal, workspace: workspace, tokenBudget: tokenBudget, model: model)
     task.status = status

@@ -6,18 +6,18 @@ struct NewTaskView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
-    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     var workspace: Workspace?
 
     @State private var title = ""
     @State private var goal = ""
-    @State private var runtimeID = AgentRuntimeID.claudeCode.rawValue
-    @State private var model = "claude-sonnet-4-6"
-    @State private var tokenBudget = 50000
+    @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
+    @State private var model = TaskExecutionDefaults.model
+    @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var isolationStrategy: IsolationStrategy = .sameDirectory
     @State private var validationStrategy: ValidationStrategy = .manual
     @State private var maxTurns = 0
@@ -27,7 +27,7 @@ struct NewTaskView: View {
     @State private var constraintsText = ""
     @State private var criteriaText = ""
 
-    private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
+    private let budgetPresets = TaskExecutionDefaults.budgetPresets
     private let turnPresets = [0, 5, 10, 25, 50, 100]
 
     var isValid: Bool {
@@ -80,13 +80,22 @@ struct NewTaskView: View {
                         }
                     }
                     .onChange(of: runtimeID) {
-                        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
-                        model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+                        let previousModel = model
+                        let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: model,
                             to: runtime,
                             cachedClaudeModelsJSON: claudeAvailableModels,
                             cachedCopilotModelsJSON: copilotAvailableModels
                         )
+                        model = resolvedModel
+                        AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
+                            "source": "new_task_sheet",
+                            "runtime": runtime.rawValue,
+                            "previous_model": previousModel,
+                            "model": resolvedModel,
+                            "model_changed": String(previousModel != resolvedModel)
+                        ])
                     }
 
                     modelSelectionRow
@@ -172,7 +181,7 @@ struct NewTaskView: View {
         .onAppear {
             runtimeID = defaultRuntimeID
             model = defaultModel
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -182,7 +191,7 @@ struct NewTaskView: View {
             tokenBudget = defaultBudget
         }
         .onChange(of: claudeAvailableModels) {
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -191,7 +200,7 @@ struct NewTaskView: View {
             )
         }
         .onChange(of: copilotAvailableModels) {
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -203,7 +212,7 @@ struct NewTaskView: View {
 
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
-            for: AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode,
+            for: AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -256,16 +265,23 @@ struct NewTaskView: View {
     }
 
     private func createTask() {
+        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        let resolvedModel = RuntimeModelAvailability.normalizedModel(
+            model,
+            for: runtime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
         let task = AgentTask(
             title: title.trimmingCharacters(in: .whitespaces),
             goal: goal.trimmingCharacters(in: .whitespaces),
             workspace: workspace,
             tokenBudget: tokenBudget,
-            model: model,
+            model: resolvedModel,
             isolationStrategy: isolationStrategy,
             validationStrategy: validationStrategy
         )
-        task.runtimeID = runtimeID
+        task.runtimeID = runtime.rawValue
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText

@@ -25,17 +25,17 @@ struct ScheduleEditorView: View {
     var prefillIntervalSeconds: Int?
     var prefillSourceTaskID: UUID?
 
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
-    @AppStorage("defaultModel") private var defaultModel = AgentRuntimeID.claudeCode.defaultModel
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
 
     @State private var name = ""
     @State private var routineDescription = ""
     @State private var goal = ""
-    @State private var runtimeID = AgentRuntimeID.claudeCode.rawValue
-    @State private var model = "claude-sonnet-4-6"
-    @State private var tokenBudget = 50000
+    @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
+    @State private var model = TaskExecutionDefaults.model
+    @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var scheduleType: ScheduleType = .daily
     @State private var onceDate = Date().addingTimeInterval(3600)
     @State private var intervalSeconds = 3600
@@ -57,7 +57,7 @@ struct ScheduleEditorView: View {
         return (workspaceSkills + enabledGlobals).sorted { $0.name < $1.name }
     }
 
-    private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
+    private let budgetPresets = TaskExecutionDefaults.budgetPresets
     private let intervalPresets = [
         (label: "15 min", value: 900),
         (label: "30 min", value: 1800),
@@ -325,7 +325,7 @@ struct ScheduleEditorView: View {
                                 .labelsHidden()
                                 .frame(width: 180)
                                 .onChange(of: runtimeID) {
-                                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+                                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
                                     model = RuntimeModelAvailability.modelForRuntimeSwitch(
                                         currentModel: model,
                                         to: runtime,
@@ -490,7 +490,7 @@ struct ScheduleEditorView: View {
                 if let m = prefillModel {
                     model = m
                 } else {
-                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
                     model = RuntimeModelAvailability.normalizedModel(
                         defaultModel,
                         for: runtime,
@@ -538,7 +538,7 @@ struct ScheduleEditorView: View {
 
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
-            for: AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode,
+            for: AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -575,7 +575,7 @@ struct ScheduleEditorView: View {
     }
 
     private func alignModelWithRuntime() {
-        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? .claudeCode
+        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
         model = RuntimeModelAvailability.normalizedModel(
             model,
             for: runtime,
@@ -662,8 +662,14 @@ struct ScheduleEditorView: View {
         s.name = name.trimmingCharacters(in: .whitespaces)
         s.routineDescription = routineDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         s.routineInstructions = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        s.runtimeID = runtimeID
-        s.model = model
+        let resolvedRuntime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        s.runtimeID = resolvedRuntime.rawValue
+        s.model = RuntimeModelAvailability.normalizedModel(
+            model,
+            for: resolvedRuntime,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
         s.tokenBudget = tokenBudget
         s.scheduleType = scheduleType
         s.intervalSeconds = intervalSeconds

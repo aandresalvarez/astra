@@ -118,6 +118,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
         switch selectedRuntime {
         case .copilotCLI:
@@ -253,6 +254,7 @@ final class AgentRuntimeWorker {
             return
         }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
+        await logGitHubCLIPreflightIfNeeded(for: task, phase: "run")
         AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
             "model": task.model,
             "token_budget": String(task.tokenBudget),
@@ -801,6 +803,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
+        alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
         switch selectedRuntime {
         case .copilotCLI:
@@ -877,6 +880,8 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
+        Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "resume")
+        await logGitHubCLIPreflightIfNeeded(for: task, phase: "resume")
 
         AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
             "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
@@ -1258,6 +1263,7 @@ final class AgentRuntimeWorker {
             return
         }
         Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
+        await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
         let startTime = Date()
         let beforeGitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
         let beforeDirtyFingerprints = AgentFileChangeDetector.fileFingerprints(
@@ -1651,6 +1657,28 @@ final class AgentRuntimeWorker {
     static let compactionKeepCount = AgentEventCompactor.keepCount
 
     @MainActor
+    private func alignTaskModelWithSelectedRuntime(
+        _ task: AgentTask,
+        selectedRuntime: AgentRuntimeID,
+        phase: String
+    ) {
+        let resolution = RuntimeModelAvailability.resolveModel(task.model, for: selectedRuntime)
+        var fields = resolution.diagnosticFields(phase: phase)
+        fields["task_runtime_id"] = task.runtimeID ?? "none"
+        fields["default_runtime"] = runtimeConfiguration.defaultRuntimeID.rawValue
+        AppLogger.audit(
+            .runtimeModelSelection,
+            category: "Worker",
+            taskID: task.id,
+            fields: fields,
+            level: resolution.changed ? .info : .debug,
+            fieldMaxLength: 200
+        )
+        guard resolution.changed else { return }
+        task.model = resolution.resolvedModel
+    }
+
+    @MainActor
     private func clearMismatchedProviderSessionIfNeeded(
         for task: AgentTask,
         selectedRuntime: AgentRuntimeID,
@@ -1928,6 +1956,75 @@ final class AgentRuntimeWorker {
             "connector_names": compactNames(connectors.map(\.name)),
             "local_tool_names": compactNames(tools.map(\.name))
         ], level: .debug, fieldMaxLength: 240)
+    }
+
+    @MainActor
+    private func logGitHubCLIPreflightIfNeeded(for task: AgentTask, phase: String) async {
+        let resolver = TaskCapabilityResolver(task: task)
+        let tools = resolver.allLocalTools
+        let hasGitHubTool = tools.contains { tool in
+            tool.command.trimmingCharacters(in: .whitespacesAndNewlines) == "gh"
+        }
+        let hasGitHubSkill = resolver.allBehaviorSkills.contains { skill in
+            let name = skill.name.lowercased()
+            return name.contains("github") || name.contains("git hub")
+        }
+        guard hasGitHubTool || hasGitHubSkill else { return }
+
+        let gh = RuntimePathResolver.detectExecutablePath(named: "gh")
+        var fields: [String: String] = [
+            "source": "task_preflight",
+            "phase": phase,
+            "command": "gh",
+            "matched_tool": String(hasGitHubTool),
+            "matched_skill": String(hasGitHubSkill),
+            "runtime": runtimeConfiguration.selectedRuntime(for: task).rawValue
+        ]
+
+        guard !gh.isEmpty, FileManager.default.isExecutableFile(atPath: gh) else {
+            fields["result"] = "executable_missing"
+            AppLogger.audit(.localToolTested, category: "Worker", taskID: task.id, fields: fields, level: .warning)
+            return
+        }
+
+        fields["executable_path"] = gh
+        let runner = ProcessBinaryRunner()
+        let version = await runner.run(path: gh, args: ["--version"], timeout: 3, environment: nil)
+        fields["version_result"] = Self.runResultLabel(version)
+        if version.isSuccess,
+           let firstLine = version.stdout.split(separator: "\n").first {
+            fields["version_summary"] = String(firstLine)
+        }
+
+        let auth = await runner.run(
+            path: gh,
+            args: ["auth", "status", "--hostname", "github.com"],
+            timeout: 5,
+            environment: nil
+        )
+        fields["auth_result"] = Self.runResultLabel(auth)
+        fields["result"] = auth.isSuccess ? "authenticated" : Self.runResultLabel(auth)
+        AppLogger.audit(
+            .localToolTested,
+            category: "Worker",
+            taskID: task.id,
+            fields: fields,
+            level: auth.isSuccess ? .debug : .warning,
+            fieldMaxLength: 220
+        )
+    }
+
+    private static func runResultLabel(_ result: RunResult) -> String {
+        switch result.outcome {
+        case .exited(code: 0):
+            return "success"
+        case .exited:
+            return "auth_failed"
+        case .timedOut:
+            return "timeout"
+        case .launchFailed:
+            return "launch_failed"
+        }
     }
 
     @MainActor
