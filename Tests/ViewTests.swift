@@ -292,6 +292,62 @@ struct MarkdownTextViewTests {
         #expect(String(first.characters) == String(second.characters))
         #expect(first.runs.compactMap(\.link) == second.runs.compactMap(\.link))
     }
+
+    @Test("Parser recognizes GitHub tables without outer pipes")
+    func parserRecognizesGitHubTablesWithoutOuterPipes() {
+        let source = """
+        Name | Score | Status
+        --- | ---: | :---
+        Ada | 10 | **ready**
+        Grace | 8 | waiting
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .table)
+        #expect(blocks.first?.content.contains("Name | Score | Status") == true)
+        #expect(blocks.first?.content.contains("Ada | 10 | **ready**") == true)
+    }
+
+    @Test("Parser formats tables for selectable Markdown preview")
+    func parserFormatsTablesForSelectableMarkdownPreview() {
+        let source = """
+        Name | Score | Status
+        --- | ---: | :---
+        Ada | 10 | ready
+        Grace | 8 | waiting
+        """
+
+        let rendered = MarkdownTextView.monospacedTableText(source)
+
+        #expect(rendered.contains("Name"))
+        #expect(rendered.contains("Score"))
+        #expect(rendered.contains("-----"))
+        #expect(rendered.contains("Ada"))
+        #expect(!rendered.contains("--- | ---: | :---"))
+    }
+
+    @Test("Parser recognizes additional heading forms")
+    func parserRecognizesAdditionalHeadingForms() {
+        let source = """
+        Report Title
+        ============
+
+        #### Deep Section ####
+
+        #Compact Heading
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+        let headings = blocks.compactMap { block -> (Int, String)? in
+            guard case .heading(let level) = block.kind else { return nil }
+            return (level, block.content)
+        }
+
+        #expect(headings.map(\.0) == [1, 4, 1])
+        #expect(headings.map(\.1) == ["Report Title", "Deep Section", "Compact Heading"])
+    }
 }
 
 // MARK: - ShelfMarkdownSession

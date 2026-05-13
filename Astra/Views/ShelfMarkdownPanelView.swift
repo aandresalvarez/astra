@@ -580,8 +580,9 @@ private enum MarkdownShelfTextRenderer {
                     background: NSColor.textBackgroundColor.withAlphaComponent(0.22)
                 )
             case .table:
+                let tableText = MarkdownTextView.monospacedTableText(block.content)
                 append(
-                    block.content + "\n\n",
+                    tableText + "\n\n",
                     to: result,
                     font: .monospacedSystemFont(ofSize: 13, weight: .regular),
                     color: .labelColor,

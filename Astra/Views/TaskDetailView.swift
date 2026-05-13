@@ -791,7 +791,6 @@ struct FilesTabView: View {
 
     @State private var showInternalFiles = false
     @State private var latestRun: TaskRun?
-    @State private var parsedMarkdownBlocks: [String: [MarkdownBlock]] = [:]
 
     private func rebuildLatestRun() {
         latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
@@ -947,7 +946,6 @@ struct FilesTabView: View {
         guard fileContents[file.path] == nil,
               FileManager.default.fileExists(atPath: file.path) else { return }
         let path = file.path
-        let isMd = isMarkdown(file)
         Task {
             let text: String = await Task.detached(priority: .userInitiated) {
                 let url = URL(fileURLWithPath: path)
@@ -959,9 +957,6 @@ struct FilesTabView: View {
                 return str
             }.value
             fileContents[path] = text
-            if isMd, text != "[Binary or file too large to preview]" {
-                parsedMarkdownBlocks[path] = markdownBlocks(from: text.components(separatedBy: "\n"))
-            }
         }
     }
 
@@ -1185,244 +1180,9 @@ struct FilesTabView: View {
         }
     }
 
-    private func renderedMarkdown(_ text: String, path: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            let blocks = parsedMarkdownBlocks[path] ?? markdownBlocks(from: text.components(separatedBy: "\n"))
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .heading(let level, let text):
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                            Text(attr)
-                                .font(level == 1 ? Stanford.heading(24) : level == 2 ? Stanford.heading(20) : level <= 3 ? Stanford.heading(16) : Stanford.heading(14))
-                                .foregroundStyle(Stanford.black)
-                        } else {
-                            Text(text)
-                                .font(level == 1 ? Stanford.heading(24) : level == 2 ? Stanford.heading(20) : level <= 3 ? Stanford.heading(16) : Stanford.heading(14))
-                                .foregroundStyle(Stanford.black)
-                        }
-                        if level <= 2 {
-                            Divider().opacity(0.3)
-                        }
-                    }
-                    .padding(.top, level == 1 ? 12 : level == 2 ? 8 : 4)
-                case .text(let text):
-                    if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                        Text(attr)
-                            .font(Stanford.body(14))
-                            .foregroundStyle(Stanford.black)
-                            .textSelection(.enabled)
-                            .lineSpacing(3)
-                    }
-                case .code(let code):
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(code)
-                            .font(Stanford.mono(12))
-                            .foregroundStyle(Stanford.black.opacity(0.85))
-                            .textSelection(.enabled)
-                            .padding(12)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Stanford.black.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Stanford.sandstone.opacity(0.2), lineWidth: 1)
-                    )
-                case .table(let rows):
-                    tableView(rows: rows)
-                case .divider:
-                    Divider().padding(.vertical, 4)
-                case .list(let items):
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text("•")
-                                    .font(Stanford.body(14))
-                                    .foregroundStyle(Stanford.coolGrey)
-                                    .frame(width: 10)
-                                if let attr = try? AttributedString(markdown: item, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                                    Text(attr)
-                                        .font(Stanford.body(14))
-                                        .foregroundStyle(Stanford.black)
-                                        .textSelection(.enabled)
-                                        .lineSpacing(2)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.leading, 4)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private enum MarkdownBlock {
-        case heading(level: Int, text: String)
-        case text(String)
-        case code(String)
-        case table(rows: [[String]])
-        case list(items: [String])
-        case divider
-    }
-
-    private func markdownBlocks(from lines: [String]) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        var i = 0
-        var textBuffer = ""
-
-        func flushText() {
-            let trimmed = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { blocks.append(.text(trimmed)) }
-            textBuffer = ""
-        }
-
-        while i < lines.count {
-            let line = lines[i]
-
-            // Headings
-            if line.hasPrefix("# ") {
-                flushText()
-                blocks.append(.heading(level: 1, text: String(line.dropFirst(2))))
-                i += 1; continue
-            }
-            if line.hasPrefix("## ") {
-                flushText()
-                blocks.append(.heading(level: 2, text: String(line.dropFirst(3))))
-                i += 1; continue
-            }
-            if line.hasPrefix("### ") || line.hasPrefix("#### ") {
-                flushText()
-                let level = line.hasPrefix("#### ") ? 4 : 3
-                let text = String(line.drop(while: { $0 == "#" || $0 == " " }))
-                blocks.append(.heading(level: level, text: text))
-                i += 1; continue
-            }
-
-            // Code blocks
-            if line.hasPrefix("```") {
-                flushText()
-                var code: [String] = []
-                i += 1
-                while i < lines.count && !lines[i].hasPrefix("```") {
-                    code.append(lines[i])
-                    i += 1
-                }
-                blocks.append(.code(code.joined(separator: "\n")))
-                i += 1; continue
-            }
-
-            // Horizontal rule
-            if line.trimmingCharacters(in: .whitespaces).allSatisfy({ $0 == "-" || $0 == "*" || $0 == "_" }),
-               line.trimmingCharacters(in: .whitespaces).count >= 3 {
-                flushText()
-                blocks.append(.divider)
-                i += 1; continue
-            }
-
-            // Table (pipe-delimited)
-            if line.contains("|") && line.trimmingCharacters(in: .whitespaces).hasPrefix("|") {
-                flushText()
-                var rows: [[String]] = []
-                while i < lines.count && lines[i].contains("|") {
-                    let row = lines[i].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-                    // Skip separator rows (----)
-                    if !row.allSatisfy({ $0.allSatisfy({ $0 == "-" || $0 == ":" || $0 == " " }) }) {
-                        rows.append(row)
-                    }
-                    i += 1
-                }
-                if !rows.isEmpty { blocks.append(.table(rows: rows)) }
-                continue
-            }
-
-            // List items (bulleted)
-            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("• ") {
-                flushText()
-                var items: [String] = []
-                while i < lines.count && (lines[i].hasPrefix("- ") || lines[i].hasPrefix("* ") || lines[i].hasPrefix("• ")) {
-                    items.append(String(lines[i].dropFirst(2)))
-                    i += 1
-                }
-                blocks.append(.list(items: items))
-                continue
-            }
-
-            // Numbered list items
-            if let _ = line.range(of: #"^\d+\.\s"#, options: .regularExpression) {
-                flushText()
-                var items: [String] = []
-                while i < lines.count, let r = lines[i].range(of: #"^\d+\.\s"#, options: .regularExpression) {
-                    items.append(String(lines[i][r.upperBound...]))
-                    i += 1
-                }
-                blocks.append(.list(items: items))
-                continue
-            }
-
-            // Regular text
-            if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                flushText()
-            } else {
-                textBuffer += (textBuffer.isEmpty ? "" : "\n") + line
-            }
-            i += 1
-        }
-        flushText()
-        return blocks
-    }
-
-    private func tableView(rows: [[String]]) -> some View {
-        let colCount = rows.map(\.count).max() ?? 0
-        // Compute ideal column widths from content
-        let colWidths: [CGFloat] = (0..<colCount).map { col in
-            let maxLen = rows.map { row in col < row.count ? row[col].count : 0 }.max() ?? 0
-            return max(60, min(300, CGFloat(maxLen) * 8 + 24))
-        }
-
-        return ScrollView(.horizontal, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
-                    HStack(spacing: 0) {
-                        ForEach(0..<colCount, id: \.self) { colIdx in
-                            let cell = colIdx < row.count ? row[colIdx] : ""
-                            Group {
-                                if rowIdx == 0 {
-                                    Text(cell)
-                                        .font(Stanford.caption(12).weight(.semibold))
-                                        .foregroundStyle(Stanford.black)
-                                } else if let attr = try? AttributedString(markdown: cell, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                                    Text(attr)
-                                        .font(Stanford.body(12))
-                                        .foregroundStyle(Stanford.black)
-                                        .textSelection(.enabled)
-                                } else {
-                                    Text(cell)
-                                        .font(Stanford.body(12))
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .frame(width: colWidths[colIdx], alignment: .leading)
-                            if colIdx < colCount - 1 {
-                                Divider().frame(height: 20).opacity(0.2)
-                            }
-                        }
-                    }
-                    .background(rowIdx == 0 ? Stanford.coolGrey.opacity(0.12) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.4) : .clear))
-                    if rowIdx == 0 {
-                        Divider().opacity(0.4)
-                    }
-                }
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
-        )
+    private func renderedMarkdown(_ text: String, path _: String) -> some View {
+        MarkdownTextView(text: text)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func diffContent(_ change: StoredFileChange) -> some View {
