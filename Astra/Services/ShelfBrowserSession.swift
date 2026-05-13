@@ -61,18 +61,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 : nil
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.engine == .controlled, self.isAgentBridgeEnabled {
-                    self.presentAgentControlPermissionGuide(source: "engine_switch")
-                }
                 if self.engine == .controlled, let controlledHandoffAddress {
                     await self.openControlledBrowser(initialAddress: controlledHandoffAddress)
                 } else if self.engine == .embedded, let embeddedHandoffAddress {
                     self.openEmbeddedBrowser(address: embeddedHandoffAddress)
+                    self.refreshAgentControlPermissionIssue(source: "engine_switch")
                 } else {
                     self.syncDisplayedStateForEngine()
                     self.publishBridgeState()
                     if self.engine == .controlled {
                         await self.refreshControlledBrowserStatus()
+                    } else {
+                        self.refreshAgentControlPermissionIssue(source: "engine_switch")
                     }
                 }
             }
@@ -87,9 +87,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published private(set) var bridgeEndpoint: String?
     @Published private(set) var boundTaskID: UUID?
     @Published var isAgentBridgeEnabled = true {
-        didSet { publishBridgeState() }
+        didSet {
+            publishBridgeState()
+            refreshAgentControlPermissionIssue(source: "bridge_toggle_state_changed")
+        }
     }
-    @Published private(set) var isAgentControlPermissionGuideVisible = false
+    @Published private(set) var agentControlPermissionIssue: MacOSPermissionIssue?
 
     let webView: WKWebView
     let controlledBrowser = ControlledBrowserController()
@@ -104,6 +107,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
+    }
+
+    var isAgentControlPermissionGuideVisible: Bool {
+        agentControlPermissionIssue != nil
     }
 
     var hasDisplayablePage: Bool {
@@ -281,9 +288,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func launchControlledBrowser() {
         let initialAddress = Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
-        if isAgentBridgeEnabled {
-            presentAgentControlPermissionGuide(source: "launch_controlled_browser")
-        }
         guard engine == .controlled else {
             engine = .controlled
             return
@@ -309,6 +313,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         await controlledBrowser.launch(initialAddress: initialAddress)
         syncDisplayedStateForEngine()
         publishBridgeState()
+        refreshAgentControlPermissionIssue(source: "controlled_browser_launch")
     }
 
     private func openEmbeddedBrowser(address: String) {
@@ -340,6 +345,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         await controlledBrowser.refreshStatus()
         syncDisplayedStateForEngine()
         publishBridgeState()
+        refreshAgentControlPermissionIssue(source: "controlled_browser_refresh")
+    }
+
+    func checkAgentControlPermissionAgain() async {
+        guard engine == .controlled else {
+            refreshAgentControlPermissionIssue(source: "permission_check_retry")
+            return
+        }
+
+        let initialAddress = Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+        await openControlledBrowser(initialAddress: initialAddress)
     }
 
     func copyBridgeEndpointToPasteboard() {
@@ -359,35 +375,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         isAgentBridgeEnabled = isEnabled
         logAgentControlState(isEnabled: isEnabled, source: source)
         if isEnabled {
-            presentAgentControlPermissionGuide(source: source)
+            refreshAgentControlPermissionIssue(source: source)
         } else {
-            isAgentControlPermissionGuideVisible = false
+            agentControlPermissionIssue = nil
         }
     }
 
     func presentAgentControlPermissionGuide(source: String) {
-        guard isAgentBridgeEnabled else { return }
-        if !isAgentControlPermissionGuideVisible {
-            isAgentControlPermissionGuideVisible = true
-        }
-        AppLogger.audit(
-            .shelfBrowserAction,
-            category: "Browser",
-            taskID: boundTaskID,
-            fields: [
-                "action": "agent_control_permission_guide",
-                "phase": "shown",
-                "source": source,
-                "engine": engine.rawValue,
-                "controlled_browser_state": controlledBrowser.runState.rawValue
-            ],
-            level: .info
-        )
+        refreshAgentControlPermissionIssue(source: source)
     }
 
     func dismissAgentControlPermissionGuide(source: String = "user") {
         guard isAgentControlPermissionGuideVisible else { return }
-        isAgentControlPermissionGuideVisible = false
+        let previousKind = agentControlPermissionIssue?.kind.rawValue ?? "unknown"
+        agentControlPermissionIssue = nil
         AppLogger.audit(
             .shelfBrowserAction,
             category: "Browser",
@@ -396,6 +397,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "action": "agent_control_permission_guide",
                 "phase": "dismissed",
                 "source": source,
+                "permission_kind": previousKind,
                 "engine": engine.rawValue,
                 "controlled_browser_state": controlledBrowser.runState.rawValue
             ],
@@ -404,25 +406,58 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func openAgentControlPrivacySettings() {
-        let candidates = [
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AppManagement",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
-            "x-apple.systempreferences:com.apple.preference.security"
-        ]
-        let opened = candidates
-            .compactMap(URL.init(string:))
-            .contains { NSWorkspace.shared.open($0) }
+        let kind = agentControlPermissionIssue?.kind ?? .appManagement
+        let opened = MacOSPermissionDiagnostics.openSettings(for: kind)
         AppLogger.audit(
             .shelfBrowserAction,
             category: "Browser",
             taskID: boundTaskID,
             fields: [
                 "action": "agent_control_privacy_settings",
+                "permission_kind": kind.rawValue,
                 "result": opened ? "opened" : "failed",
                 "engine": engine.rawValue,
                 "controlled_browser_state": controlledBrowser.runState.rawValue
             ],
             level: opened ? .info : .warning
+        )
+    }
+
+    private var applicationDisplayName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? AppChannel.current.displayName
+    }
+
+    private func refreshAgentControlPermissionIssue(source: String) {
+        let issue = MacOSPermissionDiagnostics.controlledBrowserAgentControlIssue(
+            appDisplayName: applicationDisplayName,
+            browserName: controlledBrowser.browserName,
+            isRunning: controlledBrowser.isRunning,
+            runState: controlledBrowser.runState,
+            lastErrorMessage: controlledBrowser.lastErrorMessage
+        )
+        updateAgentControlPermissionIssue(issue, source: source)
+    }
+
+    private func updateAgentControlPermissionIssue(_ issue: MacOSPermissionIssue?, source: String) {
+        let activeIssue = isAgentBridgeEnabled && engine == .controlled ? issue : nil
+        guard activeIssue != agentControlPermissionIssue else { return }
+        agentControlPermissionIssue = activeIssue
+
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "action": "agent_control_permission_check",
+                "result": activeIssue == nil ? "ok" : "missing",
+                "permission_kind": activeIssue?.kind.rawValue ?? "none",
+                "source": source,
+                "engine": engine.rawValue,
+                "controlled_browser_state": controlledBrowser.runState.rawValue
+            ],
+            level: activeIssue == nil ? .debug : .warning
         )
     }
 

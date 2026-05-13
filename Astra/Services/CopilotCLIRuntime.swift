@@ -119,6 +119,7 @@ enum CopilotCLIRuntime {
         taskEnvironment: [String: String],
         copilotHome: String,
         providerEnvironment: [String: String] = [:],
+        pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         localToolCommands: [String] = []
     ) -> CopilotCLICommandPlan {
@@ -170,7 +171,9 @@ enum CopilotCLIRuntime {
         let pathSuffix = includeAstraToolsPath
             ? RuntimePathResolver.agentPathSuffix
             : RuntimePathResolver.shellPathSuffix
-        env["PATH"] = (env["PATH"] ?? "") + ":\(pathSuffix)"
+        env["PATH"] = ([env["PATH"] ?? ""] + uniqueNonEmptyPaths(pathPrefix) + [pathSuffix])
+            .filter { !$0.isEmpty }
+            .joined(separator: ":")
         env["COPILOT_HOME"] = copilotHome
         env["NO_COLOR"] = "1"
         env["TERM"] = env["TERM"] ?? "xterm-256color"
@@ -187,6 +190,15 @@ enum CopilotCLIRuntime {
             environment: env,
             parsesJSONLines: capabilities.supportsOutputFormatJSON
         )
+    }
+
+    private static func uniqueNonEmptyPaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.compactMap { path in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
     }
 
     static func copilotPermissionArguments(

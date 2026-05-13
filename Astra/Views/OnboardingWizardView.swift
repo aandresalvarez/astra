@@ -227,8 +227,9 @@ enum OnboardingCapabilitySetup {
 /// Steps:
 ///   0. Welcome — what ASTRA is + what it needs
 ///   1. Required CLI — Claude Code or GitHub Copilot CLI
-///   2. Workspace root — pick where projects live
-///   3. Ready — "start your first workspace"
+///   2. Permissions — macOS access needed for browser control
+///   3. Workspace root — pick where projects live
+///   4. Ready — "start your first workspace"
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
@@ -269,6 +270,7 @@ struct OnboardingWizardView: View {
     enum Step: Int, CaseIterable, Identifiable {
         case welcome = 0
         case requiredCLIs
+        case permissions
         case workspaceRoot
         case ready
         var id: Int { rawValue }
@@ -277,6 +279,7 @@ struct OnboardingWizardView: View {
             switch self {
             case .welcome:        "Welcome to ASTRA"
             case .requiredCLIs:   "AI CLI"
+            case .permissions:    "macOS Access"
             case .workspaceRoot:  "Workspace Root"
             case .ready:          "You're Ready"
             }
@@ -289,6 +292,7 @@ struct OnboardingWizardView: View {
             switch self {
             case .welcome:        "Welcome"
             case .requiredCLIs:   "CLIs"
+            case .permissions:    "Access"
             case .workspaceRoot:  "Setup"
             case .ready:          "Done"
             }
@@ -414,6 +418,7 @@ struct OnboardingWizardView: View {
         switch currentStep {
         case .welcome:        welcomeStep
         case .requiredCLIs:   cliStep
+        case .permissions:    permissionsStep
         case .workspaceRoot:  workspaceStep
         case .ready:          readyStep
         }
@@ -467,6 +472,26 @@ struct OnboardingWizardView: View {
         }
         .task {
             await refreshCLIEnvironment(forceRefresh: false)
+        }
+    }
+
+    private var permissionsStep: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            stepHeader(
+                icon: "checkmark.shield.fill",
+                title: "macOS Access",
+                subtitle: "Check the local permission ASTRA uses when a task needs browser control.",
+                tint: Stanford.lagunita
+            )
+
+            MacOSPermissionsSectionView(context: .onboarding)
+
+            calloutBox(
+                icon: "info.circle.fill",
+                title: "Why this matters",
+                body: "Some web tasks use a separate controlled browser so ASTRA can read the page you opened and act on it. If macOS blocks that handoff, open App Management from here and check again.",
+                tint: Stanford.sky
+            )
         }
     }
 
@@ -551,7 +576,7 @@ struct OnboardingWizardView: View {
                 Image(systemName: "lightbulb.fill")
                     .font(Stanford.ui(11))
                     .foregroundStyle(Stanford.illuminating)
-                Text("Tip: reopen this wizard any time from Settings → Show Onboarding Again.")
+                Text("Tip: check macOS permissions any time from Settings -> Permissions.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
             }

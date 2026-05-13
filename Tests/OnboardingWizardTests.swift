@@ -16,6 +16,7 @@ struct OnboardingWizardTests {
         #expect(ordered == [
             .welcome,
             .requiredCLIs,
+            .permissions,
             .workspaceRoot,
             .ready
         ])
@@ -28,8 +29,9 @@ struct OnboardingWizardTests {
         // breaks — this test locks the assignment in.
         #expect(OnboardingWizardView.Step.welcome.rawValue == 0)
         #expect(OnboardingWizardView.Step.requiredCLIs.rawValue == 1)
-        #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 2)
-        #expect(OnboardingWizardView.Step.ready.rawValue == 3)
+        #expect(OnboardingWizardView.Step.permissions.rawValue == 2)
+        #expect(OnboardingWizardView.Step.workspaceRoot.rawValue == 3)
+        #expect(OnboardingWizardView.Step.ready.rawValue == 4)
     }
 
     @Test("Progress labels are short enough for the bar")

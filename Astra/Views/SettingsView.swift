@@ -46,6 +46,11 @@ struct SettingsView: View {
                     Label("Runtime", systemImage: "cpu")
                 }
 
+            permissionsSettingsTab
+                .tabItem {
+                    Label("Permissions", systemImage: "checkmark.shield")
+                }
+
             defaultsSettingsTab
                 .tabItem {
                     Label("Defaults", systemImage: "slider.horizontal.3")
@@ -228,6 +233,15 @@ struct SettingsView: View {
                 Text("Copilot uses your GitHub Copilot account and may consume Copilot premium requests.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var permissionsSettingsTab: some View {
+        Form {
+            Section("macOS Permissions") {
+                MacOSPermissionsSectionView(context: .settings)
             }
         }
         .formStyle(.grouped)

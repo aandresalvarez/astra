@@ -439,7 +439,20 @@ final class ControlledBrowserController: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: candidate.executablePath)
         process.arguments = candidate.launchArguments(profilePath: profilePath, debugPort: port, initialURL: initialURL)
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            let detail = "\(error.localizedDescription) \(candidate.executablePath)"
+            if MacOSPermissionDiagnostics.isLikelyAppManagementDenial(detail) {
+                throw ControlledBrowserError.commandFailed(
+                    MacOSPermissionDiagnostics.appManagementIssue(
+                        appDisplayName: AppChannel.current.displayName,
+                        targetAppName: candidate.name
+                    ).message
+                )
+            }
+            throw error
+        }
 
         self.process = process
         attachedProcessID = nil

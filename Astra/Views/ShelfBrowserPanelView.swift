@@ -535,8 +535,8 @@ struct ShelfBrowserPanelView: View {
                     .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
             }
 
-            if session.isAgentControlPermissionGuideVisible {
-                controlledAgentControlPermissionGuide
+            if let issue = session.agentControlPermissionIssue {
+                controlledAgentControlPermissionGuide(issue: issue)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -550,20 +550,20 @@ struct ShelfBrowserPanelView: View {
         )
     }
 
-    private var controlledAgentControlPermissionGuide: some View {
+    private func controlledAgentControlPermissionGuide(issue: MacOSPermissionIssue) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
 
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "switch.2")
+                Image(systemName: issue.systemImage)
                     .font(Stanford.ui(13, weight: .semibold))
                     .foregroundStyle(Stanford.statusInfo)
                     .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Finish macOS permission")
+                    Text(issue.title)
                         .font(Stanford.caption(12).weight(.semibold))
-                    Text("If System Settings opened, turn on \(applicationDisplayName) and return here.")
+                    Text(issue.message)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -573,12 +573,12 @@ struct ShelfBrowserPanelView: View {
 
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    openAppManagementButton
-                    doneWithPermissionButton
+                    openPermissionSettingsButton(issue: issue)
+                    checkPermissionAgainButton
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    openAppManagementButton
-                    doneWithPermissionButton
+                    openPermissionSettingsButton(issue: issue)
+                    checkPermissionAgainButton
                 }
             }
         }
@@ -591,11 +591,11 @@ struct ShelfBrowserPanelView: View {
         )
     }
 
-    private var openAppManagementButton: some View {
+    private func openPermissionSettingsButton(issue: MacOSPermissionIssue) -> some View {
         Button {
             session.openAgentControlPrivacySettings()
         } label: {
-            Label("Open App Management", systemImage: "gearshape")
+            Label(issue.actionTitle, systemImage: "gearshape")
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
@@ -603,12 +603,11 @@ struct ShelfBrowserPanelView: View {
         .controlSize(.small)
     }
 
-    private var doneWithPermissionButton: some View {
+    private var checkPermissionAgainButton: some View {
         Button {
-            session.dismissAgentControlPermissionGuide()
-            Task { await session.refreshControlledBrowserStatus() }
+            Task { await session.checkAgentControlPermissionAgain() }
         } label: {
-            Label("Done", systemImage: "checkmark")
+            Label("Check Again", systemImage: "arrow.clockwise")
                 .lineLimit(1)
         }
         .buttonStyle(StanfordButtonStyle(isPrimary: true))
@@ -1117,12 +1116,6 @@ struct ShelfBrowserPanelView: View {
             return "ASTRA is preparing local browser access for this task."
         }
         return "This task can read and act on the current Chrome page."
-    }
-
-    private var applicationDisplayName: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-            ?? "ASTRA"
     }
 
     private var controlledCurrentPageMessage: String {
