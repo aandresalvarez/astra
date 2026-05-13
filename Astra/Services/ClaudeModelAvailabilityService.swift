@@ -45,8 +45,24 @@ struct ClaudeModelAvailabilityService {
         defaults: UserDefaults = .standard
     ) async -> ClaudeModelAvailabilityResult {
         let result = await availableModels(configuration: configuration)
-        if case .available(let models) = result {
+        switch result {
+        case .available(let models):
             RuntimeModelAvailability.persistAvailableModels(models, for: .claudeCode, defaults: defaults)
+            AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
+                "runtime": AgentRuntimeID.claudeCode.rawValue,
+                "provider": configuration.provider.rawValue,
+                "result": "available",
+                "model_count": String(models.count),
+                "checked_at": String(Int(Date().timeIntervalSince1970))
+            ], level: .debug)
+        case .unavailable(let reason):
+            AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
+                "runtime": AgentRuntimeID.claudeCode.rawValue,
+                "provider": configuration.provider.rawValue,
+                "result": "unavailable",
+                "reason": reason,
+                "checked_at": String(Int(Date().timeIntervalSince1970))
+            ], level: .warning, fieldMaxLength: 220)
         }
         return result
     }

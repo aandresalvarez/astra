@@ -85,9 +85,9 @@ final class TaskSchedule {
         name: String,
         goal: String = "",
         workspace: Workspace? = nil,
-        runtimeID: String? = AgentRuntimeID.claudeCode.rawValue,
-        model: String = "claude-sonnet-4-6",
-        tokenBudget: Int = 50000,
+        runtimeID: String? = TaskExecutionDefaults.runtime.rawValue,
+        model: String = TaskExecutionDefaults.model,
+        tokenBudget: Int = TaskExecutionDefaults.tokenBudget,
         scheduleType: ScheduleType = .once,
         nextFireDate: Date = Date()
     ) {
@@ -116,7 +116,7 @@ final class TaskSchedule {
     }
 
     var resolvedRuntimeID: AgentRuntimeID {
-        AgentRuntimeID(rawValue: runtimeID ?? "") ?? .claudeCode
+        AgentRuntimeID(rawValue: runtimeID ?? "") ?? TaskExecutionDefaults.runtime
     }
 
     /// Advances nextFireDate based on scheduleType. For .once, disables the schedule.

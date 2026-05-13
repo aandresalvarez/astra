@@ -57,7 +57,8 @@ final class AgentRuntimeProcessRunner {
                 resumeLock.unlock()
                 continuation.resume(returning: result)
             }
-            var args = ["-p", prompt, "--model", Self.translatedModelForProvider(task.model), "--output-format", "stream-json", "--verbose"]
+            let model = Self.model(task.model, for: .claudeCode)
+            var args = ["-p", prompt, "--model", Self.translatedModelForProvider(model), "--output-format", "stream-json", "--verbose"]
             args += effectivePermissionPolicy.cliArguments
             Self.ensureSubAgentPermissions(at: workspacePath, policy: effectivePermissionPolicy, allowedTools: allowed)
             if task.maxTurns > 0 {
@@ -72,6 +73,26 @@ final class AgentRuntimeProcessRunner {
                 taskEnv: taskEnv,
                 includeClaudeTeamFlag: true
             )
+
+            AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.claudeCode.rawValue,
+                "executable_configured": String(!claudePath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: claudePath)),
+                "executable_path": claudePath,
+                "executable_mtime": Self.fileModificationTimestamp(claudePath)
+            ], level: .debug, fieldMaxLength: 220)
+
+            AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
+                "runtime": AgentRuntimeID.claudeCode.rawValue,
+                "phase": "run",
+                "model": model,
+                "provider_model": Self.translatedModelForProvider(model),
+                "permission_policy": effectivePermissionPolicy.rawValue,
+                "allowed_tools_count": String(allowed.count),
+                "allowed_tools_override": String(executionPolicy.allowedToolsOverride != nil),
+                "task_env_count": String(taskEnv.count),
+                "max_turns": String(task.maxTurns)
+            ], level: .debug)
 
             let process = AgentExecutionScopedProcess(
                 executablePath: claudePath,
@@ -240,8 +261,10 @@ final class AgentRuntimeProcessRunner {
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "provider_version": providerVersion ?? "unknown",
                 "executable_configured": String(!copilotPath.isEmpty),
-                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable))
-            ], level: .debug)
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
+                "executable_path": executable,
+                "executable_mtime": Self.fileModificationTimestamp(executable)
+            ], level: .debug, fieldMaxLength: 220)
 
             AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
@@ -448,6 +471,15 @@ final class AgentRuntimeProcessRunner {
 
     static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
         RuntimeModelAvailability.normalizedModel(model, for: runtime)
+    }
+
+    private static func fileModificationTimestamp(_ path: String) -> String {
+        guard !path.isEmpty,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let modified = attributes[.modificationDate] as? Date else {
+            return "unknown"
+        }
+        return String(Int(modified.timeIntervalSince1970))
     }
 
     @MainActor

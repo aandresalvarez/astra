@@ -144,8 +144,8 @@ final class AgentTask {
         title: String,
         goal: String,
         workspace: Workspace? = nil,
-        tokenBudget: Int = 50000,
-        model: String = "claude-sonnet-4-6",
+        tokenBudget: Int = TaskExecutionDefaults.tokenBudget,
+        model: String = TaskExecutionDefaults.model,
         isolationStrategy: IsolationStrategy = .sameDirectory,
         validationStrategy: ValidationStrategy = .manual
     ) {
@@ -183,7 +183,7 @@ final class AgentTask {
     }
 
     var resolvedRuntimeID: AgentRuntimeID {
-        AgentRuntimeID(rawValue: runtimeID ?? "") ?? .claudeCode
+        AgentRuntimeID(rawValue: runtimeID ?? "") ?? TaskExecutionDefaults.runtime
     }
 
     var skillSnapshots: [SkillSnapshotConfig] {

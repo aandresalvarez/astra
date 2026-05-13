@@ -15,6 +15,7 @@ struct LogDiagnosticsTests {
         #expect(report.errorCount == 0)
         #expect(report.warningCount == 0)
         #expect(report.issueCount == 0)
+        #expect(report.markdown.contains("App build:"))
         #expect(report.markdown.contains("No actionable issue signals were found"))
     }
 
@@ -32,7 +33,7 @@ struct LogDiagnosticsTests {
             LogEntry(level: .warning, category: "Worker", message: "runtime.empty_output runtime=copilot_cli raw_lines=1", taskID: taskID)
         ], generatedAt: Date(timeIntervalSince1970: 0))
 
-        #expect(report.issueCount == 2)
+        #expect(report.issueCount == 1)
         #expect(report.issues.first?.title == "Selected model unavailable")
         #expect(report.markdown.contains("runtime.failure_diagnostic failure_category=model_unavailable"))
         #expect(report.markdown.contains("437BF453"))
@@ -40,6 +41,7 @@ struct LogDiagnosticsTests {
         #expect(!report.markdown.contains("sk-test-secret"))
         #expect(!report.markdown.contains("OPENAI_API_KEY"))
         #expect(report.markdown.contains("[redacted-secret]") || report.markdown.contains("[redacted-secret-key]"))
+        #expect(!report.issues.contains { $0.title == "Runtime returned no visible response" })
     }
 
     @Test("Report writer creates markdown document")
@@ -79,7 +81,7 @@ struct LogDiagnosticsTests {
 
         #expect(entries.count == 3)
         #expect(entries.contains { $0.message.contains("task_short=0C48773F") })
-        #expect(report.issueCount == 2)
+        #expect(report.issueCount == 1)
         #expect(report.markdown.contains("task_short=0C48773F"))
         #expect(report.issues.contains { $0.affectedTasks == ["0C48773F"] })
     }
@@ -218,6 +220,50 @@ struct LogDiagnosticsTests {
 
         #expect(report.issues.contains { $0.title == "Connector preflight blocked task launch" })
         #expect(report.markdown.contains("Fix the connector configuration"))
+    }
+
+    @Test("Budget metric field names are preserved in diagnostics")
+    func budgetMetricFieldNamesArePreserved() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "worker.budget_exceeded configured_task_budget=50000 estimated_input_tokens=120000 launch_overhead_tokens=120000 reason=prompt_budget_estimate_exceeded token_budget=50000"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.markdown.contains("estimated_input_tokens=120000"))
+        #expect(report.markdown.contains("token_budget=50000"))
+        #expect(!report.markdown.contains("redacted_key=120000"))
+    }
+
+    @Test("Runtime model selection is reported as diagnostic context")
+    func runtimeModelSelectionIsContext() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Worker",
+                message: "runtime.model_selection available_model_count=3 model_changed=true phase=run requested_model=claude-sonnet-4-6 resolved_model=claude-sonnet-4.6 runtime=copilot_cli selection_reason=known_other_runtime_model selection_source=built_in_defaults"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.contains { $0.title == "Runtime model selection was recorded" })
+        #expect(report.markdown.contains("selection_reason=known_other_runtime_model"))
+    }
+
+    @Test("GitHub CLI local tool preflight failures are specific")
+    func githubLocalToolPreflightFailureIsSpecific() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Worker",
+                message: "local_tool.tested command=gh phase=run result=auth_failed source=task_preflight"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Local tool preflight failed" })
+        #expect(report.markdown.contains("gh auth status"))
     }
 
     @Test("Capability chat context gap is reported")

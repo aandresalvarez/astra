@@ -301,7 +301,7 @@ struct OnboardingWizardView: View {
 
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
@@ -902,7 +902,7 @@ struct OnboardingWizardView: View {
     }
 
     private var selectedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
     }
 
     private var selectedRuntimeStatus: HealthStatus? {

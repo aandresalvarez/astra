@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRACore
 
 enum AppStorageKeys {
     static let hasCompletedOnboarding = "astra.hasCompletedOnboarding"
@@ -29,6 +30,14 @@ enum AppStorageKeys {
     static let copilotModelsCheckedAt = "astra.copilot.modelsCheckedAt.v1"
 }
 
+enum TaskExecutionDefaults {
+    static let runtime = AgentRuntimeID.claudeCode
+    static let model = AgentRuntimeID.claudeCode.defaultModel
+    static let tokenBudget = 100_000
+    static let budgetEnforcementMode = BudgetEnforcementMode.warning
+    static let budgetPresets = [10_000, 25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 0]
+}
+
 enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
     case hardStop = "hard_stop"
     case warning = "warning"
@@ -55,7 +64,7 @@ enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
 
     static func configuredDefault(in defaults: UserDefaults) -> BudgetEnforcementMode {
         let raw = defaults.string(forKey: AppStorageKeys.budgetEnforcementMode)
-        return BudgetEnforcementMode(rawValue: raw ?? "") ?? .hardStop
+        return BudgetEnforcementMode(rawValue: raw ?? "") ?? TaskExecutionDefaults.budgetEnforcementMode
     }
 }
 

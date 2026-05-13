@@ -57,9 +57,9 @@ final class TaskTemplate {
         self.beforeGoal = ""
         self.mainGoal = mainGoal
         self.afterGoal = ""
-        self.beforeBudget = 20000
-        self.mainBudget = 50000
-        self.afterBudget = 20000
+        self.beforeBudget = TaskExecutionDefaults.tokenBudget
+        self.mainBudget = TaskExecutionDefaults.tokenBudget
+        self.afterBudget = TaskExecutionDefaults.tokenBudget
         self.beforeModel = ""
         self.mainModel = ""
         self.afterModel = ""

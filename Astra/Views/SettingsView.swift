@@ -4,10 +4,10 @@ import ASTRACore
 
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
-    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = 50000
-    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = BudgetEnforcementMode.hardStop.rawValue
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
+    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
@@ -26,7 +26,7 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
 
-    private let budgetPresets = [10000, 25000, 50000, 100000, 200000, 500000, 1000000, 0]
+    private let budgetPresets = TaskExecutionDefaults.budgetPresets
 
     @State private var detectedPath = ""
     @State private var detectedCopilotPath = ""
@@ -423,7 +423,7 @@ struct SettingsView: View {
     }
 
     private var selectedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
     }
 
     private var runtimeModels: [String] {
@@ -444,12 +444,12 @@ struct SettingsView: View {
     }
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
-        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? .hardStop
+        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
     }
 
     private var readinessConfiguration: RuntimeReadinessConfiguration {
         RuntimeReadinessConfiguration(
-            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode,
+            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
             claudePath: claudePath,
             copilotPath: copilotPath,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
@@ -741,7 +741,9 @@ struct SettingsView: View {
     }
 
     private func alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: Bool = false) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let previousDefaultModel = defaultModel
+        let previousValidationModel = validationModel
         if resetToRuntimeSuggestion {
             defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                 currentModel: defaultModel,
@@ -769,6 +771,16 @@ struct SettingsView: View {
                 cachedCopilotModelsJSON: copilotAvailableModels
             )
         }
+        AppLogger.breadcrumb(action: "settings_runtime_models_aligned", category: "UI", fields: [
+            "source": resetToRuntimeSuggestion ? "runtime_switch" : "model_cache_refresh",
+            "runtime": runtime.rawValue,
+            "previous_default_model": previousDefaultModel,
+            "default_model": defaultModel,
+            "default_model_changed": String(previousDefaultModel != defaultModel),
+            "previous_validation_model": previousValidationModel,
+            "validation_model": validationModel,
+            "validation_model_changed": String(previousValidationModel != validationModel)
+        ], level: previousDefaultModel == defaultModel && previousValidationModel == validationModel ? .debug : .info)
     }
 }
 

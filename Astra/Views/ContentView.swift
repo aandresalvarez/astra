@@ -279,9 +279,9 @@ struct ContentView: View {
     @State private var runningTaskCount = 0
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = "claude_code"
-    @AppStorage("defaultModel") private var defaultModel = "claude-sonnet-4-6"
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = 50000
+    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
@@ -342,7 +342,7 @@ struct ContentView: View {
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
         let runtime = selectedTask?.resolvedRuntimeID
             ?? AgentRuntimeID(rawValue: defaultRuntimeID)
-            ?? .claudeCode
+            ?? TaskExecutionDefaults.runtime
         let preferredModel = selectedTask?.model ?? RuntimeModelAvailability.defaultModel(for: runtime)
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
@@ -1472,7 +1472,7 @@ struct ContentView: View {
             return false
         }
 
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
         let task = AgentTask(
             title: AstraTaskIntentSupport.title(for: trimmedGoal),
             goal: trimmedGoal,
@@ -2104,8 +2104,8 @@ struct ContentView: View {
                 title: "Seeded Task",
                 goal: "UI test task",
                 workspace: ws,
-                tokenBudget: 50000,
-                model: "claude-sonnet-4-6"
+                tokenBudget: TaskExecutionDefaults.tokenBudget,
+                model: TaskExecutionDefaults.model
             )
             task.status = .queued
             modelContext.insert(task)

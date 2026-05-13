@@ -73,6 +73,8 @@ enum AuditEvent: String, CaseIterable {
     case workerPermissionDenied = "worker.permission_denied"
     case workerEnvironmentInjected = "worker.environment_injected"
     case runtimeCommandPlanned = "runtime.command_planned"
+    case runtimeModelSelection = "runtime.model_selection"
+    case runtimeModelAvailability = "runtime.model_availability"
     case runtimeProviderDetected = "runtime.provider_detected"
     case runtimeStreamSummary = "runtime.stream_summary"
     case runtimeUnknownEvent = "runtime.unknown_event"
@@ -118,6 +120,7 @@ enum AuditEvent: String, CaseIterable {
     case localToolCreated = "local_tool.created"
     case localToolUpdated = "local_tool.updated"
     case localToolDeleted = "local_tool.deleted"
+    case localToolTested = "local_tool.tested"
     case templateCreated = "template.created"
     case templateDeleted = "template.deleted"
 
@@ -213,10 +216,39 @@ enum LogSanitizer {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return "field" }
         let upper = cleaned.uppercased()
+        if isSafeMetricKey(upper) {
+            return cleaned
+        }
         if upper.contains("TOKEN") || upper.contains("SECRET") || upper.contains("PASSWORD") || upper.contains("API_KEY") {
             return "redacted_key"
         }
         return cleaned
+    }
+
+    private static func isSafeMetricKey(_ upper: String) -> Bool {
+        let unsafeFragments = [
+            "API_TOKEN",
+            "AUTH_TOKEN",
+            "ACCESS_TOKEN",
+            "REFRESH_TOKEN",
+            "BEARER_TOKEN",
+            "PRIVATE_TOKEN",
+            "SECRET_TOKEN"
+        ]
+        if unsafeFragments.contains(where: upper.contains) {
+            return false
+        }
+        let safeFragments = [
+            "TOKEN_BUDGET",
+            "TOKEN_COUNT",
+            "TOKENS",
+            "ESTIMATED_INPUT_TOKENS",
+            "LAUNCH_OVERHEAD_TOKENS",
+            "INPUT_TOKENS",
+            "OUTPUT_TOKENS",
+            "TOTAL_TOKENS"
+        ]
+        return safeFragments.contains { upper == $0 || upper.contains($0) }
     }
 
     private static func replace(pattern: String, in text: String, with replacement: String) -> String {

@@ -9,7 +9,7 @@ private func makeTask(
     goal: String = "Do something",
     isolation: IsolationStrategy = .sameDirectory
 ) -> AgentTask {
-    let task = AgentTask(title: title, goal: goal, tokenBudget: 50000, model: "claude-sonnet-4-6")
+    let task = AgentTask(title: title, goal: goal)
     task.isolationStrategy = isolation
     return task
 }

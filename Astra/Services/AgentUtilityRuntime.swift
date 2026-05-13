@@ -9,7 +9,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
     var copilotHome: String
 
     init(
-        runtime: AgentRuntimeID = .claudeCode,
+        runtime: AgentRuntimeID = TaskExecutionDefaults.runtime,
         model: String? = nil,
         claudePath: String = RuntimePathResolver.detectClaudePath(),
         copilotPath: String = CopilotCLIRuntime.detectPath(),
@@ -24,7 +24,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
 
     static func claude(
         path: String = RuntimePathResolver.detectClaudePath(),
-        model: String = AgentRuntimeID.claudeCode.defaultModel
+        model: String = TaskExecutionDefaults.model
     ) -> AgentUtilityRuntimeConfiguration {
         AgentUtilityRuntimeConfiguration(runtime: .claudeCode, model: model, claudePath: path)
     }

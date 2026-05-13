@@ -484,13 +484,13 @@ struct ProcessMonitorTests {
 
 @Suite("Budget Enforcement Preferences")
 struct BudgetEnforcementPreferenceTests {
-    @Test("Configured enforcement defaults to hard stop and reads warning")
+    @Test("Configured enforcement defaults to warning and reads overrides")
     func configuredDefaultReadsStoredMode() {
         let suiteName = "astra-budget-enforcement-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .warning)
 
         defaults.set(BudgetEnforcementMode.warning.rawValue, forKey: AppStorageKeys.budgetEnforcementMode)
         #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .warning)
@@ -499,7 +499,7 @@ struct BudgetEnforcementPreferenceTests {
         #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
 
         defaults.set("unexpected", forKey: AppStorageKeys.budgetEnforcementMode)
-        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .hardStop)
+        #expect(BudgetEnforcementMode.configuredDefault(in: defaults) == .warning)
     }
 }
 

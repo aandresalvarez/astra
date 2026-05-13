@@ -358,11 +358,11 @@ final class TaskLifecycleCoordinator {
     func backfillGeneratedThreadTitles(
         claudePath: String,
         copilotPath: String = "",
-        defaultRuntimeID: String = AgentRuntimeID.claudeCode.rawValue,
+        defaultRuntimeID: String = TaskExecutionDefaults.runtime.rawValue,
         model: String = "claude-haiku-4-5-20251001",
         limit: Int = 40
     ) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? .claudeCode
+        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
         let utilityRuntime = AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(model, for: runtime),
