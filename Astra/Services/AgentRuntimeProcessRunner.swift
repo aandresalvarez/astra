@@ -38,6 +38,7 @@ final class AgentRuntimeProcessRunner {
         claudePath: String,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        permissionManifest: RunPermissionManifest? = nil,
         budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String) -> Void
@@ -112,7 +113,8 @@ final class AgentRuntimeProcessRunner {
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
-                taskID: task.id
+                taskID: task.id,
+                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init)
             )
 
             process.stdoutFileHandle.readabilityHandler = { handle in
@@ -180,6 +182,8 @@ final class AgentRuntimeProcessRunner {
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
+                    policyViolation: monitor.policyViolation,
+                    policyViolationMessage: monitor.policyViolationMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
@@ -210,6 +214,7 @@ final class AgentRuntimeProcessRunner {
         copilotHome: String,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        permissionManifest: RunPermissionManifest? = nil,
         budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
@@ -313,7 +318,8 @@ final class AgentRuntimeProcessRunner {
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
-                taskID: task.id
+                taskID: task.id,
+                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init)
             )
 
             process.stdoutFileHandle.readabilityHandler = { handle in
@@ -401,6 +407,8 @@ final class AgentRuntimeProcessRunner {
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     providerVersion: providerVersion,
+                    policyViolation: monitor.policyViolation,
+                    policyViolationMessage: monitor.policyViolationMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,

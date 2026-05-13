@@ -31,11 +31,13 @@ struct ComposerToolbar: View {
     // MARK: - Permission mode (new task composer)
 
     @Binding var skipPermissions: Bool
+    @Binding var policyLevelRaw: String
     @Binding var useAgentTeam: Bool
     @Binding var teamSize: Int
     @Binding var isPlanMode: Bool
     var isPlanModeDisabled: Bool = false
     var planModeHelp: String = "Plan and refine before creating a runnable task"
+    var onPolicyLevelChange: ((AgentPolicyLevel) -> Void)?
 
     // MARK: - Submit button style
 
@@ -52,7 +54,9 @@ struct ComposerToolbar: View {
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var globalDefaultPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var isPlusHovered = false
+    @State private var isPolicySheetPresented = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -69,6 +73,18 @@ struct ComposerToolbar: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        .sheet(isPresented: $isPolicySheetPresented) {
+            AgentPolicySheet(
+                runtime: resolvedRuntime,
+                model: model,
+                workspace: workspace,
+                skills: skills,
+                selectedPolicyLevelRaw: $policyLevelRaw,
+                globalDefaultLevelRaw: $globalDefaultPolicyLevelRaw,
+                skipPermissions: $skipPermissions,
+                onPolicyLevelChange: onPolicyLevelChange
+            )
+        }
     }
 
     // MARK: - Plus Menu
@@ -322,41 +338,71 @@ struct ComposerToolbar: View {
 
     private func permissionModeButton(compact: Bool) -> some View {
         Menu {
-            Button {
-                skipPermissions = false
-            } label: {
-                Label("Review: restricted tools", systemImage: "lock.fill")
+            ForEach(AgentPolicyLevel.allCases) { level in
+                Button {
+                    setPolicyLevel(level)
+                } label: {
+                    HStack {
+                        Label(level.displayName, systemImage: level.symbolName)
+                        if currentPolicyLevel == level {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
             }
 
+            Divider()
+
             Button {
-                skipPermissions = true
+                isPolicySheetPresented = true
             } label: {
-                Label("Full access", systemImage: "lock.open.fill")
+                Label("Policy details...", systemImage: "checklist.shield")
             }
         } label: {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
-                    Image(systemName: skipPermissions ? "exclamationmark.shield.fill" : "lock.fill")
+                    Image(systemName: currentPolicyLevel.symbolName)
                         .font(Stanford.ui(12, weight: .semibold))
-                    Text(skipPermissions ? "Full access" : "Review")
+                    Text(currentPolicyLevel.displayName)
                         .font(Stanford.caption(13).weight(.medium))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
                         .font(Stanford.ui(9, weight: .bold))
                 }
             }
-            .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
+            .foregroundStyle(policyColor(currentPolicyLevel))
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 6)
-            .background((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.12))
+            .background(policyColor(currentPolicyLevel).opacity(0.12))
             .clipShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help(skipPermissions ? "Full access skips CLI permission prompts. Use only for trusted tasks." : "Review mode keeps agents on restricted tools by default.")
+        .help(currentPolicyLevel.shortDescription)
         .accessibilityIdentifier("SecurityGate")
-        .accessibilityLabel("Security Gate")
-        .accessibilityValue(skipPermissions ? "Full access" : "Review")
+        .accessibilityLabel("Agent Policy")
+        .accessibilityValue(currentPolicyLevel.displayName)
+    }
+
+    private var currentPolicyLevel: AgentPolicyLevel {
+        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(policyLevelRaw)
+    }
+
+    private func setPolicyLevel(_ level: AgentPolicyLevel) {
+        policyLevelRaw = level.rawValue
+        skipPermissions = level == .autonomous
+        onPolicyLevelChange?(level)
+    }
+
+    private func policyColor(_ level: AgentPolicyLevel) -> Color {
+        switch level {
+        case .locked: Stanford.cardinalRed
+        case .review: Stanford.paloAltoGreen
+        case .build: Stanford.lagunita
+        case .network: Stanford.sky
+        case .autonomous: Stanford.poppy
+        case .custom: Stanford.plum
+        }
     }
 
     private var teamModeButton: some View {

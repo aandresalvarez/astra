@@ -98,6 +98,8 @@ final class AgentRuntimeWorker {
         set { runtimeConfiguration.defaultRuntimeID = newValue }
     }
 
+    var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
+
     @MainActor
     init() {
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
@@ -255,6 +257,24 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
         await logGitHubCLIPreflightIfNeeded(for: task, phase: "run")
+        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: task.model,
+            workspacePath: executionPath,
+            phase: "run",
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            modelContext: modelContext
+        )
+        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: "run") else {
+            IsolationService.cleanup(task: task, executionPath: executionPath)
+            return
+        }
+        let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
             "model": task.model,
             "token_budget": String(task.tokenBudget),
@@ -290,8 +310,9 @@ final class AgentRuntimeWorker {
             task: task,
             workspacePath: executionPath,
             claudePath: claudePath,
-            permissionPolicy: permissionPolicy,
-            executionPolicy: executionPolicy,
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: launchExecutionPolicy,
+            permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
@@ -417,6 +438,17 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if result.policyViolation {
+            run.status = .failed
+            run.stopReason = "policy_violation"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "error",
+                payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
+                run: run
+            )
+            modelContext.insert(event)
         } else if Self.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
@@ -609,6 +641,7 @@ final class AgentRuntimeWorker {
 
         // Compact events if they've grown too large
         Self.compactEvents(for: task, modelContext: modelContext)
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
 
         let finishedAt = Date()
         task.updatedAt = finishedAt
@@ -882,6 +915,23 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "resume")
         await logGitHubCLIPreflightIfNeeded(for: task, phase: "resume")
+        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: task.model,
+            workspacePath: task.codeWorkingDirectory,
+            phase: "resume",
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            modelContext: modelContext
+        )
+        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: "resume") else {
+            return
+        }
+        let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
 
         AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
             "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
@@ -907,8 +957,9 @@ final class AgentRuntimeWorker {
             task: task,
             workspacePath: task.codeWorkingDirectory,
             claudePath: claudePath,
-            permissionPolicy: permissionPolicy,
-            executionPolicy: executionPolicy,
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: launchExecutionPolicy,
+            permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line in
@@ -1022,6 +1073,17 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if result.policyViolation {
+            run.status = .failed
+            run.stopReason = "policy_violation"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "error",
+                payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
+                run: run
+            )
+            modelContext.insert(event)
         } else if Self.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
@@ -1113,6 +1175,7 @@ final class AgentRuntimeWorker {
 
         // Compact events if they've grown too large
         Self.compactEvents(for: task, modelContext: modelContext)
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
 
         let finishedAt = Date()
         task.updatedAt = finishedAt
@@ -1264,6 +1327,26 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
         await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
+        let copilotCapabilities = CopilotCLIRuntime.capabilities(executablePath: copilotPath)
+        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: task.model,
+            workspacePath: executionPath,
+            phase: auditPhase,
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            copilotCapabilities: copilotCapabilities,
+            modelContext: modelContext
+        )
+        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
+            IsolationService.cleanup(task: task, executionPath: executionPath)
+            return
+        }
+        let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
         let beforeGitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
         let beforeDirtyFingerprints = AgentFileChangeDetector.fileFingerprints(
@@ -1289,8 +1372,9 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             copilotPath: copilotPath,
             copilotHome: copilotHome,
-            permissionPolicy: permissionPolicy,
-            executionPolicy: executionPolicy,
+            permissionPolicy: runPermissionPolicy,
+            executionPolicy: launchExecutionPolicy,
+            permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
@@ -1427,6 +1511,17 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
             modelContext.insert(event)
+        } else if result.policyViolation {
+            run.status = .failed
+            run.stopReason = "policy_violation"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "error",
+                payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
+                run: run
+            )
+            modelContext.insert(event)
         } else if Self.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
@@ -1546,6 +1641,7 @@ final class AgentRuntimeWorker {
 
         IsolationService.cleanup(task: task, executionPath: executionPath)
         Self.compactEvents(for: task, modelContext: modelContext)
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
         let finishedAt = Date()
         task.updatedAt = finishedAt
         if task.isTerminal {
@@ -1599,6 +1695,54 @@ final class AgentRuntimeWorker {
 
         Approve to continue this task with one-time expanded runtime permissions.\(detail)
         """
+    }
+
+    @MainActor
+    private func shouldStartProvider(
+        with manifest: RunPermissionManifest,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        let blockedDiagnostics = manifest.providerRender.diagnostics.filter { $0.severity == .blocked }
+        guard !blockedDiagnostics.isEmpty else { return true }
+
+        run.status = .failed
+        run.completedAt = Date()
+        run.stopReason = "policy_blocked"
+        task.status = .pendingUser
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus(at: task.updatedAt)
+
+        let details = blockedDiagnostics
+            .map { diagnostic in
+                let remediation = diagnostic.remediation.map { " Remediation: \($0)" } ?? ""
+                return "- \(diagnostic.title): \(diagnostic.message)\(remediation)"
+            }
+            .joined(separator: "\n")
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: "error",
+            payload: "Provider policy blocked this run before launch.\n\(details)",
+            run: run
+        ))
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: Self.runPersistenceFields(task: task, run: run, phase: phase)
+        )
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+            "reason": "policy_blocked",
+            "phase": phase,
+            "blocked_diagnostics": String(blockedDiagnostics.count),
+            "policy_level": manifest.policyLevel.rawValue,
+            "runtime": manifest.providerID.rawValue
+        ], level: .warning)
+        isRunning = false
+        return false
     }
 
     @MainActor
@@ -2247,6 +2391,20 @@ final class AgentRuntimeWorker {
 
     func buildPrompt(for task: AgentTask) -> String {
         AgentPromptBuilder.buildPrompt(for: task)
+    }
+
+    @MainActor
+    private func effectivePermissionPolicy(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy
+    ) -> PermissionPolicy {
+        let resolution = TaskPolicyStore.resolve(
+            for: task,
+            globalDefaultLevel: AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw),
+            fallbackPermissionPolicy: permissionPolicy,
+            executionPolicy: executionPolicy
+        )
+        return PermissionPolicy.fromAgentPolicyLevel(resolution.level)
     }
 
     /// Model used for AI validation checks

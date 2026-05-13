@@ -1094,12 +1094,15 @@ struct TaskThreadSnapshotTests {
             .appendingPathComponent("astra-generated-files-\(UUID().uuidString)")
         let nested = root.appendingPathComponent("nested")
         let outputs = root.appendingPathComponent("outputs")
+        let runtimeBin = root.appendingPathComponent(".runtime-bin")
 
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
         try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
         try "internal".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
         try "output".write(to: outputs.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+        try "shim".write(to: runtimeBin.appendingPathComponent("astra-browser"), atomically: true, encoding: .utf8)
         try "nested".write(to: nested.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
 
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1110,6 +1113,7 @@ struct TaskThreadSnapshotTests {
         #expect(paths.contains(nested.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(root.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(outputs.appendingPathComponent("result.txt").path))
+        #expect(!paths.contains(runtimeBin.appendingPathComponent("astra-browser").path))
     }
 
     @Test("Generated file scan can run asynchronously")
@@ -1132,9 +1136,11 @@ struct TaskThreadSnapshotTests {
             .appendingPathComponent("astra-task-file-index-\(UUID().uuidString)")
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime-bin"), withIntermediateDirectories: true)
         try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
         try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
+        try "shim".write(to: root.appendingPathComponent(".runtime-bin/astra-browser"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let files = TaskFileIndex.scanTaskFolder(root.path)
@@ -1143,6 +1149,7 @@ struct TaskThreadSnapshotTests {
         #expect(destinations["summary.md"] == .text)
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
+        #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
     }
 
     @Test("Task file index merges visible files without duplicates")

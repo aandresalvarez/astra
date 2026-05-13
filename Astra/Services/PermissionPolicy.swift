@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum PermissionPolicy: String, Codable, CaseIterable {
     case autonomous
@@ -30,6 +31,26 @@ enum PermissionPolicy: String, Codable, CaseIterable {
             ]
         case .interactive:
             return []
+        }
+    }
+
+    var agentPolicyLevel: AgentPolicyLevel {
+        switch self {
+        case .autonomous:
+            .autonomous
+        case .restricted:
+            .review
+        case .interactive:
+            .review
+        }
+    }
+
+    static func fromAgentPolicyLevel(_ level: AgentPolicyLevel) -> PermissionPolicy {
+        switch level {
+        case .autonomous:
+            .autonomous
+        case .locked, .review, .build, .network, .custom:
+            .restricted
         }
     }
 }

@@ -265,11 +265,12 @@ struct TaskRunActivity: Sendable {
     let toolResults: [TaskToolResult]
     let notices: [TaskRunNotice]
     let fileChanges: [StoredFileChange]
+    let permissionManifest: RunPermissionManifest?
 
-    static let empty = TaskRunActivity(tools: [], toolResults: [], notices: [], fileChanges: [])
+    static let empty = TaskRunActivity(tools: [], toolResults: [], notices: [], fileChanges: [], permissionManifest: nil)
 
     var hasVisibleActivity: Bool {
-        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty
+        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || permissionManifest != nil
     }
 }
 
@@ -388,6 +389,7 @@ struct TaskThreadSnapshot: Sendable {
         var toolsByRunID: [UUID: [TaskEventSnapshot]] = [:]
         var resultsByRunID: [UUID: [TaskToolResult]] = [:]
         var noticesByRunID: [UUID: [TaskRunNotice]] = [:]
+        var permissionManifestByRunID: [UUID: RunPermissionManifest] = [:]
         var protocolStatesByRunID: [UUID: TaskRunProtocolState] = [:]
         var latestPlanItems: [TaskProtocolTodoItem] = []
 
@@ -401,12 +403,17 @@ struct TaskThreadSnapshot: Sendable {
                         id: event.id,
                         payload: event.payload
                     ))
-                case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
+                case "budget.warning", "budget.exceeded", "error", "permission.approval.requested", "astra.permission_summary":
                     noticesByRunID[runID, default: []].append(TaskRunNotice(
                         id: event.id,
                         type: event.type,
                         payload: event.payload
                     ))
+                case "astra.permission_manifest":
+                    if let data = event.payload.data(using: .utf8),
+                       let manifest = try? JSONDecoder().decode(RunPermissionManifest.self, from: data) {
+                        permissionManifestByRunID[runID] = manifest
+                    }
                 default:
                     break
                 }
@@ -441,7 +448,8 @@ struct TaskThreadSnapshot: Sendable {
                 tools: Self.summarizeToolEvents(toolsByRunID[run.id] ?? []),
                 toolResults: resultsByRunID[run.id] ?? [],
                 notices: noticesByRunID[run.id] ?? [],
-                fileChanges: run.fileChanges
+                fileChanges: run.fileChanges,
+                permissionManifest: permissionManifestByRunID[run.id]
             )
         }
         activityByRunID = activity
@@ -638,7 +646,7 @@ enum TaskGeneratedFiles {
 
         var files: [String] = []
         while let rel = enumerator.nextObject() as? String {
-            if rel.hasPrefix("outputs/") || rel == "session_history.md" { continue }
+            guard shouldDisplayTaskFolderFile(relativePath: rel) else { continue }
             let full = (folder as NSString).appendingPathComponent(rel)
             var isDir: ObjCBool = false
             fileManager.fileExists(atPath: full, isDirectory: &isDir)
@@ -647,6 +655,17 @@ enum TaskGeneratedFiles {
             }
         }
         return files.sorted()
+    }
+
+    static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {
+        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
+        if rel == "session_history.md" || rel == "outputs" || rel.hasPrefix("outputs/") {
+            return false
+        }
+        if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
+            return false
+        }
+        return true
     }
 
     static func filesAsync(in folder: String) async -> [String] {

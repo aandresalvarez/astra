@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("claudePath") private var claudePath = ""
@@ -122,6 +123,19 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
 
                 Text(selectedBudgetEnforcementMode.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Agent Policy") {
+                Picker("Default Policy", selection: $defaultAgentPolicyLevelRaw) {
+                    ForEach(AgentPolicyLevel.allCases) { level in
+                        Label(level.displayName, systemImage: level.symbolName)
+                            .tag(level.rawValue)
+                    }
+                }
+
+                Text(selectedDefaultPolicyLevel.shortDescription)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -445,6 +459,10 @@ struct SettingsView: View {
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
         BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
+    }
+
+    private var selectedDefaultPolicyLevel: AgentPolicyLevel {
+        AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw)
     }
 
     private var readinessConfiguration: RuntimeReadinessConfiguration {

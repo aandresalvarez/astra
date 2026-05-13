@@ -74,6 +74,7 @@ struct TaskMainView: View {
     @State private var selectedTab: TaskMainTab = .summary
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
+    @State private var expandedRunPolicyManifests: Set<UUID> = []
     @State private var showScheduleEditor = false
     @State private var scheduleCreationTaskID: UUID?
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
@@ -104,6 +105,8 @@ struct TaskMainView: View {
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    @State private var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -302,9 +305,11 @@ struct TaskMainView: View {
             threadViewModel.reset(for: task)
             loadSSHConnections()
             alignTaskRuntimeWithAvailability()
+            initializeTaskPolicySelection()
         }
         .onAppear {
             alignTaskModelWithRuntime()
+            initializeTaskPolicySelection()
             runtimeHealthNow = Date()
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
@@ -1326,6 +1331,10 @@ struct TaskMainView: View {
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
 
         return VStack(alignment: .leading, spacing: 8) {
+            if let manifest = activity.permissionManifest {
+                runPolicyManifestView(manifest, for: run)
+            }
+
             // Collapsible tool activity
             if !toolEvents.isEmpty {
                 Button {
@@ -1481,6 +1490,108 @@ struct TaskMainView: View {
         .accessibilityLabel("Agent response")
     }
 
+    private func runPolicyManifestView(_ manifest: RunPermissionManifest, for run: TaskRunSnapshot) -> some View {
+        let isExpanded = expandedRunPolicyManifests.contains(run.id)
+        let color = manifest.providerRender.usesBroadProviderPermissions ? Stanford.poppy : policyColor(manifest.policyLevel)
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedRunPolicyManifests.remove(run.id)
+                    } else {
+                        expandedRunPolicyManifests.insert(run.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: manifest.policyLevel.symbolName)
+                        .font(Stanford.ui(12, weight: .semibold))
+                    Text("\(manifest.policyLevel.displayName) policy")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text(manifest.policyScope.displayName)
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if manifest.providerRender.usesBroadProviderPermissions {
+                        Text("Broad provider mode")
+                            .font(Stanford.caption(10).weight(.semibold))
+                            .foregroundStyle(Stanford.poppy)
+                    }
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                }
+                .foregroundStyle(color)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    manifestFact("Provider", "\(manifest.providerID.displayName) · \(manifest.model)")
+                    manifestFact("Provider version", manifest.providerVersion ?? "Unknown")
+                    manifestFact("Enforcement", manifest.providerRender.enforcementTiers.map(\.displayName).joined(separator: ", "))
+                    manifestFact("Config source", manifest.providerRender.configOwnership.displayName)
+                    manifestFact("Allowed tools", manifest.providerRender.allowedTools.isEmpty ? "None" : manifest.providerRender.allowedTools.joined(separator: ", "))
+                    manifestFact("Denied tools", manifest.providerRender.deniedTools.isEmpty ? "None" : manifest.providerRender.deniedTools.joined(separator: ", "))
+                    manifestFact("Allowed shell", manifest.providerRender.allowedShellPatterns.isEmpty ? "None" : manifest.providerRender.allowedShellPatterns.joined(separator: ", "))
+                    manifestFact("Denied shell", manifest.providerRender.deniedShellPatterns.isEmpty ? "None" : manifest.providerRender.deniedShellPatterns.joined(separator: ", "))
+                    manifestFact("Network", manifest.providerRender.allowedURLPatterns.isEmpty ? "Ask or connector scoped" : manifest.providerRender.allowedURLPatterns.joined(separator: ", "))
+                    manifestFact("Paths", ([manifest.workspacePath] + manifest.additionalPaths).joined(separator: ", "))
+                    manifestFact("Environment keys", manifest.environmentKeyNames.isEmpty ? "None" : manifest.environmentKeyNames.joined(separator: ", "))
+                    manifestFact("Credential labels", manifest.credentialLabels.isEmpty ? "None" : manifest.credentialLabels.joined(separator: ", "))
+                    manifestFact("Approvals", manifest.approvalsGranted.isEmpty ? "None" : manifest.approvalsGranted.joined(separator: ", "))
+                    if !manifest.providerRender.generatedConfigPreview.isEmpty {
+                        manifestFact("Generated config", manifest.providerRender.generatedConfigPreview)
+                    }
+                    if !manifest.providerRender.diagnostics.isEmpty {
+                        manifestFact(
+                            "Diagnostics",
+                            manifest.providerRender.diagnostics
+                                .map { "\($0.severity.rawValue): \($0.title)" }
+                                .joined(separator: "; ")
+                        )
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(color.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(color.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private func manifestFact(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 92, alignment: .leading)
+            Text(value)
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.black)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func policyColor(_ level: AgentPolicyLevel) -> Color {
+        switch level {
+        case .locked: Stanford.cardinalRed
+        case .review: Stanford.paloAltoGreen
+        case .build: Stanford.lagunita
+        case .network: Stanford.sky
+        case .autonomous: Stanford.poppy
+        case .custom: Stanford.plum
+        }
+    }
+
     private func runNoticeView(_ notice: TaskRunNotice) -> some View {
         let presentation = runNoticePresentation(for: notice.type)
         return HStack(alignment: .top, spacing: 8) {
@@ -1492,7 +1603,7 @@ struct TaskMainView: View {
                 Text(presentation.title)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(presentation.color)
-                Text(notice.payload)
+                Text(runNoticeBody(for: notice))
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.black)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1619,11 +1730,50 @@ struct TaskMainView: View {
             ("Budget Exceeded", "xmark.octagon", Stanford.cardinalRed)
         case "permission.approval.requested":
             ("Approval Needed", "hand.raised", Stanford.poppy)
+        case "astra.permission_summary":
+            ("Run Permission Summary", "checklist.shield", Stanford.coolGrey)
         case "error":
             ("Provider Error", "xmark.octagon", Stanford.cardinalRed)
         default:
             ("Notice", "info.circle", Stanford.coolGrey)
         }
+    }
+
+    private func runNoticeBody(for notice: TaskRunNotice) -> String {
+        guard notice.type == "astra.permission_summary",
+              let data = notice.payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return notice.payload
+        }
+
+        let status = json["status"] as? String ?? "unknown"
+        let stopReason = json["stopReason"] as? String ?? "unknown"
+        let tools = json["toolUseCount"] as? Int ?? 0
+        let denied = json["deniedCount"] as? Int ?? 0
+        let files = json["fileChangeCount"] as? Int ?? 0
+        let toolsUsed = (json["toolsUsed"] as? [String] ?? []).prefix(6).joined(separator: ", ")
+        let commands = (json["commandsRun"] as? [String] ?? []).prefix(3).joined(separator: " | ")
+        let domains = (json["externalDomains"] as? [String] ?? []).prefix(4).joined(separator: ", ")
+        let envKeys = (json["environmentKeyNames"] as? [String] ?? []).prefix(6).joined(separator: ", ")
+        let approvals = (json["approvalsGranted"] as? [String] ?? []).prefix(3).joined(separator: ", ")
+        let broad = (json["usedBroadProviderPermissions"] as? Bool ?? false) ? "yes" : "no"
+        let escalated = (json["exceededInitialPermissionLevel"] as? Bool ?? false) ? "yes" : "no"
+
+        var parts = [
+            "Status: \(status)",
+            "Stop reason: \(stopReason)",
+            "Tools used: \(tools)",
+            "Permission denials/requests: \(denied)",
+            "Files changed: \(files)",
+            "Broad provider permissions: \(broad)",
+            "Exceeded initial permission level: \(escalated)"
+        ]
+        if !toolsUsed.isEmpty { parts.append("Observed tools: \(toolsUsed)") }
+        if !commands.isEmpty { parts.append("Commands: \(commands)") }
+        if !domains.isEmpty { parts.append("External domains: \(domains)") }
+        if !envKeys.isEmpty { parts.append("Env keys: \(envKeys)") }
+        if !approvals.isEmpty { parts.append("Approvals: \(approvals)") }
+        return parts.joined(separator: ". ") + "."
     }
 
     private func forkTask(from run: TaskRunSnapshot) {
@@ -2386,10 +2536,21 @@ struct TaskMainView: View {
                     },
                     onManageSkills: onManageSkills,
                     skipPermissions: $skipPermissions,
+                    policyLevelRaw: $taskPolicyLevelRaw,
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
                     isPlanMode: $isPlanMode,
                     planModeHelp: "Plan and refine before resuming this thread",
+                    onPolicyLevelChange: { level in
+                        TaskPolicyStore.recordSelection(
+                            level: level,
+                            task: task,
+                            modelContext: modelContext,
+                            source: "task_composer"
+                        )
+                        task.updatedAt = Date()
+                        try? modelContext.save()
+                    },
                     showSecurityGate: true,
                     sshConnections: sshConnections
                 )
@@ -2844,6 +3005,7 @@ struct TaskMainView: View {
               task.status != .queued,
               task.status != .running else { return }
 
+        recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()
         task.status = .queued
@@ -2960,6 +3122,7 @@ struct TaskMainView: View {
             task.updatedAt = Date()
             task.completedAt = nil
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
+            recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
             Task {
                 await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
@@ -3035,6 +3198,28 @@ struct TaskMainView: View {
             return task.codeWorkingDirectory
         }
         return task.workspace?.primaryPath ?? FileManager.default.currentDirectoryPath
+    }
+
+    private func initializeTaskPolicySelection() {
+        let level = TaskPolicyStore.latestSelectedLevel(for: task)
+            ?? AgentPolicyDefaults.effectiveLevel(
+                workspace: task.workspace,
+                globalDefaultRaw: defaultAgentPolicyLevelRaw,
+                skipPermissions: skipPermissions
+            )
+        taskPolicyLevelRaw = level.rawValue
+        skipPermissions = level == .autonomous
+    }
+
+    private func recordCurrentTaskPolicyIfNeeded(source: String) {
+        let level = skipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
+        guard TaskPolicyStore.latestSelectedLevel(for: task) != level else { return }
+        TaskPolicyStore.recordSelection(
+            level: level,
+            task: task,
+            modelContext: modelContext,
+            source: source
+        )
     }
 
     private func planningConversationHistory(appendingUserMessage _: String) -> [(role: String, content: String)] {

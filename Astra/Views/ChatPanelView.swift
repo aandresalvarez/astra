@@ -396,8 +396,10 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
+    @State private var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var useAgentTeam = false
     @State private var teamSize = 3
     @State private var activeWizard: SlashWizard?
@@ -439,6 +441,10 @@ struct ChatPanelView: View {
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private var currentAgentPolicyLevel: AgentPolicyLevel {
+        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(composerPolicyLevelRaw)
     }
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -675,6 +681,7 @@ struct ChatPanelView: View {
         }
         .onAppear {
             alignDefaultModelWithRuntime()
+            initializeComposerPolicyFromDefaults()
             loadSSHConnections()
             focusComposerInput()
             if let draft = draftToLoad {
@@ -689,6 +696,7 @@ struct ChatPanelView: View {
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
+        .onChange(of: workspace?.id) { initializeComposerPolicyFromDefaults() }
     }
 
     // MARK: - Hero (empty state)
@@ -1096,11 +1104,17 @@ struct ChatPanelView: View {
                     },
                     onManageSkills: onManageSkills,
                     skipPermissions: $skipPermissions,
+                    policyLevelRaw: $composerPolicyLevelRaw,
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
                     isPlanMode: $isPlanMode,
                     isPlanModeDisabled: hasConversation || isSlashCommandInput,
                     planModeHelp: hasConversation ? "Already in Plan mode. Use Start Over to leave planning." : "Plan and refine before creating a runnable task",
+                    onPolicyLevelChange: { level in
+                        if let draftTask {
+                            recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
+                        }
+                    },
                     submitIcon: submitButtonIcon,
                     submitTitle: submitButtonTitle,
                     submitColor: submitButtonColor,
@@ -1380,6 +1394,7 @@ struct ChatPanelView: View {
         task.teamSize = teamSize
 
         modelContext.insert(task)
+        recordPolicySelection(on: task, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
         messageText = ""
@@ -1536,6 +1551,7 @@ struct ChatPanelView: View {
         task.teamSize = teamSize
 
         modelContext.insert(task)
+        recordPolicySelection(on: task, source: "conversation_spec")
 
         // Persist conversation history as events so it survives draft→queued→draft transitions
         saveConversationAsEvents(on: task)
@@ -2283,6 +2299,7 @@ struct ChatPanelView: View {
             draft.captureSkillSnapshots()
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
+            recordPolicySelectionIfChanged(on: draft, source: "draft_updated")
             draft.updatedAt = Date()
             return draft
         } else {
@@ -2306,9 +2323,43 @@ struct ChatPanelView: View {
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             modelContext.insert(draft)
+            recordPolicySelection(on: draft, source: "draft_created")
             draftTask = draft
             return draft
         }
+    }
+
+    private func initializeComposerPolicyFromDefaults() {
+        if let draftToLoad,
+           let selected = TaskPolicyStore.latestSelectedLevel(for: draftToLoad) {
+            composerPolicyLevelRaw = selected.rawValue
+            skipPermissions = selected == .autonomous
+            return
+        }
+        let level = AgentPolicyDefaults.effectiveLevel(
+            workspace: workspace,
+            globalDefaultRaw: defaultAgentPolicyLevelRaw,
+            skipPermissions: skipPermissions
+        )
+        composerPolicyLevelRaw = level.rawValue
+    }
+
+    private func recordPolicySelection(on task: AgentTask, source: String) {
+        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: source)
+    }
+
+    private func recordPolicySelectionIfChanged(on task: AgentTask, source: String) {
+        guard TaskPolicyStore.latestSelectedLevel(for: task) != currentAgentPolicyLevel else { return }
+        recordPolicySelection(on: task, source: source)
+    }
+
+    private func recordPolicySelection(on task: AgentTask, level: AgentPolicyLevel, source: String) {
+        TaskPolicyStore.recordSelection(
+            level: level,
+            task: task,
+            modelContext: modelContext,
+            source: source
+        )
     }
 
     private func preparePendingPlan(from response: String, fallbackGoal: String, on task: AgentTask, allowFallback: Bool = false) {
