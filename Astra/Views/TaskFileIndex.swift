@@ -139,6 +139,7 @@ enum TaskFileIndex {
 
         var files: [TaskFileItem] = []
         while let relativePath = enumerator.nextObject() as? String {
+            guard TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath) else { continue }
             let fullPath = (folder as NSString).appendingPathComponent(relativePath)
             var isDirectory = ObjCBool(false)
             fileManager.fileExists(atPath: fullPath, isDirectory: &isDirectory)

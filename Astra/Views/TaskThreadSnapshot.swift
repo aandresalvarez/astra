@@ -646,7 +646,7 @@ enum TaskGeneratedFiles {
 
         var files: [String] = []
         while let rel = enumerator.nextObject() as? String {
-            if rel.hasPrefix("outputs/") || rel == "session_history.md" { continue }
+            guard shouldDisplayTaskFolderFile(relativePath: rel) else { continue }
             let full = (folder as NSString).appendingPathComponent(rel)
             var isDir: ObjCBool = false
             fileManager.fileExists(atPath: full, isDirectory: &isDir)
@@ -655,6 +655,17 @@ enum TaskGeneratedFiles {
             }
         }
         return files.sorted()
+    }
+
+    static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {
+        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
+        if rel == "session_history.md" || rel == "outputs" || rel.hasPrefix("outputs/") {
+            return false
+        }
+        if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
+            return false
+        }
+        return true
     }
 
     static func filesAsync(in folder: String) async -> [String] {
