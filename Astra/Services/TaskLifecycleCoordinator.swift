@@ -165,7 +165,7 @@ final class TaskLifecycleCoordinator {
 
     private static func approvedRuntimePermissionTools(for task: AgentTask) -> [String] {
         var tools = Set(AgentPolicy.preset(.review).allowedTools)
-        tools.formUnion(task.resolvedProviderAllowedTools)
+        tools.formUnion(TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
 
         if let requestedTool = latestRequestedPermissionTool(for: task) {
             tools.formUnion(providerToolAliases(for: requestedTool, runtime: task.resolvedRuntimeID))

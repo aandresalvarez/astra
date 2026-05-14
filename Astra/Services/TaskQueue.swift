@@ -7,6 +7,8 @@ final class TaskQueue {
     let poolSize: Int
     private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
+    private(set) var isProcessingScheduled = false
+    private var processingScheduleGeneration = 0
 
     /// Track which worker is running which task (by task ID)
     private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
@@ -42,6 +44,31 @@ final class TaskQueue {
     /// Whether any worker is available
     var hasAvailableWorker: Bool {
         workers.contains { !$0.isRunning }
+    }
+
+    var hasProcessingLoop: Bool {
+        isProcessing || isProcessingScheduled
+    }
+
+    @discardableResult
+    @MainActor
+    func processQueueIfIdle(modelContext: ModelContext) -> Bool {
+        guard !hasProcessingLoop else {
+            return false
+        }
+
+        isProcessingScheduled = true
+        processingScheduleGeneration += 1
+        let generation = processingScheduleGeneration
+        Task { @MainActor in
+            guard self.isProcessingScheduled,
+                  self.processingScheduleGeneration == generation else {
+                return
+            }
+            self.isProcessingScheduled = false
+            await self.processQueue(modelContext: modelContext)
+        }
+        return true
     }
 
     /// Get the first available (idle) worker, or nil if all busy
@@ -342,7 +369,7 @@ final class TaskQueue {
     @MainActor
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
-            let folder = try task.ensureTaskFolder()
+            let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
                 "event": "task_folder_prepared",
                 "mode": mode,
@@ -379,6 +406,7 @@ final class TaskQueue {
             ], level: .warning)
             return
         }
+        isProcessingScheduled = false
         isProcessing = true
         dispatchedTasks.removeAll()
 
@@ -464,6 +492,8 @@ final class TaskQueue {
         }
         taskWorkerMap.removeAll()
         activeTasks.removeAll()
+        isProcessingScheduled = false
+        processingScheduleGeneration += 1
         isProcessing = false
         AppLogger.audit(.taskCancelled, category: "Queue", fields: [
             "scope": "all_workers"
@@ -518,7 +548,7 @@ final class TaskQueue {
     private func injectTemplateHooks(for task: AgentTask) -> Data? {
         let backup = ClaudeSettingsStore.injectTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: task.effectiveWorkspacePath
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         )
         if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
@@ -532,7 +562,7 @@ final class TaskQueue {
     private func restoreTemplateHooks(for task: AgentTask, backup: Data?) {
         ClaudeSettingsStore.restoreTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: task.effectiveWorkspacePath,
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
             backup: backup
         )
         if backup != nil {

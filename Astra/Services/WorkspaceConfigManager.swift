@@ -8,12 +8,12 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v8 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v9 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v9)
+    // MARK: - Config Schema (v10)
 
-    static let currentVersion = 9
+    static let currentVersion = 10
 
     struct WorkspaceConfig: Codable {
         var version: Int = WorkspaceConfigManager.currentVersion
@@ -158,6 +158,7 @@ enum WorkspaceConfigManager {
         var goal: String
         var status: String
         var isPinned: Bool?
+        var isDone: Bool?
         var inputs: [String]
         var constraints: [String]
         var acceptanceCriteria: [String]
@@ -753,6 +754,7 @@ enum WorkspaceConfigManager {
             goal: task.goal,
             status: task.status.rawValue,
             isPinned: task.isPinned ? true : nil,
+            isDone: task.isDone ? true : nil,
             inputs: task.inputs,
             constraints: task.constraints,
             acceptanceCriteria: task.acceptanceCriteria,
@@ -1151,6 +1153,7 @@ enum WorkspaceConfigManager {
         }
         task.status = TaskStatus(rawValue: config.status) ?? .completed
         task.isPinned = config.isPinned ?? false
+        task.isDone = config.isDone ?? false
         task.inputs = config.inputs
         task.constraints = config.constraints
         task.acceptanceCriteria = config.acceptanceCriteria
@@ -1200,7 +1203,7 @@ enum WorkspaceConfigManager {
             toolsByName: &toolsByName
         )
         if task.skillSnapshots.isEmpty {
-            task.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: task)
         }
 
         var importedRuns: [TaskRun] = []

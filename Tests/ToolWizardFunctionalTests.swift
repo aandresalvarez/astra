@@ -216,7 +216,7 @@ struct ToolWizardFunctionalTests {
         let task = AgentTask(title: "Deploy", goal: "Deploy the app")
         task.skills.append(skill)
 
-        let resolved = task.resolvedAllowedTools
+        let resolved = TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools
         #expect(resolved.contains("Bash"))
         #expect(resolved.contains("Read"))
         #expect(resolved.contains("docker"))
@@ -249,7 +249,7 @@ struct ToolWizardFunctionalTests {
         let task = AgentTask(title: "Analyze", goal: "Analyze logs")
         task.skills.append(skill)
 
-        let resolved = task.resolvedAllowedTools
+        let resolved = TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools
         #expect(resolved.contains("jq"))
         #expect(resolved.contains("rg"))
         #expect(resolved.contains("Read"))

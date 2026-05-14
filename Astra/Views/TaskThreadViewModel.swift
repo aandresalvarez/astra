@@ -14,7 +14,7 @@ final class TaskThreadViewModel {
         snapshotTask?.cancel()
         snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
         refreshSnapshot(for: task)
-        refreshGeneratedFiles(folder: task.taskFolder)
+        refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
     }
 
     func refreshSnapshot(for task: AgentTask) {

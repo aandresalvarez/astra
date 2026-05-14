@@ -356,7 +356,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let folder = try task.ensureTaskFolder()
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         let filler = String(repeating: "setup context before the draft. ", count: 80)
         let exactDraft = "EXACT_ACTIVE_DRAFT_FOR_TEST: keep this current draft text available for revision."
         SessionHistoryManager.recordTurn(

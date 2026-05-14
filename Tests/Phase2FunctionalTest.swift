@@ -18,8 +18,8 @@ private func findOutputFile(named name: String, workspacePath: String, task: Age
     let fm = FileManager.default
     let directCandidates = [
         (workspacePath as NSString).appendingPathComponent(name),
-        (task.taskFolder as NSString).appendingPathComponent(name),
-        ((task.taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
+        (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(name),
+        ((TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
     ].filter { !$0.isEmpty }
 
     if let direct = directCandidates.first(where: { fm.fileExists(atPath: $0) }) {

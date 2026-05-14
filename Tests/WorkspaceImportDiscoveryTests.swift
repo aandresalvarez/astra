@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 
@@ -84,6 +85,113 @@ struct WorkspaceImportDiscoveryTests {
     private func makeTemporaryDirectory(named name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-import-discovery-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeDirectory(_ name: String, in root: URL) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+}
+
+@Suite("Workspace Import Orchestrator")
+struct WorkspaceImportOrchestratorTests {
+    @Test("import panel configuration accepts folders config files and multi-select")
+    func importPanelConfigurationAcceptsSupportedSelections() {
+        let configuration = WorkspaceImportPanelConfiguration.workspaceImport
+
+        #expect(configuration.canChooseDirectories)
+        #expect(configuration.canChooseFiles)
+        #expect(configuration.allowsMultipleSelection)
+        #expect(configuration.prompt == "Import")
+        #expect(configuration.message.contains("workspace folders"))
+        #expect(configuration.message.contains("config files"))
+        #expect(configuration.message.contains("parent Workspaces folder"))
+    }
+
+    @Test("importing discovered candidates saves them and selects the last import")
+    @MainActor
+    func importsDiscoveredCandidatesAndSelectsLast() throws {
+        let root = try makeTemporaryDirectory(named: "Workspaces")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+
+        let configuredFolder = try makeDirectory("alpha-configured", in: root)
+        try writeWorkspaceConfig(name: "Alpha Configured", primaryPath: configuredFolder.path, to: configuredFolder)
+
+        let bareFolder = try makeDirectory("beta-bare", in: root)
+
+        let container = try makeWorkspaceImportContainer()
+        let context = container.mainContext
+        let result = WorkspaceImportOrchestrator(modelContext: context, taskQueue: TaskQueue())
+            .importWorkspaces(from: [root], existingWorkspaces: []) { _, _ in .skip }
+
+        #expect(result.imported.map(\.name) == ["Alpha Configured", "Beta Bare"])
+        #expect(result.imported.map { URL(fileURLWithPath: $0.primaryPath).standardizedFileURL.path } == [
+            configuredFolder.standardizedFileURL.path,
+            bareFolder.standardizedFileURL.path
+        ])
+        #expect(result.selectedWorkspace?.id == result.imported.last?.id)
+        #expect(result.imported.last?.skills.count == 3)
+    }
+
+    @Test("duplicate imports use the supplied duplicate policy")
+    @MainActor
+    func duplicateImportsUseSuppliedPolicy() throws {
+        let root = try makeTemporaryDirectory(named: "Duplicate")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeWorkspaceConfig(name: "Duplicate", primaryPath: root.path, to: root)
+
+        let container = try makeWorkspaceImportContainer()
+        let context = container.mainContext
+        let existing = Workspace(name: "Duplicate", primaryPath: root.path)
+        context.insert(existing)
+        let existingTask = AgentTask(title: "Existing Task", goal: "Keep history", workspace: existing)
+        context.insert(existingTask)
+        try context.save()
+
+        var promptedName: String?
+        var promptedTaskCount: Int?
+        let result = WorkspaceImportOrchestrator(modelContext: context, taskQueue: TaskQueue())
+            .importWorkspaces(from: [root], existingWorkspaces: [existing]) { name, count in
+                promptedName = name
+                promptedTaskCount = count
+                return .duplicate
+            }
+
+        #expect(promptedName == "Duplicate")
+        #expect(promptedTaskCount == 1)
+        #expect(result.imported.count == 1)
+        #expect(result.imported.first?.name == "Duplicate (Imported)")
+        #expect(result.imported.first?.tasks.first?.title == "Existing Task")
+    }
+
+    @MainActor
+    private func makeWorkspaceImportContainer() throws -> ModelContainer {
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+    }
+
+    @MainActor
+    private func writeWorkspaceConfig(name: String, primaryPath: String, to folder: URL) throws {
+        let sourceContainer = try makeWorkspaceImportContainer()
+        let context = sourceContainer.mainContext
+        let workspace = Workspace(name: name, primaryPath: primaryPath)
+        context.insert(workspace)
+        try context.save()
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: folder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        )
+    }
+
+    private func makeTemporaryDirectory(named name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-import-orchestrator-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url

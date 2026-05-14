@@ -1087,8 +1087,8 @@ struct ShelfQueryPanelView: View {
     }
 
     private var briefWorkspacePath: String {
-        if let task, !task.codeWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return task.codeWorkingDirectory
+        if let task, !TaskWorkspaceAccess(task: task).codeWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return TaskWorkspaceAccess(task: task).codeWorkingDirectory
         }
         if let path = workspace?.primaryPath, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return path

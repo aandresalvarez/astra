@@ -914,9 +914,9 @@ struct CopilotWorkerExecutionTests {
         await worker.executeApprovedPlan(task: task, plan: plan, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
-        #expect(FileManager.default.fileExists(atPath: task.taskFolder))
-        #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("outputs")))
-        #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("index.html")))
+        #expect(FileManager.default.fileExists(atPath: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")))
+        #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("index.html")))
     }
 
     @Test("Worker pauses for approval when Copilot waits for hidden permission prompt")

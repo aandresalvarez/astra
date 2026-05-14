@@ -217,6 +217,48 @@ struct SchedulerLifecycleTests {
         #expect(scheduler.isRunning == true)
         scheduler.stop()
     }
+
+    @Test("Queue wake requests coalesce while processing is pending")
+    func queueWakeCoalescesWhilePending() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let queue = TaskQueue()
+
+        #expect(queue.processQueueIfIdle(modelContext: ctx) == true)
+        #expect(queue.processQueueIfIdle(modelContext: ctx) == false)
+        #expect(queue.hasProcessingLoop)
+
+        queue.cancelAll()
+        #expect(!queue.hasProcessingLoop)
+    }
+
+    @Test("Firing a schedule wakes the queue instead of directly executing it")
+    func fireScheduleWakesQueue() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let scheduler = TaskScheduler()
+        let queue = TaskQueue()
+        let workspace = Workspace(
+            name: "Scheduled Work",
+            primaryPath: "/tmp/astra_scheduler_\(UUID().uuidString)"
+        )
+        let schedule = TaskSchedule(name: "Routine", goal: "Run routine", workspace: workspace)
+
+        ctx.insert(workspace)
+        ctx.insert(schedule)
+        try ctx.save()
+
+        scheduler.fireSchedule(schedule, modelContext: ctx, taskQueue: queue)
+
+        let scheduledTasks = workspace.tasks.filter { $0.originScheduleID == schedule.id }
+        #expect(scheduledTasks.count == 1)
+        #expect(scheduledTasks.first?.status == .queued)
+        #expect(queue.activeTasks.isEmpty)
+        #expect(queue.hasProcessingLoop)
+        #expect(queue.processQueueIfIdle(modelContext: ctx) == false)
+
+        queue.cancelAll()
+    }
 }
 
 @Suite("TaskLifecycleCoordinator Schedule Visibility")
@@ -404,7 +446,7 @@ struct ScheduleFireLogicTests {
         let task = AgentTask(title: "Routine Run", goal: "Run", workspace: workspace)
         task.inputs = [routine.path]
 
-        #expect(task.runtimeAdditionalPaths == [extra.path, routine.path])
+        #expect(TaskWorkspaceAccess(task: task).runtimeAdditionalPaths == [extra.path, routine.path])
     }
 
     @Test("Due vs future filtering logic")

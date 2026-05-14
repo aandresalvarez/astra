@@ -13,6 +13,27 @@ private func makeTaskCapabilityResolverContainer() throws -> ModelContainer {
 @Suite("TaskCapabilityResolver")
 @MainActor
 struct TaskCapabilityResolverTests {
+    @Test("Snapshotter captures live task skills into durable snapshots")
+    func snapshotterCapturesLiveTaskSkills() throws {
+        let skill = Skill(
+            name: "Snapshot Skill",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Keep this behavior for detached tasks.",
+            environmentVariables: ["SNAPSHOT_ENV": "present"]
+        )
+        let task = AgentTask(title: "Snapshot", goal: "Capture")
+        task.skills = [skill]
+
+        TaskCapabilitySnapshotter.capture(for: task)
+
+        #expect(task.skillSnapshots.count == 1)
+        #expect(task.skillSnapshots.first?.name == "Snapshot Skill")
+        #expect(task.skillSnapshots.first?.allowedTools == ["Read"])
+        #expect(task.skillSnapshots.first?.behaviorInstructions == "Keep this behavior for detached tasks.")
+        #expect(task.skillSnapshots.first?.environmentKeys == ["SNAPSHOT_ENV"])
+        #expect(task.skillSnapshots.first?.environmentValues == ["present"])
+    }
+
     @Test("Enabled connector contributes its companion skill instructions")
     func enabledConnectorIncludesCompanionSkillInstructions() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -57,7 +78,7 @@ struct TaskCapabilityResolverTests {
         context.insert(task)
         try context.save()
 
-        let instructions = task.resolvedBehaviorInstructions
+        let instructions = TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions
         #expect(instructions.contains("[Safe Bash]:"))
         #expect(instructions.contains("[Jira Agent]:"))
         #expect(instructions.contains("/rest/api/3/mypermissions"))
@@ -128,7 +149,7 @@ struct TaskCapabilityResolverTests {
         context.insert(task)
         try context.save()
 
-        #expect(task.allConnectors.map(\.id) == [configuredConnector.id])
+        #expect(TaskCapabilityResolver(task: task).allConnectors.map(\.id) == [configuredConnector.id])
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))

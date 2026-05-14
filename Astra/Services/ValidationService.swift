@@ -23,7 +23,7 @@ enum ValidationService {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-c", command]
-        process.currentDirectoryURL = URL(fileURLWithPath: task.effectiveWorkspacePath)
+        process.currentDirectoryURL = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
@@ -94,7 +94,7 @@ enum ValidationService {
 
         let result = await AgentUtilityRuntimeRunner.runPrompt(
             prompt,
-            workspacePath: task.effectiveWorkspacePath,
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
             configuration: utilityRuntime
         )
         guard result.exitCode == 0 else {

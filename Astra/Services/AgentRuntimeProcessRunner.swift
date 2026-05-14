@@ -45,7 +45,7 @@ final class AgentRuntimeProcessRunner {
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
-        let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
+        let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
         let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
@@ -221,7 +221,7 @@ final class AgentRuntimeProcessRunner {
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
-        let allowed = executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools)
+        let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
         let tokenBudget = Self.effectiveTokenBudget(for: task)
         let pathPrefix = Self.pathPrefix(for: task, taskEnv: taskEnv)
 
@@ -431,19 +431,19 @@ final class AgentRuntimeProcessRunner {
     }
 
     private static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
-        var paths = task.runtimeAdditionalPaths
-        if !task.effectiveWorkspacePath.isEmpty {
-            paths.append(task.effectiveWorkspacePath)
+        var paths = TaskWorkspaceAccess(task: task).runtimeAdditionalPaths
+        if !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty {
+            paths.append(TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
         }
-        if !task.taskFolder.isEmpty {
-            paths.append(task.taskFolder)
+        if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
+            paths.append(TaskWorkspaceAccess(task: task).taskFolder)
         }
         return Array(Set(paths.filter { !$0.isEmpty })).sorted()
     }
 
     @MainActor
     private static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
-        Array(Set(task.allLocalTools.compactMap { tool in
+        Array(Set(TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -547,11 +547,11 @@ final class AgentRuntimeProcessRunner {
 
         guard fileManager.isExecutableFile(atPath: realToolPath),
               realToolPath.rangeOfCharacter(from: .newlines) == nil,
-              !task.taskFolder.isEmpty else {
+              !TaskWorkspaceAccess(task: task).taskFolder.isEmpty else {
             return nil
         }
 
-        let shimDirectory = (task.taskFolder as NSString).appendingPathComponent(".runtime-bin")
+        let shimDirectory = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(".runtime-bin")
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
         let script = """
         #!/bin/sh
@@ -679,7 +679,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     private static func scopedEnvironmentVariables(for task: AgentTask) -> [String: String] {
-        var taskEnv = task.resolvedEnvironmentVariables
+        var taskEnv = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         if hasStanfordOutlookMailAccess(task) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
@@ -692,15 +692,15 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     private static func hasActiveCLITools(_ task: AgentTask) -> Bool {
-        task.allLocalTools.contains { tool in
+        TaskCapabilityResolver(task: task).allLocalTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
     @MainActor
     private static func hasStanfordOutlookMailAccess(_ task: AgentTask) -> Bool {
-        task.allConnectors.contains { $0.isStanfordOutlookMail } ||
-            task.allLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
+        TaskCapabilityResolver(task: task).allConnectors.contains { $0.isStanfordOutlookMail } ||
+            TaskCapabilityResolver(task: task).allLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     private static func ensureSubAgentPermissions(

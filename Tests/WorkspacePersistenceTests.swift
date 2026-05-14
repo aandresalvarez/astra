@@ -79,7 +79,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     task.status = .completed
     task.unreadAt = Date(timeIntervalSince1970: 1_701_234_567)
     task.skills = [skill]
-    task.captureSkillSnapshots()
+    TaskCapabilitySnapshotter.capture(for: task)
     context.insert(task)
 
     let run = TaskRun(task: task)
@@ -104,17 +104,18 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v9")
+@Suite("Workspace Persistence v10")
 struct WorkspacePersistenceTests {
-    @Test("v9 export and import preserve IDs, stars, history, artifacts, and redacted credentials")
+    @Test("v10 export and import preserve IDs, review state, history, artifacts, and redacted credentials")
     @MainActor
-    func v9RoundTripPreservesDurableIDs() throws {
+    func v10RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
         let workspace = try makeRichWorkspace(in: context, root: tempRoot)
         let sourceTask = try #require(workspace.tasks.first)
         sourceTask.isPinned = true
+        sourceTask.isDone = true
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
@@ -132,6 +133,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.skillIDs == [workspace.skills.first?.id.uuidString].compactMap { $0 })
         #expect(config.tasks?.first?.skillSnapshots?.first?.id == workspace.skills.first?.id.uuidString)
         #expect(config.tasks?.first?.isPinned == true)
+        #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
 
@@ -158,11 +160,30 @@ struct WorkspacePersistenceTests {
         #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
+        #expect(imported.tasks.first?.isDone == true)
         #expect(imported.tasks.first?.unreadAt == sourceTask.unreadAt)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)
         #expect(imported.tasks.first?.events.first?.id == workspace.tasks.first?.events.first?.id)
         #expect(imported.tasks.first?.artifacts.first?.id == workspace.tasks.first?.artifacts.first?.id)
+    }
+
+    @Test("legacy task configs without done state import as not done")
+    @MainActor
+    func legacyTaskConfigsWithoutDoneStateDefaultToOpen() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: "/tmp/astra_legacy_done_\(UUID().uuidString)")
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.version = 9
+        config.tasks?[0].isDone = nil
+
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let importedContext = importedContainer.mainContext
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
+        try importedContext.save()
+
+        #expect(imported.tasks.first?.isDone == false)
     }
 
     @Test("renamed resources relink by ID, not name")
@@ -217,7 +238,7 @@ struct WorkspacePersistenceTests {
 
         let task = AgentTask(title: "Use B", goal: "Use second skill", workspace: workspace)
         task.skills = [skillB]
-        task.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: task)
         context.insert(task)
         try context.save()
 
@@ -347,6 +368,7 @@ struct WorkspacePersistenceTests {
         let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
         let sourceTask = try #require(sourceWorkspace.tasks.first)
         sourceTask.isPinned = true
+        sourceTask.isDone = true
         try sourceContext.save()
         let configURL = workspaceFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
         try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
@@ -370,6 +392,7 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.count == 1)
         #expect(workspaces.first?.id == sourceWorkspace.id)
         #expect(workspaces.first?.tasks.first?.isPinned == true)
+        #expect(workspaces.first?.tasks.first?.isDone == true)
     }
 
     @Test("auto-export skips unavailable workspace paths")

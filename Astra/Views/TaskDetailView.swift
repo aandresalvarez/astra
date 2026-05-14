@@ -428,9 +428,9 @@ struct ArtifactsTabView: View {
                         .font(Stanford.caption(13))
                         .foregroundStyle(Stanford.coolGrey)
                     Spacer()
-                    if !task.taskFolder.isEmpty {
+                    if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
                         Button {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: task.taskFolder))
+                            NSWorkspace.shared.open(URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder))
                         } label: {
                             Label("Open Folder", systemImage: "folder")
                                 .font(Stanford.caption(12))
@@ -550,7 +550,7 @@ struct ArtifactsTabView: View {
     // MARK: - Helpers
 
     private func scanTaskFolder() {
-        let folder = task.taskFolder
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
         Task {
             let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
                 guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
@@ -827,9 +827,9 @@ struct FilesTabView: View {
                         .font(Stanford.caption(13))
                         .foregroundStyle(Stanford.coolGrey)
                     Spacer()
-                    if !task.taskFolder.isEmpty {
+                    if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
                         Button {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: task.taskFolder))
+                            NSWorkspace.shared.open(URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder))
                         } label: {
                             Label("Open Folder", systemImage: "folder")
                                 .font(Stanford.caption(12))
@@ -1263,7 +1263,7 @@ struct FilesTabView: View {
     }
 
     private func scanTaskFolder() {
-        let folder = task.taskFolder
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
         Task {
             let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
                 TaskFileIndex.scanTaskFolder(folder)

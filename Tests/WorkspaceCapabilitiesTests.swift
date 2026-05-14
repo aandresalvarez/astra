@@ -509,10 +509,10 @@ struct WorkspaceCapabilitiesTests {
         context.insert(task)
         try context.save()
 
-        #expect(task.allLocalTools.map(\.name) == ["Shared jq"])
-        #expect(task.resolvedAllowedTools.contains("jq"))
-        #expect(task.resolvedAllowedTools.contains("Bash"))
-        #expect(!task.resolvedClaudeAllowedTools.contains("jq"))
+        #expect(TaskCapabilityResolver(task: task).allLocalTools.map(\.name) == ["Shared jq"])
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools.contains("jq"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools.contains("Bash"))
+        #expect(!TaskCapabilityResolver(task: task).resolver.resolvedClaudeAllowedTools.contains("jq"))
     }
 
     @Test("workspace import reuses existing shared connector by ID")

@@ -209,6 +209,7 @@ private struct AboutHighlightLabelStyle: LabelStyle {
 public struct ASTRAApp: App {
     public let modelContainer: ModelContainer
     @StateObject private var appUpdateController = AppUpdateController()
+    @State private var runtime = AppRuntimeController()
 
     public init() {
         UserDefaults.standard.register(defaults: [AppLogger.sensitiveModeKey: true])
@@ -392,7 +393,7 @@ public struct ASTRAApp: App {
 
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName) {
-            ContentView(appUpdateController: appUpdateController)
+            ContentView(appUpdateController: appUpdateController, runtime: runtime)
                 .frame(minWidth: 900, minHeight: 600)
                 .tint(Stanford.cardinalRed)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
