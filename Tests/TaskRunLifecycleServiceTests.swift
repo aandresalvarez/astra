@@ -160,6 +160,36 @@ struct TaskRunLifecycleServiceTests {
         #expect(run.stopReason == "completed")
     }
 
+    @Test("Startup recovery can skip workspace auto-export")
+    func startupRecoveryCanSkipWorkspaceAutoExport() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-run-recovery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "No Export", primaryPath: root.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Orphan", goal: "Was running", workspace: workspace)
+        task.status = .running
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        try context.save()
+
+        let summary = TaskRunLifecycleService.recoverOrphanedRunningRuns(
+            modelContext: context,
+            autoExportWorkspaces: false
+        )
+
+        let configPath = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path
+        #expect(summary.hasChanges)
+        #expect(task.status == .cancelled)
+        #expect(run.status == .cancelled)
+        #expect(!FileManager.default.fileExists(atPath: configPath))
+    }
+
     @Test("Superseded run finalization does not change terminal task status")
     func supersededRunDoesNotChangeTerminalTaskStatus() throws {
         let finishedAt = Date(timeIntervalSince1970: 5_000)

@@ -226,6 +226,28 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
+    func accessibilitySnapshot(limit: Int = 300) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let response = try await sendCDPCommand(
+            method: "Accessibility.getFullAXTree",
+            params: ["interestingOnly": true]
+        )
+        try await refreshPageMetadata()
+        guard let result = response["result"] as? [String: Any] else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        let rawNodes = result["nodes"] as? [[String: Any]] ?? []
+        let compactNodes = rawNodes.prefix(max(1, limit)).map(Self.compactAccessibilityNode)
+        return try Self.jsonString([
+            "ok": true,
+            "url": currentURL,
+            "title": pageTitle,
+            "nodeCount": rawNodes.count,
+            "returnedNodeCount": compactNodes.count,
+            "nodes": Array(compactNodes)
+        ])
+    }
+
     func click(
         selector: String?,
         x: Double?,
@@ -911,6 +933,37 @@ final class ControlledBrowserController: ObservableObject {
         return string
     }
 
+    private nonisolated static func compactAccessibilityNode(_ node: [String: Any]) -> [String: Any] {
+        var object: [String: Any] = [
+            "nodeId": stringValue(node["nodeId"]),
+            "backendDOMNodeId": stringValue(node["backendDOMNodeId"]),
+            "ignored": boolValue(node["ignored"]),
+            "role": compactAXValue(node["role"]),
+            "name": compactAXValue(node["name"]),
+            "value": compactAXValue(node["value"]),
+            "description": compactAXValue(node["description"])
+        ]
+        if let properties = node["properties"] as? [[String: Any]] {
+            object["properties"] = properties.prefix(20).map { property in
+                [
+                    "name": stringValue(property["name"]),
+                    "value": compactAXValue(property["value"])
+                ]
+            }
+        }
+        return object
+    }
+
+    private nonisolated static func compactAXValue(_ value: Any?) -> [String: Any] {
+        guard let object = value as? [String: Any] else {
+            return ["value": stringValue(value)]
+        }
+        return [
+            "type": stringValue(object["type"]),
+            "value": stringValue(object["value"])
+        ]
+    }
+
     private nonisolated static func boolValue(_ value: Any?) -> Bool {
         if let bool = value as? Bool {
             return bool
@@ -932,6 +985,19 @@ final class ControlledBrowserController: ObservableObject {
             return Double(string)
         }
         return nil
+    }
+
+    private nonisolated static func stringValue(_ value: Any?) -> String {
+        if let string = value as? String {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        return ""
     }
 
     private nonisolated static func intValue(_ value: Any?) -> Int? {

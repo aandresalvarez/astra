@@ -80,6 +80,84 @@ enum BrowserRisk: String {
     }
 }
 
+enum BrowserAnalysisVersion: String {
+    case v1
+    case v2
+
+    static func requested(version: String?, v2: Bool) -> BrowserAnalysisVersion {
+        if v2 { return .v2 }
+        let normalized = version?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "") ?? ""
+        switch normalized {
+        case "2", "v2", "browsercontrolv2":
+            return .v2
+        default:
+            return .v1
+        }
+    }
+}
+
+enum BrowserAnalysisV2RolloutMode: String {
+    case off
+    case shadow
+    case on
+
+    static let defaultsKey = "astra.browser.analysisV2.mode.v1"
+    static let environmentKey = "ASTRA_BROWSER_ANALYSIS_V2"
+
+    static func configured(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> BrowserAnalysisV2RolloutMode {
+        if let override = environment[environmentKey].flatMap(parse) {
+            return override
+        }
+        return parse(defaults.string(forKey: defaultsKey)) ?? .off
+    }
+
+    func effectiveVersion(requested: BrowserAnalysisVersion, explicit: Bool) -> BrowserAnalysisVersion {
+        if explicit { return requested }
+        switch self {
+        case .off, .shadow:
+            return .v1
+        case .on:
+            return .v2
+        }
+    }
+
+    var shouldAttachShadowAnalysis: Bool {
+        self == .shadow
+    }
+
+    private static func parse(_ value: String?) -> BrowserAnalysisV2RolloutMode? {
+        let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "") ?? ""
+        switch normalized {
+        case "0", "false", "off", "v1":
+            return .off
+        case "shadow", "shadowmode", "compare":
+            return .shadow
+        case "1", "true", "on", "v2":
+            return .on
+        default:
+            return nil
+        }
+    }
+}
+
+enum BrowserControlSource: String {
+    case accessibility
+    case dom
+    case adapter
+    case vision
+}
+
 struct BrowserPageFingerprint: Equatable {
     let value: String
     let stateValue: String
@@ -98,6 +176,95 @@ struct BrowserPageFingerprint: Equatable {
     }
 }
 
+struct BrowserAccessibilityNode {
+    let nodeID: String
+    let backendDOMNodeID: String
+    let role: String
+    let name: String
+    let value: String
+    let description: String
+    let ignored: Bool
+    let properties: [String: String]
+
+    init(raw: [String: Any]) {
+        nodeID = Self.string(raw["nodeId"])
+        backendDOMNodeID = Self.string(raw["backendDOMNodeId"])
+        role = Self.axValue(raw["role"])
+        name = Self.axValue(raw["name"])
+        value = Self.axValue(raw["value"])
+        description = Self.axValue(raw["description"])
+        ignored = Self.bool(raw["ignored"])
+        let rawProperties = raw["properties"] as? [[String: Any]] ?? []
+        var resolvedProperties: [String: String] = [:]
+        for property in rawProperties {
+            let name = Self.string(property["name"])
+            guard !name.isEmpty else { continue }
+            resolvedProperties[name] = Self.axValue(property["value"])
+        }
+        properties = resolvedProperties
+    }
+
+    var jsonObject: [String: Any] {
+        [
+            "nodeID": nodeID,
+            "backendDOMNodeID": backendDOMNodeID,
+            "role": role,
+            "name": name,
+            "value": value,
+            "description": description,
+            "ignored": ignored,
+            "properties": properties
+        ]
+    }
+
+    private static func axValue(_ value: Any?) -> String {
+        if let object = value as? [String: Any] {
+            return string(object["value"])
+        }
+        return string(value)
+    }
+
+    private static func string(_ value: Any?) -> String {
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return ""
+    }
+
+    private static func bool(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber { return number.boolValue }
+        if let string = value as? String { return ["true", "1", "yes"].contains(string.lowercased()) }
+        return false
+    }
+}
+
+struct BrowserAccessibilitySnapshot {
+    let nodes: [BrowserAccessibilityNode]
+    let nodeCount: Int
+
+    init?(object: [String: Any]?) {
+        guard let object else { return nil }
+        let rawNodes = object["nodes"] as? [[String: Any]] ?? []
+        nodes = rawNodes.map(BrowserAccessibilityNode.init(raw:))
+        nodeCount = BrowserAnalysisBuilder.int(object["nodeCount"]) ?? nodes.count
+    }
+
+    func matchingNode(for control: BrowserControl) -> BrowserAccessibilityNode? {
+        let controlName = BrowserAnalysisBuilder.normalizedName(control.name.isEmpty ? control.label : control.name)
+        let controlRole = BrowserAnalysisBuilder.normalizedName(control.role)
+        guard !controlName.isEmpty || !controlRole.isEmpty else { return nil }
+
+        return nodes.first { node in
+            guard !node.ignored else { return false }
+            let nodeName = BrowserAnalysisBuilder.normalizedName(node.name)
+            let nodeRole = BrowserAnalysisBuilder.normalizedName(node.role)
+            let roleMatches = controlRole.isEmpty || nodeRole.isEmpty || nodeRole.contains(controlRole) || controlRole.contains(nodeRole)
+            let nameMatches = controlName.isEmpty || nodeName == controlName || nodeName.contains(controlName) || controlName.contains(nodeName)
+            return roleMatches && nameMatches && (!nodeName.isEmpty || !nodeRole.isEmpty)
+        }
+    }
+}
+
 struct BrowserControl {
     let controlID: String
     let identityHash: String
@@ -111,6 +278,8 @@ struct BrowserControl {
     let testID: String
     let value: String
     let href: String
+    let framePath: [String]
+    let shadowDepth: Int
     let disabled: Bool
     let visible: Bool
     let actionable: Bool
@@ -144,6 +313,8 @@ struct BrowserControl {
             "testID": testID,
             "value": value,
             "href": href,
+            "framePath": framePath,
+            "shadowDepth": shadowDepth,
             "state": disabled ? "disabled" : "enabled",
             "disabled": disabled,
             "visible": visible,
@@ -172,6 +343,71 @@ struct BrowserControl {
     }
 }
 
+struct BrowserControlRef {
+    let control: BrowserControl
+    let source: BrowserControlSource
+    let accessibilityNode: BrowserAccessibilityNode?
+
+    init(control: BrowserControl, accessibilityNode: BrowserAccessibilityNode?) {
+        self.control = control
+        self.accessibilityNode = accessibilityNode
+        if control.actionOutcomes.contains(where: { $0["adapterID"] != nil }) {
+            source = .adapter
+        } else if accessibilityNode != nil {
+            source = .accessibility
+        } else {
+            source = .dom
+        }
+    }
+
+    func jsonObject(debug: Bool = false) -> [String: Any] {
+        var evidence = control.jsonObject(debug: debug)["evidence"] as? [String: Any] ?? [:]
+        if let accessibilityNode {
+            evidence["accessibilityNodeID"] = accessibilityNode.nodeID
+            evidence["accessibilityRole"] = accessibilityNode.role
+            evidence["accessibilityName"] = accessibilityNode.name
+        }
+
+        var object: [String: Any] = [
+            "id": control.controlID,
+            "controlID": control.controlID,
+            "source": source.rawValue,
+            "role": control.role,
+            "name": control.name.isEmpty ? control.label : control.name,
+            "label": control.label,
+            "value": control.value,
+            "selectorFallback": control.selector,
+            "framePath": control.framePath,
+            "bounds": control.bounds,
+            "state": [
+                "visible": control.visible,
+                "enabled": !control.disabled,
+                "disabled": control.disabled,
+                "actionable": control.actionable
+            ],
+            "context": [
+                "placeholder": control.placeholder,
+                "testID": control.testID,
+                "tag": control.tag,
+                "type": control.type,
+                "href": control.href,
+                "shadowDepth": control.shadowDepth
+            ],
+            "validActions": control.validActions.map(\.rawValue),
+            "primaryAction": control.primaryAction?.rawValue ?? "",
+            "actionOutcomes": control.actionOutcomes,
+            "risk": control.risk.rawValue,
+            "requiresUserConfirmation": control.requiresUserConfirmation,
+            "confidence": control.confidence,
+            "evidence": evidence
+        ]
+        if let accessibilityNode, debug {
+            object["accessibilityNode"] = accessibilityNode.jsonObject
+        }
+        return object
+    }
+}
+
 struct BrowserAnalysis {
     let analysisID: String
     let createdAt: Date
@@ -182,6 +418,7 @@ struct BrowserAnalysis {
     let pageType: String
     let summary: String
     let controls: [BrowserControl]
+    let accessibilitySnapshot: BrowserAccessibilitySnapshot?
     let recommendations: [[String: Any]]
     let siteAdapters: [[String: Any]]
 
@@ -197,7 +434,13 @@ struct BrowserAnalysis {
         controls.first { $0.controlID == id }
     }
 
-    func responseObject(query: String?, full: Bool, limit: Int?, debug: Bool = false) -> [String: Any] {
+    func responseObject(
+        query: String?,
+        full: Bool,
+        limit: Int?,
+        debug: Bool = false,
+        version: BrowserAnalysisVersion = .v1
+    ) -> [String: Any] {
         let normalizedQuery = BrowserAnalysisBuilder.normalized(query)
         let filtered = BrowserAnalysisBuilder.filteredControls(controls, query: normalizedQuery)
         let ranked = filtered.sorted { left, right in
@@ -234,10 +477,50 @@ struct BrowserAnalysis {
             "controls": returned.map { $0.jsonObject(debug: debug) },
             "recommendedActions": recommendations
         ]
+        if version == .v2 {
+            let refs = returned.map {
+                BrowserControlRef(
+                    control: $0,
+                    accessibilityNode: accessibilitySnapshot?.matchingNode(for: $0)
+                )
+            }
+            object["analysisVersion"] = version.rawValue
+            object["controlRefs"] = refs.map { $0.jsonObject(debug: debug) }
+            object["sourceBreakdown"] = BrowserAnalysisBuilder.sourceBreakdown(
+                controls: controls,
+                accessibilitySnapshot: accessibilitySnapshot
+            )
+            object["adapterRecommendations"] = recommendations.filter { $0["adapterID"] != nil }
+            object["visionFallbackAvailable"] = false
+            object["contentTrust"] = [
+                "pageText": "untrusted",
+                "instructionBoundary": "browser_page_content"
+            ]
+            if let lowConfidenceReason = BrowserAnalysisBuilder.lowConfidenceReason(controls: ranked) {
+                object["lowConfidenceReason"] = lowConfidenceReason
+            }
+        }
         if let ambiguity = BrowserAnalysisBuilder.ambiguityObject(for: ranked, query: normalizedQuery) {
             object["ambiguity"] = ambiguity
         }
         return object
+    }
+
+    func shadowResponseObject(query: String?, full: Bool, limit: Int?, debug: Bool = false) -> [String: Any] {
+        let v2 = responseObject(query: query, full: full, limit: limit, debug: debug, version: .v2)
+        return [
+            "analysisVersion": BrowserAnalysisVersion.v2.rawValue,
+            "analysisID": analysisID,
+            "fingerprint": fingerprint.value,
+            "stateFingerprint": fingerprint.stateValue,
+            "pageType": pageType,
+            "controlCount": controls.count,
+            "returnedControlCount": v2["returnedControlCount"] as? Int ?? 0,
+            "sourceBreakdown": v2["sourceBreakdown"] as? [String: Any] ?? [:],
+            "lowConfidenceReason": v2["lowConfidenceReason"] as? String ?? "",
+            "recommendedActions": v2["recommendedActions"] as? [[String: Any]] ?? [],
+            "controlRefs": v2["controlRefs"] as? [[String: Any]] ?? []
+        ]
     }
 }
 
@@ -281,7 +564,8 @@ enum BrowserAnalysisBuilder {
         createdAt: Date = Date(),
         analysisID: String? = nil,
         ttlSeconds: TimeInterval = defaultTTLSeconds,
-        enabledBrowserAdapters: [String] = []
+        enabledBrowserAdapters: [String] = [],
+        accessibilitySnapshotObject: [String: Any]? = nil
     ) -> BrowserAnalysis {
         let enabledAdapterIDs = BrowserSiteAdapterID.normalizedSet(enabledBrowserAdapters)
         let url = string(snapshot["url"])
@@ -306,6 +590,7 @@ enum BrowserAnalysisBuilder {
         let recommendations = recommendedActions(pageType: pageType, controls: controls, enabledBrowserAdapters: enabledAdapterIDs)
         let resolvedAnalysisID = analysisID ?? makeAnalysisID(fingerprint: fingerprint, date: createdAt)
         let siteAdapters = activeSiteAdapters(url: url, enabledBrowserAdapters: enabledAdapterIDs)
+        let accessibilitySnapshot = BrowserAccessibilitySnapshot(object: accessibilitySnapshotObject)
 
         return BrowserAnalysis(
             analysisID: resolvedAnalysisID,
@@ -317,6 +602,7 @@ enum BrowserAnalysisBuilder {
             pageType: pageType,
             summary: makeSummary(pageType: pageType, title: title, controls: controls),
             controls: controls,
+            accessibilitySnapshot: accessibilitySnapshot,
             recommendations: recommendations,
             siteAdapters: siteAdapters
         )
@@ -386,6 +672,47 @@ enum BrowserAnalysisBuilder {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    static func normalizedName(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    static func sourceBreakdown(
+        controls: [BrowserControl],
+        accessibilitySnapshot: BrowserAccessibilitySnapshot?
+    ) -> [String: Any] {
+        var breakdown = [
+            BrowserControlSource.accessibility.rawValue: 0,
+            BrowserControlSource.dom.rawValue: 0,
+            BrowserControlSource.adapter.rawValue: 0,
+            BrowserControlSource.vision.rawValue: 0
+        ]
+        for control in controls {
+            let ref = BrowserControlRef(
+                control: control,
+                accessibilityNode: accessibilitySnapshot?.matchingNode(for: control)
+            )
+            breakdown[ref.source.rawValue, default: 0] += 1
+        }
+        return [
+            "controlRefs": breakdown,
+            "accessibilityNodeCount": accessibilitySnapshot?.nodeCount ?? 0,
+            "accessibilityMatchedControlCount": controls.filter {
+                accessibilitySnapshot?.matchingNode(for: $0) != nil
+            }.count
+        ]
+    }
+
+    static func lowConfidenceReason(controls: [BrowserControl]) -> String? {
+        if controls.isEmpty { return "no_matching_controls_detected" }
+        if !controls.contains(where: { !$0.validActions.isEmpty }) { return "no_actionable_controls_detected" }
+        let highConfidenceCount = controls.filter { $0.confidence >= 0.65 }.count
+        if highConfidenceCount == 0 { return "all_matching_controls_low_confidence" }
+        return nil
+    }
+
     static func isGoogleDriveFileControl(
         pageURL: String,
         selector: String,
@@ -408,6 +735,10 @@ enum BrowserAnalysisBuilder {
 
     static func googleDriveNameHint(from label: String) -> String {
         GoogleDriveBrowserAdapter.nameHint(from: label)
+    }
+
+    static func githubNameHint(from label: String) -> String {
+        GitHubBrowserAdapter.nameHint(from: label)
     }
 
     static func fingerprintsCompatible(_ cached: BrowserPageFingerprint, _ current: BrowserPageFingerprint) -> Bool {
@@ -451,6 +782,8 @@ enum BrowserAnalysisBuilder {
                 string(raw["label"]).lowercased(),
                 string(raw["placeholder"]).lowercased(),
                 string(raw["testID"]).lowercased(),
+                stringArray(raw["framePath"]).joined(separator: ">"),
+                String(int(raw["shadowDepth"]) ?? 0),
                 bool(raw["disabled"]) ? "disabled" : "enabled"
             ].joined(separator: "|")
         }.joined(separator: "||")
@@ -501,6 +834,8 @@ enum BrowserAnalysisBuilder {
         let testID = string(raw["testID"])
         let value = string(raw["value"])
         let href = string(raw["href"])
+        let framePath = stringArray(raw["framePath"])
+        let shadowDepth = int(raw["shadowDepth"]) ?? 0
         let disabled = bool(raw["disabled"])
         let visible = true
         let actionable = bool(raw["actionable"]) && !disabled
@@ -561,6 +896,8 @@ enum BrowserAnalysisBuilder {
             type,
             placeholder.lowercased(),
             testID.lowercased(),
+            framePath.joined(separator: ">"),
+            String(shadowDepth),
             boundsBucket(bounds)
         ].joined(separator: "\u{1f}")
         let identityHash = stableHash(identitySeed)
@@ -589,6 +926,8 @@ enum BrowserAnalysisBuilder {
             "labelSource": label.isEmpty ? "missing" : "computed",
             "identityHash": identityHash,
             "sourceIndex": index,
+            "framePath": framePath,
+            "shadowDepth": shadowDepth,
             "visible": visible,
             "enabled": !disabled,
             "actionable": actionable
@@ -607,6 +946,8 @@ enum BrowserAnalysisBuilder {
             testID: testID,
             value: value,
             href: href,
+            framePath: framePath,
+            shadowDepth: shadowDepth,
             disabled: disabled,
             visible: visible,
             actionable: actionable,
@@ -648,6 +989,15 @@ enum BrowserAnalysisBuilder {
             tag: tag,
             href: href
         )
+        let githubEntity = GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters) && GitHubBrowserAdapter.isEntityControl(
+            pageURL: pageURL,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            href: href
+        )
 
         if lowerTag == "input" || lowerTag == "textarea" || lowerRole.contains("textbox") {
             actions.append(contentsOf: [.focus, .fill, .setValue])
@@ -663,6 +1013,8 @@ enum BrowserAnalysisBuilder {
         }
         if driveFile {
             actions.append(contentsOf: [.select, .open, .doubleClick])
+        } else if githubEntity {
+            actions.append(.open)
         } else if !href.isEmpty || lowerTag == "a" || lowerRole.contains("link") {
             actions.append(.open)
         }
@@ -683,6 +1035,18 @@ enum BrowserAnalysisBuilder {
     ) -> BrowserActionKind? {
         if GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters),
            GoogleDriveBrowserAdapter.isFileControl(
+            pageURL: pageURL,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            href: ""
+        ) {
+            return .open
+        }
+        if GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters),
+           GitHubBrowserAdapter.isEntityControl(
             pageURL: pageURL,
             selector: selector,
             label: label,
@@ -742,6 +1106,28 @@ enum BrowserAnalysisBuilder {
                     "expectedOutcome": "googleEditorOpened",
                     "preferred": true,
                     "goalSatisfiedWhen": "The bridge verifies that a matching Google Drive file opened."
+                ]
+            ]
+        }
+
+        if GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters),
+           GitHubBrowserAdapter.isEntityControl(
+            pageURL: pageURL,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            href: href
+        ) {
+            return [
+                [
+                    "action": BrowserActionKind.open.rawValue,
+                    "adapterID": BrowserSiteAdapterID.github,
+                    "semanticAction": BrowserActionKind.open.rawValue,
+                    "expectedOutcome": "githubEntityOpened",
+                    "preferredReadPath": "Use gh CLI/API for durable reads when the task does not require visual browser state.",
+                    "href": href
                 ]
             ]
         }
@@ -881,6 +1267,7 @@ enum BrowserAnalysisBuilder {
         if host == "docs.google.com", path.hasPrefix("/spreadsheets/") { return "googleSheetsEditor" }
         if host == "docs.google.com", path.hasPrefix("/presentation/") { return "googleSlidesEditor" }
         if host == "drive.google.com", GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters) { return "googleDrive" }
+        if host == "github.com", GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters) { return "github" }
         if controls.contains(where: { $0.risk == .credentialInput }) { return "login" }
         if controls.contains(where: { $0.placeholder.lowercased().contains("search") || $0.label.lowercased().contains("search") }) { return "search" }
         let editableCount = controls.filter { $0.validActions.contains(.fill) || $0.validActions.contains(.setValue) }.count
@@ -912,6 +1299,10 @@ enum BrowserAnalysisBuilder {
             return GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
                 ? GoogleDriveBrowserAdapter.recommendations
                 : []
+        case "github":
+            return GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+                ? GitHubBrowserAdapter.recommendations
+                : []
         default:
             return controls
                 .filter { !$0.requiresUserConfirmation && !$0.validActions.isEmpty }
@@ -928,7 +1319,10 @@ enum BrowserAnalysisBuilder {
     }
 
     private static func activeSiteAdapters(url: String, enabledBrowserAdapters: Set<String>) -> [[String: Any]] {
-        [GoogleDriveBrowserAdapter.activeMetadata(pageURL: url, enabledAdapterIDs: enabledBrowserAdapters)].compactMap { $0 }
+        [
+            GoogleDriveBrowserAdapter.activeMetadata(pageURL: url, enabledAdapterIDs: enabledBrowserAdapters),
+            GitHubBrowserAdapter.activeMetadata(pageURL: url, enabledAdapterIDs: enabledBrowserAdapters)
+        ].compactMap { $0 }
     }
 
     private static func makeSummary(pageType: String, title: String, controls: [BrowserControl]) -> String {
@@ -998,13 +1392,22 @@ enum BrowserAnalysisBuilder {
         return ""
     }
 
+    private static func stringArray(_ value: Any?) -> [String] {
+        if let array = value as? [String] { return array }
+        if let array = value as? [Any] {
+            return array.map(string).filter { !$0.isEmpty }
+        }
+        let single = string(value)
+        return single.isEmpty ? [] : [single]
+    }
+
     private static func bool(_ value: Any?) -> Bool {
         if let bool = value as? Bool { return bool }
         if let number = value as? NSNumber { return number.boolValue }
         return false
     }
 
-    private static func int(_ value: Any?) -> Int? {
+    static func int(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String { return Int(string) }
@@ -1027,6 +1430,10 @@ enum BrowserActionOutcomeVerifier {
         let afterURL = string(after?["url"])
         let beforeTitle = string(before?["title"])
         let afterTitle = string(after?["title"])
+        let beforeTextHash = stableHash(String(string(before?["text"]).prefix(1_000)))
+        let afterTextHash = stableHash(String(string(after?["text"]).prefix(1_000)))
+        let textChanged = !beforeTextHash.isEmpty && beforeTextHash != afterTextHash
+        let meaningfulTextChanged = meaningfulTextChanged(before: before, after: after)
         let expected = expectedOutcome(
             action: action,
             control: control,
@@ -1037,6 +1444,7 @@ enum BrowserActionOutcomeVerifier {
             action: action,
             control: control,
             result: result,
+            before: before,
             beforeURL: beforeURL,
             afterURL: afterURL,
             beforeTitle: beforeTitle,
@@ -1045,6 +1453,17 @@ enum BrowserActionOutcomeVerifier {
         )
         let knownDriveFile = control.map {
             GoogleDriveBrowserAdapter.isEnabled(in: enabledAdapterIDs) && GoogleDriveBrowserAdapter.isFileControl(
+                pageURL: beforeURL.isEmpty ? afterURL : beforeURL,
+                selector: $0.selector,
+                label: $0.label,
+                name: $0.name,
+                role: $0.role,
+                tag: $0.tag,
+                href: $0.href
+            )
+        } ?? false
+        let knownGitHubEntity = control.map {
+            GitHubBrowserAdapter.isEnabled(in: enabledAdapterIDs) && GitHubBrowserAdapter.isEntityControl(
                 pageURL: beforeURL.isEmpty ? afterURL : beforeURL,
                 selector: $0.selector,
                 label: $0.label,
@@ -1068,6 +1487,12 @@ enum BrowserActionOutcomeVerifier {
             reason = goalSatisfied
                 ? "The Google Drive file opened in an editor."
                 : "The Google Drive file control was activated, but the page did not open a Google editor. Treat this as selection, not completion."
+        } else if knownGitHubEntity {
+            goalSatisfied = observed == "githubEntityOpened" || observed == "navigation"
+            outcomeVerified = true
+            reason = goalSatisfied
+                ? "The GitHub entity opened or navigation changed."
+                : "The GitHub control was activated, but no matching navigation was observed."
         } else if [.fill, .setValue, .insertText].contains(action) {
             goalSatisfied = observed == "valueChanged" || executed
             outcomeVerified = observed == "valueChanged" || executed
@@ -1094,12 +1519,18 @@ enum BrowserActionOutcomeVerifier {
             "beforeURL": beforeURL,
             "afterURL": afterURL,
             "beforeTitle": beforeTitle,
-            "afterTitle": afterTitle
+            "afterTitle": afterTitle,
+            "beforeTextHash": beforeTextHash,
+            "afterTextHash": afterTextHash,
+            "textChanged": textChanged,
+            "meaningfulTextChanged": meaningfulTextChanged,
+            "focusedValueChanged": focusedValueChanged(before: before, after: after)
         ]
         let suggestions = suggestedNextActions(
             action: action,
             control: control,
             knownDriveFile: knownDriveFile,
+            knownGitHubEntity: knownGitHubEntity,
             observedOutcome: observed,
             goalSatisfied: goalSatisfied
         )
@@ -1135,6 +1566,19 @@ enum BrowserActionOutcomeVerifier {
                 return "driveFileStateChanged"
             }
         }
+        if let control,
+           GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters),
+           GitHubBrowserAdapter.isEntityControl(
+            pageURL: beforeURL,
+            selector: control.selector,
+            label: control.label,
+            name: control.name,
+            role: control.role,
+            tag: control.tag,
+            href: control.href
+           ) {
+            return "githubEntityOpened"
+        }
         if [.fill, .setValue, .insertText].contains(action) {
             return "valueChanged"
         }
@@ -1148,6 +1592,7 @@ enum BrowserActionOutcomeVerifier {
         action: BrowserActionKind,
         control: BrowserControl?,
         result: [String: Any],
+        before: [String: Any]?,
         beforeURL: String,
         afterURL: String,
         beforeTitle: String,
@@ -1157,17 +1602,23 @@ enum BrowserActionOutcomeVerifier {
         if isGoogleEditorURL(afterURL) {
             return "googleEditorOpened"
         }
+        if isGitHubEntityURL(afterURL) {
+            return "githubEntityOpened"
+        }
         if !beforeURL.isEmpty, !afterURL.isEmpty, beforeURL != afterURL {
             return "navigation"
         }
         if [.fill, .setValue, .insertText].contains(action), bool(result["ok"]) {
             return "valueChanged"
         }
-        if let control, focusMatches(control: control, snapshot: after) {
-            return "selectedOrFocused"
-        }
         if !beforeTitle.isEmpty, !afterTitle.isEmpty, beforeTitle != afterTitle {
             return "pageChanged"
+        }
+        if meaningfulTextChanged(before: before, after: after) {
+            return "pageChanged"
+        }
+        if let control, focusMatches(control: control, snapshot: after) {
+            return "selectedOrFocused"
         }
         if bool(result["clicked"]) {
             return "clickedNoPageChange"
@@ -1179,10 +1630,25 @@ enum BrowserActionOutcomeVerifier {
         action: BrowserActionKind,
         control: BrowserControl?,
         knownDriveFile: Bool,
+        knownGitHubEntity: Bool,
         observedOutcome: String,
         goalSatisfied: Bool
     ) -> [[String: Any]] {
-        guard knownDriveFile, !goalSatisfied else { return [] }
+        guard !goalSatisfied else { return [] }
+        if knownGitHubEntity {
+            return [
+                [
+                    "action": "prefer-api",
+                    "adapterID": BrowserSiteAdapterID.github,
+                    "reason": "Use gh CLI/API if browser navigation did not expose the needed GitHub state."
+                ],
+                [
+                    "action": BrowserActionKind.open.rawValue,
+                    "reason": "Re-analyze the GitHub page and open the specific issue, PR, file, or workflow control by controlID."
+                ]
+            ]
+        }
+        guard knownDriveFile else { return [] }
         let label = control?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return [
             [
@@ -1216,6 +1682,38 @@ enum BrowserActionOutcomeVerifier {
         return false
     }
 
+    private static func focusedValueChanged(before: [String: Any]?, after: [String: Any]?) -> Bool {
+        let beforeFocused = before?["focusedElement"] as? [String: Any]
+        let afterFocused = after?["focusedElement"] as? [String: Any]
+        let beforeSelector = string(beforeFocused?["selector"])
+        let afterSelector = string(afterFocused?["selector"])
+        let beforeValue = string(beforeFocused?["value"])
+        let afterValue = string(afterFocused?["value"])
+        guard !afterSelector.isEmpty || !afterValue.isEmpty else { return false }
+        return beforeSelector == afterSelector && beforeValue != afterValue
+    }
+
+    private static func meaningfulTextChanged(before: [String: Any]?, after: [String: Any]?) -> Bool {
+        let beforeText = normalizedMeaningfulText(string(before?["text"]))
+        let afterText = normalizedMeaningfulText(string(after?["text"]))
+        guard !beforeText.isEmpty else { return false }
+        return beforeText != afterText
+    }
+
+    private static func normalizedMeaningfulText(_ value: String) -> String {
+        value
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !isBrowserAccessoryText($0) }
+            .joined(separator: "\n")
+    }
+
+    private static func isBrowserAccessoryText(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return lower.hasPrefix("1password menu is available")
+            || lower.contains("press down arrow to select")
+    }
+
     private static func isGoogleEditorURL(_ value: String) -> Bool {
         guard let components = URLComponents(string: value),
               components.host?.lowercased() == "docs.google.com" else {
@@ -1227,10 +1725,33 @@ enum BrowserActionOutcomeVerifier {
             || path.hasPrefix("/presentation/")
     }
 
+    private static func isGitHubEntityURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              components.host?.lowercased() == "github.com" else {
+            return false
+        }
+        let path = components.path.lowercased()
+        return path.contains("/issues/")
+            || path.contains("/pull/")
+            || path.contains("/actions/")
+            || path.contains("/blob/")
+            || path.contains("/tree/")
+    }
+
     private static func string(_ value: Any?) -> String {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
         return ""
+    }
+
+    private static func stableHash(_ value: String) -> String {
+        guard !value.isEmpty else { return "" }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
     }
 
     private static func bool(_ value: Any?) -> Bool {

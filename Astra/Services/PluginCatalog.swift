@@ -660,6 +660,7 @@ final class PluginCatalog {
                 )
             ],
             templates: [],
+            browserAdapters: [BrowserSiteAdapterID.github],
             prerequisites: [
                 CommonCLIPrerequisites.githubCLI,
                 CommonCLIPrerequisites.githubAuth

@@ -90,27 +90,39 @@ enum BrowserAutomationScripts {
         const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
         return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
       };
+      const frameLabelFor = (frame) => {
+        const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
+        return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+      };
       const allControls = () => {
         const selector = "a, button, input, textarea, select, [role], [contenteditable=true], [tabindex]";
         const out = [];
         const seen = new Set();
-        const collect = (root, depth) => {
+        const collect = (root, depth, framePath) => {
           if (!root || depth > 3) return;
           for (const el of Array.from(root.querySelectorAll(selector))) {
             if (!seen.has(el)) {
               seen.add(el);
-              out.push(el);
+              out.push({ el, shadowDepth: depth, framePath });
             }
-            if (el.shadowRoot) collect(el.shadowRoot, depth + 1);
+            if (el.shadowRoot) collect(el.shadowRoot, depth + 1, framePath);
+          }
+          const frames = root.querySelectorAll ? Array.from(root.querySelectorAll("iframe, frame")) : [];
+          for (const frame of frames) {
+            try {
+              if (frame.contentDocument) collect(frame.contentDocument, depth, framePath.concat(frameLabelFor(frame)));
+            } catch (_) {}
           }
         };
-        collect(document, 0);
+        collect(document, 0, []);
         return out;
       };
       const controls = allControls()
-        .filter(visible)
+        .filter((entry) => visible(entry.el))
         .slice(0, 200)
-        .map((el) => ({
+        .map((entry) => {
+          const el = entry.el;
+          return ({
           selector: selectorFor(el),
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
@@ -123,8 +135,11 @@ enum BrowserAutomationScripts {
           actionable: !disabled(el) && visible(el),
           value: (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") ? String(el.value || "").slice(0, 160) : "",
           href: el.href || "",
+          framePath: entry.framePath,
+          shadowDepth: entry.shadowDepth,
           bounds: boundsFor(el)
-        }));
+        });
+        });
       const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
       return JSON.stringify({
         ok: true,

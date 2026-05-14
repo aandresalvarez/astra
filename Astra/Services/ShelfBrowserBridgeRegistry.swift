@@ -75,7 +75,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
     func environmentVariables(for taskID: UUID) -> [String: String] {
         lock.lock()
         defer { lock.unlock() }
-        guard isPresented, isEnabled, self.taskID == taskID, let endpoint else { return [:] }
+        guard isEnabled, self.taskID == taskID, let endpoint else { return [:] }
         return [
             "ASTRA_BROWSER_URL": endpoint
         ]
@@ -88,18 +88,21 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         let currentTitle = currentTitle
         let backend = backend
         let boundTaskID = self.taskID
-        let shouldExpose = isPresented && isEnabled
+        let isVisible = isPresented
+        let shouldExpose = isEnabled
         let storedAdapterIDs = enabledBrowserAdapters
         lock.unlock()
         let adapterIDs = override.map(normalizedAdapterList) ?? storedAdapterIDs
         let hasGoogleDriveAdapter = adapterIDs.contains(BrowserSiteAdapterID.googleDrive)
+        let hasGitHubAdapter = adapterIDs.contains(BrowserSiteAdapterID.github)
 
         let isTaskBound = boundTaskID == taskID
         let isExposed = shouldExpose && isTaskBound && endpoint != nil
         AppLogger.audit(.shelfBrowserContext, category: "Browser", taskID: taskID, fields: [
             "event": "prompt_context_requested",
             "exposed": String(isExposed),
-            "is_presented": String(shouldExpose),
+            "is_presented": String(isVisible),
+            "is_enabled": String(isEnabled),
             "is_task_bound": String(isTaskBound),
             "has_endpoint": String(endpoint != nil),
             "has_current_url": String(currentURL?.isEmpty == false),
@@ -116,6 +119,9 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         let driveCommandLine = hasGoogleDriveAdapter
             ? "- For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`"
+            : ""
+        let githubCommandLine = hasGitHubAdapter
+            ? "- On GitHub pages, prefer the GitHub capability (`gh` CLI/API) for durable issue, PR, repository, and Actions reads; use browser control for authenticated visual state or page navigation."
             : ""
         let driveSafetyLine = hasGoogleDriveAdapter
             ? "- On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots. A Drive row click commonly selects a file without opening it; if `goalSatisfied` is false, follow `suggestedNextActions` instead of repeating the click."
@@ -135,7 +141,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
-        - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`
+        - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; use `astra-browser analyze --v2` when semantic controlRefs/source evidence are useful.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
         - Prefer control IDs from analyze when acting: `astra-browser click --analysis ana_... --control ctl_...`
@@ -160,6 +166,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - For Google Docs insertion: `astra-browser google-docs-insert --verify 'A Gentle Morning' --text 'A Gentle Morning\n...'`
         - For Google Docs verification: `astra-browser google-docs-find --query 'A Gentle Morning'`
         \(driveCommandLine)
+        \(githubCommandLine)
         - Combine common steps in one compact turn: `astra-browser act --find 'Replace with' --set '05/07/2026' --click 'Replace all' --wait-saved --verify '05/07/2026'`
         - Click a control: `astra-browser click --selector 'button.primary'`
         - Click by role/name: `astra-browser click --role button --name "Save"`

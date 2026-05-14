@@ -302,6 +302,7 @@ struct CapabilityLibraryTests {
         #expect(packages.allSatisfy { $0.sourceMetadata == .builtIn() })
         #expect(packages.first { $0.id == "gcloud-workflow" }?.connectors.map(\.name) == ["Google Cloud"])
         #expect(packages.first { $0.id == "github-workflow" }?.connectors.isEmpty == true)
+        #expect(packages.first { $0.id == "github-workflow" }?.browserAdapters == [BrowserSiteAdapterID.github])
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.map(\.command) == ["gh"])
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         #expect(packages.first { $0.id == "google-drive-browser" }?.browserAdapters == [BrowserSiteAdapterID.googleDrive])

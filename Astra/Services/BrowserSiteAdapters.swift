@@ -2,6 +2,7 @@ import Foundation
 
 enum BrowserSiteAdapterID {
     static let googleDrive = "googleDrive"
+    static let github = "github"
 
     static func normalized(_ value: String) -> String? {
         let compact = value
@@ -14,6 +15,8 @@ enum BrowserSiteAdapterID {
         switch compact {
         case "googledrive", "googledrivebrowser", "drive":
             return googleDrive
+        case "github", "githubbrowser", "githubworkflow", "gh":
+            return github
         default:
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -128,6 +131,81 @@ enum GoogleDriveBrowserAdapter {
                 "action": BrowserActionKind.googleDriveOpen.rawValue,
                 "adapterID": BrowserSiteAdapterID.googleDrive,
                 "reason": "Use Drive search/open helper before manual row clicks."
+            ]
+        ]
+    }
+
+    private static func containsAny(_ haystack: String, _ needles: [String]) -> Bool {
+        needles.contains { haystack.contains($0) }
+    }
+}
+
+enum GitHubBrowserAdapter {
+    static let descriptor = BrowserSiteAdapterDescriptor(
+        id: BrowserSiteAdapterID.github,
+        name: "GitHub Browser",
+        hostPatterns: ["github.com"],
+        capabilities: ["github.browser.open", "github.api.prefer"],
+        actions: [.open]
+    )
+
+    static func isEnabled(in adapterIDs: Set<String>) -> Bool {
+        BrowserSiteAdapterID.contains(BrowserSiteAdapterID.github, in: adapterIDs)
+    }
+
+    static func matches(pageURL: String) -> Bool {
+        URL(string: pageURL)?.host?.lowercased() == "github.com"
+    }
+
+    static func activeMetadata(pageURL: String, enabledAdapterIDs: Set<String>) -> [String: Any]? {
+        guard isEnabled(in: enabledAdapterIDs), matches(pageURL: pageURL) else { return nil }
+        var object = descriptor.jsonObject
+        object["active"] = true
+        object["preferredReadPath"] = "Use gh CLI for durable issue, PR, repository, and Actions reads when possible."
+        return object
+    }
+
+    static func isEntityControl(
+        pageURL: String,
+        selector: String,
+        label: String,
+        name: String,
+        role: String,
+        tag: String,
+        href: String
+    ) -> Bool {
+        guard matches(pageURL: pageURL) else { return false }
+        let target = href.isEmpty ? selector : href
+        guard let path = URL(string: target)?.path.lowercased()
+            ?? URL(string: pageURL)?.path.lowercased() else {
+            return false
+        }
+        let text = [selector, label, name, role, tag, href].joined(separator: " ").lowercased()
+        return path.contains("/issues/")
+            || path.contains("/pull/")
+            || path.contains("/actions/")
+            || path.contains("/blob/")
+            || path.contains("/tree/")
+            || containsAny(text, ["issue #", "pull request", "checks", "workflow", "commits"])
+    }
+
+    static func nameHint(from label: String) -> String {
+        label
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static var recommendations: [[String: Any]] {
+        [
+            [
+                "action": "prefer-api",
+                "adapterID": BrowserSiteAdapterID.github,
+                "reason": "Use gh CLI/API reads before broad browser scraping for GitHub issues, PRs, repos, and Actions."
+            ],
+            [
+                "action": BrowserActionKind.open.rawValue,
+                "adapterID": BrowserSiteAdapterID.github,
+                "reason": "Use browser open for authenticated pages or visual inspection, then verify URL/title outcome."
             ]
         ]
     }

@@ -458,6 +458,8 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("Available CLI/Script Tools"))
+        #expect(prompt.contains("Shelf Browser Control: `astra-browser`"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))
@@ -509,6 +511,42 @@ struct BuildPromptTests {
         #expect(prompt.contains("Google Drive"))
         #expect(prompt.contains("http://127.0.0.1:49152"))
         #expect(!prompt.contains("http://127.0.0.1:49153"))
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+    }
+
+    @Test("Prompt and environment keep enabled Shelf browser when panel is hidden")
+    func promptKeepsEnabledShelfBrowserWhenPanelHidden() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-hidden")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Use browser", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "http://127.0.0.1:47831/",
+            currentTitle: "Validation",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "http://127.0.0.1:47831/",
+            currentTitle: "Validation",
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(prompt.contains("ASTRA_BROWSER_URL"))
+        #expect(prompt.contains("http://127.0.0.1:47831/"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 

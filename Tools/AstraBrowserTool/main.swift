@@ -28,9 +28,21 @@ struct AstraBrowserTool {
         case "actions":
             let endpoint = try browserEndpoint()
             return try await request(endpoint: endpoint, method: "GET", path: "/actions")
+        case "trace":
+            let endpoint = try browserEndpoint()
+            return try await request(endpoint: endpoint, method: "GET", path: "/trace")
+        case "benchmark":
+            let endpoint = try browserEndpoint()
+            return try await request(endpoint: endpoint, method: "GET", path: "/benchmark")
         case "analyze", "analyse":
             let endpoint = try browserEndpoint()
             var items: [URLQueryItem] = []
+            if args.contains("--v2") {
+                items.append(URLQueryItem(name: "v2", value: "true"))
+            }
+            if let version = args.value(after: "--version") ?? args.value(after: "--analysis-version") {
+                items.append(URLQueryItem(name: "version", value: version))
+            }
             if args.contains("--full") {
                 items.append(URLQueryItem(name: "full", value: "true"))
             }
@@ -480,7 +492,9 @@ struct AstraBrowserTool {
                 "ok": true,
                 "usage": [
                 "astra-browser health",
-                "astra-browser analyze [--query text] [--full] [--debug] [--limit n]",
+                "astra-browser analyze [--v2] [--query text] [--full] [--debug] [--limit n]",
+                "astra-browser trace",
+                "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
                 "astra-browser page [--query text] [--limit n]",
                 "astra-browser snapshot --mode summary|text|controls|full [--query text] [--limit n]",

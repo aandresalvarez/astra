@@ -416,6 +416,26 @@ struct WorkspacePersistenceTests {
         #expect(target.url?.path == root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path)
     }
 
+    @Test("auto-export skip launch flags are recognized")
+    func autoExportSkipLaunchFlagsAreRecognized() {
+        #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(
+            arguments: ["ASTRA Dev", "--skip-workspace-recovery"],
+            environment: [:]
+        ))
+        #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(
+            arguments: ["ASTRA Dev", "--skip-workspace-auto-export"],
+            environment: [:]
+        ))
+        #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(
+            arguments: ["ASTRA Dev"],
+            environment: ["ASTRA_SKIP_WORKSPACE_AUTO_EXPORT": "true"]
+        ))
+        #expect(!WorkspacePersistenceCoordinator.shouldSkipAutoExport(
+            arguments: ["ASTRA Dev"],
+            environment: [:]
+        ))
+    }
+
     @Test("import reuses built-in global skills by name")
     @MainActor
     func importReusesBuiltInGlobalSkillsByName() throws {

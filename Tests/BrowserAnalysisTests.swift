@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Browser Analysis")
 struct BrowserAnalysisTests {
+    @Test("V2 rollout mode parses environment and preserves explicit requests")
+    func v2RolloutModeParsesEnvironmentAndExplicitRequests() {
+        #expect(BrowserAnalysisV2RolloutMode.configured(environment: [
+            BrowserAnalysisV2RolloutMode.environmentKey: "shadow"
+        ]) == .shadow)
+        #expect(BrowserAnalysisV2RolloutMode.configured(environment: [
+            BrowserAnalysisV2RolloutMode.environmentKey: "on"
+        ]) == .on)
+        #expect(BrowserAnalysisV2RolloutMode.off.effectiveVersion(requested: .v2, explicit: true) == .v2)
+        #expect(BrowserAnalysisV2RolloutMode.shadow.effectiveVersion(requested: .v2, explicit: false) == .v1)
+        #expect(BrowserAnalysisV2RolloutMode.on.effectiveVersion(requested: .v1, explicit: false) == .v2)
+    }
+
     @Test("Analyzer classifies valid actions and risk")
     func analyzerClassifiesActionsAndRisk() throws {
         let analysis = BrowserAnalysisBuilder.build(
@@ -53,6 +66,48 @@ struct BrowserAnalysisTests {
         #expect(compact["omittedControlCount"] as? Int == 5)
         #expect(full["returnedControlCount"] as? Int == 25)
         #expect(full["omittedControlCount"] as? Int == 0)
+    }
+
+    @Test("V2 response adds semantic control refs without changing default response")
+    func v2ResponseAddsSemanticControlRefs() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "button[data-testid=save]", tag: "button", role: "button", label: "Save")
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: [
+                "nodeCount": 1,
+                "nodes": [
+                    [
+                        "nodeId": "1",
+                        "backendDOMNodeId": "42",
+                        "ignored": false,
+                        "role": ["value": "button"],
+                        "name": ["value": "Save"]
+                    ]
+                ]
+            ]
+        )
+
+        let defaultResponse = analysis.responseObject(query: nil, full: false, limit: nil)
+        #expect(defaultResponse["controlRefs"] == nil)
+
+        let v2 = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        #expect(v2["analysisVersion"] as? String == BrowserAnalysisVersion.v2.rawValue)
+        #expect(v2["visionFallbackAvailable"] as? Bool == false)
+
+        let refs = try #require(v2["controlRefs"] as? [[String: Any]])
+        let firstRef = try #require(refs.first)
+        #expect(firstRef["controlID"] as? String == analysis.controls.first?.controlID)
+        #expect(firstRef["source"] as? String == BrowserControlSource.accessibility.rawValue)
+        #expect(firstRef["selectorFallback"] as? String == "button[data-testid=save]")
+
+        let sourceBreakdown = try #require(v2["sourceBreakdown"] as? [String: Any])
+        #expect(sourceBreakdown["accessibilityNodeCount"] as? Int == 1)
+        #expect(sourceBreakdown["accessibilityMatchedControlCount"] as? Int == 1)
+        let controlRefs = try #require(sourceBreakdown["controlRefs"] as? [String: Int])
+        #expect(controlRefs[BrowserControlSource.accessibility.rawValue] == 1)
     }
 
     @Test("Control IDs stay stable across state-only changes")
@@ -160,6 +215,10 @@ struct BrowserAnalysisTests {
         let ambiguity = try #require(response["ambiguity"] as? [String: Any])
         #expect(ambiguity["type"] as? String == "duplicateLabels")
         #expect(ambiguity["matchCount"] as? Int == 2)
+
+        let v2 = analysis.responseObject(query: "Untitled document", full: false, limit: nil, version: .v2)
+        let refs = try #require(v2["controlRefs"] as? [[String: Any]])
+        #expect(refs.first?["source"] as? String == BrowserControlSource.adapter.rawValue)
     }
 
     @Test("Google Drive semantics stay disabled without browser capability")
@@ -188,6 +247,42 @@ struct BrowserAnalysisTests {
         let file = try #require(analysis.controls.first)
         #expect(!file.validActions.contains(BrowserActionKind.open))
         #expect(!file.actionOutcomes.contains { $0["action"] as? String == BrowserActionKind.googleDriveOpen.rawValue })
+    }
+
+    @Test("GitHub adapter adds API-first recommendations and open semantics")
+    func githubAdapterAddsRecommendationsAndOpenSemantics() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(
+                url: "https://github.com/coral/astra/pulls",
+                title: "Pull requests - coral/astra",
+                text: "Pull requests Fix browser control",
+                controls: [
+                    Self.control(
+                        selector: "a[href='/coral/astra/pull/42']",
+                        tag: "a",
+                        role: "link",
+                        label: "Fix browser control #42",
+                        href: "https://github.com/coral/astra/pull/42"
+                    )
+                ]
+            ),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+
+        #expect(analysis.pageType == "github")
+        #expect(analysis.siteAdapters.first?["id"] as? String == BrowserSiteAdapterID.github)
+        #expect(analysis.recommendations.contains { $0["adapterID"] as? String == BrowserSiteAdapterID.github })
+
+        let control = try #require(analysis.controls.first)
+        #expect(control.validActions.contains(.open))
+        #expect(control.primaryAction == .open)
+        #expect(control.actionOutcomes.contains { $0["adapterID"] as? String == BrowserSiteAdapterID.github })
+
+        let response = analysis.responseObject(query: "browser control", full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        #expect(refs.first?["source"] as? String == BrowserControlSource.adapter.rawValue)
     }
 
     @Test("Google Drive click outcome does not satisfy open goal without editor navigation")
@@ -288,6 +383,50 @@ struct BrowserAnalysisTests {
         #expect(outcome["goalSatisfied"] as? Bool == true)
     }
 
+    @Test("Outcome verifier treats page text changes as verified page changes")
+    func outcomeVerifierTreatsTextChangesAsPageChanges() {
+        let outcome = BrowserActionOutcomeVerifier.outcome(
+            action: .click,
+            control: nil,
+            result: ["ok": true],
+            before: Self.sampleSnapshot(text: "Before", controls: []),
+            after: Self.sampleSnapshot(text: "After", controls: [])
+        )
+
+        #expect(outcome["observedOutcome"] as? String == "pageChanged")
+        #expect(outcome["goalSatisfied"] as? Bool == true)
+        #expect(outcome["textChanged"] as? Bool == true)
+        #expect(outcome["meaningfulTextChanged"] as? Bool == true)
+    }
+
+    @Test("Outcome verifier ignores browser accessory text changes")
+    func outcomeVerifierIgnoresBrowserAccessoryTextChanges() {
+        let outcome = BrowserActionOutcomeVerifier.outcome(
+            action: .click,
+            control: Self.browserControl(
+                selector: "#save-primary",
+                tag: "button",
+                role: "button",
+                label: "Save Project"
+            ),
+            result: ["ok": true, "clicked": true],
+            before: Self.sampleSnapshot(text: "Settings\nSave Project", controls: []),
+            after: Self.sampleSnapshot(
+                text: "Settings\nSave Project\n1Password menu is available. Press down arrow to select.",
+                focused: [
+                    "selector": "#save-primary",
+                    "label": "Save Project"
+                ],
+                controls: []
+            )
+        )
+
+        #expect(outcome["observedOutcome"] as? String == "selectedOrFocused")
+        #expect(outcome["goalSatisfied"] as? Bool == false)
+        #expect(outcome["textChanged"] as? Bool == true)
+        #expect(outcome["meaningfulTextChanged"] as? Bool == false)
+    }
+
     private static func sampleSnapshot(
         url: String = "https://example.com/settings",
         title: String = "Settings",
@@ -339,5 +478,53 @@ struct BrowserAnalysisTests {
                 "centerY": y + 16
             ]
         ]
+    }
+
+    private static func browserControl(
+        selector: String,
+        tag: String,
+        role: String,
+        label: String
+    ) -> BrowserControl {
+        BrowserControl(
+            controlID: "ctl_test",
+            identityHash: "hash_test",
+            selector: selector,
+            label: label,
+            name: label,
+            role: role,
+            tag: tag,
+            type: "",
+            placeholder: "",
+            testID: "",
+            value: "",
+            href: "",
+            framePath: [],
+            shadowDepth: 0,
+            disabled: false,
+            visible: true,
+            actionable: true,
+            bounds: [
+                "x": 10,
+                "y": 20,
+                "width": 120,
+                "height": 32,
+                "centerX": 70,
+                "centerY": 36
+            ],
+            validActions: [.click],
+            primaryAction: .click,
+            actionOutcomes: [
+                [
+                    "action": BrowserActionKind.click.rawValue,
+                    "semanticAction": "click",
+                    "expectedOutcome": "activation"
+                ]
+            ],
+            risk: .normal,
+            confidence: 0.99,
+            rank: 100,
+            evidence: [:]
+        )
     }
 }
