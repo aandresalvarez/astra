@@ -8,6 +8,29 @@ ASTRA is built around a simple idea:
 
 > You should supervise meaningful work, not babysit raw transcripts.
 
+## Value Proposition
+
+ASTRA helps technical leaders adopt AI agents without losing operational
+control. It turns ad hoc AI chat sessions into durable, supervised workspaces
+where teams can assign work, preserve context, review evidence, and decide when
+an agent should continue, pause, or ask for help.
+
+For decision-makers, the value is straightforward:
+
+- Increase engineering throughput by delegating repeatable work to AI agents.
+- Reduce supervision cost by showing plans, outcomes, artifacts, and blockers
+  before raw transcripts.
+- Lower adoption risk with visible permissions, policies, prerequisites, logs,
+  and trust signals.
+- Preserve institutional context through workspace memory, task history,
+  schedules, tools, and generated artifacts.
+- Keep work local and auditable on macOS while supporting provider CLIs such as
+  Claude Code and GitHub Copilot CLI.
+
+The outcome is not just a better AI interface. ASTRA is an accountability layer
+for AI-assisted work: it helps teams move faster while keeping humans in control
+of important decisions.
+
 ## What ASTRA Does
 
 ASTRA is a command center for agentic work on your Mac:
