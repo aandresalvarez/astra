@@ -15,11 +15,14 @@ struct TaskCapabilityResolver {
         let liveConnectors = allConnectors
         let liveSkills = allBehaviorSkills(connectors: liveConnectors)
 
-        let liveCLICommands = Set(
+        var liveCLICommands = Set(
             allLocalTools
                 .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
                 .map(\.command)
         )
+        if Self.hasBrowserBridge(for: task) {
+            liveCLICommands.insert("astra-browser")
+        }
 
         var liveEnvVars: [String: String] = [:]
         for skill in liveSkills {
@@ -139,7 +142,11 @@ struct TaskCapabilityResolver {
 
     func promptScope(contextText: String = "") -> TaskCapabilityPromptScope {
         let connectors = allConnectors
-        let tools = allLocalTools
+        var tools = allLocalTools
+        if Self.hasBrowserBridge(for: task),
+           !tools.contains(where: { $0.command == "astra-browser" }) {
+            tools.append(Self.browserBridgeTool())
+        }
         let skills = allBehaviorSkills(connectors: connectors)
 
         guard Self.shouldPruneForBrowserTask(task: task, contextText: contextText) else {
@@ -318,10 +325,23 @@ struct TaskCapabilityResolver {
     }
 
     private static func shouldPruneForBrowserTask(task: AgentTask, contextText: String) -> Bool {
-        let hasBrowserBridge = !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty
-        guard hasBrowserBridge else { return false }
+        guard hasBrowserBridge(for: task) else { return false }
         let text = searchableTaskText(task: task, contextText: contextText)
         return browserIntentTerms.contains { text.contains($0) }
+    }
+
+    private static func hasBrowserBridge(for task: AgentTask) -> Bool {
+        !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty
+    }
+
+    private static func browserBridgeTool() -> LocalTool {
+        LocalTool(
+            name: "Shelf Browser Control",
+            toolDescription: "Controls ASTRA's current Shelf browser session through ASTRA_BROWSER_URL. Analyze uses v2 by default; verify outcomeVerified after actions.",
+            icon: "globe",
+            toolType: "cli",
+            command: "astra-browser"
+        )
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {

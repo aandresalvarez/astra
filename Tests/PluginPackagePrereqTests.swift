@@ -133,11 +133,12 @@ struct PluginPackagePrereqTests {
         #expect(drive?.localTools.isEmpty == true)
     }
 
-    @Test("Built-in GitHub package is CLI-only and requires gh")
-    func builtInGitHubIsCLIOnly() {
+    @Test("Built-in GitHub package requires gh and exposes browser adapter")
+    func builtInGitHubRequiresGhAndExposesBrowserAdapter() {
         let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
         #expect(github != nil)
         #expect(github?.connectors.isEmpty == true)
+        #expect(github?.browserAdapters == [BrowserSiteAdapterID.github])
         #expect(github?.localTools.map(\.command) == ["gh"])
         #expect(github?.prerequisites.count == 2)
         #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])

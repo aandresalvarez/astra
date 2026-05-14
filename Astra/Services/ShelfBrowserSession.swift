@@ -106,8 +106,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
+    private var lastBrowserTrace: [String: Any]?
     private var lastPageFingerprint: String?
     private var lastLoggedURL = ""
+    private var keypressSafetyState = BrowserKeypressSafetyState()
+    private var browserRunGuard = BrowserRunGuard()
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
@@ -117,8 +120,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
     }
 
+    var isGoogleDrivePage: Bool {
+        guard let url = URL(string: currentURL) else { return false }
+        return url.host?.lowercased() == "drive.google.com"
+    }
+
+    var canUseGoogleDriveOpen: Bool {
+        isGoogleDriveAdapterEnabled || isGoogleDrivePage || isGoogleWorkspaceEditor
+    }
+
     var activeBrowserSiteAdapters: [[String: Any]] {
-        [GoogleDriveBrowserAdapter.activeMetadata(pageURL: currentURL, enabledAdapterIDs: enabledBrowserAdapters)].compactMap { $0 }
+        [
+            GoogleDriveBrowserAdapter.activeMetadata(pageURL: currentURL, enabledAdapterIDs: enabledBrowserAdapters),
+            GitHubBrowserAdapter.activeMetadata(pageURL: currentURL, enabledAdapterIDs: enabledBrowserAdapters)
+        ].compactMap { $0 }
     }
 
     var isAgentControlPermissionGuideVisible: Bool {
@@ -153,12 +168,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "actions",
             "analyze",
             "preflight",
+            "trace",
+            "benchmark",
             "snapshot",
             "locator",
             "navigate",
             "control.id",
             "analysis.cache",
             "analysis.preflight",
+            "analysis.v2",
+            "analysis.v2.rollout",
             "click.selector",
             "click.locator",
             "click.coordinates",
@@ -175,6 +194,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "google.find.replace",
             "google.docs.find",
             "google.docs.insert",
+            "google.docs.read.document",
+            "google.docs.replace.document",
             "act",
             "keypress",
             "text.focused",
@@ -184,11 +205,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "wait.text",
             "wait.selector"
         ]
-        if isGoogleDriveAdapterEnabled {
+        if canUseGoogleDriveOpen {
             capabilities.append(contentsOf: [
-                "browser.adapter.googleDrive",
                 "google.drive.open"
             ])
+        }
+        if isGoogleDriveAdapterEnabled {
+            capabilities.append("browser.adapter.googleDrive")
         }
         return capabilities
     }
@@ -230,6 +253,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
+        keypressSafetyState = BrowserKeypressSafetyState()
+        browserRunGuard.reset()
         publishBridgeState()
     }
 
@@ -693,10 +718,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "controlledBrowserStatus": controlledBrowser.statusMessage,
                 "controlledBrowserProfilePath": controlledBrowser.profilePath,
                 "bridgeEnabled": isAgentBridgeEnabled,
+                "browserAnalysisV2Mode": BrowserAnalysisV2RolloutMode.configured().rawValue,
                 "enabledBrowserAdapters": Array(enabledBrowserAdapters).sorted(),
                 "activeSiteAdapters": activeBrowserSiteAdapters,
+                "browserRunGuard": [
+                    "totalBrowserCalls": browserRunGuard.totalBrowserCalls,
+                    "warningThreshold": 30,
+                    "hardStopThreshold": 60
+                ],
                 "capabilities": bridgeCapabilities
             ]
+            if let lastBrowserTrace {
+                health["lastBrowserTrace"] = lastBrowserTrace
+            }
             if let debugPort = controlledBrowser.debugPort {
                 health["controlledBrowserDebugPort"] = Int(debugPort)
             }
@@ -731,8 +765,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     [
                         "method": "GET",
                         "path": "/analyze",
-                        "query": ["query": "optional text", "full": "optional true|false", "limit": "optional number", "debug": "optional true|false"],
-                        "description": "Deterministically scan the current rendered page and return a cached action map with analysisID, controlIDs, valid actions, primary action, expected outcomes, ambiguity hints, risk, confidence, and concise evidence."
+                        "query": ["query": "optional text", "full": "optional true|false", "limit": "optional number", "debug": "optional true|false", "v2": "optional true|false", "version": "optional v1|v2"],
+                        "description": "Deterministically scan the current rendered page and return a cached action map with analysisID, controlIDs, valid actions, primary action, expected outcomes, ambiguity hints, risk, confidence, and concise evidence. v2 semantic controlRefs, source breakdown, and accessibility matching are enabled by default. ASTRA_BROWSER_ANALYSIS_V2 or user defaults can set off/shadow/on rollout."
+                    ],
+                    [
+                        "method": "GET",
+                        "path": "/trace",
+                        "description": "Return the most recent compact browser action trace for supervision."
+                    ],
+                    [
+                        "method": "GET",
+                        "path": "/benchmark",
+                        "description": "Return the built-in Browser Control V2 benchmark suite definition and metric schema."
                     ],
                     [
                         "method": "POST",
@@ -820,11 +864,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     ],
                     [
                         "method": "POST",
+                        "path": "/googleDocsReadDocument",
+                        "body": [:],
+                        "description": "Read the full current Google Docs document through a safe document API path. If no authenticated document API path is available, returns google_docs_safe_edit_unavailable and the agent must not fall back to raw select-all/delete."
+                    ],
+                    [
+                        "method": "POST",
+                        "path": "/googleDocsReplaceDocument",
+                        "body": ["text": "Full replacement content", "verifyText": "short unique phrase"],
+                        "description": "Replace the full current Google Docs document through a safe document API path. If unavailable, returns google_docs_safe_edit_unavailable and blocks destructive keyboard fallback."
+                    ],
+                    [
+                        "method": "POST",
                         "path": "/googleDriveOpen",
                         "body": ["name": "Untitled document", "timeoutSeconds": 12],
-                        "enabled": isGoogleDriveAdapterEnabled,
+                        "enabled": canUseGoogleDriveOpen,
                         "adapterID": BrowserSiteAdapterID.googleDrive,
-                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Requires the Google Drive Browser capability."
+                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Available on Drive pages and through the Google Drive Browser capability."
                     ],
                     [
                         "method": "POST",
@@ -900,17 +956,42 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return .json(["ok": false, "error": "browser_bridge_disabled"], statusCode: 403)
         }
 
+        if let budgetResponse = browserRunGuardResponse(for: request) {
+            return .json(budgetResponse, statusCode: 429)
+        }
+
         do {
             switch (request.method, request.path) {
             case ("GET", "/analyze"):
                 let query = request.queryValue("query")
                 let full = Self.boolQueryValue(request.queryValue("full")) ?? false
                 let debug = Self.boolQueryValue(request.queryValue("debug")) ?? false
+                let hasExplicitVersion = request.queryValue("v2") != nil || request.queryValue("version") != nil
+                let requestedVersion = BrowserAnalysisVersion.requested(
+                    version: request.queryValue("version"),
+                    v2: Self.boolQueryValue(request.queryValue("v2")) ?? false
+                )
+                let rollout = BrowserAnalysisV2RolloutMode.configured()
+                let version = rollout.effectiveVersion(requested: requestedVersion, explicit: hasExplicitVersion)
                 let limit = request.queryValue("limit").flatMap(Int.init)
-                return .json(try await analyze(query: query, full: full, limit: limit, debug: debug))
+                return .json(try await analyze(
+                    query: query,
+                    full: full,
+                    limit: limit,
+                    debug: debug,
+                    version: version,
+                    rolloutMode: rollout,
+                    includeShadowV2: rollout.shouldAttachShadowAnalysis && !hasExplicitVersion
+                ))
             case ("POST", "/preflight"):
                 let command = try request.decodeJSON(BrowserPreflightCommand.self)
                 return .json(try await preflightResponse(command))
+            case ("GET", "/trace"):
+                var response: [String: Any] = ["ok": true]
+                response["trace"] = lastBrowserTrace ?? NSNull()
+                return .json(response)
+            case ("GET", "/benchmark"):
+                return .json(browserBenchmarkSuite())
             case ("GET", "/snapshot"):
                 let mode = SnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
                 let query = request.queryValue("query")
@@ -1206,6 +1287,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
                 ))
+            case ("POST", "/googleDocsReadDocument"):
+                return .json(try await googleDocsReadDocument())
+            case ("POST", "/googleDocsReplaceDocument"):
+                let command = try request.decodeJSON(GoogleDocsReplaceDocumentCommand.self)
+                return .json(try await googleDocsReplaceDocument(
+                    text: command.text,
+                    verifyText: command.normalizedVerifyText
+                ))
             case ("POST", "/googleDriveOpen"):
                 let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
                 return .json(try await googleDriveOpen(
@@ -1254,6 +1343,47 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "message": error.localizedDescription
             ], statusCode: 400)
         }
+    }
+
+    private func browserRunGuardResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
+        guard isRunGuardedBridgeRequest(request) else { return nil }
+        let decision = browserRunGuard.record(
+            path: "\(request.method) \(request.path)",
+            currentURL: currentURL,
+            currentTitle: pageTitle,
+            pageType: currentPageTypeLabel()
+        )
+        guard decision.shouldStop else { return nil }
+        return [
+            "ok": false,
+            "error": "browser_action_budget_exceeded",
+            "message": "Browser control exceeded the per-task bridge call budget. Stop repeating browser actions and switch to a deterministic helper or ask the user for direction.",
+            "runGuard": decision.diagnostics
+        ]
+    }
+
+    private func isRunGuardedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
+        switch (request.method, request.path) {
+        case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func currentPageTypeLabel() -> String {
+        guard let url = URL(string: currentURL),
+              let host = url.host?.lowercased() else {
+            return "unknown"
+        }
+        if host == "drive.google.com" { return "googleDrive" }
+        if host == "docs.google.com" {
+            if url.path.hasPrefix("/document/") { return "googleDocsEditor" }
+            if url.path.hasPrefix("/spreadsheets/") { return "googleSheetsEditor" }
+            if url.path.hasPrefix("/presentation/") { return "googleSlidesEditor" }
+            return "googleWorkspace"
+        }
+        return host
     }
 
     private func rawSnapshotJSON() async throws -> String {
@@ -1309,14 +1439,24 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func analyze(query: String?, full: Bool, limit: Int?, debug: Bool) async throws -> [String: Any] {
+    private func analyze(
+        query: String?,
+        full: Bool,
+        limit: Int?,
+        debug: Bool,
+        version: BrowserAnalysisVersion = .v1,
+        rolloutMode: BrowserAnalysisV2RolloutMode = BrowserAnalysisV2RolloutMode.configured(),
+        includeShadowV2: Bool = false
+    ) async throws -> [String: Any] {
         let started = Date()
         let snapshot = try await rawSnapshotObject()
+        let accessibilitySnapshot = version == .v2 ? await rawAccessibilitySnapshotObject() : nil
         let analysis = BrowserAnalysisBuilder.build(
             snapshot: snapshot,
             backend: engine.bridgeBackendLabel,
             engine: engine.rawValue,
-            enabledBrowserAdapters: Array(enabledBrowserAdapters)
+            enabledBrowserAdapters: Array(enabledBrowserAdapters),
+            accessibilitySnapshotObject: accessibilitySnapshot
         )
         browserAnalysisCache.store(analysis)
         AppLogger.audit(
@@ -1330,6 +1470,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "fingerprint": analysis.fingerprint.value,
                 "page_type": analysis.pageType,
                 "control_count": String(analysis.controls.count),
+                "analysis_version": version.rawValue,
+                "accessibility_node_count": String(analysis.accessibilitySnapshot?.nodeCount ?? 0),
                 "browser_adapter_ids": enabledBrowserAdapters.isEmpty ? "none" : Array(enabledBrowserAdapters).sorted().joined(separator: ","),
                 "has_query": String(query?.isEmpty == false),
                 "full": String(full),
@@ -1337,7 +1479,99 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ],
             level: .info
         )
-        return analysis.responseObject(query: query, full: full, limit: limit, debug: debug)
+        var response = analysis.responseObject(query: query, full: full, limit: limit, debug: debug, version: version)
+        response["browserAnalysisV2Mode"] = rolloutMode.rawValue
+
+        if includeShadowV2, version == .v1 {
+            let shadowAccessibilitySnapshot = await rawAccessibilitySnapshotObject()
+            let shadowAnalysis = BrowserAnalysisBuilder.build(
+                snapshot: snapshot,
+                backend: engine.bridgeBackendLabel,
+                engine: engine.rawValue,
+                analysisID: "shadow_\(analysis.analysisID)",
+                enabledBrowserAdapters: Array(enabledBrowserAdapters),
+                accessibilitySnapshotObject: shadowAccessibilitySnapshot
+            )
+            response["shadowAnalysisV2"] = shadowAnalysis.shadowResponseObject(query: query, full: full, limit: limit, debug: debug)
+        }
+
+        return response
+    }
+
+    private func rawAccessibilitySnapshotObject() async -> [String: Any]? {
+        guard isUsingControlledBrowser else { return nil }
+        do {
+            let json = try await controlledBrowser.accessibilitySnapshot()
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+            return try Self.jsonObject(from: json)
+        } catch {
+            AppLogger.audit(
+                .shelfBrowserAction,
+                category: "Browser",
+                taskID: boundTaskID,
+                fields: [
+                    "phase": "failed",
+                    "action": "accessibility_snapshot",
+                    "error": error.localizedDescription
+                ],
+                level: .debug
+            )
+            return nil
+        }
+    }
+
+    private func browserBenchmarkSuite() -> [String: Any] {
+        [
+            "ok": true,
+            "suiteID": "browser-v2-smoke",
+            "version": 1,
+            "description": "Small Browser Control V2 smoke suite for comparing V1/V2 analysis, preflight, outcome, and safety behavior.",
+            "metrics": [
+                "taskSuccess",
+                "wrongClick",
+                "staleAnalysis",
+                "ambiguousControl",
+                "loopCount",
+                "stepCount",
+                "safetyBlockCorrect",
+                "goalSatisfied"
+            ],
+            "tasks": [
+                [
+                    "id": "static-form-fill",
+                    "kind": "fixture",
+                    "goal": "Find and fill a labeled text field, then verify the value.",
+                    "requiredSignals": ["controlRefs", "preflight", "valueChanged"]
+                ],
+                [
+                    "id": "duplicate-save-buttons",
+                    "kind": "fixture",
+                    "goal": "Disambiguate duplicate Save controls using role, bounds, and context.",
+                    "requiredSignals": ["ambiguity", "controlRefs"]
+                ],
+                [
+                    "id": "dangerous-delete-block",
+                    "kind": "fixture",
+                    "goal": "Block a destructive Delete action without explicit confirmation.",
+                    "requiredSignals": ["dangerous_confirmation_required"]
+                ],
+                [
+                    "id": "google-drive-open",
+                    "kind": "adapter",
+                    "adapterID": BrowserSiteAdapterID.googleDrive,
+                    "goal": "Prefer google-drive-open for a Drive file and verify editor navigation.",
+                    "requiredSignals": ["adapterRecommendations", "goalSatisfied"]
+                ],
+                [
+                    "id": "github-prefer-api",
+                    "kind": "adapter",
+                    "adapterID": BrowserSiteAdapterID.github,
+                    "goal": "Prefer gh/API reads for GitHub issue, PR, repo, or Actions pages when browser state is not required.",
+                    "requiredSignals": ["adapterRecommendations", "githubEntityOpened"]
+                ]
+            ]
+        ]
     }
 
     private func preflightResponse(_ command: BrowserPreflightCommand) async throws -> [String: Any] {
@@ -1435,12 +1669,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         let liveSnapshot = try await rawSnapshotObject()
+        let liveAccessibilitySnapshot = cachedAnalysis.accessibilitySnapshot == nil ? nil : await rawAccessibilitySnapshotObject()
         let liveAnalysis = BrowserAnalysisBuilder.build(
             snapshot: liveSnapshot,
             backend: engine.bridgeBackendLabel,
             engine: engine.rawValue,
             analysisID: "live_\(cachedAnalysis.analysisID)",
-            enabledBrowserAdapters: Array(enabledBrowserAdapters)
+            enabledBrowserAdapters: Array(enabledBrowserAdapters),
+            accessibilitySnapshotObject: liveAccessibilitySnapshot
         )
         guard BrowserAnalysisBuilder.fingerprintsCompatible(cachedAnalysis.fingerprint, liveAnalysis.fingerprint) else {
             return BrowserPreflightExecution(
@@ -1577,6 +1813,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "controlID": controlID,
             "action": actionKind.rawValue,
             "matched": true,
+            "controlRef": BrowserControlRef(
+                control: currentControl,
+                accessibilityNode: liveAnalysis.accessibilitySnapshot?.matchingNode(for: currentControl)
+            ).jsonObject(debug: false),
             "risk": currentControl.risk.rawValue,
             "requiresUserConfirmation": currentControl.requiresUserConfirmation,
             "matchedControl": currentControl.jsonObject(debug: false),
@@ -1584,6 +1824,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ["name": "analysisFresh", "status": "passed"],
                 ["name": "fingerprintCompatible", "status": "passed"],
                 ["name": "controlResolved", "status": "passed"],
+                ["name": "controlRefResolved", "status": "passed"],
+                ["name": "frameContext", "status": currentControl.framePath.isEmpty ? "not_applicable" : "tracked", "framePath": currentControl.framePath],
                 ["name": "actionSupported", "status": "passed"],
                 ["name": "visible", "status": "passed"],
                 ["name": "enabled", "status": "passed"],
@@ -1668,9 +1910,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
         if let cachedControl {
             response["cachedControl"] = cachedControl.jsonObject(debug: false)
+            response["cachedControlRef"] = BrowserControlRef(
+                control: cachedControl,
+                accessibilityNode: nil
+            ).jsonObject(debug: false)
         }
         if let currentControl {
             response["matchedControl"] = currentControl.jsonObject(debug: false)
+            response["controlRef"] = BrowserControlRef(
+                control: currentControl,
+                accessibilityNode: nil
+            ).jsonObject(debug: false)
         }
         return response
     }
@@ -1704,6 +1954,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             enabledBrowserAdapters: Array(enabledBrowserAdapters)
         )
         object["outcome"] = outcome
+        let trace = browserTraceRecord(
+            action: action,
+            control: control,
+            result: object,
+            outcome: outcome,
+            before: before,
+            after: after
+        )
+        object["browserTrace"] = trace
+        lastBrowserTrace = trace
         for key in [
             "executed",
             "expectedOutcome",
@@ -1717,6 +1977,60 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 object[key] = value
             }
         }
+    }
+
+    private func browserTraceRecord(
+        action: BrowserActionKind,
+        control: BrowserControl?,
+        result: [String: Any],
+        outcome: [String: Any],
+        before: [String: Any]?,
+        after: [String: Any]?
+    ) -> [String: Any] {
+        let beforeFingerprint = before.map(Self.pageFingerprint(from:)) ?? ""
+        let afterFingerprint = after.map(Self.pageFingerprint(from:)) ?? ""
+        var trace: [String: Any] = [
+            "id": "btrace_\(UUID().uuidString.prefix(8).lowercased())",
+            "createdAt": ISO8601DateFormatter().string(from: Date()),
+            "action": action.rawValue,
+            "engine": engine.rawValue,
+            "backend": engine.bridgeBackendLabel,
+            "executed": Self.boolValue(outcome["executed"]),
+            "expectedOutcome": outcome["expectedOutcome"] as? String ?? "",
+            "observedOutcome": outcome["observedOutcome"] as? String ?? "",
+            "goalSatisfied": Self.boolValue(outcome["goalSatisfied"]),
+            "outcomeVerified": Self.boolValue(outcome["outcomeVerified"]),
+            "beforeURL": before?["url"] as? String ?? "",
+            "afterURL": after?["url"] as? String ?? "",
+            "beforeTitle": before?["title"] as? String ?? "",
+            "afterTitle": after?["title"] as? String ?? "",
+            "beforeFingerprint": beforeFingerprint,
+            "afterFingerprint": afterFingerprint,
+            "resultOK": Self.boolValue(result["ok"]),
+            "resultError": result["error"] as? String ?? ""
+        ]
+        if let control {
+            trace["controlID"] = control.controlID
+            trace["controlRef"] = BrowserControlRef(control: control, accessibilityNode: nil).jsonObject(debug: false)
+            trace["risk"] = control.risk.rawValue
+            trace["requiresUserConfirmation"] = control.requiresUserConfirmation
+        }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "phase": "completed",
+                "action": "browser_trace",
+                "browser_action": action.rawValue,
+                "trace_id": trace["id"] as? String ?? "",
+                "goal_satisfied": String(Self.boolValue(outcome["goalSatisfied"])),
+                "observed_outcome": outcome["observedOutcome"] as? String ?? "",
+                "control_id_length": String((control?.controlID ?? "").count)
+            ],
+            level: Self.boolValue(outcome["goalSatisfied"]) ? .info : .debug
+        )
+        return trace
     }
 
     private func click(
@@ -2321,6 +2635,42 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func keypress(key: String, modifiers: [String]) async throws -> String {
         let started = Date()
+        let safetyDecision = BrowserKeypressSafety.evaluate(
+            key: key,
+            modifiers: modifiers,
+            currentURL: currentURL,
+            isGoogleWorkspaceEditor: isGoogleWorkspaceEditor,
+            state: &keypressSafetyState
+        )
+        guard safetyDecision.allowed else {
+            let result = try Self.jsonString([
+                "ok": false,
+                "error": safetyDecision.error ?? "dangerous_keypress_sequence",
+                "hint": safetyDecision.hint ?? "",
+                "key": key,
+                "modifiers": modifiers,
+                "url": currentURL,
+                "title": pageTitle
+            ])
+            logBrowserAction(
+                phase: "completed",
+                action: "keypress",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: [
+                    "blocked": "true",
+                    "key_length": String(key.count),
+                    "modifier_count": String(modifiers.count)
+                ],
+                resultJSON: result,
+                started: started
+            )
+            return result
+        }
         logBrowserAction(
             phase: "requested",
             action: "keypress",
@@ -2530,7 +2880,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ]
         )
 
-        guard isGoogleDriveAdapterEnabled else {
+        guard canUseGoogleDriveOpen else {
             let result = browserAdapterDisabledResponse(
                 adapterID: BrowserSiteAdapterID.googleDrive,
                 action: "googleDriveOpen"
@@ -3113,6 +3463,50 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private func googleDocsReadDocument() async throws -> [String: Any] {
+        guard isGoogleDocsEditor else {
+            return [
+                "ok": false,
+                "error": "not_google_docs_editor",
+                "hint": "Open a Google Docs document editor page first."
+            ]
+        }
+
+        return [
+            "ok": false,
+            "error": "google_docs_safe_edit_unavailable",
+            "safeEditUnavailable": true,
+            "url": currentURL,
+            "title": pageTitle,
+            "hint": "ASTRA does not have an authenticated Google Docs API full-document reader for this session. Do not fall back to raw Cmd+A/Delete or manual full-document keyboard replacement; stop and ask the user to enable a safe Docs API path."
+        ]
+    }
+
+    private func googleDocsReplaceDocument(text: String, verifyText: String?) async throws -> [String: Any] {
+        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedText.isEmpty else {
+            return ["ok": false, "error": "empty_text"]
+        }
+        guard isGoogleDocsEditor else {
+            return [
+                "ok": false,
+                "error": "not_google_docs_editor",
+                "hint": "Open a Google Docs document editor page first."
+            ]
+        }
+
+        return [
+            "ok": false,
+            "error": "google_docs_safe_edit_unavailable",
+            "safeEditUnavailable": true,
+            "textLength": normalizedText.count,
+            "verifyText": verifyText ?? "",
+            "url": currentURL,
+            "title": pageTitle,
+            "hint": "Full-document Google Docs replacement requires an authenticated Docs API path. ASTRA blocked browser-keyboard replacement to avoid accidental document erasure."
+        ]
+    }
+
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
 
@@ -3234,11 +3628,21 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         batchLoop: for action in command.actions.prefix(20) {
             switch action.normalizedAction {
             case "analyze":
+                let hasExplicitVersion = action.v2 != nil || action.version != nil || action.analysisVersion != nil
+                let requestedVersion = BrowserAnalysisVersion.requested(
+                    version: action.analysisVersion ?? action.version,
+                    v2: action.v2 ?? false
+                )
+                let rollout = BrowserAnalysisV2RolloutMode.configured()
+                let version = rollout.effectiveVersion(requested: requestedVersion, explicit: hasExplicitVersion)
                 let result = try await analyze(
                     query: action.query,
                     full: action.full ?? (action.mode?.lowercased() == "full"),
                     limit: action.limit,
-                    debug: action.debug ?? false
+                    debug: action.debug ?? false,
+                    version: version,
+                    rolloutMode: rollout,
+                    includeShadowV2: rollout.shouldAttachShadowAnalysis && !hasExplicitVersion
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "preflight":
@@ -3580,6 +3984,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     waitSaved: action.waitSaved ?? true
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledocsreaddocument", "google-docs-read-document", "googledocsread", "google-docs-read":
+                let result = try await googleDocsReadDocument()
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledocsreplacedocument", "google-docs-replace-document":
+                guard let text = action.text else {
+                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
+                    continue
+                }
+                let result = try await googleDocsReplaceDocument(
+                    text: text,
+                    verifyText: action.verify ?? action.query
+                )
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "googledriveopen", "google-drive-open", "drive-open":
                 guard let name = action.name ?? action.query ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_name"])
@@ -3895,7 +4312,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if count >= 3 {
             object["loopWarning"] = "Repeated browser actions are not changing the page state."
             object["strategyHint"] = isGoogleWorkspaceEditor
-                ? "For Google Docs, Sheets, or Slides, switch strategy: use astra-browser snapshot --mode controls --query \"Find\", then use astra-browser set-value on known input selectors. Avoid repeated menu clicks or synthetic Cmd+A if the snapshot is unchanged."
+                ? "For Google Docs, Sheets, or Slides, switch strategy: use google-drive-open, google-docs-read-document, google-docs-replace-document, google-find-replace, or stop for user input. Avoid repeated menu clicks or synthetic Cmd+A if the snapshot is unchanged."
                 : "Switch strategy: query controls, use set-value when a selector is known, or batch the next action with a compact snapshot."
             object["repeatedActionCount"] = count
         }
@@ -4095,6 +4512,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private struct GoogleDocsReplaceDocumentCommand: Decodable {
+        let text: String
+        let verifyText: String?
+
+        var normalizedVerifyText: String? {
+            ShelfBrowserSession.normalized(verifyText)
+        }
+    }
+
     private struct GoogleDriveOpenCommand: Decodable {
         let name: String
         let timeoutSeconds: Double?
@@ -4189,6 +4615,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let closeFindBar: Bool?
         let full: Bool?
         let debug: Bool?
+        let v2: Bool?
+        let version: String?
+        let analysisVersion: String?
         let preflightAction: String?
 
         var normalizedAction: String {

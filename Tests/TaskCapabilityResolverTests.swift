@@ -218,7 +218,7 @@ struct TaskCapabilityResolverTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(!prompt.contains("astra-browser google-drive-open"))
+        #expect(prompt.contains("astra-browser google-drive-open"))
         #expect(!prompt.contains("[GCloud Agent]:"))
         #expect(!prompt.contains("GCloud must inspect projects"))
         #expect(!prompt.contains("Available CLI/Script Tools"))

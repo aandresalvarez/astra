@@ -128,7 +128,8 @@ enum TaskRunLifecycleService {
     @discardableResult
     static func recoverOrphanedRunningRuns(
         modelContext: ModelContext,
-        at recoveredAt: Date = Date()
+        at recoveredAt: Date = Date(),
+        autoExportWorkspaces: Bool = true
     ) -> TaskRunInterruptionSummary {
         let tasks = fetchAllTasks(modelContext: modelContext)
         var summary = TaskRunInterruptionSummary()
@@ -154,13 +155,21 @@ enum TaskRunLifecycleService {
                 "events_inserted": String(summary.eventsInserted)
             ], level: .warning)
         }
-        persist(summary: summary, modelContext: modelContext)
+        persist(
+            summary: summary,
+            modelContext: modelContext,
+            autoExportWorkspaces: autoExportWorkspaces
+        )
         return summary
     }
 
-    static func persist(summary: TaskRunInterruptionSummary, modelContext: ModelContext) {
+    static func persist(
+        summary: TaskRunInterruptionSummary,
+        modelContext: ModelContext,
+        autoExportWorkspaces: Bool = true
+    ) {
         guard summary.hasChanges else { return }
-        if summary.affectedWorkspaces.isEmpty {
+        if summary.affectedWorkspaces.isEmpty || !autoExportWorkspaces {
             do {
                 try modelContext.save()
             } catch {

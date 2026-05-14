@@ -233,6 +233,12 @@ public struct ASTRAApp: App {
 
         // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
+        let skipWorkspaceRecovery = ProcessInfo.processInfo.arguments.contains("--skip-workspace-recovery") ||
+            ["1", "true", "yes"].contains(
+                ProcessInfo.processInfo.environment["ASTRA_SKIP_WORKSPACE_RECOVERY"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            )
         let persistentStoreURL = isUITesting ? nil : WorkspaceRecoveryService.preparePersistentStoreURL()
         if let persistentStoreURL, !isUITesting {
             WorkspaceRecoveryService.repairLegacyStoreValues(at: persistentStoreURL)
@@ -257,7 +263,9 @@ public struct ASTRAApp: App {
                 "result": "model_container_created"
             ])
             if !isUITesting {
-                WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                if !skipWorkspaceRecovery {
+                    WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                }
                 let capabilityLibrary = CapabilityLibrary()
                 try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
                 CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
@@ -267,7 +275,10 @@ public struct ASTRAApp: App {
                 )
                 Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                 Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
-                TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)
+                TaskRunLifecycleService.recoverOrphanedRunningRuns(
+                    modelContext: modelContainer.mainContext,
+                    autoExportWorkspaces: !skipWorkspaceRecovery
+                )
             }
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
@@ -285,7 +296,9 @@ public struct ASTRAApp: App {
                     "result": "model_container_recreated"
                 ])
                 if !isUITesting {
-                    WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                    if !skipWorkspaceRecovery {
+                        WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                    }
                     let capabilityLibrary = CapabilityLibrary()
                     try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
                     CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
@@ -295,7 +308,10 @@ public struct ASTRAApp: App {
                     )
                     Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
                     Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
-                    TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: modelContainer.mainContext)
+                    TaskRunLifecycleService.recoverOrphanedRunningRuns(
+                        modelContext: modelContainer.mainContext,
+                        autoExportWorkspaces: !skipWorkspaceRecovery
+                    )
                 }
             } catch {
                 AppLogger.audit(.dataStoreRecovered, category: "App", fields: [

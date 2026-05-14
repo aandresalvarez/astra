@@ -35,6 +35,13 @@ enum WorkspacePersistenceCoordinator {
         }
 
         guard let workspace else { return didSave }
+        guard !shouldSkipAutoExport() else {
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "skipped",
+                "reason": "launch_flag"
+            ], level: .debug)
+            return didSave
+        }
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         return didSave
     }
@@ -69,5 +76,20 @@ enum WorkspacePersistenceCoordinator {
             pendingExports[id] = nil
         }
         saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    nonisolated static func shouldSkipAutoExport(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        if arguments.contains("--skip-workspace-auto-export") ||
+            arguments.contains("--skip-workspace-recovery") {
+            return true
+        }
+        return ["1", "true", "yes"].contains(
+            environment["ASTRA_SKIP_WORKSPACE_AUTO_EXPORT"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        )
     }
 }

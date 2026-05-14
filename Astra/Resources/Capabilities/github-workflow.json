@@ -1,5 +1,8 @@
 {
   "author" : "ASTRA",
+  "browserAdapters" : [
+    "github"
+  ],
   "category" : "Integrations",
   "connectors" : [
 
