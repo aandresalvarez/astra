@@ -5,10 +5,17 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var reason: String
     var toolName: String?
     var detail: String?
+    var requiresApproval: Bool = false
+    var approvalGrant: String?
 
     var userMessage: String {
         let tool = toolName.map { " Tool: \($0)." } ?? ""
         let detailText = detail.map { " Detail: \($0)" } ?? ""
+        let grantText = approvalGrant.map { " Runtime grant: \($0)" } ?? ""
+        if requiresApproval {
+            let requestedTool = toolName ?? "unknown"
+            return "Permission requested for tool: \(requestedTool). ASTRA paused the provider because observed activity requires user approval. \(reason).\(tool)\(detailText)\(grantText)"
+        }
         return "ASTRA stopped the provider because observed activity violated the run policy. \(reason).\(tool)\(detailText)"
     }
 }
@@ -55,6 +62,16 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
+        if requiresApproval(toolName: toolName, command: observed.command) {
+            return AgentRuntimePolicyViolation(
+                reason: "The tool or command is configured as ask-first by the effective ASTRA policy",
+                toolName: toolName,
+                detail: observed.summary,
+                requiresApproval: true,
+                approvalGrant: suggestedApprovalGrant(toolName: toolName, command: observed.command)
+            )
+        }
+
         if !toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.allowedTools) {
             return AgentRuntimePolicyViolation(
                 reason: "The tool is not in the provider allow-list for this run",
@@ -79,7 +96,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
 
         if isNetworkTool(toolName) || observed.url != nil || observed.command?.lowercased().contains("curl ") == true,
-           let violation = validateNetwork(url: observed.url ?? observed.command.flatMap(Self.firstURL(in:)), toolName: toolName) {
+           let violation = validateNetwork(urls: networkURLs(from: observed), toolName: toolName) {
             return violation
         }
 
@@ -121,6 +138,15 @@ struct AgentRuntimePolicyGuard: Sendable {
            !allowedShellPatterns.contains("*"),
            !matchesAnyShellPattern(trimmedCommand, patterns: allowedShellPatterns),
            !toolPatternAllowsShellCommand(trimmedCommand) {
+            if matchesAnyShellPattern(trimmedCommand, patterns: manifest.providerRender.askFirstShellPatterns) {
+                return AgentRuntimePolicyViolation(
+                    reason: "The shell command requires user approval by the effective ASTRA policy",
+                    toolName: toolName,
+                    detail: trimmedCommand,
+                    requiresApproval: true,
+                    approvalGrant: suggestedApprovalGrant(toolName: toolName, command: trimmedCommand)
+                )
+            }
             return AgentRuntimePolicyViolation(
                 reason: "The shell command is outside the allowed command patterns for this run",
                 toolName: toolName,
@@ -156,12 +182,20 @@ struct AgentRuntimePolicyGuard: Sendable {
         return nil
     }
 
-    private func validateNetwork(url: String?, toolName: String) -> AgentRuntimePolicyViolation? {
+    private func validateNetwork(urls: [String], toolName: String) -> AgentRuntimePolicyViolation? {
         if manifest.providerRender.deniedURLPatterns.contains("*") {
             return AgentRuntimePolicyViolation(
                 reason: "Network access is denied by the effective ASTRA policy",
                 toolName: toolName,
-                detail: url
+                detail: urls.first
+            )
+        }
+
+        if let deniedURL = urls.first(where: { matchesAnyURLPattern($0, patterns: manifest.providerRender.deniedURLPatterns) }) {
+            return AgentRuntimePolicyViolation(
+                reason: "The network destination matches a denied URL pattern for this run",
+                toolName: toolName,
+                detail: deniedURL
             )
         }
 
@@ -169,14 +203,27 @@ struct AgentRuntimePolicyGuard: Sendable {
         guard !allowedURLPatterns.isEmpty, !allowedURLPatterns.contains("*") else {
             return nil
         }
-        guard let url, matchesAnyURLPattern(url, patterns: allowedURLPatterns) else {
+        guard !urls.isEmpty,
+              urls.allSatisfy({ matchesAnyURLPattern($0, patterns: allowedURLPatterns) }) else {
             return AgentRuntimePolicyViolation(
                 reason: "The network destination is outside the URL allow-list for this run",
                 toolName: toolName,
-                detail: url
+                detail: urls.first
             )
         }
         return nil
+    }
+
+    private func networkURLs(from observed: PolicyObservedEvent) -> [String] {
+        var values: [String] = []
+        if let url = observed.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
+            values.append(url)
+        }
+        if let command = observed.command {
+            values.append(contentsOf: Self.allURLs(in: command))
+        }
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 
     private func isPathInScope(_ rawPath: String) -> Bool {
@@ -190,6 +237,38 @@ struct AgentRuntimePolicyGuard: Sendable {
         return allowedPathRoots.contains { root in
             candidate == root || candidate.hasPrefix(root + "/")
         }
+    }
+
+    private func requiresApproval(toolName: String, command: String?) -> Bool {
+        if let command,
+           isShellTool(toolName),
+           (manifest.providerRender.deniedShellPatterns.contains("*")
+            || matchesAnyShellPattern(command, patterns: manifest.providerRender.deniedShellPatterns)) {
+            return false
+        }
+        if let command,
+           isShellTool(toolName),
+           toolPatternAllowsShellCommand(command) {
+            return false
+        }
+        if toolMatches(toolName, command: command, candidates: manifest.providerRender.askFirstTools) {
+            return true
+        }
+        if let command,
+           isShellTool(toolName),
+           matchesAnyShellPattern(command, patterns: manifest.providerRender.askFirstShellPatterns) {
+            return true
+        }
+        return false
+    }
+
+    private func suggestedApprovalGrant(toolName: String, command: String?) -> String {
+        if isShellTool(toolName),
+           let commandRoot = Self.shellCommandRoot(command),
+           !commandRoot.isEmpty {
+            return "Bash(\(commandRoot):*)"
+        }
+        return Self.canonicalProviderToolName(toolName)
     }
 
     private func toolMatches(_ tool: String, command: String?, candidates: [String]) -> Bool {
@@ -306,6 +385,29 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
     }
 
+    private static func canonicalProviderToolName(_ tool: String) -> String {
+        switch normalizedToolName(tool) {
+        case "bash": return "Bash"
+        case "read": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit": return "MultiEdit"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func shellCommandRoot(_ command: String?) -> String? {
+        guard let command else { return nil }
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
+    }
+
     private static func normalizedShellText(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -315,7 +417,8 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private static func standardizedAbsolutePath(_ path: String) -> String {
         guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
-        return URL(fileURLWithPath: path).standardizedFileURL.path
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return (standardized as NSString).resolvingSymlinksInPath
     }
 
     private static func wildcardMatch(_ value: String, pattern: String) -> Bool {
@@ -341,12 +444,15 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func firstURL(in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s"')<>]+"#) else { return nil }
+        allURLs(in: text).first
+    }
+
+    private static func allURLs(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s"')<>]+"#) else { return [] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, range: range),
-              let valueRange = Range(match.range, in: text) else {
-            return nil
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let valueRange = Range(match.range, in: text) else { return nil }
+            return String(text[valueRange])
         }
-        return String(text[valueRange])
     }
 }

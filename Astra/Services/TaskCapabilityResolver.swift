@@ -84,7 +84,9 @@ struct TaskCapabilityResolver {
         }
 
         var seen = Set<UUID>()
-        let unique = all.filter { seen.insert($0.id).inserted }
+        let unique = all
+            .filter { seen.insert($0.id).inserted }
+            .filter(ConnectorSecurityPolicy.isRuntimeSafe)
         return ConnectorPreflightService.preferredRuntimeConnectors(
             from: unique,
             contextText: [task.title, task.goal].joined(separator: "\n")
@@ -105,7 +107,10 @@ struct TaskCapabilityResolver {
         }
 
         var seen = Set<UUID>()
-        return all.filter { seen.insert($0.id).inserted }
+        return all.filter {
+            seen.insert($0.id).inserted
+                && LocalToolSecurityPolicy.isSafe(command: $0.command, arguments: $0.arguments)
+        }
     }
 
     var enabledBrowserAdapters: [String] {

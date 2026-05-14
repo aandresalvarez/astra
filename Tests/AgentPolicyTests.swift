@@ -71,6 +71,7 @@ struct AgentPolicyTests {
         #expect(render.policyLevel == .review)
         #expect(render.permissionMode == PermissionPolicy.restricted.rawValue)
         #expect(render.allowedTools.contains("Read"))
+        #expect(render.askFirstTools.contains("Bash"))
         #expect(!render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "claude.shell-deny-provider-native-gap" })
     }

@@ -759,6 +759,8 @@ struct AgentProcessResult {
     let providerVersion: String?
     let policyViolation: Bool
     let policyViolationMessage: String?
+    let policyApprovalRequired: Bool
+    let policyApprovalMessage: String?
     let budgetExceeded: Bool
     let budgetWarning: Bool
     let finalReportedBudgetExceededAfterCompletion: Bool
@@ -772,6 +774,8 @@ struct AgentProcessResult {
         providerVersion: String? = nil,
         policyViolation: Bool = false,
         policyViolationMessage: String? = nil,
+        policyApprovalRequired: Bool = false,
+        policyApprovalMessage: String? = nil,
         budgetExceeded: Bool = false,
         budgetWarning: Bool = false,
         finalReportedBudgetExceededAfterCompletion: Bool = false,
@@ -784,6 +788,8 @@ struct AgentProcessResult {
         self.providerVersion = providerVersion
         self.policyViolation = policyViolation
         self.policyViolationMessage = policyViolationMessage
+        self.policyApprovalRequired = policyApprovalRequired
+        self.policyApprovalMessage = policyApprovalMessage
         self.budgetExceeded = budgetExceeded
         self.budgetWarning = budgetWarning
         self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
@@ -816,6 +822,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _repetitionKilled: Bool = false
     private var _policyViolation: Bool = false
     private var _policyViolationMessage: String?
+    private var _policyApprovalRequired: Bool = false
+    private var _policyApprovalMessage: String?
     private var _sawAstraComplete: Bool = false
 
     private var lastEventSignature: String = ""
@@ -833,6 +841,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var repetitionKilled: Bool { lock.lock(); defer { lock.unlock() }; return _repetitionKilled }
     var policyViolation: Bool { lock.lock(); defer { lock.unlock() }; return _policyViolation }
     var policyViolationMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyViolationMessage }
+    var policyApprovalRequired: Bool { lock.lock(); defer { lock.unlock() }; return _policyApprovalRequired }
+    var policyApprovalMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyApprovalMessage }
 
     init(
         tokenBudget: Int,
@@ -1005,20 +1015,30 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private func recordPolicyViolation(_ violation: AgentRuntimePolicyViolation, process: AgentRuntimeProcessControl?) -> Bool {
-        guard !_policyViolation else { return false }
+        guard !_policyViolation, !_policyApprovalRequired else { return false }
         let redactedDetail = violation.detail.map { LogSanitizer.sanitize($0, maxLength: 240) }
+        let reason = violation.requiresApproval ? "runtime_policy_approval_required" : "runtime_policy_violation"
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
-            "reason": "runtime_policy_violation",
+            "reason": reason,
             "tool": violation.toolName ?? "unknown",
             "message": violation.reason,
+            "approval_grant": violation.approvalGrant ?? "none",
             "detail": redactedDetail ?? "none"
-        ], level: .error)
-        _policyViolation = true
-        _policyViolationMessage = AgentRuntimePolicyViolation(
+        ], level: violation.requiresApproval ? .warning : .error)
+        let message = AgentRuntimePolicyViolation(
             reason: violation.reason,
             toolName: violation.toolName,
-            detail: redactedDetail
+            detail: redactedDetail,
+            requiresApproval: violation.requiresApproval,
+            approvalGrant: violation.approvalGrant
         ).userMessage
+        if violation.requiresApproval {
+            _policyApprovalRequired = true
+            _policyApprovalMessage = message
+        } else {
+            _policyViolation = true
+            _policyViolationMessage = message
+        }
         process?.terminate()
         return true
     }

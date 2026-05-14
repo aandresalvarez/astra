@@ -439,6 +439,64 @@ struct HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
     }
 
+    @Test("UI approval resumes a Claude ASTRA ask-first shell pause")
+    func uiApprovalResumesClaudeAstraAskFirstShellPause() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-claude-policy-approval-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(curl:*)'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-policy-approved","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Approved curl completed"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Approved curl completed","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-policy-needs-approval","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_curl","input":{"command":"curl https://redcap.stanford.edu/api/"}}]}}'
+                /bin/sleep 20
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Read REDCap project info",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+
+        await queue.executeTask(task, modelContext: harness.context)
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.first?.stopReason == "permission_approval_required")
+        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Runtime grant: Bash(curl:*)") })
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(completed)
+        #expect(runs.count == 2)
+        #expect(args.contains("Bash(curl:*)"))
+        #expect(!args.contains("--dangerously-skip-permissions"))
+        #expect(runs.last?.output == "Approved curl completed")
+    }
+
     @Test("Claude hidden permission prompt pauses for user approval and can continue")
     func claudeHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
         let harness = try HeadlessChatHarness()

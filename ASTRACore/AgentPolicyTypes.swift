@@ -368,8 +368,10 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
     public var configOwnership: PolicyConfigOwnership
     public var permissionMode: String
     public var allowedTools: [String]
+    public var askFirstTools: [String]
     public var deniedTools: [String]
     public var allowedShellPatterns: [String]
+    public var askFirstShellPatterns: [String]
     public var deniedShellPatterns: [String]
     public var allowedURLPatterns: [String]
     public var deniedURLPatterns: [String]
@@ -387,8 +389,10 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         case configOwnership
         case permissionMode
         case allowedTools
+        case askFirstTools
         case deniedTools
         case allowedShellPatterns
+        case askFirstShellPatterns
         case deniedShellPatterns
         case allowedURLPatterns
         case deniedURLPatterns
@@ -407,8 +411,10 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         configOwnership: PolicyConfigOwnership,
         permissionMode: String,
         allowedTools: [String],
+        askFirstTools: [String] = [],
         deniedTools: [String],
         allowedShellPatterns: [String],
+        askFirstShellPatterns: [String] = [],
         deniedShellPatterns: [String],
         allowedURLPatterns: [String],
         deniedURLPatterns: [String],
@@ -425,8 +431,10 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         self.configOwnership = configOwnership
         self.permissionMode = permissionMode
         self.allowedTools = allowedTools
+        self.askFirstTools = askFirstTools
         self.deniedTools = deniedTools
         self.allowedShellPatterns = allowedShellPatterns
+        self.askFirstShellPatterns = askFirstShellPatterns
         self.deniedShellPatterns = deniedShellPatterns
         self.allowedURLPatterns = allowedURLPatterns
         self.deniedURLPatterns = deniedURLPatterns
@@ -446,8 +454,10 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         configOwnership = try container.decode(PolicyConfigOwnership.self, forKey: .configOwnership)
         permissionMode = try container.decode(String.self, forKey: .permissionMode)
         allowedTools = try container.decode([String].self, forKey: .allowedTools)
+        askFirstTools = try container.decodeIfPresent([String].self, forKey: .askFirstTools) ?? []
         deniedTools = try container.decode([String].self, forKey: .deniedTools)
         allowedShellPatterns = try container.decode([String].self, forKey: .allowedShellPatterns)
+        askFirstShellPatterns = try container.decodeIfPresent([String].self, forKey: .askFirstShellPatterns) ?? []
         deniedShellPatterns = try container.decode([String].self, forKey: .deniedShellPatterns)
         allowedURLPatterns = try container.decode([String].self, forKey: .allowedURLPatterns)
         deniedURLPatterns = try container.decode([String].self, forKey: .deniedURLPatterns)

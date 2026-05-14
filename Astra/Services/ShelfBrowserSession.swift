@@ -101,6 +101,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var observations: [NSKeyValueObservation] = []
     private var controlledBrowserCancellable: AnyCancellable?
     private var bridgeServer: BrowserBridgeServer?
+    private let bridgeAccessToken = BrowserBridgeServer.generateAccessToken()
     private var isPresented = false
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
@@ -588,7 +589,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func startBridge() {
-        let server = BrowserBridgeServer(route: { [weak self] request in
+        let server = BrowserBridgeServer(requiredAccessToken: bridgeAccessToken, route: { [weak self] request in
             guard let self else {
                 return .json(["ok": false, "error": "browser_session_unavailable"], statusCode: 404)
             }
@@ -610,6 +611,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             currentTitle: pageTitle.isEmpty ? nil : pageTitle,
             backend: engine.bridgeBackendLabel,
             taskID: boundTaskID,
+            accessToken: bridgeAccessToken,
             isPresented: isPresented,
             isEnabled: isAgentBridgeEnabled,
             enabledBrowserAdapters: Array(enabledBrowserAdapters).sorted()

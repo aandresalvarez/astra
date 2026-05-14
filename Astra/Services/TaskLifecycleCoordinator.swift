@@ -165,9 +165,10 @@ final class TaskLifecycleCoordinator {
 
     private static func approvedRuntimePermissionTools(for task: AgentTask) -> [String] {
         var tools = Set(AgentPolicy.preset(.review).allowedTools)
-        tools.formUnion(TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
 
-        if let requestedTool = latestRequestedPermissionTool(for: task) {
+        if let requestedGrant = latestRequestedPermissionGrant(for: task) {
+            tools.insert(requestedGrant)
+        } else if let requestedTool = latestRequestedPermissionTool(for: task) {
             tools.formUnion(providerToolAliases(for: requestedTool, runtime: task.resolvedRuntimeID))
         } else {
             tools.formUnion(AgentPolicy.preset(.review).askFirstTools)
@@ -183,6 +184,34 @@ final class TaskLifecycleCoordinator {
             .reversed()
             .compactMap { permissionToolName(from: $0.payload) }
             .first
+    }
+
+    private static func latestRequestedPermissionGrant(for task: AgentTask) -> String? {
+        task.events
+            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+            .compactMap { permissionGrant(from: $0.payload) }
+            .first
+    }
+
+    private static func permissionGrant(from payload: String) -> String? {
+        let patterns = [
+            #"Runtime grant:\s*([^\n]+)"#,
+            #""grant"\s*:\s*"([^"]+)""#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
+                  let range = Range(match.range(at: 1), in: payload) else {
+                continue
+            }
+            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func permissionToolName(from payload: String) -> String? {
@@ -339,6 +368,7 @@ final class TaskLifecycleCoordinator {
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
+            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
