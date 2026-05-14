@@ -2,69 +2,6 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-/// Thread-safe collector for fire-and-forget `Task` handles.
-/// Allows callers to drain all pending tasks before proceeding.
-final class PendingTaskCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var tasks: [Task<Void, Never>] = []
-
-    var count: Int {
-        lock.lock(); defer { lock.unlock() }; return tasks.count
-    }
-
-    func add(_ task: Task<Void, Never>) {
-        lock.lock(); defer { lock.unlock() }; tasks.append(task)
-    }
-
-    /// Take a snapshot of all collected tasks (synchronous, lock-safe).
-    private func takeSnapshot() -> [Task<Void, Never>] {
-        lock.lock(); defer { lock.unlock() }; return tasks
-    }
-
-    /// Await all collected tasks. Safe to call from any async context.
-    func drainAll() async {
-        for t in takeSnapshot() {
-            await t.value
-        }
-    }
-}
-
-/// Serializes main-actor event recording while still allowing runtime readers to
-/// enqueue work immediately from background pipe callbacks.
-final class OrderedMainActorTaskQueue: @unchecked Sendable {
-    private let lock = NSLock()
-    private var tasks: [Task<Void, Never>] = []
-    private var tail: Task<Void, Never>?
-
-    var count: Int {
-        lock.lock(); defer { lock.unlock() }; return tasks.count
-    }
-
-    func add(_ operation: @escaping @MainActor () -> Void) {
-        lock.lock()
-        let previous = tail
-        let task = Task { @MainActor in
-            if let previous {
-                await previous.value
-            }
-            operation()
-        }
-        tasks.append(task)
-        tail = task
-        lock.unlock()
-    }
-
-    private func takeTail() -> Task<Void, Never>? {
-        lock.lock()
-        defer { lock.unlock() }
-        return tail
-    }
-
-    func drainAll() async {
-        await takeTail()?.value
-    }
-}
-
 @Observable
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
@@ -148,7 +85,12 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
-        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: "run") else {
+        guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+            task,
+            modelContext: modelContext,
+            phase: "run"
+        ) else {
+            isRunning = false
             return
         }
         isRunning = true
@@ -169,13 +111,14 @@ final class AgentRuntimeWorker {
         )
         modelContext.insert(startEvent)
 
-        guard await preflightConnectorsBeforeLaunch(
+        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: "run",
             contextText: task.goal
         ) else {
+            isRunning = false
             return
         }
 
@@ -244,7 +187,7 @@ final class AgentRuntimeWorker {
 
         let prompt = promptOverride ?? buildPrompt(for: task)
         let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard enforcePromptBudgetIfNeeded(
+        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
             task: task,
             run: run,
@@ -253,6 +196,7 @@ final class AgentRuntimeWorker {
             runtime: .claudeCode,
             budgetEnforcementMode: budgetEnforcementMode
         ) else {
+            isRunning = false
             return
         }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
@@ -375,7 +319,7 @@ final class AgentRuntimeWorker {
         run.exitCode = result.exitCode
         streamDebugCapture?.recordStderr(result.error)
         if let streamDebugCapture {
-            Self.logStreamDebug(
+            AgentRuntimeStreamDiagnostics.logStreamDebug(
                 snapshot: streamDebugCapture.snapshot(),
                 runtime: .claudeCode,
                 task: task,
@@ -449,7 +393,7 @@ final class AgentRuntimeWorker {
                 run: run
             )
             modelContext.insert(event)
-        } else if Self.shouldTreatAsBudgetExceeded(
+        } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
             budgetEnforcementMode: budgetEnforcementMode
@@ -470,7 +414,7 @@ final class AgentRuntimeWorker {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
-            Self.recordFinalBudgetWarningIfNeeded(
+            AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
                 result: result,
                 task: task,
                 run: run,
@@ -554,29 +498,21 @@ final class AgentRuntimeWorker {
             task.status = .failed
             let payload = failureDiagnostic?.userFacingPayload(
                 prefix: "Agent exited with code \(result.exitCode)."
-            ) ?? enrichedFailurePayload(
+            ) ?? AgentRuntimeFailurePayload.enriched(
                 prefix: "Agent exited with code \(result.exitCode).",
-                rawError: result.error
+                rawError: result.error,
+                task: task
             )
             let event = TaskEvent(task: task, type: "error",
                                   payload: payload, run: run)
             modelContext.insert(event)
         }
 
-        let folder = (try? task.ensureTaskFolder()) ?? ""
-        if !folder.isEmpty {
-            SessionHistoryManager.recordTurn(
-                taskFolder: folder,
-                taskTitle: task.title,
-                turnMessage: task.goal,
-                output: run.output,
-                tokensUsed: run.tokensUsed,
-                costUSD: run.costUSD,
-                fileChanges: run.fileChanges,
-                redactions: AgentSensitiveRedactions.values(for: task),
-                durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
-            )
-        }
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: task.goal
+        )
 
         // Chain: auto-create follow-up task if configured
         if task.status == .completed,
@@ -639,23 +575,11 @@ final class AgentRuntimeWorker {
         // Cleanup isolation
         IsolationService.cleanup(task: task, executionPath: executionPath)
 
-        // Compact events if they've grown too large
-        Self.compactEvents(for: task, modelContext: modelContext)
-        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-
-        let finishedAt = Date()
-        task.updatedAt = finishedAt
-        if task.isTerminal {
-            task.completedAt = finishedAt
-        }
-        task.markUnreadForCurrentStatus(at: finishedAt)
-
-        // Auto-export workspace config so Import picks up tasks
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
+        AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: task,
+            run: run,
             modelContext: modelContext,
-            taskID: task.id,
-            auditFields: Self.runPersistenceFields(task: task, run: run, phase: "run")
+            phase: "run"
         )
 
         isRunning = false
@@ -872,7 +796,12 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
-        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: "resume") else {
+        guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+            task,
+            modelContext: modelContext,
+            phase: "resume"
+        ) else {
+            isRunning = false
             return
         }
         isRunning = true
@@ -888,13 +817,14 @@ final class AgentRuntimeWorker {
         let userEvent = TaskEvent(task: task, type: "user.message", payload: message, run: run)
         modelContext.insert(userEvent)
 
-        guard await preflightConnectorsBeforeLaunch(
+        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: "resume",
             contextText: message
         ) else {
+            isRunning = false
             return
         }
 
@@ -902,7 +832,7 @@ final class AgentRuntimeWorker {
         // This cuts input tokens by ~90% on follow-ups.
         let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
         let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard enforcePromptBudgetIfNeeded(
+        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: followUpPrompt,
             task: task,
             run: run,
@@ -1015,7 +945,7 @@ final class AgentRuntimeWorker {
         run.exitCode = result.exitCode
         streamDebugCapture?.recordStderr(result.error)
         if let streamDebugCapture {
-            Self.logStreamDebug(
+            AgentRuntimeStreamDiagnostics.logStreamDebug(
                 snapshot: streamDebugCapture.snapshot(),
                 runtime: .claudeCode,
                 task: task,
@@ -1084,7 +1014,7 @@ final class AgentRuntimeWorker {
                 run: run
             )
             modelContext.insert(event)
-        } else if Self.shouldTreatAsBudgetExceeded(
+        } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
             budgetEnforcementMode: budgetEnforcementMode
@@ -1107,7 +1037,7 @@ final class AgentRuntimeWorker {
             run.status = .completed
             run.stopReason = "completed"
             task.status = .completed
-            Self.recordFinalBudgetWarningIfNeeded(
+            AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
                 result: result,
                 task: task,
                 run: run,
@@ -1147,9 +1077,10 @@ final class AgentRuntimeWorker {
             } else {
                 let payload = failureDiagnostic?.userFacingPayload(
                     prefix: "Follow-up failed (exit \(result.exitCode))."
-                ) ?? enrichedFailurePayload(
+                ) ?? AgentRuntimeFailurePayload.enriched(
                     prefix: "Follow-up failed (exit \(result.exitCode)).",
-                    rawError: result.error
+                    rawError: result.error,
+                    task: task
                 )
                 let event = TaskEvent(task: task, type: "error",
                                       payload: payload, run: run)
@@ -1158,38 +1089,17 @@ final class AgentRuntimeWorker {
             task.status = .failed
         }
 
-        let folder = (try? task.ensureTaskFolder()) ?? ""
-        if !folder.isEmpty {
-            SessionHistoryManager.recordTurn(
-                taskFolder: folder,
-                taskTitle: task.title,
-                turnMessage: message,
-                output: run.output,
-                tokensUsed: run.tokensUsed,
-                costUSD: run.costUSD,
-                fileChanges: run.fileChanges,
-                redactions: AgentSensitiveRedactions.values(for: task),
-                durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
-            )
-        }
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: message
+        )
 
-        // Compact events if they've grown too large
-        Self.compactEvents(for: task, modelContext: modelContext)
-        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-
-        let finishedAt = Date()
-        task.updatedAt = finishedAt
-        if task.isTerminal {
-            task.completedAt = finishedAt
-        }
-        task.markUnreadForCurrentStatus(at: finishedAt)
-
-        // Auto-export workspace config so Import picks up follow-up runs
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
+        AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: task,
+            run: run,
             modelContext: modelContext,
-            taskID: task.id,
-            auditFields: Self.runPersistenceFields(task: task, run: run, phase: "resume")
+            phase: "resume"
         )
 
         isRunning = false
@@ -1219,7 +1129,11 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
-        guard prepareTaskFolderForLaunch(task, modelContext: modelContext, phase: auditPhase) else {
+        guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+            task,
+            modelContext: modelContext,
+            phase: auditPhase
+        ) else {
             return
         }
         isRunning = true
@@ -1238,13 +1152,14 @@ final class AgentRuntimeWorker {
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
 
-        guard await preflightConnectorsBeforeLaunch(
+        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
             contextText: promptOverride ?? startPayload
         ) else {
+            isRunning = false
             return
         }
 
@@ -1314,7 +1229,7 @@ final class AgentRuntimeWorker {
 
         let prompt = promptOverride ?? buildPrompt(for: task)
         let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard enforcePromptBudgetIfNeeded(
+        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
             task: task,
             run: run,
@@ -1450,7 +1365,7 @@ final class AgentRuntimeWorker {
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
         streamDebugCapture?.recordStderr(result.error)
-        Self.logCopilotStreamTelemetry(
+        AgentRuntimeStreamDiagnostics.logCopilotStreamTelemetry(
             snapshot: streamSnapshot,
             task: task,
             run: run,
@@ -1458,7 +1373,7 @@ final class AgentRuntimeWorker {
             exitCode: result.exitCode
         )
         if let streamDebugCapture {
-            Self.logStreamDebug(
+            AgentRuntimeStreamDiagnostics.logStreamDebug(
                 snapshot: streamDebugCapture.snapshot(),
                 runtime: .copilotCLI,
                 task: task,
@@ -1522,7 +1437,7 @@ final class AgentRuntimeWorker {
                 run: run
             )
             modelContext.insert(event)
-        } else if Self.shouldTreatAsBudgetExceeded(
+        } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
             task: task,
             budgetEnforcementMode: budgetEnforcementMode
@@ -1538,7 +1453,7 @@ final class AgentRuntimeWorker {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
-            Self.recordFinalBudgetWarningIfNeeded(
+            AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
                 result: result,
                 task: task,
                 run: run,
@@ -1616,43 +1531,27 @@ final class AgentRuntimeWorker {
             task.status = .failed
             let payload = failureDiagnostic?.userFacingPayload(
                 prefix: "Copilot exited with code \(result.exitCode)."
-            ) ?? enrichedFailurePayload(
+            ) ?? AgentRuntimeFailurePayload.enriched(
                 prefix: "Copilot exited with code \(result.exitCode).",
-                rawError: result.error
+                rawError: result.error,
+                task: task
             )
             let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
             modelContext.insert(event)
         }
 
-        let folder = (try? task.ensureTaskFolder()) ?? ""
-        if !folder.isEmpty {
-            SessionHistoryManager.recordTurn(
-                taskFolder: folder,
-                taskTitle: task.title,
-                turnMessage: promptOverride == nil ? task.goal : (startEventPayload ?? task.goal),
-                output: run.output,
-                tokensUsed: run.tokensUsed,
-                costUSD: run.costUSD,
-                fileChanges: run.fileChanges,
-                redactions: AgentSensitiveRedactions.values(for: task),
-                durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
-            )
-        }
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: promptOverride == nil ? task.goal : (startEventPayload ?? task.goal)
+        )
 
         IsolationService.cleanup(task: task, executionPath: executionPath)
-        Self.compactEvents(for: task, modelContext: modelContext)
-        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        let finishedAt = Date()
-        task.updatedAt = finishedAt
-        if task.isTerminal {
-            task.completedAt = finishedAt
-        }
-        task.markUnreadForCurrentStatus(at: finishedAt)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
+        AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: task,
+            run: run,
             modelContext: modelContext,
-            taskID: task.id,
-            auditFields: Self.runPersistenceFields(task: task, run: run, phase: auditPhase)
+            phase: auditPhase
         )
         isRunning = false
     }
@@ -1732,7 +1631,7 @@ final class AgentRuntimeWorker {
             workspace: task.workspace,
             modelContext: modelContext,
             taskID: task.id,
-            auditFields: Self.runPersistenceFields(task: task, run: run, phase: phase)
+            auditFields: AgentRuntimeRunPersistence.fields(task: task, run: run, phase: phase)
         )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
             "reason": "policy_blocked",
@@ -1756,41 +1655,6 @@ final class AgentRuntimeWorker {
         }
         return task.events.contains { event in
             event.type == "permission.denied" && event.run?.id == run.id
-        }
-    }
-
-    @MainActor
-    private func prepareTaskFolderForLaunch(
-        _ task: AgentTask,
-        modelContext: ModelContext,
-        phase: String
-    ) -> Bool {
-        do {
-            let folder = try task.ensureTaskFolder()
-            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
-                "event": "task_folder_prepared",
-                "phase": phase,
-                "folder_available": String(!folder.isEmpty)
-            ], level: .debug)
-            return true
-        } catch {
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": "task_folder_create_failed",
-                "phase": phase,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-            task.status = .failed
-            let now = Date()
-            task.updatedAt = now
-            task.completedAt = now
-            task.markUnreadForCurrentStatus(at: now)
-            modelContext.insert(TaskEvent(
-                task: task,
-                type: "error",
-                payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
-            ))
-            try? modelContext.save()
-            return false
         }
     }
 
@@ -1856,223 +1720,6 @@ final class AgentRuntimeWorker {
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {
         rawValue.flatMap(AgentRuntimeID.init(rawValue:))
-    }
-
-    @MainActor
-    private static func logCopilotStreamTelemetry(
-        snapshot: AgentRuntimeStreamTelemetrySnapshot,
-        task: AgentTask,
-        run: TaskRun,
-        phase: String,
-        exitCode: Int
-    ) {
-        var fields = snapshot.fields
-        fields["runtime"] = AgentRuntimeID.copilotCLI.rawValue
-        fields["phase"] = phase
-        fields["exit_code"] = String(exitCode)
-        fields["run_output_chars"] = String(run.output.count)
-        fields["file_changes"] = String(run.fileChanges.count)
-
-        let completedWithoutOutput = exitCode == 0
-            && run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && snapshot.completedEventCount == 0
-        let parsedNoVisibleAnswer = snapshot.rawLineCount > 0
-            && snapshot.textEventCount == 0
-            && snapshot.completedEventCount == 0
-        let streamLevel: LogLevel = (completedWithoutOutput || parsedNoVisibleAnswer || snapshot.unknownEventCount > 0)
-            ? .warning
-            : .info
-
-        AppLogger.audit(.runtimeStreamSummary, category: "Worker", taskID: task.id, fields: fields, level: streamLevel)
-
-        for sample in snapshot.unknownSamples {
-            var fields = [
-                "runtime": AgentRuntimeID.copilotCLI.rawValue,
-                "phase": phase,
-                "event_type": sample.type,
-                "sample": sample.sample
-            ]
-            fields.merge(unknownEventShapeFields(raw: sample.sample)) { current, _ in current }
-            AppLogger.audit(.runtimeUnknownEvent, category: "Worker", taskID: task.id, fields: fields, level: .warning)
-        }
-
-        if completedWithoutOutput {
-            AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: [
-                "runtime": AgentRuntimeID.copilotCLI.rawValue,
-                "phase": phase,
-                "exit_code": String(exitCode),
-                "raw_lines": String(snapshot.rawLineCount),
-                "parsed_events": String(snapshot.parsedEventCount),
-                "text_events": String(snapshot.textEventCount),
-                "completed_events": String(snapshot.completedEventCount),
-                "unknown_events": String(snapshot.unknownEventCount)
-            ], level: .warning)
-        }
-    }
-
-    @MainActor
-    private static func logStreamDebug(
-        snapshot: AgentRuntimeStreamDebugSnapshot,
-        runtime: AgentRuntimeID,
-        task: AgentTask,
-        run: TaskRun,
-        phase: String,
-        exitCode: Int
-    ) {
-        var fields = snapshot.fields
-        fields["runtime"] = runtime.rawValue
-        fields["phase"] = phase
-        fields["exit_code"] = String(exitCode)
-        fields["run_output_chars"] = String(run.output.count)
-        fields["file_changes"] = String(run.fileChanges.count)
-
-        AppLogger.audit(
-            .runtimeStreamDebug,
-            category: "Worker",
-            taskID: task.id,
-            fields: fields,
-            level: .debug,
-            fieldMaxLength: 240
-        )
-
-        for (index, sample) in snapshot.rawSamples.enumerated() {
-            AppLogger.audit(
-                .runtimeStreamDebugSample,
-                category: "Worker",
-                taskID: task.id,
-                fields: [
-                    "runtime": runtime.rawValue,
-                    "phase": phase,
-                    "sample_kind": "raw_line",
-                    "sample_index": String(index + 1),
-                    "sample": sample
-                ],
-                level: .debug,
-                fieldMaxLength: 500
-            )
-        }
-
-        for (index, shape) in snapshot.unknownJSONShapes.enumerated() {
-            AppLogger.audit(
-                .runtimeStreamDebugSample,
-                category: "Worker",
-                taskID: task.id,
-                fields: [
-                    "runtime": runtime.rawValue,
-                    "phase": phase,
-                    "sample_kind": "unknown_json_shape",
-                    "sample_index": String(index + 1),
-                    "shape": shape
-                ],
-                level: .debug,
-                fieldMaxLength: 500
-            )
-        }
-
-        if let stderrTail = snapshot.stderrTail, !stderrTail.isEmpty {
-            AppLogger.audit(
-                .runtimeStreamDebugSample,
-                category: "Worker",
-                taskID: task.id,
-                fields: [
-                    "runtime": runtime.rawValue,
-                    "phase": phase,
-                    "sample_kind": "stderr_tail",
-                    "tail": stderrTail
-                ],
-                level: .debug,
-                fieldMaxLength: 500
-            )
-        }
-    }
-
-    @MainActor
-    private func preflightConnectorsBeforeLaunch(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: String,
-        contextText: String
-    ) async -> Bool {
-        let fullContext = [
-            task.goal,
-            task.title,
-            contextText
-        ].joined(separator: "\n")
-        let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
-            from: TaskCapabilityResolver(task: task).allConnectors,
-            contextText: fullContext
-        )
-        let traceID = AuditTrace.make("connector-preflight")
-        var preflightFields = CapabilityAudit.taskContextFields(source: "connector_preflight_candidates", task: task)
-        preflightFields["trace_id"] = traceID
-        preflightFields["phase"] = phase
-        preflightFields["preflight_connector_count"] = String(connectors.count)
-        AppLogger.audit(.capabilityChatContext, category: "Worker", taskID: task.id, fields: preflightFields, level: .debug, fieldMaxLength: 240)
-
-        guard let issue = await ConnectorPreflightService.firstBlockingIssue(
-            connectors: connectors,
-            contextText: fullContext,
-            workspaceID: task.workspace?.id,
-            traceID: traceID
-        ) else {
-            if !connectors.isEmpty {
-                AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
-                    "source": "task_preflight",
-                    "trace_id": traceID,
-                    "phase": phase,
-                    "workspace_id": task.workspace?.id.uuidString ?? "none",
-                    "result": "preflight_passed",
-                    "connector_count": String(connectors.count),
-                    "connector_names": CapabilityAudit.compactNames(connectors.map(\.name))
-                ], level: .info, fieldMaxLength: 240)
-            }
-            return true
-        }
-
-        var fields = issue.auditFields
-        fields["trace_id"] = traceID
-        fields["phase"] = phase
-        AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
-
-        let message = """
-        \(issue.connectorName) connector check failed before the agent ran:
-
-        \(issue.message)
-
-        Fix this connector in Manage Capabilities, then retry the task. ASTRA stopped here so the agent does not guess about Jira permissions from partial API results.
-        """
-        finishPreLaunchFailure(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            reason: "connector_preflight_failed",
-            payload: message
-        )
-        return false
-    }
-
-    @MainActor
-    private func finishPreLaunchFailure(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        reason: String,
-        payload: String
-    ) {
-        run.status = .failed
-        run.stopReason = reason
-        run.completedAt = Date()
-        task.status = .failed
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
-        let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
-        modelContext.insert(event)
-        AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-            "reason": reason
-        ], level: .error)
-        try? modelContext.save()
-        isRunning = false
     }
 
     @MainActor
@@ -2171,30 +1818,6 @@ final class AgentRuntimeWorker {
         }
     }
 
-    @MainActor
-    private static func runPersistenceFields(task: AgentTask, run: TaskRun, phase: String) -> [String: String] {
-        let runEvents = task.events.filter { $0.run?.id == run.id }
-        return [
-            "phase": phase,
-            "runtime": run.runtimeID ?? task.resolvedRuntimeID.rawValue,
-            "task_status": task.status.rawValue,
-            "run_status": run.status.rawValue,
-            "run_stop_reason": run.stopReason,
-            "exit_code": run.exitCode.map(String.init) ?? "none",
-            "run_output_chars": String(run.output.count),
-            "response_event_count": String(runEvents.filter { $0.type == "agent.response" }.count),
-            "thinking_event_count": String(runEvents.filter { $0.type == "agent.thinking" }.count),
-            "tool_use_event_count": String(runEvents.filter { $0.type == "tool.use" }.count),
-            "tool_result_event_count": String(runEvents.filter { $0.type == "tool.result" }.count),
-            "error_event_count": String(runEvents.filter { $0.type == "error" }.count),
-            "run_event_count": String(runEvents.count),
-            "file_changes": String(run.fileChanges.count),
-            "tokens_input": String(run.inputTokens),
-            "tokens_output": String(run.outputTokens),
-            "provider_version": run.providerVersion ?? "unknown"
-        ]
-    }
-
     private static func compactNames(_ names: [String], limit: Int = 8) -> String {
         let visible = names.prefix(limit).joined(separator: ",")
         let remaining = names.count - min(names.count, limit)
@@ -2249,131 +1872,9 @@ final class AgentRuntimeWorker {
             .contains { lower.contains($0) }
     }
 
-    private static func unknownEventShapeFields(raw: String) -> [String: String] {
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["raw_length": String(raw.count)]
-        }
-
-        var fields: [String: String] = [
-            "raw_length": String(raw.count),
-            "top_level_keys": object.keys.sorted().joined(separator: ",")
-        ]
-        if let dataObject = object["data"] as? [String: Any] {
-            fields["data_keys"] = dataObject.keys.sorted().joined(separator: ",")
-        }
-        if let payloadObject = object["payload"] as? [String: Any] {
-            fields["payload_keys"] = payloadObject.keys.sorted().joined(separator: ",")
-        }
-        if let type = object["type"] as? String {
-            fields["type_field"] = type
-        }
-        return fields
-    }
-
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
-    }
-
-    @MainActor
-    private func enforcePromptBudgetIfNeeded(
-        prompt: String,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: String,
-        runtime: AgentRuntimeID,
-        budgetEnforcementMode: BudgetEnforcementMode
-    ) -> Bool {
-        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
-        guard tokenBudget != Int.max else { return true }
-
-        let estimatedInputTokens = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(prompt: prompt, runtime: runtime)
-        guard estimatedInputTokens > tokenBudget else { return true }
-
-        let fields = [
-            "phase": phase,
-            "reason": "prompt_budget_estimate_exceeded",
-            "estimated_input_tokens": String(estimatedInputTokens),
-            "launch_overhead_tokens": String(AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)),
-            "runtime": runtime.rawValue,
-            "token_budget": String(tokenBudget),
-            "configured_task_budget": String(task.tokenBudget),
-            "enforcement": budgetEnforcementMode.rawValue
-        ]
-
-        if budgetEnforcementMode == .warning {
-            let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
-            modelContext.insert(TaskEvent(task: task, type: "budget.warning", payload: message, run: run))
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .warning)
-            return true
-        }
-
-        run.status = .budgetExceeded
-        run.completedAt = Date()
-        run.stopReason = "max_budget_reached"
-        task.status = .budgetExceeded
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
-        let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
-        modelContext.insert(TaskEvent(task: task, type: "budget.exceeded", payload: message, run: run))
-        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .error)
-        try? modelContext.save()
-        isRunning = false
-        return false
-    }
-
-    @MainActor
-    private static func hasReportedTokensAboveBudget(task: AgentTask) -> Bool {
-        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
-        return tokenBudget != Int.max && task.tokensUsed > tokenBudget
-    }
-
-    @MainActor
-    private static func shouldTreatAsBudgetExceeded(
-        result: AgentProcessResult,
-        task: AgentTask,
-        budgetEnforcementMode: BudgetEnforcementMode
-    ) -> Bool {
-        result.budgetExceeded ||
-            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(task: task))
-    }
-
-    @MainActor
-    private static func recordFinalBudgetWarningIfNeeded(
-        result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: String,
-        budgetEnforcementMode: BudgetEnforcementMode
-    ) {
-        let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
-        guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
-            return
-        }
-        let message: String
-        let reason: String
-        if result.budgetWarning || reportedBudgetWarning {
-            message = "Budget exceeded in warning mode (\(task.tokensUsed)/\(task.tokenBudget)). ASTRA kept the provider running because Budget Enforcement is set to Warning Only."
-            reason = "budget_exceeded_warning_mode"
-        } else {
-            message = "Completed after exceeding the reported provider token budget (\(task.tokensUsed)/\(task.tokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
-            reason = "final_reported_budget_exceeded_after_completion"
-        }
-        modelContext.insert(TaskEvent(
-            task: task,
-            type: "budget.warning",
-            payload: message,
-            run: run
-        ))
-        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
-            "reason": reason,
-            "tokens_used": String(task.tokensUsed),
-            "token_budget": String(task.tokenBudget)
-        ], level: .warning)
     }
 
     static func ensureSubAgentPermissions(at workspacePath: String, policy: PermissionPolicy, allowedTools: [String]) {
@@ -2418,32 +1919,4 @@ final class AgentRuntimeWorker {
     var skipPermissions: Bool = false
     var permissionPolicy: PermissionPolicy = .restricted
 
-    // MARK: - Error enrichment
-
-    /// Format a failure payload, folding in actionable install guidance
-    /// when stderr looks like "command not found: X". The prefix carries
-    /// the generic worker context ("Agent exited with code N.") and
-    /// `rawError` is the stderr blob from the run.
-    ///
-    /// On no-match, returns the concatenation of prefix + rawError (the
-    /// old behavior), so this is a strictly additive improvement.
-    @MainActor
-    private func enrichedFailurePayload(prefix: String, rawError: String?) -> String {
-        let raw = rawError ?? ""
-        let knownPrereqs = PluginCatalog.builtInPackages.flatMap { $0.prerequisites }
-        if let enrichment = ClaudeErrorEnricher.enrich(
-            stderr: raw,
-            knownPrerequisites: knownPrereqs
-        ) {
-            AppLogger.audit(.workerExited, category: "Worker", fields: [
-                "enriched": "true",
-                "missing_binary": enrichment.binary
-            ], level: .warning)
-            // Surface the enriched message first; keep the raw stderr tail
-            // for power users who want the gory details.
-            let tail = raw.isEmpty ? "" : "\n\nRaw error:\n\(raw)"
-            return "\(prefix) \(enrichment.displayMessage)\(tail)"
-        }
-        return "\(prefix) \(raw)"
-    }
 }
