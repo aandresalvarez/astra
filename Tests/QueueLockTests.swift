@@ -148,7 +148,7 @@ struct TaskFolderTests {
     @Test("taskFolder returns empty when no workspace")
     func noWorkspace() {
         let task = makeTask()
-        #expect(task.taskFolder == "")
+        #expect(TaskWorkspaceAccess(task: task).taskFolder == "")
     }
 
     @Test("taskFolder includes short task ID")
@@ -157,7 +157,7 @@ struct TaskFolderTests {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
         task.workspace = ws
         let shortID = String(task.id.uuidString.prefix(8))
-        #expect(task.taskFolder == "/tmp/test-ws/.astra/tasks/\(shortID)")
+        #expect(TaskWorkspaceAccess(task: task).taskFolder == "/tmp/test-ws/.astra/tasks/\(shortID)")
     }
 
     @Test("taskFolder reads legacy location until migrated")
@@ -172,9 +172,9 @@ struct TaskFolderTests {
         let legacy = WorkspaceFileLayout.legacyTaskFolder(workspacePath: tmpDir, taskID: task.id)
         try FileManager.default.createDirectory(atPath: legacy, withIntermediateDirectories: true)
 
-        #expect(task.taskFolder == legacy)
+        #expect(TaskWorkspaceAccess(task: task).taskFolder == legacy)
 
-        let migrated = try task.ensureTaskFolder()
+        let migrated = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         #expect(migrated == WorkspaceFileLayout.taskFolder(workspacePath: tmpDir, taskID: task.id))
         #expect(FileManager.default.fileExists(atPath: migrated))
         #expect(!FileManager.default.fileExists(atPath: legacy))
@@ -187,7 +187,7 @@ struct TaskFolderTests {
         task1.workspace = ws
         let task2 = makeTask(title: "Task 2")
         task2.workspace = ws
-        #expect(task1.taskFolder != task2.taskFolder)
+        #expect(TaskWorkspaceAccess(task: task1).taskFolder != TaskWorkspaceAccess(task: task2).taskFolder)
     }
 
     @Test("ensureTaskFolder creates directory on disk")
@@ -200,7 +200,7 @@ struct TaskFolderTests {
         let ws = Workspace(name: "Test", primaryPath: tmpDir)
         task.workspace = ws
 
-        let path = try task.ensureTaskFolder()
+        let path = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         #expect(!path.isEmpty)
         var isDir: ObjCBool = false
         #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDir))
@@ -210,6 +210,22 @@ struct TaskFolderTests {
             isDirectory: &isDir
         ))
         #expect(isDir.boolValue)
+    }
+
+    @Test("TaskWorkspaceAccess creates task directories through injected file system")
+    func ensureCreatesThroughInjectedFileSystem() throws {
+        let task = makeTask()
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/astra-mock-\(UUID().uuidString.prefix(8))")
+        task.workspace = ws
+        let fileSystem = MockFileSystem()
+
+        let path = try TaskWorkspaceAccess(task: task).ensureTaskFolder(fileSystem: fileSystem)
+
+        #expect(path == WorkspaceFileLayout.taskFolder(workspacePath: ws.primaryPath, taskID: task.id))
+        #expect(fileSystem.createdDirectories.map(\.path) == [
+            path,
+            (path as NSString).appendingPathComponent("outputs")
+        ])
     }
 }
 

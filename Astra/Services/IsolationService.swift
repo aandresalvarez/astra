@@ -44,7 +44,7 @@ enum IsolationService {
     /// Prepare the workspace according to the isolation strategy.
     /// Returns the actual working directory path to use for execution.
     static func prepare(task: AgentTask) async throws -> String {
-        let codeDir = task.codeWorkingDirectory
+        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         switch task.isolationStrategy {
         case .sameDirectory:
             return codeDir

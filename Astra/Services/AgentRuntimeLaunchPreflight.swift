@@ -9,7 +9,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: String
     ) -> Bool {
         do {
-            let folder = try task.ensureTaskFolder()
+            let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
             AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
                 "event": "task_folder_prepared",
                 "phase": phase,

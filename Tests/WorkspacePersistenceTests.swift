@@ -79,7 +79,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     task.status = .completed
     task.unreadAt = Date(timeIntervalSince1970: 1_701_234_567)
     task.skills = [skill]
-    task.captureSkillSnapshots()
+    TaskCapabilitySnapshotter.capture(for: task)
     context.insert(task)
 
     let run = TaskRun(task: task)
@@ -238,7 +238,7 @@ struct WorkspacePersistenceTests {
 
         let task = AgentTask(title: "Use B", goal: "Use second skill", workspace: workspace)
         task.skills = [skillB]
-        task.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: task)
         context.insert(task)
         try context.save()
 

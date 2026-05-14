@@ -936,7 +936,7 @@ struct TaskGeneratedFilesTrigger: Equatable {
 
     init(task: AgentTask, latestRun: TaskRunSnapshot?) {
         taskID = task.id
-        taskFolder = task.taskFolder
+        taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         latestRunID = latestRun?.id
         latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
         status = task.status

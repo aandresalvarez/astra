@@ -17,8 +17,8 @@ private func findOutputFile(named name: String, workspacePath: String, task: Age
     let fm = FileManager.default
     let directCandidates = [
         (workspacePath as NSString).appendingPathComponent(name),
-        (task.taskFolder as NSString).appendingPathComponent(name),
-        ((task.taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
+        (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(name),
+        ((TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
     ].filter { !$0.isEmpty }
 
     if let direct = directCandidates.first(where: { fm.fileExists(atPath: $0) }) {
@@ -133,7 +133,7 @@ struct Phase1FunctionalTest {
         try context.save()
 
         #expect(task.workspace === workspace, "Task should be linked to workspace")
-        #expect(task.effectiveWorkspacePath == testDir, "Task workspace path should match")
+        #expect(TaskWorkspaceAccess(task: task).effectiveWorkspacePath == testDir, "Task workspace path should match")
         #expect(task.status == .queued, "Task should be explicitly queued before direct worker execution")
         #expect(workspace.tasks.contains(task), "Workspace should contain the task")
 

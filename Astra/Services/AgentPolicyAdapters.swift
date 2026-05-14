@@ -314,14 +314,14 @@ enum AgentPolicyManifestService {
         let policy = executionPolicy.allowedToolsOverride
             .map { basePolicy.applyingOneRunAllowedTools($0) }
             ?? basePolicy
-        let envKeys = Array(task.resolvedEnvironmentVariables.keys).sorted()
+        let envKeys = Array(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables.keys).sorted()
         let configOwnership = providerConfigOwnership(for: runtime, workspacePath: workspacePath)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
             workspacePath: workspacePath,
-            additionalPaths: task.runtimeAdditionalPaths,
-            requestedAllowedTools: executionPolicy.allowedTools(default: task.resolvedProviderAllowedTools),
+            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
+            requestedAllowedTools: executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools),
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
@@ -344,7 +344,7 @@ enum AgentPolicyManifestService {
             policyScope: executionPolicy.allowedToolsOverride == nil ? resolution.scope : .oneRunEscalation,
             providerRender: render,
             workspacePath: workspacePath,
-            additionalPaths: task.runtimeAdditionalPaths,
+            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
             approvalsGranted: approvals
@@ -428,7 +428,7 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func localToolCommands(for task: AgentTask) -> [String] {
-        task.allLocalTools.compactMap { tool in
+        TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -438,7 +438,7 @@ enum AgentPolicyManifestService {
     @MainActor
     private static func credentialLabels(for task: AgentTask) -> [String] {
         let skillKeys = task.skills.flatMap(\.environmentKeys)
-        let connectorKeys = task.allConnectors.flatMap(\.credentialKeys)
+        let connectorKeys = TaskCapabilityResolver(task: task).allConnectors.flatMap(\.credentialKeys)
         return Array(Set(skillKeys + connectorKeys)).sorted()
     }
 

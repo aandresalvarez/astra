@@ -1035,7 +1035,7 @@ struct ContentView: View {
         selectedTaskPreferredMarkdownPath = attachedMarkdownPath ?? ""
         selectedTaskHasMarkdownShelfContent = attachedMarkdownPath != nil
 
-        let taskFolder = selectedTask.taskFolder
+        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else {
             closeMarkdownShelfIfUnavailable()
             return
@@ -1084,7 +1084,7 @@ struct ContentView: View {
         selectedTaskPreferredQueryPath = attachedSQLPath ?? ""
         selectedTaskHasQueryShelfContent = attachedSQLPath != nil
 
-        let taskFolder = selectedTask.taskFolder
+        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else { return }
 
         queryAvailabilityTask = Task {
@@ -1145,7 +1145,7 @@ struct ContentView: View {
         }
 
         let taskID = selectedTask.id
-        let taskFolder = selectedTask.taskFolder
+        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else { return }
 
         generatedHTMLPreviewTask?.cancel()
@@ -1220,7 +1220,7 @@ struct ContentView: View {
         }
 
         let taskID = selectedTask.id
-        let taskFolder = selectedTask.taskFolder
+        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else { return }
 
         generatedMarkdownPreviewTask?.cancel()

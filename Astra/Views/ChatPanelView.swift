@@ -1389,7 +1389,7 @@ struct ChatPanelView: View {
         task.status = .queued
         task.inputs = attachedFiles
         task.skills = selectedSkills
-        task.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
 
@@ -1545,7 +1545,7 @@ struct ChatPanelView: View {
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
         task.skills = selectedSkills
-        task.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: task)
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
@@ -2296,7 +2296,7 @@ struct ChatPanelView: View {
             draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
             draft.skills = selectedSkills
-            draft.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             recordPolicySelectionIfChanged(on: draft, source: "draft_updated")
@@ -2319,7 +2319,7 @@ struct ChatPanelView: View {
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = selectedSkills
-            draft.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             modelContext.insert(draft)

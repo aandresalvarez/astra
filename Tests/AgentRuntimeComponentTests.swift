@@ -81,8 +81,8 @@ struct AgentRuntimeLaunchPreflightTests {
         )
 
         #expect(prepared)
-        #expect(FileManager.default.fileExists(atPath: task.taskFolder))
-        #expect(FileManager.default.fileExists(atPath: (task.taskFolder as NSString).appendingPathComponent("outputs")))
+        #expect(FileManager.default.fileExists(atPath: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")))
         #expect(task.status == .draft)
         #expect(task.unreadAt == nil)
     }
@@ -236,7 +236,7 @@ struct AgentRuntimeRunPersistenceTests {
             message: "user message"
         )
 
-        let historyPath = SessionHistoryManager.historyPath(taskFolder: task.taskFolder)
+        let historyPath = SessionHistoryManager.historyPath(taskFolder: TaskWorkspaceAccess(task: task).taskFolder)
         let history = try String(contentsOfFile: historyPath, encoding: .utf8)
         #expect(history.contains("History Task"))
         #expect(history.contains("user message"))

@@ -17,6 +17,19 @@ struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
+    var runtimeAdditionalPaths: [String] {
+        var paths = task.workspace?.additionalPaths ?? []
+        paths.append(contentsOf: inputDirectoryPaths)
+
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let path = (rawPath as NSString).expandingTildeInPath
+            guard !path.isEmpty, !seen.contains(path) else { return nil }
+            seen.insert(path)
+            return path
+        }
+    }
+
     var taskFolder: String {
         WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
     }
@@ -43,5 +56,17 @@ struct TaskWorkspaceAccess {
             withIntermediateDirectories: true
         )
         return path
+    }
+
+    private var inputDirectoryPaths: [String] {
+        task.inputs.compactMap { input in
+            let path = (input as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            return path
+        }
     }
 }

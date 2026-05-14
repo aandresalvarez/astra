@@ -92,7 +92,7 @@ struct SkillModelTests {
     }
 }
 
-// MARK: - Resolved Tools (AgentTask + Skills)
+// MARK: - Resolved Tools
 
 @Suite("Skill Resolution")
 struct SkillResolutionTests {
@@ -101,8 +101,8 @@ struct SkillResolutionTests {
     func noSkillsDefaultTools() {
         let task = makeTask()
         #expect(task.skills.isEmpty)
-        #expect(Set(task.resolvedAllowedTools) == Set(Skill.defaultAllowed))
-        #expect(task.resolvedDisallowedTools.isEmpty)
+        #expect(Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools) == Set(Skill.defaultAllowed))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedDisallowedTools.isEmpty)
     }
 
     @Test("Single skill restricts allowed tools")
@@ -111,7 +111,7 @@ struct SkillResolutionTests {
         let skill = makeSkill(allowedTools: ["Read", "Glob", "Grep"])
         task.skills = [skill]
 
-        let resolved = Set(task.resolvedAllowedTools)
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(resolved == Set(["Read", "Glob", "Grep"]))
     }
 
@@ -124,7 +124,7 @@ struct SkillResolutionTests {
         )
         task.skills = [skill]
 
-        let resolved = Set(task.resolvedAllowedTools)
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(resolved == Set(["Read", "Glob", "Grep"]))
         #expect(!resolved.contains("Bash"))
     }
@@ -136,7 +136,7 @@ struct SkillResolutionTests {
         let skill2 = makeSkill(allowedTools: ["Write", "Edit"])
         task.skills = [skill1, skill2]
 
-        let resolved = Set(task.resolvedAllowedTools)
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(resolved == Set(["Read", "Glob", "Write", "Edit"]))
     }
 
@@ -153,11 +153,11 @@ struct SkillResolutionTests {
         )
         task.skills = [skill1, skill2]
 
-        let disallowed = Set(task.resolvedDisallowedTools)
+        let disallowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedDisallowedTools)
         #expect(disallowed.contains("Bash"))
         #expect(disallowed.contains("Write"))
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(!allowed.contains("Bash"))
         #expect(!allowed.contains("Write"))
     }
@@ -173,7 +173,7 @@ struct SkillResolutionTests {
         )
         task.skills = [skill1, skill2]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(allowed.contains("Read"))
         #expect(allowed.contains("Grep"))
         #expect(!allowed.contains("Bash"))
@@ -190,7 +190,7 @@ struct SkillResolutionTests {
         )
         task.skills = [skill1, skill2]
 
-        let conflicts = task.toolPermissionConflicts
+        let conflicts = TaskCapabilityResolver(task: task).resolver.toolPermissionConflicts
         #expect(conflicts.count == 1)
         #expect(conflicts[0].tool == "Bash")
         #expect(conflicts[0].allowedBy == "Writer")
@@ -204,7 +204,7 @@ struct SkillResolutionTests {
         let skill2 = makeSkill(allowedTools: ["Read", "Grep"])
         task.skills = [skill1, skill2]
 
-        #expect(task.toolPermissionConflicts.isEmpty)
+        #expect(TaskCapabilityResolver(task: task).resolver.toolPermissionConflicts.isEmpty)
     }
 
     @Test("Custom tools are included in resolved allowed")
@@ -217,7 +217,7 @@ struct SkillResolutionTests {
         )
         task.skills = [skill]
 
-        let resolved = Set(task.resolvedAllowedTools)
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(resolved.contains("Read"))
         #expect(resolved.contains("Bash"))
         #expect(resolved.contains("mcp__postgres__query"))
@@ -238,7 +238,7 @@ struct SkillResolutionTests {
         )
         task.skills = [skill1, skill2]
 
-        let resolved = Set(task.resolvedAllowedTools)
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(resolved.contains("Read"))
         #expect(!resolved.contains("mcp__dangerous__tool"))
     }
@@ -249,7 +249,7 @@ struct SkillResolutionTests {
         let skill = makeSkill(allowedTools: ["Grep", "Bash", "Read", "Edit"])
         task.skills = [skill]
 
-        let resolved = task.resolvedAllowedTools
+        let resolved = TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools
         #expect(resolved == resolved.sorted())
     }
 
@@ -259,7 +259,7 @@ struct SkillResolutionTests {
         let skill = makeSkill(disallowedTools: ["Write", "Bash", "Edit"])
         task.skills = [skill]
 
-        let resolved = task.resolvedDisallowedTools
+        let resolved = TaskCapabilityResolver(task: task).resolver.resolvedDisallowedTools
         #expect(resolved == resolved.sorted())
     }
 }
@@ -272,7 +272,7 @@ struct BehavioralInstructionsTests {
     @Test("No skills returns empty behavior instructions")
     func noSkillsEmptyBehavior() {
         let task = makeTask()
-        #expect(task.resolvedBehaviorInstructions.isEmpty)
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.isEmpty)
     }
 
     @Test("Single skill behavior instructions")
@@ -281,7 +281,7 @@ struct BehavioralInstructionsTests {
         let skill = makeSkill(behaviorInstructions: "Never delete files")
         task.skills = [skill]
 
-        #expect(task.resolvedBehaviorInstructions == "[Test Skill]:\nNever delete files")
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions == "[Test Skill]:\nNever delete files")
     }
 
     @Test("Multiple skills concatenate instructions with double newline")
@@ -291,7 +291,7 @@ struct BehavioralInstructionsTests {
         let skill2 = makeSkill(name: "Skill B", behaviorInstructions: "Only run test commands")
         task.skills = [skill1, skill2]
 
-        let result = task.resolvedBehaviorInstructions
+        let result = TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions
         #expect(result.contains("[Skill A]:\nNever delete files"))
         #expect(result.contains("[Skill B]:\nOnly run test commands"))
         #expect(result.contains("\n\n"))
@@ -304,7 +304,7 @@ struct BehavioralInstructionsTests {
         let skill2 = makeSkill(behaviorInstructions: "")
         task.skills = [skill1, skill2]
 
-        #expect(task.resolvedBehaviorInstructions == "[Test Skill]:\nNever delete files")
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions == "[Test Skill]:\nNever delete files")
     }
 }
 
@@ -369,14 +369,14 @@ struct SkillSnapshotFallbackTests {
         ]
 
         #expect(task.skills.isEmpty)
-        #expect(task.resolvedBehaviorInstructions.contains("[Data Analyst]"))
-        #expect(task.resolvedBehaviorInstructions.contains("analyze data sources"))
-        #expect(Set(task.resolvedAllowedTools).contains("bq"))
-        #expect(Set(task.resolvedAllowedTools).contains("Bash"))
-        #expect(!Set(task.resolvedAllowedTools).contains("Edit"))
-        #expect(!Set(task.resolvedClaudeAllowedTools).contains("bq"))
-        #expect(task.resolvedEnvironmentVariables["BQ_PROFILE"] == "prod")
-        #expect(task.resolvedEnvironmentVariables["BQ_PROJECT"] == "analytics-prod")
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("[Data Analyst]"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("analyze data sources"))
+        #expect(Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools).contains("bq"))
+        #expect(Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools).contains("Bash"))
+        #expect(!Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools).contains("Edit"))
+        #expect(!Set(TaskCapabilityResolver(task: task).resolver.resolvedClaudeAllowedTools).contains("bq"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables["BQ_PROFILE"] == "prod")
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables["BQ_PROJECT"] == "analytics-prod")
     }
 
     @Test("Live skills and detached snapshots are merged without duplication")
@@ -410,11 +410,11 @@ struct SkillSnapshotFallbackTests {
             )
         ]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(allowed.contains("Read"))
         #expect(allowed.contains("Grep"))
-        #expect(task.resolvedBehaviorInstructions.contains("[Live Skill]"))
-        #expect(task.resolvedBehaviorInstructions.contains("[Detached Skill]"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("[Live Skill]"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("[Detached Skill]"))
     }
 }
 
@@ -431,7 +431,7 @@ struct PromptWithSkillsTests {
 
         // Replicate buildPrompt logic
         var parts: [String] = ["Goal: \(task.goal)"]
-        let behaviorBlock = task.resolvedBehaviorInstructions
+        let behaviorBlock = TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
             parts.append("Behavioral Instructions (from Skills):\n\(behaviorBlock)")
         }
@@ -447,7 +447,7 @@ struct PromptWithSkillsTests {
         let task = makeTask(goal: "Fix the login bug")
 
         var parts: [String] = ["Goal: \(task.goal)"]
-        let behaviorBlock = task.resolvedBehaviorInstructions
+        let behaviorBlock = TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
             parts.append("Behavioral Instructions (from Skills):\n\(behaviorBlock)")
         }
@@ -472,7 +472,7 @@ struct PromptWithSkillsTests {
         if !task.acceptanceCriteria.isEmpty {
             parts.append("Acceptance Criteria:\n" + task.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n"))
         }
-        let behaviorBlock = task.resolvedBehaviorInstructions
+        let behaviorBlock = TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
             parts.append("Behavioral Instructions (from Skills):\n\(behaviorBlock)")
         }
@@ -493,7 +493,7 @@ struct EnvironmentVariableTests {
     @Test("No skills returns empty env vars")
     func noSkillsEmptyEnv() {
         let task = AgentTask(title: "Test", goal: "test")
-        #expect(task.resolvedEnvironmentVariables.isEmpty)
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables.isEmpty)
     }
 
     @Test("Skill env vars are resolved")
@@ -505,7 +505,7 @@ struct EnvironmentVariableTests {
         )
         task.skills = [skill]
 
-        let env = task.resolvedEnvironmentVariables
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["DATABASE_URL"] == "postgres://localhost/test")
         #expect(env["DB_POOL"] == "5")
     }
@@ -523,7 +523,7 @@ struct EnvironmentVariableTests {
         )
         task.skills = [skill1, skill2]
 
-        let env = task.resolvedEnvironmentVariables
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["API_KEY"] == "key-from-a")
         #expect(env["SECRET"] == "b-secret")
         // Later skill overrides
@@ -561,7 +561,7 @@ struct EnvironmentVariableTests {
         let skill2 = Skill(name: "B")
         task.skills = [skill1, skill2]
 
-        let env = task.resolvedEnvironmentVariables
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["KEY"] == "val")
         #expect(env.count == 1)
     }
@@ -584,12 +584,12 @@ struct PresetSkillTests {
         let task = makeTask()
         task.skills = [skill]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(allowed == Set(["Read", "Glob", "Grep"]))
         #expect(!allowed.contains("Write"))
         #expect(!allowed.contains("Edit"))
         #expect(!allowed.contains("Bash"))
-        #expect(task.resolvedBehaviorInstructions.contains("must not create"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("must not create"))
     }
 
     @Test("Test Runner preset allows all tools with test restriction")
@@ -604,10 +604,10 @@ struct PresetSkillTests {
         let task = makeTask()
         task.skills = [skill]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(allowed == Set(Skill.defaultAllowed))
-        #expect(task.resolvedDisallowedTools.isEmpty)
-        #expect(task.resolvedBehaviorInstructions.contains("test commands"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedDisallowedTools.isEmpty)
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("test commands"))
     }
 
     @Test("Safe Bash preset restricts dangerous commands")
@@ -622,9 +622,9 @@ struct PresetSkillTests {
         let task = makeTask()
         task.skills = [skill]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         #expect(allowed == Set(Skill.defaultAllowed))
-        #expect(task.resolvedBehaviorInstructions.contains("Never run rm"))
+        #expect(TaskCapabilityResolver(task: task).resolver.resolvedBehaviorInstructions.contains("Never run rm"))
     }
 
     @Test("Combining Read-Only and Safe Bash — disallowed wins")
@@ -643,7 +643,7 @@ struct PresetSkillTests {
         let task = makeTask()
         task.skills = [readOnly, safeBash]
 
-        let allowed = Set(task.resolvedAllowedTools)
+        let allowed = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
         // readOnly disallows Write, Edit, Bash — those should be removed even though safeBash allows them
         #expect(!allowed.contains("Write"))
         #expect(!allowed.contains("Edit"))

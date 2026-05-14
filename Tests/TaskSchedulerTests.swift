@@ -446,7 +446,7 @@ struct ScheduleFireLogicTests {
         let task = AgentTask(title: "Routine Run", goal: "Run", workspace: workspace)
         task.inputs = [routine.path]
 
-        #expect(task.runtimeAdditionalPaths == [extra.path, routine.path])
+        #expect(TaskWorkspaceAccess(task: task).runtimeAdditionalPaths == [extra.path, routine.path])
     }
 
     @Test("Due vs future filtering logic")

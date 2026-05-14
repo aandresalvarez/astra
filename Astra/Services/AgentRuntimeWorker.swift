@@ -141,7 +141,7 @@ final class AgentRuntimeWorker {
         }
 
         // Use codeWorkingDirectory — prefers additional paths (actual code repo) over the Astra workspace folder
-        let codeDir = task.codeWorkingDirectory
+        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         // Verify workspace exists
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir), isDir.boolValue else {
@@ -164,7 +164,7 @@ final class AgentRuntimeWorker {
         let executionPath: String
         do {
             executionPath = try await IsolationService.prepare(task: task)
-            if executionPath != task.effectiveWorkspacePath {
+            if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
                 let isoEvent = TaskEvent(task: task, type: "tool.use",
                     payload: "Isolation: \(task.isolationStrategy.rawValue) → \(executionPath)", run: run)
                 modelContext.insert(isoEvent)
@@ -224,7 +224,7 @@ final class AgentRuntimeWorker {
             "token_budget": String(task.tokenBudget),
             "budget_enforcement": budgetEnforcementMode.rawValue,
             "isolation": task.isolationStrategy.rawValue,
-            "workspace_changed": String(executionPath != task.effectiveWorkspacePath)
+            "workspace_changed": String(executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
         ])
 
         // Log active skills
@@ -235,7 +235,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(skillEvent)
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
                 "skills_count": String(task.skills.count),
-                "allowed_tools_count": String(task.resolvedAllowedTools.count)
+                "allowed_tools_count": String(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools.count)
             ])
         }
 
@@ -535,7 +535,7 @@ final class AgentRuntimeWorker {
                 nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
             }
             nextTask.skills = task.skills
-            nextTask.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: nextTask)
             modelContext.insert(nextTask)
 
             let chainEvent = TaskEvent(task: task, type: "task.chained",
@@ -851,7 +851,7 @@ final class AgentRuntimeWorker {
             run: run,
             runtime: .claudeCode,
             model: task.model,
-            workspacePath: task.codeWorkingDirectory,
+            workspacePath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
             phase: "resume",
             permissionPolicy: runPermissionPolicy,
             executionPolicy: executionPolicy,
@@ -885,7 +885,7 @@ final class AgentRuntimeWorker {
         let result = await processRunner.runClaudeProcess(
             prompt: followUpPrompt,
             task: task,
-            workspacePath: task.codeWorkingDirectory,
+            workspacePath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
             claudePath: claudePath,
             permissionPolicy: runPermissionPolicy,
             executionPolicy: launchExecutionPolicy,
@@ -1181,7 +1181,7 @@ final class AgentRuntimeWorker {
             return
         }
 
-        let codeDir = task.codeWorkingDirectory
+        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir), isDir.boolValue else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -1204,7 +1204,7 @@ final class AgentRuntimeWorker {
         let executionPath: String
         do {
             executionPath = try await IsolationService.prepare(task: task)
-            if executionPath != task.effectiveWorkspacePath {
+            if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
                 let isoEvent = TaskEvent(task: task, type: "tool.use",
                     payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
                 modelContext.insert(isoEvent)
@@ -1844,7 +1844,7 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         step approvedStep: TaskPlanPayloadStep? = nil
     ) -> [String] {
-        var tools = Set(task.resolvedProviderAllowedTools)
+        var tools = Set(TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
         let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
         for step in scopedSteps {
             for tool in step.likelyTools {

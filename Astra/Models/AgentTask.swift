@@ -27,12 +27,6 @@ enum ValidationStrategy: String, Codable, CaseIterable {
 
 @Model
 final class AgentTask {
-    struct ToolPermissionConflict: Equatable {
-        let tool: String
-        let allowedBy: String
-        let disallowedBy: String
-    }
-
     var id: UUID
     var title: String
     var goal: String
@@ -83,62 +77,6 @@ final class AgentTask {
 
     @Relationship
     var skills: [Skill] = []
-
-    var workspaceAccess: TaskWorkspaceAccess {
-        TaskWorkspaceAccess(task: self)
-    }
-
-    var effectiveWorkspacePath: String {
-        workspaceAccess.effectiveWorkspacePath
-    }
-
-    /// The directory where the selected provider process should actually run.
-    /// Prefers the first additional path (where the actual code lives) over the
-    /// Astra workspace folder (which is for metadata/task outputs).
-    var codeWorkingDirectory: String {
-        workspaceAccess.codeWorkingDirectory
-    }
-
-    var runtimeAdditionalPaths: [String] {
-        var paths = workspace?.additionalPaths ?? []
-        paths.append(contentsOf: inputDirectoryPaths)
-
-        var seen: Set<String> = []
-        return paths.compactMap { rawPath in
-            let path = (rawPath as NSString).expandingTildeInPath
-            guard !path.isEmpty, !seen.contains(path) else { return nil }
-            seen.insert(path)
-            return path
-        }
-    }
-
-    private var inputDirectoryPaths: [String] {
-        inputs.compactMap { input in
-            let path = (input as NSString).expandingTildeInPath
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
-                return nil
-            }
-            return path
-        }
-    }
-
-    /// Per-task subfolder within the workspace for task-specific outputs
-    var taskFolder: String {
-        workspaceAccess.taskFolder
-    }
-
-    var canonicalTaskFolder: String {
-        workspaceAccess.canonicalTaskFolder
-    }
-
-    /// Ensures the task folder exists on disk, creating it if needed.
-    /// Throws if the directory cannot be created.
-    @discardableResult
-    func ensureTaskFolder(fileSystem: FileSystem = RealFileSystem()) throws -> String {
-        try workspaceAccess.ensureTaskFolder(fileSystem: fileSystem)
-    }
 
     init(
         title: String,
@@ -200,10 +138,6 @@ final class AgentTask {
         }
     }
 
-    func captureSkillSnapshots() {
-        skillSnapshots = skills.map(SkillSnapshotConfig.init(skill:))
-    }
-
     var isForked: Bool { forkedFromID != nil }
 
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
@@ -251,30 +185,4 @@ final class AgentTask {
         TaskPresentationState.statusColor(for: status)
     }
 
-    func makeSkillResolver() -> SkillResolver {
-        TaskCapabilityResolver(task: self).resolver
-    }
-
-    var resolvedAllowedTools: [String] { makeSkillResolver().resolvedAllowedTools }
-    var resolvedDisallowedTools: [String] { makeSkillResolver().resolvedDisallowedTools }
-    var resolvedProviderAllowedTools: [String] { makeSkillResolver().resolvedProviderAllowedTools }
-    var resolvedClaudeAllowedTools: [String] { makeSkillResolver().resolvedClaudeAllowedTools }
-    var resolvedBehaviorInstructions: String { makeSkillResolver().resolvedBehaviorInstructions }
-    var resolvedEnvironmentVariables: [String: String] { makeSkillResolver().resolvedEnvironmentVariables }
-
-    var toolPermissionConflicts: [ToolPermissionConflict] {
-        makeSkillResolver().toolPermissionConflicts.map {
-            ToolPermissionConflict(tool: $0.tool, allowedBy: $0.allowedBy, disallowedBy: $0.disallowedBy)
-        }
-    }
-
-    /// All connectors: from attached skills + standalone workspace connectors + enabled global connectors
-    var allConnectors: [Connector] {
-        TaskCapabilityResolver(task: self).allConnectors
-    }
-
-    /// All local tools: from attached skills + standalone workspace tools + enabled global tools
-    var allLocalTools: [LocalTool] {
-        TaskCapabilityResolver(task: self).allLocalTools
-    }
 }

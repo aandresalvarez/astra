@@ -1203,7 +1203,7 @@ enum WorkspaceConfigManager {
             toolsByName: &toolsByName
         )
         if task.skillSnapshots.isEmpty {
-            task.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: task)
         }
 
         var importedRuns: [TaskRun] = []

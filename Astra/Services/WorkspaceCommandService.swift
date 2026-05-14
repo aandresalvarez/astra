@@ -132,7 +132,7 @@ enum WorkspaceCommandService {
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
         mainTask.skills = skills(for: template, selectedSkills: selectedSkills)
-        mainTask.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: mainTask)
 
         if template.hasAfterPhase {
             let afterGoal = template.resolveGoal(template.afterGoal, with: variables)
@@ -160,7 +160,7 @@ enum WorkspaceCommandService {
             task.templateID = template.id
             task.templateHooksJSON = template.hooksJSON
             task.skills = mainTask.skills
-            task.captureSkillSnapshots()
+            TaskCapabilitySnapshotter.capture(for: task)
 
             let chainedMainGoal = template.passContextToMain
                 ? "Previous task output will be provided as context.\n\n" + mainGoal

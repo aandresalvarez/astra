@@ -133,7 +133,7 @@ struct AgentTaskDefaultTests {
     @Test("ensureTaskFolder returns empty string when no workspace")
     func ensureTaskFolderNoWorkspace() throws {
         let task = AgentTask(title: "Test", goal: "test")
-        let result = try task.ensureTaskFolder()
+        let result = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         #expect(result == "")
     }
 }

@@ -330,7 +330,7 @@ struct TaskMainView: View {
             logRuntimeHealthIfNeeded(reason: "snapshot")
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
-            threadViewModel.refreshGeneratedFiles(folder: task.taskFolder)
+            threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -624,10 +624,10 @@ struct TaskMainView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Stanford.lagunita)
 
-                if !task.taskFolder.isEmpty {
+                if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
                     Button {
                         isShowingFilesPopover = false
-                        NSWorkspace.shared.open(URL(fileURLWithPath: task.taskFolder))
+                        NSWorkspace.shared.open(URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder))
                     } label: {
                         Image(systemName: "folder")
                             .font(Stanford.ui(12, weight: .medium))
@@ -2559,7 +2559,7 @@ struct TaskMainView: View {
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
                         task.skills.removeAll { $0.id == skill.id }
-                        task.captureSkillSnapshots()
+                        TaskCapabilitySnapshotter.capture(for: task)
                         task.updatedAt = Date()
                         AppLogger.breadcrumb(action: "task_skill_removed", category: "UI", taskID: task.id, fields: [
                             "source": "task_composer",
@@ -2577,7 +2577,7 @@ struct TaskMainView: View {
                         } else {
                             task.skills.removeAll { $0.id == skill.id }
                         }
-                        task.captureSkillSnapshots()
+                        TaskCapabilitySnapshotter.capture(for: task)
                         task.updatedAt = Date()
                         let traceID = AuditTrace.make("task-skill-toggle")
                         AppLogger.breadcrumb(action: enabled ? "task_skill_enabled" : "task_skill_disabled", category: "UI", taskID: task.id, traceID: traceID, fields: [
@@ -3253,8 +3253,8 @@ struct TaskMainView: View {
     }
 
     private var planningWorkspacePath: String {
-        if !task.codeWorkingDirectory.isEmpty {
-            return task.codeWorkingDirectory
+        if !TaskWorkspaceAccess(task: task).codeWorkingDirectory.isEmpty {
+            return TaskWorkspaceAccess(task: task).codeWorkingDirectory
         }
         return task.workspace?.primaryPath ?? FileManager.default.currentDirectoryPath
     }

@@ -77,7 +77,7 @@ struct ContentExternalRouteResolver {
         } else {
             task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: trimmedGoal)
         }
-        task.captureSkillSnapshots()
+        TaskCapabilitySnapshotter.capture(for: task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.taskCreated, category: "AppIntents", taskID: task.id, fields: [

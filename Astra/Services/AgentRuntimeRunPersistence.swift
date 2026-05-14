@@ -8,7 +8,7 @@ enum AgentRuntimeRunPersistence {
         run: TaskRun,
         message: String
     ) {
-        let folder = (try? task.ensureTaskFolder()) ?? ""
+        let folder = (try? TaskWorkspaceAccess(task: task).ensureTaskFolder()) ?? ""
         guard !folder.isEmpty else { return }
 
         SessionHistoryManager.recordTurn(

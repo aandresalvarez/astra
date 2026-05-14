@@ -122,8 +122,8 @@ enum AgentPromptBuilder {
 
     private static func appendWorkspacePaths(for task: AgentTask, to parts: inout [String]) {
         guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
-        let codeDir = task.codeWorkingDirectory
-        if codeDir != task.effectiveWorkspacePath {
+        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
             parts.append("WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.")
         }
         if ws.additionalPaths.count > 1 {
@@ -136,7 +136,7 @@ enum AgentPromptBuilder {
     }
 
     private static func appendTaskOutputFolder(for task: AgentTask, to parts: inout [String]) {
-        let taskDir = task.taskFolder
+        let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
             if let relativePath {
@@ -155,7 +155,7 @@ enum AgentPromptBuilder {
     }
 
     private static func relativeTaskFolderPath(for task: AgentTask, taskDir: String) -> String? {
-        let base = task.codeWorkingDirectory
+        let base = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         guard !base.isEmpty else { return nil }
         let standardizedBase = URL(fileURLWithPath: base).standardizedFileURL.path
         let standardizedTaskDir = URL(fileURLWithPath: taskDir).standardizedFileURL.path
@@ -298,7 +298,7 @@ enum AgentPromptBuilder {
         parts.append("You are continuing work on a task. Here is the original goal:")
         parts.append("Goal: \(task.goal)")
 
-        let folder = task.taskFolder
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
         if !folder.isEmpty {
             if let transcript = buildRecentConversationTranscript(for: task) {
@@ -387,7 +387,7 @@ enum AgentPromptBuilder {
     }
 
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
-        let folder = task.taskFolder
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty else { return nil }
         return recentSessionOutputTranscript(taskFolder: folder)
     }
@@ -515,7 +515,7 @@ enum AgentPromptBuilder {
             }
         }
 
-        let folder = task.taskFolder
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
         if !folder.isEmpty {
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
             if FileManager.default.fileExists(atPath: historyPath) {

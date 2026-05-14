@@ -369,7 +369,7 @@ final class TaskQueue {
     @MainActor
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
-            let folder = try task.ensureTaskFolder()
+            let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
                 "event": "task_folder_prepared",
                 "mode": mode,
@@ -548,7 +548,7 @@ final class TaskQueue {
     private func injectTemplateHooks(for task: AgentTask) -> Data? {
         let backup = ClaudeSettingsStore.injectTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: task.effectiveWorkspacePath
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         )
         if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
@@ -562,7 +562,7 @@ final class TaskQueue {
     private func restoreTemplateHooks(for task: AgentTask, backup: Data?) {
         ClaudeSettingsStore.restoreTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: task.effectiveWorkspacePath,
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
             backup: backup
         )
         if backup != nil {
