@@ -332,7 +332,7 @@ struct TaskCapabilityResolver {
     private static func browserBridgeTool() -> LocalTool {
         LocalTool(
             name: "Shelf Browser Control",
-            toolDescription: "Controls ASTRA's current Shelf browser session through ASTRA_BROWSER_URL. Use analyze --v2 before click/fill actions and verify outcomeVerified after actions.",
+            toolDescription: "Controls ASTRA's current Shelf browser session through ASTRA_BROWSER_URL. Analyze uses v2 by default; verify outcomeVerified after actions.",
             icon: "globe",
             toolType: "cli",
             command: "astra-browser"

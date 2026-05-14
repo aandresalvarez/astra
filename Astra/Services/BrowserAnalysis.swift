@@ -115,7 +115,7 @@ enum BrowserAnalysisV2RolloutMode: String {
         if let override = environment[environmentKey].flatMap(parse) {
             return override
         }
-        return parse(defaults.string(forKey: defaultsKey)) ?? .off
+        return parse(defaults.string(forKey: defaultsKey)) ?? .on
     }
 
     func effectiveVersion(requested: BrowserAnalysisVersion, explicit: Bool) -> BrowserAnalysisVersion {

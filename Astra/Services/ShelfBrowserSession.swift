@@ -742,7 +742,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "GET",
                         "path": "/analyze",
                         "query": ["query": "optional text", "full": "optional true|false", "limit": "optional number", "debug": "optional true|false", "v2": "optional true|false", "version": "optional v1|v2"],
-                        "description": "Deterministically scan the current rendered page and return a cached action map with analysisID, controlIDs, valid actions, primary action, expected outcomes, ambiguity hints, risk, confidence, and concise evidence. v2 adds semantic controlRefs, source breakdown, and accessibility matching when available. ASTRA_BROWSER_ANALYSIS_V2 or user defaults can set off/shadow/on rollout."
+                        "description": "Deterministically scan the current rendered page and return a cached action map with analysisID, controlIDs, valid actions, primary action, expected outcomes, ambiguity hints, risk, confidence, and concise evidence. v2 semantic controlRefs, source breakdown, and accessibility matching are enabled by default. ASTRA_BROWSER_ANALYSIS_V2 or user defaults can set off/shadow/on rollout."
                     ],
                     [
                         "method": "GET",

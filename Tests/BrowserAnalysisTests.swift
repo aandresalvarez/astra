@@ -6,6 +6,11 @@ import Testing
 struct BrowserAnalysisTests {
     @Test("V2 rollout mode parses environment and preserves explicit requests")
     func v2RolloutModeParsesEnvironmentAndExplicitRequests() {
+        let suiteName = "BrowserAnalysisTests.v2.default.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(BrowserAnalysisV2RolloutMode.configured(defaults: defaults, environment: [:]) == .on)
         #expect(BrowserAnalysisV2RolloutMode.configured(environment: [
             BrowserAnalysisV2RolloutMode.environmentKey: "shadow"
         ]) == .shadow)
