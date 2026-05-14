@@ -266,6 +266,7 @@ struct NewWorkspaceDraft: Equatable {
 
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
+    let runtime: AppRuntimeController
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
@@ -283,7 +284,6 @@ struct ContentView: View {
     @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
-    @State private var runtime = AppRuntimeController()
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
@@ -347,8 +347,9 @@ struct ContentView: View {
     /// (and vice versa).
 
     @MainActor
-    init(appUpdateController: AppUpdateController) {
+    init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
         self.appUpdateController = appUpdateController
+        self.runtime = runtime
     }
 
     private var effectiveWorkspace: Workspace? {

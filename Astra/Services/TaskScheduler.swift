@@ -109,23 +109,7 @@ final class TaskScheduler {
             "workspace_id": schedule.workspace?.id.uuidString ?? "none"
         ])
 
-        // Always trigger queue processing for scheduled tasks.
-        // If the queue is already processing, it will pick up the new task in its loop.
-        // If not, we start a new processing cycle.
-        let queue = taskQueue
-        let ctx = modelContext
-        Task { @MainActor in
-            if queue.isProcessing {
-                // Queue loop is active — it polls for queued tasks, so just ensure
-                // the task gets picked up by executing it directly if a worker is free
-                if queue.hasAvailableWorker {
-                    await queue.executeTask(task, modelContext: ctx)
-                }
-                // Otherwise the loop will find it on next iteration
-            } else {
-                await queue.processQueue(modelContext: ctx)
-            }
-        }
+        taskQueue.processQueueIfIdle(modelContext: modelContext)
     }
 
     static func resolvedSkills(for schedule: TaskSchedule, globalSkills: [Skill]) -> [Skill] {
