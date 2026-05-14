@@ -49,6 +49,11 @@ private struct PendingDecisionButtonStyle: ButtonStyle {
     }
 }
 
+private enum RunNoticeProminence {
+    case actionable
+    case detail
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -93,6 +98,8 @@ struct TaskMainView: View {
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
     @State private var isPlanning = false
+    @State private var isAgentPlanCompletedExpanded = false
+    @State private var isThreadStatusExpanded = false
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -343,37 +350,6 @@ struct TaskMainView: View {
             runtimeHealthNow = now
             logRuntimeHealthIfNeeded(reason: "timer")
         }
-    }
-
-    private func runningProgressRow(_ health: TaskRuntimeHealth) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            if health.isAttentionState {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(Stanford.ui(14, weight: .semibold))
-                    .foregroundStyle(Stanford.poppy)
-                    .frame(width: 16, height: 16)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 16, height: 16)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(health.message)
-                    .font(Stanford.body(14))
-                    .foregroundStyle(health.isAttentionState ? Stanford.poppy : .secondary)
-                if let detail = health.detail {
-                    Text(detail)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(health.isAttentionState ? Stanford.poppy.opacity(0.08) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func logRuntimeHealthIfNeeded(reason: String) {
@@ -971,128 +947,319 @@ struct TaskMainView: View {
                 .id(item.id)
         }
 
+        threadStatusDisclosure
+    }
+
+    @ViewBuilder
+    private var threadStatusDisclosure: some View {
+        let count = threadStatusCount
+        if count > 0 {
+            let accent = threadStatusAccentColor
+            let summary = threadStatusSummaryText
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isThreadStatusExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isThreadStatusExpanded ? "chevron.down" : "chevron.right")
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .frame(width: 12)
+
+                        if task.status == .running && !runtimeHealth.isAttentionState {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 14, height: 14)
+                        } else {
+                            Image(systemName: threadStatusIcon)
+                                .font(Stanford.ui(12, weight: .semibold))
+                                .frame(width: 14)
+                        }
+
+                        Text("Task status")
+                            .font(Stanford.caption(12).weight(.semibold))
+                        Text(summary)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        if count > 1 {
+                            Text("\(count)")
+                                .font(Stanford.caption(10).weight(.semibold))
+                                .foregroundStyle(accent)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(accent.opacity(0.10))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .foregroundStyle(accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if isThreadStatusExpanded {
+                    threadStatusDetails
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Stanford.fog.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Task status. \(summary)")
+        }
+    }
+
+    @ViewBuilder
+    private var threadStatusDetails: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if task.status == .running {
+                threadStatusDetailRow(
+                    title: runtimeHealth.message,
+                    detail: runtimeHealth.detail,
+                    icon: runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
+                    color: runtimeHealth.isAttentionState ? Stanford.poppy : Stanford.lagunita,
+                    isLoading: !runtimeHealth.isAttentionState
+                )
+            }
+
+            if shouldShowPendingApprovalStatus {
+                threadStatusDetailRow(
+                    title: "Waiting for your approval",
+                    detail: pendingApprovalStatusDetail,
+                    icon: "person.crop.circle.badge.questionmark",
+                    color: Stanford.poppy
+                )
+            }
+
+            if isCreatingScheduleForCurrentTask {
+                threadStatusDetailRow(
+                    title: "Creating routine...",
+                    detail: nil,
+                    icon: "arrow.triangle.2.circlepath",
+                    color: Stanford.lagunita,
+                    isLoading: true
+                )
+            }
+
+            if isGeneratingRecap {
+                threadStatusDetailRow(
+                    title: "Generating recap...",
+                    detail: nil,
+                    icon: "doc.text.magnifyingglass",
+                    color: Stanford.lagunita,
+                    isLoading: true
+                )
+            }
+
+            if let msg = recapStatusMessage {
+                threadStatusDetailRow(
+                    title: msg,
+                    detail: nil,
+                    icon: "exclamationmark.triangle",
+                    color: Stanford.poppy,
+                    dismissAction: { recapStatusMessage = nil }
+                )
+            }
+
+            if task.isTerminal && task.status != .completed {
+                threadStatusDetailRow(
+                    title: terminalStatusLabel,
+                    detail: nil,
+                    icon: terminalStatusIcon,
+                    color: terminalStatusColor
+                )
+            }
+
+            if let statusMsg = currentScheduleStatusMessage {
+                threadStatusAttributedRow(
+                    text: MarkdownTextView.markdownAttributed(statusMsg),
+                    icon: isScheduleStatusError ? "exclamationmark.triangle" : "checkmark.circle",
+                    color: isScheduleStatusError ? Stanford.poppy : Stanford.paloAltoGreen,
+                    dismissAction: { clearScheduleStatusMessage() }
+                )
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var threadStatusCount: Int {
+        var count = 0
+        if task.status == .running { count += 1 }
+        if shouldShowPendingApprovalStatus { count += 1 }
+        if isCreatingScheduleForCurrentTask { count += 1 }
+        if isGeneratingRecap { count += 1 }
+        if recapStatusMessage != nil { count += 1 }
+        if task.isTerminal && task.status != .completed { count += 1 }
+        if currentScheduleStatusMessage != nil { count += 1 }
+        return count
+    }
+
+    private var shouldShowPendingApprovalStatus: Bool {
+        task.status == .pendingUser && (latestRun?.output.isEmpty ?? true)
+    }
+
+    private var pendingApprovalStatusDetail: String {
+        hasOpenRuntimePermissionApprovalRequest
+            ? "Review the permission request to continue."
+            : "Use the review controls above the composer to continue."
+    }
+
+    private var threadStatusSummaryText: String {
+        let parts = threadStatusSummaryParts
+        guard !parts.isEmpty else { return "" }
+        let visible = Array(parts.prefix(3))
+        let hiddenCount = parts.count - visible.count
+        if hiddenCount > 0 {
+            return visible.joined(separator: " · ") + " · +\(hiddenCount)"
+        }
+        return visible.joined(separator: " · ")
+    }
+
+    private var threadStatusSummaryParts: [String] {
+        var parts: [String] = []
         if task.status == .running {
-            runningProgressRow(runtimeHealth)
+            parts.append(runtimeHealth.message)
         }
-
-        if task.status == .pendingUser {
-            if latestRun?.output.isEmpty ?? true {
-                HStack(spacing: 10) {
-                    Image(systemName: "person.crop.circle.badge.questionmark")
-                        .font(Stanford.ui(16))
-                        .foregroundStyle(Stanford.poppy)
-                    Text("Waiting for your approval")
-                        .font(Stanford.body(13))
-                        .foregroundStyle(Stanford.poppy)
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Stanford.poppy.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
+        if shouldShowPendingApprovalStatus {
+            parts.append(hasOpenRuntimePermissionApprovalRequest ? "Permission needed" : "Waiting for approval")
         }
-
         if isCreatingScheduleForCurrentTask {
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Creating routine...")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            parts.append("Creating routine")
         }
-
         if isGeneratingRecap {
-            HStack(spacing: 10) {
+            parts.append("Generating recap")
+        }
+        if recapStatusMessage != nil {
+            parts.append("Recap needs attention")
+        }
+        if task.isTerminal && task.status != .completed {
+            parts.append(terminalStatusLabel)
+        }
+        if currentScheduleStatusMessage != nil {
+            parts.append(isScheduleStatusError ? "Routine needs attention" : "Routine created")
+        }
+        return parts
+    }
+
+    private var threadStatusAccentColor: Color {
+        if runtimeHealth.isAttentionState ||
+            shouldShowPendingApprovalStatus ||
+            recapStatusMessage != nil ||
+            isScheduleStatusError ||
+            task.status == .failed ||
+            task.status == .budgetExceeded {
+            return Stanford.poppy
+        }
+        if task.isTerminal && task.status != .completed {
+            return terminalStatusColor
+        }
+        return Stanford.lagunita
+    }
+
+    private var threadStatusIcon: String {
+        if runtimeHealth.isAttentionState || recapStatusMessage != nil || isScheduleStatusError {
+            return "exclamationmark.triangle"
+        }
+        if shouldShowPendingApprovalStatus {
+            return "person.crop.circle.badge.questionmark"
+        }
+        if task.isTerminal && task.status != .completed {
+            return terminalStatusIcon
+        }
+        return "list.bullet.rectangle"
+    }
+
+    private func threadStatusDetailRow(
+        title: String,
+        detail: String? = nil,
+        icon: String,
+        color: Color,
+        isLoading: Bool = false,
+        dismissAction: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            if isLoading {
                 ProgressView()
                     .controlSize(.small)
-                Text("Generating recap...")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.secondary)
-                Spacer()
+                    .frame(width: 16, height: 17)
+            } else {
+                Image(systemName: icon)
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 16, height: 17)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
 
-        if let msg = recapStatusMessage {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(Stanford.poppy)
-                Text(msg)
-                    .font(Stanford.body(13))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Stanford.caption(12).weight(.medium))
                     .foregroundStyle(Stanford.black)
-                Spacer()
-                Button {
-                    recapStatusMessage = nil
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(Stanford.ui(10, weight: .bold))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
-        }
-
-        if task.isTerminal && task.status != .completed {
-            HStack(spacing: 8) {
-                Image(systemName: terminalStatusIcon)
-                    .font(Stanford.ui(13))
-                    .foregroundStyle(terminalStatusColor)
-                Text(terminalStatusLabel)
-                    .font(Stanford.caption(13).weight(.medium))
-                    .foregroundStyle(terminalStatusColor)
-                Spacer()
-                if let completedAt = task.completedAt {
-                    Text(completedAt, style: .relative)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
                         .font(Stanford.caption(11))
-                        .foregroundStyle(Stanford.coolGrey)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(terminalStatusColor.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
 
-        if let statusMsg = currentScheduleStatusMessage {
-            HStack(spacing: 10) {
-                Image(systemName: isScheduleStatusError
-                      ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
-                    .foregroundStyle(isScheduleStatusError
-                                     ? Stanford.poppy : Stanford.paloAltoGreen)
-                Text(MarkdownTextView.markdownAttributed(statusMsg))
-                    .font(Stanford.body(13))
-                    .foregroundStyle(Stanford.black)
-                Spacer()
-                Button {
-                    clearScheduleStatusMessage()
-                } label: {
+            Spacer(minLength: 8)
+
+            if let dismissAction {
+                Button(action: dismissAction) {
                     Image(systemName: "xmark")
                         .font(Stanford.ui(10, weight: .bold))
                         .foregroundStyle(Stanford.coolGrey)
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
+                .help("Dismiss")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Stanford.cardBackground.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func threadStatusAttributedRow(
+        text: AttributedString,
+        icon: String,
+        color: Color,
+        dismissAction: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon)
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 16, height: 17)
+
+            Text(text)
+                .font(Stanford.caption(12).weight(.medium))
+                .foregroundStyle(Stanford.black)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 8)
+
+            if let dismissAction {
+                Button(action: dismissAction) {
+                    Image(systemName: "xmark")
+                        .font(Stanford.ui(10, weight: .bold))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Stanford.cardBackground.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     @ViewBuilder
@@ -1382,59 +1549,11 @@ struct TaskMainView: View {
     private func chatAgentBubble(run: TaskRunSnapshot) -> some View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
-        let toolEvents = activity.tools
-        let isExpanded = expandedRunActivity.contains(run.id)
-        let showsLiveActivity = run.status == .running
-        let showsActivityDetails = isExpanded || showsLiveActivity
-        let visibleToolResults = isExpanded ? activity.toolResults : []
+        let displayNotices = runNoticesToDisplay(activity.notices, for: run)
+        let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
 
         return VStack(alignment: .leading, spacing: 8) {
-            if let manifest = activity.permissionManifest {
-                runPolicyManifestView(manifest, for: run)
-            }
-
-            // Collapsible tool activity
-            if !toolEvents.isEmpty {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if isExpanded {
-                            expandedRunActivity.remove(run.id)
-                        } else {
-                            expandedRunActivity.insert(run.id)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(Stanford.ui(10, weight: .semibold))
-                        Image(systemName: "wrench")
-                            .font(Stanford.ui(11))
-                        Text("\(toolEvents.count) tool \(toolEvents.count == 1 ? "call" : "calls")")
-                            .font(Stanford.caption(12).weight(.medium))
-                        if showsLiveActivity {
-                            Text("live")
-                                .font(Stanford.caption(10).weight(.semibold))
-                                .foregroundStyle(Stanford.lagunita)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Stanford.lagunita.opacity(0.1))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .foregroundStyle(Stanford.coolGrey)
-                }
-                .buttonStyle(.plain)
-
-                if showsActivityDetails {
-                    toolActivityList(toolEvents, results: visibleToolResults)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Stanford.fog.opacity(0.4))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-            }
-
             if run.hasVPNWarning {
                 networkAccessNotice()
             }
@@ -1447,8 +1566,8 @@ struct TaskMainView: View {
                 agentCompletionPanel(protocolState)
             }
 
-            ForEach(runNoticesToDisplay(activity.notices, for: run)) { notice in
-                runNoticeView(notice)
+            ForEach(actionableNotices) { notice in
+                runNoticeView(notice, prominence: .actionable)
             }
 
             if !run.output.isEmpty {
@@ -1492,6 +1611,10 @@ struct TaskMainView: View {
                         .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
                     }
                 }
+            }
+
+            if shouldShowRunActivityDisclosure(activity: activity, notices: displayNotices) {
+                runActivityDisclosure(run: run, activity: activity, notices: displayNotices)
             }
 
             // Action icons row
@@ -1547,6 +1670,231 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func shouldShowRunActivityDisclosure(activity: TaskRunActivity, notices: [TaskRunNotice]) -> Bool {
+        !activity.tools.isEmpty ||
+            !activity.toolResults.isEmpty ||
+            !notices.isEmpty ||
+            !activity.fileChanges.isEmpty ||
+            activity.permissionManifest != nil
+    }
+
+    private func runActivityDisclosure(
+        run: TaskRunSnapshot,
+        activity: TaskRunActivity,
+        notices: [TaskRunNotice]
+    ) -> some View {
+        let isExpanded = expandedRunActivity.contains(run.id)
+        let accent = runActivitySummaryColor(run: run, notices: notices)
+        let parts = runActivitySummaryParts(run: run, activity: activity, notices: notices)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isExpanded {
+                        expandedRunActivity.remove(run.id)
+                    } else {
+                        expandedRunActivity.insert(run.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .frame(width: 12)
+                    Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
+                        .font(Stanford.ui(12, weight: .semibold))
+                    Text(run.status == .running ? "Working" : "Run details")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text(parts.joined(separator: " · "))
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if run.status == .running {
+                        Text("Live")
+                            .font(Stanford.caption(10).weight(.semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Stanford.lagunita.opacity(0.10))
+                            .clipShape(Capsule())
+                    }
+                }
+                .foregroundStyle(accent)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                runActivityDetails(run: run, activity: activity, notices: notices)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Stanford.fog.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Run details. \(parts.joined(separator: ", "))")
+    }
+
+    private func runActivityDetails(
+        run: TaskRunSnapshot,
+        activity: TaskRunActivity,
+        notices: [TaskRunNotice]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let manifest = activity.permissionManifest {
+                runPolicyManifestView(manifest, for: run)
+            }
+
+            if !activity.tools.isEmpty || !activity.toolResults.isEmpty {
+                runActivityDetailSection(title: "Tool calls", systemImage: "wrench") {
+                    toolActivityList(activity.tools, results: activity.toolResults)
+                }
+            }
+
+            if !notices.isEmpty {
+                runActivityDetailSection(title: "Warnings and logs", systemImage: "exclamationmark.triangle") {
+                    ForEach(notices) { notice in
+                        runNoticeView(notice, prominence: .detail)
+                    }
+                }
+            }
+
+            if !activity.fileChanges.isEmpty {
+                runActivityDetailSection(title: "Files", systemImage: "doc.text") {
+                    Button {
+                        selectedTab = .files
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.text")
+                                .font(Stanford.ui(11, weight: .semibold))
+                            Text("\(activity.fileChanges.count) changed \(activity.fileChanges.count == 1 ? "file" : "files")")
+                                .font(Stanford.caption(12).weight(.medium))
+                            Spacer(minLength: 8)
+                            Image(systemName: "arrow.right")
+                                .font(Stanford.ui(10, weight: .semibold))
+                        }
+                        .foregroundStyle(Stanford.lagunita)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func runActivityDetailSection<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.coolGrey)
+            content()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Stanford.cardBackground.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func runActivitySummaryParts(
+        run: TaskRunSnapshot,
+        activity: TaskRunActivity,
+        notices: [TaskRunNotice]
+    ) -> [String] {
+        var parts: [String] = []
+        let toolCallCount = activity.tools.reduce(0) { $0 + $1.count }
+        let warningCount = notices.filter { $0.type == "budget.warning" }.count
+        let issueCount = notices.filter { $0.type == "error" || $0.type == "budget.exceeded" }.count
+
+        if toolCallCount > 0 {
+            parts.append("\(toolCallCount) tool \(toolCallCount == 1 ? "call" : "calls")")
+        }
+        if warningCount > 0 {
+            parts.append("\(warningCount) \(warningCount == 1 ? "warning" : "warnings")")
+        }
+        if notices.contains(where: { $0.type == "permission.approval.requested" }) {
+            parts.append("approval needed")
+        } else if runStoppedByPolicy(run, notices: notices) {
+            parts.append("stopped by policy")
+        } else if issueCount > 0 {
+            parts.append("\(issueCount) \(issueCount == 1 ? "issue" : "issues")")
+        }
+        if activity.fileChanges.count > 0 {
+            parts.append("\(activity.fileChanges.count) \(activity.fileChanges.count == 1 ? "file" : "files") changed")
+        }
+        if activity.permissionManifest != nil && !parts.contains(where: { $0.contains("policy") }) {
+            parts.append("policy")
+        }
+        if activity.toolResults.count > 0 && toolCallCount == 0 {
+            parts.append("\(activity.toolResults.count) tool \(activity.toolResults.count == 1 ? "result" : "results")")
+        }
+
+        return parts.isEmpty ? [runStatusLabel(run).lowercased()] : Array(parts.prefix(4))
+    }
+
+    private func runActivitySummaryIcon(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
+        if run.status == .running {
+            return "arrow.triangle.2.circlepath"
+        }
+        if notices.contains(where: { $0.type == "permission.approval.requested" }) {
+            return "hand.raised"
+        }
+        if runStoppedByPolicy(run, notices: notices) {
+            return "shield.slash"
+        }
+        if notices.contains(where: { $0.type == "error" || $0.type == "budget.exceeded" }) {
+            return "exclamationmark.circle"
+        }
+        if notices.contains(where: { $0.type == "budget.warning" }) {
+            return "exclamationmark.triangle"
+        }
+        return "list.bullet.rectangle"
+    }
+
+    private func runActivitySummaryColor(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> Color {
+        if run.status == .running {
+            return Stanford.lagunita
+        }
+        if notices.contains(where: { $0.type == "error" || $0.type == "budget.exceeded" }) {
+            return Stanford.cardinalRed
+        }
+        if notices.contains(where: { $0.type == "budget.warning" || $0.type == "permission.approval.requested" }) {
+            return Stanford.poppy
+        }
+        return Stanford.coolGrey
+    }
+
+    private func isActionableRunNotice(_ notice: TaskRunNotice, for run: TaskRunSnapshot) -> Bool {
+        guard !run.hasVPNWarning || notice.type != "error" else { return false }
+        switch notice.type {
+        case "error", "budget.exceeded", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func runStoppedByPolicy(_ run: TaskRunSnapshot, notices: [TaskRunNotice]) -> Bool {
+        let stopReason = run.stopReason.lowercased()
+        return stopReason.contains("policy") ||
+            notices.contains(where: runNoticeLooksPolicyBlocked)
+    }
+
+    private func runNoticeLooksPolicyBlocked(_ notice: TaskRunNotice) -> Bool {
+        guard notice.type == "error" else { return false }
+        let payload = notice.payload.lowercased()
+        return payload.contains("violated the run policy") ||
+            payload.contains("provider allow-list") ||
+            payload.contains("policy violation") ||
+            payload.contains("not in the provider allow-list")
     }
 
     private func runPolicyManifestView(_ manifest: RunPermissionManifest, for run: TaskRunSnapshot) -> some View {
@@ -1651,8 +1999,16 @@ struct TaskMainView: View {
         }
     }
 
-    private func runNoticeView(_ notice: TaskRunNotice) -> some View {
-        let presentation = runNoticePresentation(for: notice.type)
+    private func runNoticeView(
+        _ notice: TaskRunNotice,
+        prominence: RunNoticeProminence
+    ) -> some View {
+        let presentation = runNoticePresentation(for: notice)
+        let body = runNoticeBody(for: notice)
+        let rawDetail = prominence == .detail ? runNoticeRawDetail(for: notice, body: body) : nil
+        let backgroundOpacity = prominence == .actionable ? 0.08 : 0.045
+        let strokeOpacity = prominence == .actionable ? 0.25 : 0.14
+
         return HStack(alignment: .top, spacing: 8) {
             Image(systemName: presentation.icon)
                 .font(Stanford.ui(13, weight: .semibold))
@@ -1662,21 +2018,30 @@ struct TaskMainView: View {
                 Text(presentation.title)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(presentation.color)
-                Text(runNoticeBody(for: notice))
+                Text(body)
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.black)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                if let rawDetail {
+                    Text(rawDetail)
+                        .font(Stanford.mono(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(.top, 3)
+                }
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(presentation.color.opacity(0.08))
+        .background(presentation.color.opacity(backgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(presentation.color.opacity(0.25), lineWidth: 1)
+                .stroke(presentation.color.opacity(strokeOpacity), lineWidth: 1)
         )
     }
 
@@ -1781,24 +2146,43 @@ struct TaskMainView: View {
         }
     }
 
-    private func runNoticePresentation(for type: String) -> (title: String, icon: String, color: Color) {
-        switch type {
+    private func runNoticePresentation(for notice: TaskRunNotice) -> (title: String, icon: String, color: Color) {
+        switch notice.type {
         case "budget.warning":
-            ("Budget Warning", "exclamationmark.triangle", Stanford.poppy)
+            ("Budget warning", "exclamationmark.triangle", Stanford.poppy)
         case "budget.exceeded":
-            ("Budget Exceeded", "xmark.octagon", Stanford.cardinalRed)
+            ("Budget exceeded", "xmark.octagon", Stanford.cardinalRed)
         case "permission.approval.requested":
-            ("Approval Needed", "hand.raised", Stanford.poppy)
+            ("Approval needed", "hand.raised", Stanford.poppy)
         case "astra.permission_summary":
-            ("Run Permission Summary", "checklist.shield", Stanford.coolGrey)
+            ("Permission summary", "checklist.shield", Stanford.coolGrey)
         case "error":
-            ("Provider Error", "xmark.octagon", Stanford.cardinalRed)
+            runNoticeLooksPolicyBlocked(notice)
+                ? ("Policy blocked this run", "shield.slash", Stanford.cardinalRed)
+                : ("Run stopped", "xmark.octagon", Stanford.cardinalRed)
         default:
             ("Notice", "info.circle", Stanford.coolGrey)
         }
     }
 
     private func runNoticeBody(for notice: TaskRunNotice) -> String {
+        switch notice.type {
+        case "budget.warning":
+            return budgetWarningBody(for: notice.payload)
+        case "budget.exceeded":
+            return "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
+        case "permission.approval.requested":
+            return notice.payload.isEmpty
+                ? "Review the policy request to continue this run."
+                : notice.payload
+        case "error" where runNoticeLooksPolicyBlocked(notice):
+            return "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
+        case "error":
+            return providerErrorBody(for: notice.payload)
+        default:
+            break
+        }
+
         guard notice.type == "astra.permission_summary",
               let data = notice.payload.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1835,6 +2219,42 @@ struct TaskMainView: View {
         return parts.joined(separator: ". ") + "."
     }
 
+    private func budgetWarningBody(for payload: String) -> String {
+        let lower = payload.lowercased()
+        if lower.contains("launch estimate") {
+            return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
+        }
+        if lower.contains("warning mode") || lower.contains("warning only") {
+            return "This task has used more budget than expected. ASTRA kept it running because budget enforcement is set to warning mode."
+        }
+        return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
+    }
+
+    private func providerErrorBody(for payload: String) -> String {
+        let lower = payload.lowercased()
+        if lower.contains("exited with code") || lower.contains("failed before astra received") {
+            return "The provider stopped before returning a visible response. Retry the task or open run details for the technical output."
+        }
+        if payload.isEmpty {
+            return "The provider stopped unexpectedly. Retry the task or open run details for diagnostics."
+        }
+        return String(payload.prefix(220))
+    }
+
+    private func runNoticeRawDetail(for notice: TaskRunNotice, body: String) -> String? {
+        guard !notice.payload.isEmpty,
+              notice.payload != body else {
+            return nil
+        }
+
+        switch notice.type {
+        case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
+            return notice.payload
+        default:
+            return nil
+        }
+    }
+
     private func forkTask(from run: TaskRunSnapshot) {
         guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
         let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
@@ -1843,29 +2263,73 @@ struct TaskMainView: View {
     }
 
     private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let activeItems = items.filter { !$0.isDone }
+        let completedItems = items.filter(\.isDone)
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "checklist")
                     .font(Stanford.ui(12, weight: .semibold))
                 Text("Agent Plan")
                     .font(Stanford.caption(12).weight(.semibold))
                 Spacer()
+                if !completedItems.isEmpty {
+                    Text("\(completedItems.count) done")
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(Stanford.paloAltoGreen)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Stanford.paloAltoGreen.opacity(0.10))
+                        .clipShape(Capsule())
+                }
             }
             .foregroundStyle(Stanford.coolGrey)
 
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(items) { item in
+                if activeItems.isEmpty, !completedItems.isEmpty {
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                        Image(systemName: "checkmark.circle.fill")
                             .font(Stanford.ui(12, weight: .semibold))
-                            .foregroundStyle(item.isDone ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                            .foregroundStyle(Stanford.paloAltoGreen)
                             .frame(width: 14, height: 16)
-                        Text(item.text)
+                        Text("All plan steps are complete")
                             .font(Stanford.body(13))
-                            .foregroundStyle(item.isDone ? Stanford.coolGrey : Stanford.black)
-                            .strikethrough(item.isDone, color: Stanford.coolGrey)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(Stanford.black)
                         Spacer(minLength: 0)
+                    }
+                } else {
+                    ForEach(activeItems) { item in
+                        agentPlanItemRow(item)
+                    }
+                }
+
+                if !completedItems.isEmpty {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isAgentPlanCompletedExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isAgentPlanCompletedExpanded ? "chevron.down" : "chevron.right")
+                                .font(Stanford.ui(10, weight: .semibold))
+                                .frame(width: 12)
+                            Text("\(completedItems.count) completed \(completedItems.count == 1 ? "step" : "steps")")
+                                .font(Stanford.caption(12).weight(.medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(Stanford.coolGrey)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if isAgentPlanCompletedExpanded {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(completedItems) { item in
+                                agentPlanItemRow(item)
+                            }
+                        }
+                        .padding(.top, 2)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }
@@ -1878,6 +2342,21 @@ struct TaskMainView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Stanford.coolGrey.opacity(0.18), lineWidth: 1)
         )
+    }
+
+    private func agentPlanItemRow(_ item: TaskProtocolTodoItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(item.isDone ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                .frame(width: 14, height: 16)
+            Text(item.text)
+                .font(Stanford.body(13))
+                .foregroundStyle(item.isDone ? Stanford.coolGrey : Stanford.black)
+                .strikethrough(item.isDone, color: Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 
     private func agentCompletionPanel(_ state: TaskRunProtocolState) -> some View {
@@ -2037,7 +2516,7 @@ struct TaskMainView: View {
         [.completed, .pendingUser, .failed, .budgetExceeded, .cancelled].contains(task.status)
     }
 
-    // (Activity tab removed — tool events are shown inline in agent response bubbles)
+    // (Activity tab removed — run activity is summarized inline in agent response bubbles)
 
     // MARK: - Result Helpers
 
