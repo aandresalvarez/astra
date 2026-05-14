@@ -219,6 +219,22 @@ final class Connector {
             return (false, "No base URL configured")
         }
 
+        if let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: baseURL,
+            authMethod: authMethod,
+            credentialKeys: credentialKeys
+        ) {
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
+                "result": "unsafe_base_url"
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
+            return (false, violation)
+        }
+
         let creds = credentials(store: store)
         let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {

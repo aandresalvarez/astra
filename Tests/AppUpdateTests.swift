@@ -81,6 +81,19 @@ struct AppChannelTests {
         #expect(AppChannel.development.keychainConnectorPrefix == "astra-dev")
         #expect(AppChannel.development.defaultWorkspacesRoot.contains("Astra Dev"))
     }
+
+    @Test("channel identities do not overlap")
+    func channelIdentitiesDoNotOverlap() {
+        let channels: [AppChannel] = [.production, .development, .beta]
+
+        #expect(Set(channels.map(\.displayName)).count == channels.count)
+        #expect(Set(channels.map(\.appSupportDirectoryName)).count == channels.count)
+        #expect(Set(channels.map(\.defaultWorkspacesRoot)).count == channels.count)
+        #expect(Set(channels.map(\.keychainConnectorPrefix)).count == channels.count)
+        #expect(Set(channels.map(\.keychainSkillPrefix)).count == channels.count)
+        #expect(AppChannel.production.defaultWorkspacesRoot.contains("Astra/Workspaces"))
+        #expect(!AppChannel.production.defaultWorkspacesRoot.contains("Astra Dev"))
+    }
 }
 
 @Suite("Pre-update Store Backup")

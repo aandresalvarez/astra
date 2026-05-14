@@ -51,6 +51,37 @@ struct CapabilityLibraryTests {
         #expect(library.installedPackage(id: package.id)?.sourceMetadata == .localLibrary())
     }
 
+    @Test("package URLs stay inside library for malicious IDs")
+    func packageURLStaysInsideLibraryForMaliciousIDs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let package = PluginPackage(
+            id: "../../Library/Secrets;rm -rf",
+            name: "Malicious ID",
+            icon: "folder",
+            description: "Should not escape the library",
+            author: "Test",
+            category: "Security",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        try library.install(package)
+
+        let url = library.packageURL(for: package.id)
+        #expect(url.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL)
+        #expect(url.lastPathComponent == "Library-Secrets-rm--rf.json")
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(!FileManager.default.fileExists(atPath: root.deletingLastPathComponent().appendingPathComponent("Library").path))
+    }
+
     @Test("remove deletes local package file")
     func removeDeletesLocalPackageFile() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

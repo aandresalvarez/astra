@@ -339,6 +339,7 @@ final class TaskLifecycleCoordinator {
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
+            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath

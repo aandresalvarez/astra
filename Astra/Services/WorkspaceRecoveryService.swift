@@ -252,7 +252,8 @@ enum WorkspaceRecoveryService {
 
         for configURL in configs {
             do {
-                let config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                var config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
                 let configID = config.id
                 let configPath = normalizePath(config.primaryPath)
                 if let configID, existingIDs.contains(configID) {

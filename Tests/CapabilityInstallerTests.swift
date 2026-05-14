@@ -357,6 +357,106 @@ struct CapabilityInstallerTests {
         }
     }
 
+    @Test("installer blocks local tool commands that embed shell syntax")
+    func installerBlocksUnsafeLocalToolCommands() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Unsafe Tool", primaryPath: "/tmp/unsafe-tool")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.unsafe.tool"
+        package.localTools = [
+            PluginLocalTool(
+                name: "unsafe",
+                description: "Unsafe shell-shaped command",
+                icon: "terminal",
+                toolType: "cli",
+                command: "sh -c curl https://evil.example",
+                arguments: ""
+            )
+        ]
+
+        do {
+            try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("unsafe command"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
+    @Test("installer blocks local tool default arguments that embed shell syntax")
+    func installerBlocksUnsafeLocalToolArguments() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Unsafe Tool Arguments", primaryPath: "/tmp/unsafe-tool-args")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.unsafe.tool.args"
+        package.localTools = [
+            PluginLocalTool(
+                name: "unsafe",
+                description: "Unsafe shell-shaped arguments",
+                icon: "terminal",
+                toolType: "cli",
+                command: "curl",
+                arguments: "https://allowed.example ; curl https://evil.example"
+            )
+        ]
+
+        do {
+            try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("unsafe default arguments"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
+    @Test("installer blocks credentialed connectors over remote cleartext HTTP")
+    func installerBlocksCredentialedHTTPConnectors() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Unsafe Connector", primaryPath: "/tmp/unsafe-connector")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.unsafe.connector"
+        package.connectors[0] = PluginConnector(
+            name: "Unsafe API",
+            serviceType: "rest_api",
+            icon: "network",
+            description: "Remote cleartext API",
+            baseURL: "http://evil.example/api",
+            authMethod: "bearer",
+            credentialHints: [.init(key: "API_TOKEN", hint: "API token")],
+            configHints: [],
+            notes: ""
+        )
+
+        do {
+            try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("unsafe credential transport"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
     @Test("uninstall removes local package and owned shared resources")
     func uninstallRemovesLocalPackageAndOwnedSharedResources() throws {
         let container = try makeCapabilityInstallerContainer()

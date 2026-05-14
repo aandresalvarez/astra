@@ -92,6 +92,63 @@ struct PathValidatorTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try PathValidator.validate(path, withinRoot: root)
     }
+
+    @Test("Root-bounded validation rejects sibling prefix escape")
+    func siblingPrefixEscape() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-root-\(UUID().uuidString)", isDirectory: true)
+        let sibling = URL(fileURLWithPath: root.path + "-evil", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sibling)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+
+        #expect(throws: PathValidationError.self) {
+            try PathValidator.validate(sibling.path, withinRoot: root.path)
+        }
+    }
+
+    @Test("Root-bounded validation rejects symlink escape")
+    func symlinkEscape() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-root-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-outside-\(UUID().uuidString)", isDirectory: true)
+        let link = root.appendingPathComponent("linked-outside", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        #expect(throws: PathValidationError.self) {
+            try PathValidator.validate(link.path, withinRoot: root.path)
+        }
+    }
+}
+
+@Suite("Secret Redaction Inputs")
+struct SecretRedactionInputTests {
+    @Test("Agent redaction values trim, deduplicate, and omit blanks")
+    func redactionValuesAreNormalized() {
+        let task = AgentTask(title: "Redact", goal: "Do not leak")
+        let skill = Skill(
+            name: "Canary",
+            allowedTools: ["Read"],
+            environmentVariables: [
+                "CANARY_ONE": " ASTRA_TEST_SECRET_123 ",
+                "CANARY_TWO": "ASTRA_TEST_SECRET_123",
+                "EMPTY_CANARY": " "
+            ]
+        )
+        task.skills = [skill]
+
+        #expect(AgentSensitiveRedactions.values(for: task) == ["ASTRA_TEST_SECRET_123"])
+    }
 }
 
 @Suite("Plugin Signing")
@@ -196,5 +253,45 @@ struct LegacyCredentialTests {
 
         #expect(!result.0)
         #expect(result.1 == "Missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN")
+    }
+
+    @Test("Connector test rejects credentialed remote HTTP before making request")
+    func credentialedConnectorRejectsRemoteHTTP() async {
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Unsafe API",
+            serviceType: "rest_api",
+            baseURL: "http://evil.example/api",
+            authMethod: "bearer"
+        )
+        connector.credentialKeys = ["API_TOKEN"]
+        store.save(
+            key: "API_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+        let transport = RecordingConnectorHTTPTransport()
+
+        let result = await connector.testConnection(store: store, transport: transport)
+
+        #expect(!result.0)
+        #expect(result.1.contains("HTTPS"))
+        #expect(transport.requests.isEmpty)
+    }
+}
+
+private final class RecordingConnectorHTTPTransport: ConnectorHTTPTransport {
+    private(set) var requests: [URLRequest] = []
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://example.invalid")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (Data(), response)
     }
 }

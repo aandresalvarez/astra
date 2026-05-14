@@ -38,6 +38,25 @@ struct WorkspaceImportDiscoveryTests {
         #expect(candidates.contains(where: { $0.folderURL.lastPathComponent == ".hidden-project" }) == false)
     }
 
+    @Test("Workspaces parent ignores symlinked child directories")
+    func workspacesParentIgnoresSymlinkedChildren() throws {
+        let root = try makeTemporaryDirectory(named: "Workspaces")
+        let outside = try makeTemporaryDirectory(named: "outside-workspace")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try Data("{}".utf8).write(to: outside.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("linked-outside", isDirectory: true),
+            withDestinationURL: outside
+        )
+
+        let candidates = WorkspaceImportDiscovery.candidates(for: [root])
+
+        #expect(candidates.isEmpty)
+    }
+
     @Test("generic parent expands only marked child workspace directories")
     func genericParentExpandsMarkedChildrenOnly() throws {
         let root = try makeTemporaryDirectory(named: "Projects")
@@ -166,6 +185,25 @@ struct WorkspaceImportOrchestratorTests {
         #expect(result.imported.count == 1)
         #expect(result.imported.first?.name == "Duplicate (Imported)")
         #expect(result.imported.first?.tasks.first?.title == "Existing Task")
+    }
+
+    @Test("config import anchors primary path to selected folder")
+    @MainActor
+    func configImportAnchorsPrimaryPathToSelectedFolder() throws {
+        let selected = try makeTemporaryDirectory(named: "Selected")
+        let outside = try makeTemporaryDirectory(named: "Outside")
+        defer {
+            try? FileManager.default.removeItem(at: selected.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: outside.deletingLastPathComponent())
+        }
+        try writeWorkspaceConfig(name: "Path Mismatch", primaryPath: outside.path, to: selected)
+
+        let container = try makeWorkspaceImportContainer()
+        let context = container.mainContext
+        let result = WorkspaceImportOrchestrator(modelContext: context, taskQueue: TaskQueue())
+            .importWorkspaces(from: [selected], existingWorkspaces: []) { _, _ in .skip }
+
+        #expect(result.imported.map(\.primaryPath) == [selected.standardizedFileURL.path])
     }
 
     @MainActor

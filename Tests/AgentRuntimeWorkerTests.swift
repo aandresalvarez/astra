@@ -568,6 +568,37 @@ struct BuildPromptTests {
         #expect(!prompt.contains("Shelf Browser Session:"))
         #expect(!prompt.contains("ASTRA_BROWSER_URL"))
     }
+
+    @Test("Shelf browser token is environment-only")
+    func shelfBrowserTokenIsEnvironmentOnly() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-token")
+        ctx.insert(ws)
+        let task = AgentTask(title: "Attached", goal: "Use browser", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            accessToken: "ASTRA_TEST_BROWSER_TOKEN",
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let environment = ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(environment["ASTRA_BROWSER_TOKEN"] == "ASTRA_TEST_BROWSER_TOKEN")
+        #expect(prompt.contains("http://127.0.0.1:49152"))
+        #expect(!prompt.contains("ASTRA_TEST_BROWSER_TOKEN"))
+        #expect(!prompt.contains("ASTRA_BROWSER_TOKEN"))
+    }
 }
 
 @Suite("Shelf Browser Address")

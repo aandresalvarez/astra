@@ -435,7 +435,9 @@ enum WorkspaceConfigManager {
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         for cc in config.connectors ?? [] {
-            let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc)
+            guard let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc) else {
+                continue
+            }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal {
                 appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
@@ -452,7 +454,9 @@ enum WorkspaceConfigManager {
         var toolsByID: [String: LocalTool] = [:]
         var toolsByName: [String: LocalTool] = [:]
         for tc in config.localTools ?? [] {
-            let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc)
+            guard let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc) else {
+                continue
+            }
             tool.workspace = (tool.isGlobal ? nil : workspace)
             if tool.isGlobal {
                 appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
@@ -612,6 +616,7 @@ enum WorkspaceConfigManager {
 
     private static func connectorConfig(_ connector: Connector) -> ConnectorConfig? {
         guard !connector.isDeleted, connector.modelContext != nil else { return nil }
+        guard ConnectorSecurityPolicy.isRuntimeSafe(connector) else { return nil }
         return ConnectorConfig(
             id: connector.id.uuidString,
             name: connector.name,
@@ -632,6 +637,7 @@ enum WorkspaceConfigManager {
 
     private static func localToolConfig(_ tool: LocalTool) -> LocalToolConfig? {
         guard !tool.isDeleted, tool.modelContext != nil else { return nil }
+        guard LocalToolSecurityPolicy.isSafe(command: tool.command, arguments: tool.arguments) else { return nil }
         return LocalToolConfig(
             id: tool.id.uuidString,
             name: tool.name,
@@ -803,7 +809,14 @@ enum WorkspaceConfigManager {
 
     // MARK: - Import Helpers
 
-    private static func makeConnector(from config: ConnectorConfig) -> Connector {
+    private static func makeConnector(from config: ConnectorConfig) -> Connector? {
+        guard ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: config.baseURL,
+            authMethod: config.authMethod,
+            credentialKeys: config.credentialKeys
+        ) == nil else {
+            return nil
+        }
         let connector = Connector(
             name: config.name,
             serviceType: config.serviceType,
@@ -826,7 +839,14 @@ enum WorkspaceConfigManager {
         return connector
     }
 
-    private static func makeConnector(from snapshot: ConnectorSnapshotConfig, workspace: Workspace) -> Connector {
+    private static func makeConnector(from snapshot: ConnectorSnapshotConfig, workspace: Workspace) -> Connector? {
+        guard ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: snapshot.baseURL,
+            authMethod: snapshot.authMethod,
+            credentialKeys: snapshot.credentialKeys
+        ) == nil else {
+            return nil
+        }
         let connector = Connector(
             name: snapshot.name,
             serviceType: snapshot.serviceType,
@@ -850,7 +870,10 @@ enum WorkspaceConfigManager {
         return connector
     }
 
-    private static func makeLocalTool(from config: LocalToolConfig) -> LocalTool {
+    private static func makeLocalTool(from config: LocalToolConfig) -> LocalTool? {
+        guard LocalToolSecurityPolicy.isSafe(command: config.command, arguments: config.arguments) else {
+            return nil
+        }
         let tool = LocalTool(
             name: config.name,
             toolDescription: config.description,
@@ -868,7 +891,10 @@ enum WorkspaceConfigManager {
         return tool
     }
 
-    private static func makeLocalTool(from snapshot: LocalToolSnapshotConfig, workspace: Workspace) -> LocalTool {
+    private static func makeLocalTool(from snapshot: LocalToolSnapshotConfig, workspace: Workspace) -> LocalTool? {
+        guard LocalToolSecurityPolicy.isSafe(command: snapshot.command, arguments: snapshot.arguments) else {
+            return nil
+        }
         let tool = LocalTool(
             name: snapshot.name,
             toolDescription: snapshot.description,
@@ -1048,6 +1074,13 @@ enum WorkspaceConfigManager {
 
     private static func reusedGlobalConnector(for config: ConnectorConfig, modelContext: ModelContext) -> Connector? {
         guard config.isGlobal == true else { return nil }
+        guard ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: config.baseURL,
+            authMethod: config.authMethod,
+            credentialKeys: config.credentialKeys
+        ) == nil else {
+            return nil
+        }
 
         if let idString = config.id,
            let id = UUID(uuidString: idString) {
@@ -1073,6 +1106,9 @@ enum WorkspaceConfigManager {
 
     private static func reusedGlobalTool(for config: LocalToolConfig, modelContext: ModelContext) -> LocalTool? {
         guard config.isGlobal == true else { return nil }
+        guard LocalToolSecurityPolicy.isSafe(command: config.command, arguments: config.arguments) else {
+            return nil
+        }
 
         if let idString = config.id,
            let id = UUID(uuidString: idString) {
@@ -1332,7 +1368,7 @@ enum WorkspaceConfigManager {
     ) -> Skill {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
-            let connector = makeConnector(from: connectorSnapshot, workspace: workspace)
+            guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             if connectorsByName[connector.name] == nil {
@@ -1341,7 +1377,7 @@ enum WorkspaceConfigManager {
         }
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {
             guard let id = toolSnapshot.id, toolsByID[id] == nil else { continue }
-            let tool = makeLocalTool(from: toolSnapshot, workspace: workspace)
+            guard let tool = makeLocalTool(from: toolSnapshot, workspace: workspace) else { continue }
             modelContext.insert(tool)
             toolsByID[tool.id.uuidString] = tool
             if toolsByName[tool.name] == nil {
