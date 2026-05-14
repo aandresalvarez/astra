@@ -503,6 +503,75 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
     }
 
+    @Test("Ask-first tool pauses for runtime approval")
+    func askFirstToolPausesForRuntimeApproval() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "curl https://redcap.stanford.edu/api/"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyApprovalMessage?.contains("Permission requested for tool: Bash") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(curl:*)") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved shell grant satisfies ask-first tool")
+    func approvedShellGrantSatisfiesAskFirstTool() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Bash(curl:*)"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "curl https://redcap.stanford.edu/api/"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Denied shell pattern wins over ask-first tool")
+    func deniedShellPatternWinsOverAskFirstTool() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "rm -rf build"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+    }
+
     @Test("Denied shell command pattern stops the provider")
     func deniedShellPatternStopsProvider() {
         let manifest = runtimePolicyManifest(
@@ -716,8 +785,10 @@ struct RuntimePolicyGuardTests {
 
 private func runtimePolicyManifest(
     allowedTools: [String],
+    askFirstTools: [String] = [],
     deniedTools: [String] = [],
     allowedShellPatterns: [String] = [],
+    askFirstShellPatterns: [String] = [],
     deniedShellPatterns: [String] = [],
     allowedURLPatterns: [String] = [],
     deniedURLPatterns: [String] = [],
@@ -730,8 +801,10 @@ private func runtimePolicyManifest(
         configOwnership: .generated,
         permissionMode: PermissionPolicy.restricted.rawValue,
         allowedTools: allowedTools,
+        askFirstTools: askFirstTools,
         deniedTools: deniedTools,
         allowedShellPatterns: allowedShellPatterns,
+        askFirstShellPatterns: askFirstShellPatterns,
         deniedShellPatterns: deniedShellPatterns,
         allowedURLPatterns: allowedURLPatterns,
         deniedURLPatterns: deniedURLPatterns,

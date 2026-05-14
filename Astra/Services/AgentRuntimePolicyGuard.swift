@@ -5,10 +5,17 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var reason: String
     var toolName: String?
     var detail: String?
+    var requiresApproval: Bool = false
+    var approvalGrant: String?
 
     var userMessage: String {
         let tool = toolName.map { " Tool: \($0)." } ?? ""
         let detailText = detail.map { " Detail: \($0)" } ?? ""
+        let grantText = approvalGrant.map { " Runtime grant: \($0)" } ?? ""
+        if requiresApproval {
+            let requestedTool = toolName ?? "unknown"
+            return "Permission requested for tool: \(requestedTool). ASTRA paused the provider because observed activity requires user approval. \(reason).\(tool)\(detailText)\(grantText)"
+        }
         return "ASTRA stopped the provider because observed activity violated the run policy. \(reason).\(tool)\(detailText)"
     }
 }
@@ -52,6 +59,16 @@ struct AgentRuntimePolicyGuard: Sendable {
                 reason: "The tool is explicitly denied by the effective ASTRA policy",
                 toolName: toolName,
                 detail: observed.summary
+            )
+        }
+
+        if requiresApproval(toolName: toolName, command: observed.command) {
+            return AgentRuntimePolicyViolation(
+                reason: "The tool or command is configured as ask-first by the effective ASTRA policy",
+                toolName: toolName,
+                detail: observed.summary,
+                requiresApproval: true,
+                approvalGrant: suggestedApprovalGrant(toolName: toolName, command: observed.command)
             )
         }
 
@@ -121,6 +138,15 @@ struct AgentRuntimePolicyGuard: Sendable {
            !allowedShellPatterns.contains("*"),
            !matchesAnyShellPattern(trimmedCommand, patterns: allowedShellPatterns),
            !toolPatternAllowsShellCommand(trimmedCommand) {
+            if matchesAnyShellPattern(trimmedCommand, patterns: manifest.providerRender.askFirstShellPatterns) {
+                return AgentRuntimePolicyViolation(
+                    reason: "The shell command requires user approval by the effective ASTRA policy",
+                    toolName: toolName,
+                    detail: trimmedCommand,
+                    requiresApproval: true,
+                    approvalGrant: suggestedApprovalGrant(toolName: toolName, command: trimmedCommand)
+                )
+            }
             return AgentRuntimePolicyViolation(
                 reason: "The shell command is outside the allowed command patterns for this run",
                 toolName: toolName,
@@ -211,6 +237,38 @@ struct AgentRuntimePolicyGuard: Sendable {
         return allowedPathRoots.contains { root in
             candidate == root || candidate.hasPrefix(root + "/")
         }
+    }
+
+    private func requiresApproval(toolName: String, command: String?) -> Bool {
+        if let command,
+           isShellTool(toolName),
+           (manifest.providerRender.deniedShellPatterns.contains("*")
+            || matchesAnyShellPattern(command, patterns: manifest.providerRender.deniedShellPatterns)) {
+            return false
+        }
+        if let command,
+           isShellTool(toolName),
+           toolPatternAllowsShellCommand(command) {
+            return false
+        }
+        if toolMatches(toolName, command: command, candidates: manifest.providerRender.askFirstTools) {
+            return true
+        }
+        if let command,
+           isShellTool(toolName),
+           matchesAnyShellPattern(command, patterns: manifest.providerRender.askFirstShellPatterns) {
+            return true
+        }
+        return false
+    }
+
+    private func suggestedApprovalGrant(toolName: String, command: String?) -> String {
+        if isShellTool(toolName),
+           let commandRoot = Self.shellCommandRoot(command),
+           !commandRoot.isEmpty {
+            return "Bash(\(commandRoot):*)"
+        }
+        return Self.canonicalProviderToolName(toolName)
     }
 
     private func toolMatches(_ tool: String, command: String?, candidates: [String]) -> Bool {
@@ -325,6 +383,29 @@ struct AgentRuntimePolicyGuard: Sendable {
         default:
             return lower
         }
+    }
+
+    private static func canonicalProviderToolName(_ tool: String) -> String {
+        switch normalizedToolName(tool) {
+        case "bash": return "Bash"
+        case "read": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit": return "MultiEdit"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func shellCommandRoot(_ command: String?) -> String? {
+        guard let command else { return nil }
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
     }
 
     private static func normalizedShellText(_ value: String) -> String {

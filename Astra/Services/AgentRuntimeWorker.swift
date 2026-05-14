@@ -382,6 +382,17 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if result.policyApprovalRequired {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "permission.approval.requested",
+                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
+                run: run
+            )
+            modelContext.insert(event)
         } else if result.policyViolation {
             run.status = .failed
             run.stopReason = "policy_violation"
@@ -1003,6 +1014,17 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if result.policyApprovalRequired {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "permission.approval.requested",
+                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
+                run: run
+            )
+            modelContext.insert(event)
         } else if result.policyViolation {
             run.status = .failed
             run.stopReason = "policy_violation"
@@ -1425,6 +1447,17 @@ final class AgentRuntimeWorker {
             task.status = .budgetExceeded
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
+            modelContext.insert(event)
+        } else if result.policyApprovalRequired {
+            run.status = .failed
+            run.stopReason = "permission_approval_required"
+            task.status = .pendingUser
+            let event = TaskEvent(
+                task: task,
+                type: "permission.approval.requested",
+                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
+                run: run
+            )
             modelContext.insert(event)
         } else if result.policyViolation {
             run.status = .failed
