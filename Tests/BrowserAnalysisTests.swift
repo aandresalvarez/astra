@@ -404,6 +404,23 @@ struct BrowserAnalysisTests {
         #expect(outcome["meaningfulTextChanged"] as? Bool == true)
     }
 
+    @Test("Outcome verifier detects text changes from empty snapshots")
+    func outcomeVerifierDetectsTextChangesFromEmptySnapshots() {
+        let outcome = BrowserActionOutcomeVerifier.outcome(
+            action: .click,
+            control: nil,
+            result: ["ok": true],
+            before: Self.sampleSnapshot(text: "", controls: []),
+            after: Self.sampleSnapshot(text: "Loaded document text", controls: [])
+        )
+
+        #expect(outcome["observedOutcome"] as? String == "pageChanged")
+        #expect(outcome["goalSatisfied"] as? Bool == true)
+        #expect(outcome["textChanged"] as? Bool == true)
+        #expect(outcome["meaningfulTextChanged"] as? Bool == true)
+        #expect(outcome["beforeTextHash"] as? String != "")
+    }
+
     @Test("Outcome verifier ignores browser accessory text changes")
     func outcomeVerifierIgnoresBrowserAccessoryTextChanges() {
         let outcome = BrowserActionOutcomeVerifier.outcome(

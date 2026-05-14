@@ -237,7 +237,7 @@ final class ControlledBrowserController: ObservableObject {
             throw ControlledBrowserError.invalidDevToolsResponse
         }
         let rawNodes = result["nodes"] as? [[String: Any]] ?? []
-        let compactNodes = rawNodes.prefix(max(1, limit)).map(Self.compactAccessibilityNode)
+        let compactNodes = rawNodes.prefix(max(0, limit)).map(Self.compactAccessibilityNode)
         return try Self.jsonString([
             "ok": true,
             "url": currentURL,

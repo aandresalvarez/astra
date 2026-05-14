@@ -1432,7 +1432,7 @@ enum BrowserActionOutcomeVerifier {
         let afterTitle = string(after?["title"])
         let beforeTextHash = stableHash(String(string(before?["text"]).prefix(1_000)))
         let afterTextHash = stableHash(String(string(after?["text"]).prefix(1_000)))
-        let textChanged = !beforeTextHash.isEmpty && beforeTextHash != afterTextHash
+        let textChanged = before != nil && after != nil && beforeTextHash != afterTextHash
         let meaningfulTextChanged = meaningfulTextChanged(before: before, after: after)
         let expected = expectedOutcome(
             action: action,
@@ -1694,9 +1694,9 @@ enum BrowserActionOutcomeVerifier {
     }
 
     private static func meaningfulTextChanged(before: [String: Any]?, after: [String: Any]?) -> Bool {
+        guard before != nil && after != nil else { return false }
         let beforeText = normalizedMeaningfulText(string(before?["text"]))
         let afterText = normalizedMeaningfulText(string(after?["text"]))
-        guard !beforeText.isEmpty else { return false }
         return beforeText != afterText
     }
 
@@ -1745,7 +1745,6 @@ enum BrowserActionOutcomeVerifier {
     }
 
     private static func stableHash(_ value: String) -> String {
-        guard !value.isEmpty else { return "" }
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in value.utf8 {
             hash ^= UInt64(byte)

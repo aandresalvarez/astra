@@ -515,7 +515,7 @@ struct AstraBrowserTool {
                 "ok": true,
                 "usage": [
                 "astra-browser health",
-                "astra-browser analyze [--v2|--version v1] [--query text] [--full] [--debug] [--limit n]",
+                "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
                 "astra-browser trace",
                 "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
