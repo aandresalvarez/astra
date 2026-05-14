@@ -44,7 +44,7 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String] = [:],
         traceID: String? = nil
     ) throws -> InstallationResult {
-        let blockers = installBlockerMessages(for: package, in: workspace)
+        let blockers = installBlockerMessages(for: package, in: workspace, baseURLOverrides: baseURLOverrides)
         guard blockers.isEmpty else {
             var fields = capabilityFields(for: package, workspace: workspace, source: "install")
             if let traceID { fields["trace_id"] = traceID }
@@ -558,8 +558,12 @@ struct CapabilityInstaller {
         values.append(value)
     }
 
-    private func installBlockerMessages(for package: PluginPackage, in workspace: Workspace) -> [String] {
-        package.installBlockers(
+    private func installBlockerMessages(
+        for package: PluginPackage,
+        in workspace: Workspace,
+        baseURLOverrides: [String: String]
+    ) -> [String] {
+        let dependencyMessages = package.installBlockers(
             appVersion: appVersion,
             installedPluginIDs: workspace.installedPluginIDSet.union(Set(workspace.enabledCapabilityIDs))
         ).map { blocker in
@@ -571,6 +575,39 @@ struct CapabilityInstaller {
             case .conflictsWith(let conflict):
                 return "\(package.name) conflicts with \(conflict)."
             }
+        }
+        return dependencyMessages
+            + unsafeLocalToolMessages(for: package)
+            + unsafeConnectorMessages(for: package, baseURLOverrides: baseURLOverrides)
+    }
+
+    private func unsafeLocalToolMessages(for package: PluginPackage) -> [String] {
+        package.localTools.compactMap { tool in
+            let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
+                return "\(package.name) defines local tool \(tool.name) with an unsafe command: \(reason). Put flags or shell syntax in reviewed documentation, not in the command field."
+            }
+            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(tool.arguments) {
+                return "\(package.name) defines local tool \(tool.name) with unsafe default arguments: \(reason). Keep shell control syntax out of package defaults."
+            }
+            return nil
+        }
+    }
+
+    private func unsafeConnectorMessages(
+        for package: PluginPackage,
+        baseURLOverrides: [String: String]
+    ) -> [String] {
+        package.connectors.compactMap { connector in
+            let baseURL = baseURLOverrides[connector.name] ?? connector.baseURL
+            guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+                baseURL: baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialHints.map(\.key)
+            ) else {
+                return nil
+            }
+            return "\(package.name) defines connector \(connector.name) with an unsafe credential transport. \(violation)"
         }
     }
 }

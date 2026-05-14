@@ -79,7 +79,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
 
         if isNetworkTool(toolName) || observed.url != nil || observed.command?.lowercased().contains("curl ") == true,
-           let violation = validateNetwork(url: observed.url ?? observed.command.flatMap(Self.firstURL(in:)), toolName: toolName) {
+           let violation = validateNetwork(urls: networkURLs(from: observed), toolName: toolName) {
             return violation
         }
 
@@ -156,12 +156,20 @@ struct AgentRuntimePolicyGuard: Sendable {
         return nil
     }
 
-    private func validateNetwork(url: String?, toolName: String) -> AgentRuntimePolicyViolation? {
+    private func validateNetwork(urls: [String], toolName: String) -> AgentRuntimePolicyViolation? {
         if manifest.providerRender.deniedURLPatterns.contains("*") {
             return AgentRuntimePolicyViolation(
                 reason: "Network access is denied by the effective ASTRA policy",
                 toolName: toolName,
-                detail: url
+                detail: urls.first
+            )
+        }
+
+        if let deniedURL = urls.first(where: { matchesAnyURLPattern($0, patterns: manifest.providerRender.deniedURLPatterns) }) {
+            return AgentRuntimePolicyViolation(
+                reason: "The network destination matches a denied URL pattern for this run",
+                toolName: toolName,
+                detail: deniedURL
             )
         }
 
@@ -169,14 +177,27 @@ struct AgentRuntimePolicyGuard: Sendable {
         guard !allowedURLPatterns.isEmpty, !allowedURLPatterns.contains("*") else {
             return nil
         }
-        guard let url, matchesAnyURLPattern(url, patterns: allowedURLPatterns) else {
+        guard !urls.isEmpty,
+              urls.allSatisfy({ matchesAnyURLPattern($0, patterns: allowedURLPatterns) }) else {
             return AgentRuntimePolicyViolation(
                 reason: "The network destination is outside the URL allow-list for this run",
                 toolName: toolName,
-                detail: url
+                detail: urls.first
             )
         }
         return nil
+    }
+
+    private func networkURLs(from observed: PolicyObservedEvent) -> [String] {
+        var values: [String] = []
+        if let url = observed.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
+            values.append(url)
+        }
+        if let command = observed.command {
+            values.append(contentsOf: Self.allURLs(in: command))
+        }
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 
     private func isPathInScope(_ rawPath: String) -> Bool {
@@ -315,7 +336,8 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private static func standardizedAbsolutePath(_ path: String) -> String {
         guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
-        return URL(fileURLWithPath: path).standardizedFileURL.path
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return (standardized as NSString).resolvingSymlinksInPath
     }
 
     private static func wildcardMatch(_ value: String, pattern: String) -> Bool {
@@ -341,12 +363,15 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func firstURL(in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s"')<>]+"#) else { return nil }
+        allURLs(in: text).first
+    }
+
+    private static func allURLs(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s"')<>]+"#) else { return [] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, range: range),
-              let valueRange = Range(match.range, in: text) else {
-            return nil
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let valueRange = Range(match.range, in: text) else { return nil }
+            return String(text[valueRange])
         }
-        return String(text[valueRange])
     }
 }

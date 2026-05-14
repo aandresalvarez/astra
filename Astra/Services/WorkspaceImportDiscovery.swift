@@ -58,6 +58,10 @@ enum WorkspaceImportDiscovery {
             workspaceCandidate(for: $0, allowBareFolder: importsChildrenByConvention, fileManager: fileManager)
         }
 
+        if importsChildrenByConvention {
+            return children
+        }
+
         return children.isEmpty
             ? [WorkspaceImportCandidate(folderURL: url, configURL: nil)]
             : children
@@ -107,13 +111,13 @@ enum WorkspaceImportDiscovery {
     private static func childDirectories(in url: URL, fileManager: FileManager) -> [URL] {
         let children = (try? fileManager.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey]
+            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isSymbolicLinkKey]
         )) ?? []
 
         return children
             .filter { child in
-                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey])
-                return values?.isDirectory == true && values?.isHidden != true
+                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isSymbolicLinkKey])
+                return values?.isDirectory == true && values?.isHidden != true && values?.isSymbolicLink != true
             }
             .sorted {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending

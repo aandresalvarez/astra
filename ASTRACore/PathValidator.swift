@@ -35,7 +35,7 @@ public enum PathValidator {
         let resolvedPath = (path as NSString).resolvingSymlinksInPath
         let resolvedRoot = (root as NSString).resolvingSymlinksInPath
 
-        guard resolvedPath.hasPrefix(resolvedRoot) else {
+        guard resolvedPath == resolvedRoot || resolvedPath.hasPrefix(resolvedRoot + "/") else {
             throw PathValidationError.symlinkEscapesRoot(resolved: resolvedPath, root: resolvedRoot)
         }
     }

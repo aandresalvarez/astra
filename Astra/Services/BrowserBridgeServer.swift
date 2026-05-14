@@ -4,6 +4,7 @@ import Network
 struct BrowserBridgeRequest {
     let method: String
     let path: String
+    let headers: [String: String]
     let queryItems: [String: String]
     let body: Data
 
@@ -13,6 +14,10 @@ struct BrowserBridgeRequest {
 
     func queryValue(_ name: String) -> String? {
         queryItems[name]
+    }
+
+    func headerValue(_ name: String) -> String? {
+        headers[name.lowercased()]
     }
 }
 
@@ -39,11 +44,22 @@ final class BrowserBridgeServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.coral.astra.browser-bridge")
     private let route: RouteHandler
     private let onEndpointChanged: EndpointHandler
+    private let requiredAccessToken: String?
     private var listener: NWListener?
 
-    init(route: @escaping RouteHandler, onEndpointChanged: @escaping EndpointHandler) {
+    init(
+        requiredAccessToken: String? = nil,
+        route: @escaping RouteHandler,
+        onEndpointChanged: @escaping EndpointHandler
+    ) {
+        self.requiredAccessToken = requiredAccessToken?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.route = route
         self.onEndpointChanged = onEndpointChanged
+    }
+
+    static func generateAccessToken() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            + UUID().uuidString.replacingOccurrences(of: "-", with: "")
     }
 
     func start() {
@@ -113,6 +129,10 @@ final class BrowserBridgeServer: @unchecked Sendable {
             }
 
             if let request = Self.parseRequest(from: buffer) {
+                guard self.isAuthorized(request) else {
+                    self.send(.json(["ok": false, "error": "unauthorized_browser_bridge_request"], statusCode: 403), on: connection)
+                    return
+                }
                 Task {
                     let response = await self.route(request)
                     self.send(response, on: connection)
@@ -141,6 +161,17 @@ final class BrowserBridgeServer: @unchecked Sendable {
         connection.send(content: payload, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+
+    private func isAuthorized(_ request: BrowserBridgeRequest) -> Bool {
+        guard let requiredAccessToken, !requiredAccessToken.isEmpty else { return true }
+        if request.headerValue("x-astra-browser-token") == requiredAccessToken {
+            return true
+        }
+        let authorization = request.headerValue("authorization") ?? ""
+        let prefix = "Bearer "
+        guard authorization.hasPrefix(prefix) else { return false }
+        return String(authorization.dropFirst(prefix.count)) == requiredAccessToken
     }
 
     private static func parseRequest(from data: Data) -> BrowserBridgeRequest? {
@@ -177,6 +208,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         return BrowserBridgeRequest(
             method: requestParts[0].uppercased(),
             path: path,
+            headers: headers,
             queryItems: queryItems,
             body: Data(body)
         )

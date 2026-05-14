@@ -37,11 +37,13 @@ struct BrowserToolShimTests {
         let endpoint = "http://127.0.0.1:59638"
         let shimDirectory = try #require(AgentRuntimeProcessRunner.prepareBrowserToolShimIfNeeded(
             task: task,
-            taskEnv: ["ASTRA_BROWSER_URL": endpoint],
+            taskEnv: ["ASTRA_BROWSER_URL": endpoint, "ASTRA_BROWSER_TOKEN": "ASTRA_TEST_BROWSER_TOKEN"],
             realToolPath: realTool.path
         ))
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
         #expect(FileManager.default.isExecutableFile(atPath: shimPath))
+        let shimScript = try String(contentsOfFile: shimPath, encoding: .utf8)
+        #expect(!shimScript.contains("ASTRA_TEST_BROWSER_TOKEN"))
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shimPath)

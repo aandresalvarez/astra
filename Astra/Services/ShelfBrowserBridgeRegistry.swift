@@ -9,6 +9,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
     private var currentTitle: String?
     private var backend = "embedded WebKit"
     private var taskID: UUID?
+    private var accessToken: String?
     private var isPresented = false
     private var isEnabled = false
     private var enabledBrowserAdapters: [String] = []
@@ -21,6 +22,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         currentTitle: String?,
         backend: String = "embedded WebKit",
         taskID: UUID?,
+        accessToken: String? = nil,
         isPresented: Bool,
         isEnabled: Bool,
         enabledBrowserAdapters: [String] = []
@@ -53,6 +55,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         self.currentTitle = currentTitle
         self.backend = backend
         self.taskID = taskID
+        self.accessToken = accessToken
         self.isPresented = isPresented
         self.isEnabled = isEnabled
         self.enabledBrowserAdapters = normalizedAdapterList(enabledBrowserAdapters)
@@ -66,6 +69,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         currentTitle = nil
         backend = "embedded WebKit"
         taskID = nil
+        accessToken = nil
         isPresented = false
         isEnabled = false
         enabledBrowserAdapters = []
@@ -76,9 +80,13 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard isPresented, isEnabled, self.taskID == taskID, let endpoint else { return [:] }
-        return [
+        var variables = [
             "ASTRA_BROWSER_URL": endpoint
         ]
+        if let accessToken, !accessToken.isEmpty {
+            variables["ASTRA_BROWSER_TOKEN"] = accessToken
+        }
+        return variables
     }
 
     func promptContext(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> String? {

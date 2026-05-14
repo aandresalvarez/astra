@@ -458,6 +458,10 @@ struct AstraBrowserTool {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 35
+        if let token = ProcessInfo.processInfo.environment["ASTRA_BROWSER_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         if let object {
             request.httpBody = try JSONSerialization.data(withJSONObject: object)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
