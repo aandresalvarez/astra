@@ -108,6 +108,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var lastBrowserTrace: [String: Any]?
     private var lastPageFingerprint: String?
     private var lastLoggedURL = ""
+    private var keypressSafetyState = BrowserKeypressSafetyState()
+    private var browserRunGuard = BrowserRunGuard()
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
@@ -115,6 +117,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     var isGoogleDriveAdapterEnabled: Bool {
         GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+    }
+
+    var isGoogleDrivePage: Bool {
+        guard let url = URL(string: currentURL) else { return false }
+        return url.host?.lowercased() == "drive.google.com"
+    }
+
+    var canUseGoogleDriveOpen: Bool {
+        isGoogleDriveAdapterEnabled || isGoogleDrivePage || isGoogleWorkspaceEditor
     }
 
     var activeBrowserSiteAdapters: [[String: Any]] {
@@ -182,6 +193,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "google.find.replace",
             "google.docs.find",
             "google.docs.insert",
+            "google.docs.read.document",
+            "google.docs.replace.document",
             "act",
             "keypress",
             "text.focused",
@@ -191,11 +204,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "wait.text",
             "wait.selector"
         ]
-        if isGoogleDriveAdapterEnabled {
+        if canUseGoogleDriveOpen {
             capabilities.append(contentsOf: [
-                "browser.adapter.googleDrive",
                 "google.drive.open"
             ])
+        }
+        if isGoogleDriveAdapterEnabled {
+            capabilities.append("browser.adapter.googleDrive")
         }
         return capabilities
     }
@@ -237,6 +252,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
+        keypressSafetyState = BrowserKeypressSafetyState()
+        browserRunGuard.reset()
         publishBridgeState()
     }
 
@@ -702,6 +719,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "browserAnalysisV2Mode": BrowserAnalysisV2RolloutMode.configured().rawValue,
                 "enabledBrowserAdapters": Array(enabledBrowserAdapters).sorted(),
                 "activeSiteAdapters": activeBrowserSiteAdapters,
+                "browserRunGuard": [
+                    "totalBrowserCalls": browserRunGuard.totalBrowserCalls,
+                    "warningThreshold": 30,
+                    "hardStopThreshold": 60
+                ],
                 "capabilities": bridgeCapabilities
             ]
             if let lastBrowserTrace {
@@ -840,11 +862,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     ],
                     [
                         "method": "POST",
+                        "path": "/googleDocsReadDocument",
+                        "body": [:],
+                        "description": "Read the full current Google Docs document through a safe document API path. If no authenticated document API path is available, returns google_docs_safe_edit_unavailable and the agent must not fall back to raw select-all/delete."
+                    ],
+                    [
+                        "method": "POST",
+                        "path": "/googleDocsReplaceDocument",
+                        "body": ["text": "Full replacement content", "verifyText": "short unique phrase"],
+                        "description": "Replace the full current Google Docs document through a safe document API path. If unavailable, returns google_docs_safe_edit_unavailable and blocks destructive keyboard fallback."
+                    ],
+                    [
+                        "method": "POST",
                         "path": "/googleDriveOpen",
                         "body": ["name": "Untitled document", "timeoutSeconds": 12],
-                        "enabled": isGoogleDriveAdapterEnabled,
+                        "enabled": canUseGoogleDriveOpen,
                         "adapterID": BrowserSiteAdapterID.googleDrive,
-                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Requires the Google Drive Browser capability."
+                        "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Available on Drive pages and through the Google Drive Browser capability."
                     ],
                     [
                         "method": "POST",
@@ -918,6 +952,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
         guard isAgentBridgeEnabled else {
             return .json(["ok": false, "error": "browser_bridge_disabled"], statusCode: 403)
+        }
+
+        if let budgetResponse = browserRunGuardResponse(for: request) {
+            return .json(budgetResponse, statusCode: 429)
         }
 
         do {
@@ -1247,6 +1285,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
                 ))
+            case ("POST", "/googleDocsReadDocument"):
+                return .json(try await googleDocsReadDocument())
+            case ("POST", "/googleDocsReplaceDocument"):
+                let command = try request.decodeJSON(GoogleDocsReplaceDocumentCommand.self)
+                return .json(try await googleDocsReplaceDocument(
+                    text: command.text,
+                    verifyText: command.normalizedVerifyText
+                ))
             case ("POST", "/googleDriveOpen"):
                 let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
                 return .json(try await googleDriveOpen(
@@ -1295,6 +1341,47 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "message": error.localizedDescription
             ], statusCode: 400)
         }
+    }
+
+    private func browserRunGuardResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
+        guard isRunGuardedBridgeRequest(request) else { return nil }
+        let decision = browserRunGuard.record(
+            path: "\(request.method) \(request.path)",
+            currentURL: currentURL,
+            currentTitle: pageTitle,
+            pageType: currentPageTypeLabel()
+        )
+        guard decision.shouldStop else { return nil }
+        return [
+            "ok": false,
+            "error": "browser_action_budget_exceeded",
+            "message": "Browser control exceeded the per-task bridge call budget. Stop repeating browser actions and switch to a deterministic helper or ask the user for direction.",
+            "runGuard": decision.diagnostics
+        ]
+    }
+
+    private func isRunGuardedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
+        switch (request.method, request.path) {
+        case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func currentPageTypeLabel() -> String {
+        guard let url = URL(string: currentURL),
+              let host = url.host?.lowercased() else {
+            return "unknown"
+        }
+        if host == "drive.google.com" { return "googleDrive" }
+        if host == "docs.google.com" {
+            if url.path.hasPrefix("/document/") { return "googleDocsEditor" }
+            if url.path.hasPrefix("/spreadsheets/") { return "googleSheetsEditor" }
+            if url.path.hasPrefix("/presentation/") { return "googleSlidesEditor" }
+            return "googleWorkspace"
+        }
+        return host
     }
 
     private func rawSnapshotJSON() async throws -> String {
@@ -2546,6 +2633,42 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func keypress(key: String, modifiers: [String]) async throws -> String {
         let started = Date()
+        let safetyDecision = BrowserKeypressSafety.evaluate(
+            key: key,
+            modifiers: modifiers,
+            currentURL: currentURL,
+            isGoogleWorkspaceEditor: isGoogleWorkspaceEditor,
+            state: &keypressSafetyState
+        )
+        guard safetyDecision.allowed else {
+            let result = try Self.jsonString([
+                "ok": false,
+                "error": safetyDecision.error ?? "dangerous_keypress_sequence",
+                "hint": safetyDecision.hint ?? "",
+                "key": key,
+                "modifiers": modifiers,
+                "url": currentURL,
+                "title": pageTitle
+            ])
+            logBrowserAction(
+                phase: "completed",
+                action: "keypress",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: [
+                    "blocked": "true",
+                    "key_length": String(key.count),
+                    "modifier_count": String(modifiers.count)
+                ],
+                resultJSON: result,
+                started: started
+            )
+            return result
+        }
         logBrowserAction(
             phase: "requested",
             action: "keypress",
@@ -2755,7 +2878,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ]
         )
 
-        guard isGoogleDriveAdapterEnabled else {
+        guard canUseGoogleDriveOpen else {
             let result = browserAdapterDisabledResponse(
                 adapterID: BrowserSiteAdapterID.googleDrive,
                 action: "googleDriveOpen"
@@ -3338,6 +3461,50 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private func googleDocsReadDocument() async throws -> [String: Any] {
+        guard isGoogleDocsEditor else {
+            return [
+                "ok": false,
+                "error": "not_google_docs_editor",
+                "hint": "Open a Google Docs document editor page first."
+            ]
+        }
+
+        return [
+            "ok": false,
+            "error": "google_docs_safe_edit_unavailable",
+            "safeEditUnavailable": true,
+            "url": currentURL,
+            "title": pageTitle,
+            "hint": "ASTRA does not have an authenticated Google Docs API full-document reader for this session. Do not fall back to raw Cmd+A/Delete or manual full-document keyboard replacement; stop and ask the user to enable a safe Docs API path."
+        ]
+    }
+
+    private func googleDocsReplaceDocument(text: String, verifyText: String?) async throws -> [String: Any] {
+        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedText.isEmpty else {
+            return ["ok": false, "error": "empty_text"]
+        }
+        guard isGoogleDocsEditor else {
+            return [
+                "ok": false,
+                "error": "not_google_docs_editor",
+                "hint": "Open a Google Docs document editor page first."
+            ]
+        }
+
+        return [
+            "ok": false,
+            "error": "google_docs_safe_edit_unavailable",
+            "safeEditUnavailable": true,
+            "textLength": normalizedText.count,
+            "verifyText": verifyText ?? "",
+            "url": currentURL,
+            "title": pageTitle,
+            "hint": "Full-document Google Docs replacement requires an authenticated Docs API path. ASTRA blocked browser-keyboard replacement to avoid accidental document erasure."
+        ]
+    }
+
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
 
@@ -3815,6 +3982,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     waitSaved: action.waitSaved ?? true
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledocsreaddocument", "google-docs-read-document", "googledocsread", "google-docs-read":
+                let result = try await googleDocsReadDocument()
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledocsreplacedocument", "google-docs-replace-document":
+                guard let text = action.text else {
+                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
+                    continue
+                }
+                let result = try await googleDocsReplaceDocument(
+                    text: text,
+                    verifyText: action.verify ?? action.query
+                )
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "googledriveopen", "google-drive-open", "drive-open":
                 guard let name = action.name ?? action.query ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_name"])
@@ -4130,7 +4310,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if count >= 3 {
             object["loopWarning"] = "Repeated browser actions are not changing the page state."
             object["strategyHint"] = isGoogleWorkspaceEditor
-                ? "For Google Docs, Sheets, or Slides, switch strategy: use astra-browser snapshot --mode controls --query \"Find\", then use astra-browser set-value on known input selectors. Avoid repeated menu clicks or synthetic Cmd+A if the snapshot is unchanged."
+                ? "For Google Docs, Sheets, or Slides, switch strategy: use google-drive-open, google-docs-read-document, google-docs-replace-document, google-find-replace, or stop for user input. Avoid repeated menu clicks or synthetic Cmd+A if the snapshot is unchanged."
                 : "Switch strategy: query controls, use set-value when a selector is known, or batch the next action with a compact snapshot."
             object["repeatedActionCount"] = count
         }
@@ -4324,6 +4504,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let text: String
         let verifyText: String?
         let waitSaved: Bool?
+
+        var normalizedVerifyText: String? {
+            ShelfBrowserSession.normalized(verifyText)
+        }
+    }
+
+    private struct GoogleDocsReplaceDocumentCommand: Decodable {
+        let text: String
+        let verifyText: String?
 
         var normalizedVerifyText: String? {
             ShelfBrowserSession.normalized(verifyText)

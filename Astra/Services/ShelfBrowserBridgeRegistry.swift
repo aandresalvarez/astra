@@ -94,6 +94,9 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         lock.unlock()
         let adapterIDs = override.map(normalizedAdapterList) ?? storedAdapterIDs
         let hasGoogleDriveAdapter = adapterIDs.contains(BrowserSiteAdapterID.googleDrive)
+        let currentHost = currentURL.flatMap { URL(string: $0)?.host?.lowercased() } ?? ""
+        let isGoogleDriveOrDocsPage = currentHost == "drive.google.com" || currentHost == "docs.google.com"
+        let shouldSurfaceGoogleDriveHelper = hasGoogleDriveAdapter || isGoogleDriveOrDocsPage
         let hasGitHubAdapter = adapterIDs.contains(BrowserSiteAdapterID.github)
 
         let isTaskBound = boundTaskID == taskID
@@ -117,13 +120,13 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
             pageLine = "Current page: \(currentTitle?.isEmpty == false ? "\(currentTitle!) — " : "")\(currentURL)"
         }
 
-        let driveCommandLine = hasGoogleDriveAdapter
+        let driveCommandLine = shouldSurfaceGoogleDriveHelper
             ? "- For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`"
             : ""
         let githubCommandLine = hasGitHubAdapter
             ? "- On GitHub pages, prefer the GitHub capability (`gh` CLI/API) for durable issue, PR, repository, and Actions reads; use browser control for authenticated visual state or page navigation."
             : ""
-        let driveSafetyLine = hasGoogleDriveAdapter
+        let driveSafetyLine = shouldSurfaceGoogleDriveHelper
             ? "- On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots. A Drive row click commonly selects a file without opening it; if `goalSatisfied` is false, follow `suggestedNextActions` instead of repeating the click."
             : "- Site-specific helpers are capability-gated. If `analyze` reports an enabled `siteAdapters` entry, prefer its listed adapter actions; otherwise use generic control IDs and preflight."
         let adapterLine = adapterIDs.isEmpty
@@ -164,6 +167,8 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Wait for editor save state: `astra-browser wait-saved --timeout 8`
         - For Google Docs/Sheets/Slides text replacement: `astra-browser google-find-replace --find '05/08/2027' --with '05/07/2026'`
         - For Google Docs insertion: `astra-browser google-docs-insert --verify 'A Gentle Morning' --text 'A Gentle Morning\n...'`
+        - For full Google Docs reads: `astra-browser google-docs-read-document`
+        - For full Google Docs replacement: `astra-browser google-docs-replace-document --verify 'A Gentle Morning' --text 'full replacement content'`; if it returns `google_docs_safe_edit_unavailable`, stop instead of using raw keyboard deletion.
         - For Google Docs verification: `astra-browser google-docs-find --query 'A Gentle Morning'`
         \(driveCommandLine)
         \(githubCommandLine)
@@ -186,7 +191,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - When `analyze` reports `ambiguity`, compare labels, roles, bounds, file type, and folder/opened metadata before selecting a controlID.
         - When a selector or label is known, prefer `fill`, `set-value`, or `type` instead of click + Cmd+A + text. If a response includes loopWarning, stop repeating the same click/snapshot path and switch strategy.
         - Cached analysis is a hint, not authority. If an action returns `stale_analysis`, `control_changed`, `target_obscured`, or `dangerous_confirmation_required`, stop and re-analyze or ask for confirmation as directed.
-        - For Google Docs, Sheets, or Slides editing, prefer Controlled mode when available. For Google Docs writing, use `google-docs-insert` instead of manual click + text + Find verification. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Avoid AppleScript/System Events, repeated menu clicks, and synthetic selection shortcuts when snapshots are unchanged.
+        - For Google Docs, Sheets, or Slides editing, prefer Controlled mode when available. For Google Docs writing, use `google-docs-insert` for insertion and `google-docs-replace-document` for full-document replacement. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Never use `keypress --key a --mod command` followed by Backspace/Delete in Google editors; the bridge blocks that sequence to prevent data loss.
         """
     }
 

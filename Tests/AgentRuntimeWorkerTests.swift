@@ -471,6 +471,9 @@ struct BuildPromptTests {
         #expect(prompt.contains("astra-browser text"))
         #expect(prompt.contains("astra-browser google-docs-insert"))
         #expect(prompt.contains("astra-browser google-docs-find"))
+        #expect(prompt.contains("astra-browser google-docs-read-document"))
+        #expect(prompt.contains("astra-browser google-docs-replace-document"))
+        #expect(prompt.contains("Never use `keypress --key a --mod command` followed by Backspace/Delete"))
         #expect(!prompt.contains("astra-browser google-drive-open"))
         #expect(prompt.contains("Do not use osascript"))
     }
@@ -511,6 +514,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("Google Drive"))
         #expect(prompt.contains("http://127.0.0.1:49152"))
         #expect(!prompt.contains("http://127.0.0.1:49153"))
+        #expect(prompt.contains("astra-browser google-drive-open"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 

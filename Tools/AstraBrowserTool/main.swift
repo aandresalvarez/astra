@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ASTRACore
 
 @main
 struct AstraBrowserTool {
@@ -14,10 +15,11 @@ struct AstraBrowserTool {
     }
 
     private static func run(arguments: [String]) async throws -> String {
-        var args = ArgumentCursor(arguments)
-        guard let command = args.next() else {
+        let sanitizedArguments = try BrowserToolCommandParser.sanitizedArguments(arguments)
+        guard let command = sanitizedArguments.first else {
             return usageJSON()
         }
+        var args = BrowserToolArgumentCursor(Array(sanitizedArguments.dropFirst()))
 
         switch command.lowercased() {
         case "help", "--help", "-h":
@@ -96,7 +98,7 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "GET", path: "/snapshot", queryItems: items)
         case "navigate":
             let endpoint = try browserEndpoint()
-            guard let url = args.next() ?? args.value(after: "--url") else {
+            guard let url = BrowserToolCommandParser.navigateTarget(from: &args) else {
                 throw ToolError("navigate requires a URL or search phrase")
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/navigate", object: ["url": url])
@@ -325,6 +327,20 @@ struct AstraBrowserTool {
                 object["verifyText"] = verify
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsInsert", object: object)
+        case "google-docs-read-document", "googledocsreaddocument", "google-docs-read", "googledocsread":
+            let endpoint = try browserEndpoint()
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsReadDocument", object: [:])
+        case "google-docs-replace-document", "googledocsreplacedocument":
+            let endpoint = try browserEndpoint()
+            let verify = args.value(after: "--verify")
+            guard let text = args.value(after: "--text") ?? args.value(after: "--body") ?? args.remainingText() else {
+                throw ToolError("google-docs-replace-document requires --text")
+            }
+            var object: [String: Any] = ["text": text]
+            if let verify {
+                object["verifyText"] = verify
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsReplaceDocument", object: object)
         case "google-drive-open", "googledriveopen", "drive-open":
             let endpoint = try browserEndpoint()
             guard let name = args.value(after: "--name")
@@ -395,12 +411,19 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/act", object: object)
         case "keypress":
             let endpoint = try browserEndpoint()
-            guard let key = args.value(after: "--key") ?? args.next() else {
+            let modifiers = args.values(after: "--mod") + args.values(after: "--modifier")
+            let key: String?
+            if args.has("--key") {
+                key = args.value(after: "--key")
+            } else {
+                key = args.nextValue()
+            }
+            guard let key else {
                 throw ToolError("keypress requires --key")
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/keypress", object: [
                 "key": key,
-                "modifiers": args.values(after: "--mod") + args.values(after: "--modifier")
+                "modifiers": modifiers
             ])
         case "text", "insert-text":
             let endpoint = try browserEndpoint()
@@ -421,7 +444,7 @@ struct AstraBrowserTool {
         case "wait-selector":
             let endpoint = try browserEndpoint()
             let timeout = args.value(after: "--timeout").flatMap(Double.init) ?? 5
-            guard let selector = args.value(after: "--selector") ?? args.next() else {
+            guard let selector = args.value(after: "--selector") ?? args.nextValue() else {
                 throw ToolError("wait-selector requires a selector")
             }
             return try await request(endpoint: endpoint, method: "POST", path: "/waitForSelector", object: [
@@ -517,7 +540,9 @@ struct AstraBrowserTool {
                 "astra-browser google-find-replace --find 'old text' --with 'new text'",
                 "astra-browser google-docs-find --query 'unique phrase'",
                 "astra-browser google-docs-insert --verify 'unique phrase' --text 'content to insert'",
-                "astra-browser google-drive-open --name 'Untitled document'  # requires Google Drive Browser capability",
+                "astra-browser google-docs-read-document",
+                "astra-browser google-docs-replace-document --verify 'unique phrase' --text 'full replacement content'",
+                "astra-browser google-drive-open --name 'Untitled document'",
                 "astra-browser act --find 'Replace with' --set 'new text' --click 'Replace all' --wait-saved --verify 'new text'",
                 "astra-browser keypress --key h --mod command --mod shift",
                 "astra-browser text 'replacement text'",
@@ -547,63 +572,5 @@ struct AstraBrowserTool {
         var errorDescription: String? {
             message
         }
-    }
-}
-
-private struct ArgumentCursor {
-    private let arguments: [String]
-    private var consumed: Set<Int> = []
-    private var cursor = 0
-
-    init(_ arguments: [String]) {
-        self.arguments = arguments
-    }
-
-    mutating func next() -> String? {
-        while cursor < arguments.count {
-            defer { cursor += 1 }
-            guard !consumed.contains(cursor) else { continue }
-            consumed.insert(cursor)
-            return arguments[cursor]
-        }
-        return nil
-    }
-
-    mutating func contains(_ flag: String) -> Bool {
-        guard let index = arguments.firstIndex(of: flag) else { return false }
-        consumed.insert(index)
-        return true
-    }
-
-    mutating func value(after flag: String) -> String? {
-        guard let index = arguments.firstIndex(of: flag),
-              arguments.indices.contains(index + 1) else {
-            return nil
-        }
-        consumed.insert(index)
-        consumed.insert(index + 1)
-        return arguments[index + 1]
-    }
-
-    mutating func values(after flag: String) -> [String] {
-        var values: [String] = []
-        for index in arguments.indices where arguments[index] == flag && arguments.indices.contains(index + 1) {
-            consumed.insert(index)
-            consumed.insert(index + 1)
-            values.append(arguments[index + 1])
-        }
-        return values
-    }
-
-    mutating func remainingText() -> String? {
-        let rest = arguments.indices
-            .filter { !consumed.contains($0) }
-            .map { arguments[$0] }
-            .filter { !$0.hasPrefix("--") }
-        for index in arguments.indices where !consumed.contains(index) {
-            consumed.insert(index)
-        }
-        let text = rest.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
     }
 }

@@ -25,6 +25,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "AstraBrowserTool",
+            dependencies: ["ASTRACore"],
             path: "Tools/AstraBrowserTool"
         ),
         .executableTarget(
