@@ -1,6 +1,8 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("ASTRA External Routing")
 struct AstraExternalRoutingTests {
@@ -71,5 +73,121 @@ struct AstraExternalRoutingTests {
         workspace.tasks = [olderQueued, newerCompleted, newerMarkedDone, latestRunning]
 
         #expect(AstraTaskIntentSupport.latestUnfinishedTask(in: workspace)?.id == latestRunning.id)
+    }
+}
+
+@Suite("Content external route resolution")
+struct ContentExternalRouteResolverTests {
+    @Test("workspace and task routes resolve without view state")
+    @MainActor
+    func workspaceAndTaskRoutesResolveWithoutViewState() throws {
+        let container = try makeExternalRouteContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        let task = AgentTask(title: "Review", goal: "Review notes", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let resolver = makeResolver(context: context)
+        let workspaceRoute = AstraExternalRoute(destination: .workspace(workspace.id))
+        let taskRoute = AstraExternalRoute(destination: .task(task.id))
+
+        guard case .openWorkspace(let resolvedWorkspace) = resolver.resolve(workspaceRoute, workspaces: [workspace]) else {
+            Issue.record("Expected workspace route resolution")
+            return
+        }
+        guard case .openTask(let resolvedTask) = resolver.resolve(taskRoute, workspaces: [workspace]) else {
+            Issue.record("Expected task route resolution")
+            return
+        }
+
+        #expect(resolvedWorkspace.id == workspace.id)
+        #expect(resolvedTask.id == task.id)
+    }
+
+    @Test("create draft route inserts a draft task with draft messages")
+    @MainActor
+    func createDraftRouteInsertsDraftTask() throws {
+        let container = try makeExternalRouteContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        context.insert(workspace)
+        try context.save()
+
+        let goal = "  Draft a plan for the study  "
+        let resolver = makeResolver(context: context, defaultRuntimeID: AgentRuntimeID.copilotCLI.rawValue)
+        let route = AstraExternalRoute(
+            destination: .createTask(workspaceID: workspace.id, goal: goal, shouldRun: false)
+        )
+
+        guard case .createdTask(let task, let shouldRun) = resolver.resolve(route, workspaces: [workspace]) else {
+            Issue.record("Expected created draft task resolution")
+            return
+        }
+
+        #expect(shouldRun == false)
+        #expect(task.status == .draft)
+        #expect(task.goal == "Draft a plan for the study")
+        #expect(task.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(task.draftMessages.contains("Draft a plan for the study"))
+        #expect(task.events.isEmpty)
+        #expect(task.workspace?.id == workspace.id)
+    }
+
+    @Test("create and run route queues task and records the user message")
+    @MainActor
+    func createAndRunRouteQueuesTaskAndRecordsUserMessage() throws {
+        let container = try makeExternalRouteContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        context.insert(workspace)
+        try context.save()
+
+        let resolver = makeResolver(context: context)
+        let route = AstraExternalRoute(
+            destination: .createTask(workspaceID: workspace.id, goal: "Run the analysis", shouldRun: true)
+        )
+
+        guard case .createdTask(let task, let shouldRun) = resolver.resolve(route, workspaces: [workspace]) else {
+            Issue.record("Expected created running task resolution")
+            return
+        }
+
+        #expect(shouldRun)
+        #expect(task.status == .queued)
+        #expect(task.events.count == 1)
+        #expect(task.events.first?.type == "user.message")
+        #expect(task.events.first?.payload == "Run the analysis")
+    }
+
+    @Test("unresolved routes return nil")
+    @MainActor
+    func unresolvedRoutesReturnNil() throws {
+        let container = try makeExternalRouteContainer()
+        let resolver = makeResolver(context: container.mainContext)
+        let route = AstraExternalRoute(destination: .workspace(UUID()))
+
+        #expect(resolver.resolve(route, workspaces: []) == nil)
+    }
+
+    @MainActor
+    private func makeExternalRouteContainer() throws -> ModelContainer {
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+    }
+
+    @MainActor
+    private func makeResolver(
+        context: ModelContext,
+        defaultRuntimeID: String = TaskExecutionDefaults.runtime.rawValue
+    ) -> ContentExternalRouteResolver {
+        ContentExternalRouteResolver(
+            modelContext: context,
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: TaskExecutionDefaults.model,
+            defaultBudget: TaskExecutionDefaults.tokenBudget
+        )
     }
 }

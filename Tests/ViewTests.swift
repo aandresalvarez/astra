@@ -163,6 +163,51 @@ struct ContentSelectionResolverTests {
 
         #expect(resolved?.id == workspace.id)
     }
+
+    @Test("Workspace restoration preserves a live current selection")
+    func workspaceRestorationPreservesLiveCurrentSelection() {
+        let first = makeWorkspace(name: "First")
+        let current = makeWorkspace(name: "Current")
+
+        let restored = ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: [first, current],
+            currentSelection: current,
+            lastSelectedWorkspaceID: first.id.uuidString,
+            lastSelectedWorkspacePath: first.primaryPath
+        )
+
+        #expect(restored?.id == current.id)
+    }
+
+    @Test("Workspace restoration falls back by ID then path then first workspace")
+    func workspaceRestorationFallsBackByIDPathThenFirst() {
+        let first = makeWorkspace(name: "First")
+        let byPath = makeWorkspace(name: "By Path")
+        let byID = makeWorkspace(name: "By ID")
+
+        let restoredByID = ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: [first, byPath, byID],
+            currentSelection: nil,
+            lastSelectedWorkspaceID: byID.id.uuidString,
+            lastSelectedWorkspacePath: byPath.primaryPath
+        )
+        let restoredByPath = ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: [first, byPath],
+            currentSelection: byID,
+            lastSelectedWorkspaceID: byID.id.uuidString,
+            lastSelectedWorkspacePath: byPath.primaryPath
+        )
+        let restoredFirst = ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: [first, byPath],
+            currentSelection: nil,
+            lastSelectedWorkspaceID: UUID().uuidString,
+            lastSelectedWorkspacePath: "/missing"
+        )
+
+        #expect(restoredByID?.id == byID.id)
+        #expect(restoredByPath?.id == byPath.id)
+        #expect(restoredFirst?.id == first.id)
+    }
 }
 
 // MARK: - Content Detail Presentation

@@ -3,40 +3,6 @@ import SwiftData
 import ASTRACore
 import AppKit
 
-enum ContentSelectionResolver {
-    static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
-        selectedTask?.workspace ?? selectedWorkspace
-    }
-}
-
-enum ContentDetailPresentation: Equatable {
-    case draftTask
-    case existingTask
-    case newTaskComposer
-    case workspaceHome
-    case noWorkspace
-
-    static func resolve(
-        selectedTask: AgentTask?,
-        effectiveWorkspace: Workspace?,
-        isComposingTask: Bool
-    ) -> ContentDetailPresentation {
-        if let selectedTask {
-            return selectedTask.status == .draft ? .draftTask : .existingTask
-        }
-
-        guard let effectiveWorkspace else {
-            return .noWorkspace
-        }
-
-        if isComposingTask || effectiveWorkspace.tasks.isEmpty {
-            return .newTaskComposer
-        }
-
-        return .workspaceHome
-    }
-}
-
 /// Layout-level artifacts shown in the docked Shelf column.
 /// Future cases can choose wider sizing for browser or file previews.
 private enum WorkspaceCanvasItem: Equatable {
@@ -1433,121 +1399,43 @@ struct ContentView: View {
     private func handlePendingExternalRoute() {
         guard let route = externalRouteStore.pendingRoute else { return }
 
-        let handled: Bool
-        switch route.destination {
-        case .workspace(let workspaceID):
-            handled = openWorkspaceFromExternalRoute(workspaceID)
-
-        case .task(let taskID):
-            handled = openTaskFromExternalRoute(taskID)
-
-        case .createTask(let workspaceID, let goal, let shouldRun):
-            handled = createTaskFromExternalRoute(
-                workspaceID: workspaceID,
-                goal: goal,
-                shouldRun: shouldRun
-            )
-
-        case .continueLatestUnfinishedTask(let workspaceID):
-            handled = continueLatestUnfinishedTaskFromExternalRoute(workspaceID)
-        }
-
-        guard handled else {
+        guard let resolution = externalRouteResolver.resolve(route, workspaces: workspaces) else {
             AppLogger.warning("Could not resolve external ASTRA route", category: "AppIntents")
             externalRouteStore.clear(route)
             return
         }
 
+        applyExternalRouteResolution(resolution)
         externalRouteStore.clear(route)
     }
 
-    private func openWorkspaceFromExternalRoute(_ workspaceID: UUID) -> Bool {
-        guard let workspace = workspace(for: workspaceID) else { return false }
+    private func applyExternalRouteResolution(_ resolution: ContentExternalRouteResolution) {
+        switch resolution {
+        case .openWorkspace(let workspace):
+            openWorkspaceFromExternalRoute(workspace)
+
+        case .openTask(let task):
+            openTaskFromExternalRoute(task)
+
+        case .createdTask(let task, let shouldRun):
+            openTaskFromExternalRoute(task)
+            if shouldRun {
+                runSingleTask(task)
+            }
+        }
+    }
+
+    private func openWorkspaceFromExternalRoute(_ workspace: Workspace) {
         selectedWorkspace = workspace
         setSelectedTask(nil)
         isComposingTask = false
         presentRightRail()
-        return true
     }
 
-    private func openTaskFromExternalRoute(_ taskID: UUID) -> Bool {
-        guard let task = task(for: taskID) else { return false }
+    private func openTaskFromExternalRoute(_ task: AgentTask) {
         setSelectedTask(task)
         isComposingTask = false
         presentRightRail()
-        return true
-    }
-
-    private func continueLatestUnfinishedTaskFromExternalRoute(_ workspaceID: UUID) -> Bool {
-        guard let workspace = workspace(for: workspaceID),
-              let task = AstraTaskIntentSupport.latestUnfinishedTask(in: workspace) else {
-            return false
-        }
-        selectedWorkspace = workspace
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail()
-        return true
-    }
-
-    private func createTaskFromExternalRoute(
-        workspaceID: UUID,
-        goal: String,
-        shouldRun: Bool
-    ) -> Bool {
-        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedGoal.isEmpty,
-              let workspace = workspace(for: workspaceID) else {
-            return false
-        }
-
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
-        let task = AgentTask(
-            title: AstraTaskIntentSupport.title(for: trimmedGoal),
-            goal: trimmedGoal,
-            workspace: workspace,
-            tokenBudget: defaultBudget,
-            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
-        )
-        task.runtimeID = runtime.rawValue
-        task.status = shouldRun ? .queued : .draft
-        modelContext.insert(task)
-        if shouldRun {
-            modelContext.insert(TaskEvent(task: task, type: "user.message", payload: trimmedGoal))
-        } else {
-            task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: trimmedGoal)
-        }
-        task.captureSkillSnapshots()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-
-        selectedWorkspace = workspace
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail()
-
-        AppLogger.audit(.taskCreated, category: "AppIntents", taskID: task.id, fields: [
-            "source": shouldRun ? "voice_create_and_run" : "voice_create_draft",
-            "workspace_id": workspace.id.uuidString
-        ])
-
-        if shouldRun {
-            runSingleTask(task)
-        }
-
-        return true
-    }
-
-    private func workspace(for id: UUID) -> Workspace? {
-        workspaces.first { $0.id == id }
-    }
-
-    private func task(for id: UUID) -> AgentTask? {
-        for workspace in workspaces {
-            if let task = workspace.tasks.first(where: { $0.id == id }) {
-                return task
-            }
-        }
-        return nil
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
@@ -1562,6 +1450,19 @@ struct ContentView: View {
 
     private var coordinator: TaskLifecycleCoordinator {
         TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: runtime.taskQueue)
+    }
+
+    private var workspaceImporter: WorkspaceImportOrchestrator {
+        WorkspaceImportOrchestrator(modelContext: modelContext, taskQueue: runtime.taskQueue)
+    }
+
+    private var externalRouteResolver: ContentExternalRouteResolver {
+        ContentExternalRouteResolver(
+            modelContext: modelContext,
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            defaultBudget: defaultBudget
+        )
     }
 
     private var updateSafetySignature: String {
@@ -1671,22 +1572,20 @@ struct ContentView: View {
     }
 
     private func restoreWorkspaceSelection() {
-        guard !workspaces.isEmpty else {
+        let restored = ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: workspaces,
+            currentSelection: selectedWorkspace,
+            lastSelectedWorkspaceID: lastSelectedWorkspaceID,
+            lastSelectedWorkspacePath: lastSelectedWorkspacePath
+        )
+        if let restored {
+            if selectedWorkspace?.id != restored.id {
+                selectedWorkspace = restored
+            }
+        } else {
             selectedWorkspace = nil
             setSelectedTask(nil)
             isComposingTask = false
-            return
-        }
-
-        if let selectedWorkspace,
-           workspaces.contains(where: { $0.id == selectedWorkspace.id }) {
-            return
-        }
-
-        if let restored = workspaces.first(where: { $0.id.uuidString == lastSelectedWorkspaceID }) ??
-            workspaces.first(where: { $0.primaryPath == lastSelectedWorkspacePath }) ??
-            workspaces.first {
-            selectedWorkspace = restored
         }
     }
 
@@ -1778,77 +1677,16 @@ struct ContentView: View {
     }
 
     private func importWorkspace() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        panel.message = "Select workspace folders, config files, or a parent Workspaces folder"
-        panel.prompt = "Import"
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let urls = WorkspaceImportPanel.selectedURLs()
+        guard !urls.isEmpty else { return }
 
-        var imported: [Workspace] = []
-        var knownWorkspaces = workspaces
-
-        for candidate in WorkspaceImportDiscovery.candidates(for: panel.urls) {
-            let workspace: Workspace?
-            if let configURL = candidate.configURL {
-                workspace = coordinator.importFromConfig(
-                    at: configURL,
-                    existingWorkspaces: knownWorkspaces,
-                    askDuplicateAction: askDuplicateAction
-                )
-            } else {
-                workspace = coordinator.createWorkspaceFromFolder(
-                    candidate.folderURL,
-                    existingWorkspaces: knownWorkspaces,
-                    askDuplicateAction: askDuplicateAction
-                )
-            }
-
-            if let workspace {
-                imported.append(workspace)
-                knownWorkspaces.append(workspace)
-            }
-        }
-
-        for ws in imported {
-            coordinator.importSessionsIfNeeded(for: ws)
-        }
-
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.workspaceExported, category: "UI", fields: [
-                "operation": "save_imported_workspaces",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
-        for ws in imported {
-            WorkspaceConfigManager.autoExport(workspace: ws, modelContext: modelContext)
-        }
-        if let last = imported.last {
-            selectedWorkspace = last
-        }
-        if !imported.isEmpty {
-            AppLogger.audit(.workspaceImported, category: "App", fields: [
-                "workspace_count": String(imported.count)
-            ])
-        }
-    }
-
-    private func askDuplicateAction(name: String, existingTaskCount: Int) -> TaskLifecycleCoordinator.DuplicateAction {
-        let alert = NSAlert()
-        alert.messageText = "Workspace \"\(name)\" already exists"
-        alert.informativeText = "The existing workspace has \(existingTaskCount) task(s). What would you like to do?"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Keep Both")
-        alert.addButton(withTitle: "Skip")
-        let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn: return .replace
-        case .alertSecondButtonReturn: return .duplicate
-        default: return .skip
+        let result = workspaceImporter.importWorkspaces(
+            from: urls,
+            existingWorkspaces: workspaces,
+            askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
+        )
+        if let selected = result.selectedWorkspace {
+            selectedWorkspace = selected
         }
     }
 
