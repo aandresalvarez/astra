@@ -792,6 +792,7 @@ struct ControlledBrowserTests {
         #expect(script.contains("locatorRole"))
         #expect(script.contains("target_obscured"))
         #expect(script.contains("target_disabled"))
+        #expect(script.contains("boundsForTarget"))
     }
 
     @Test("type script supports filling by label")

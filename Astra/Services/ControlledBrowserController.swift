@@ -248,6 +248,39 @@ final class ControlledBrowserController: ObservableObject {
         ])
     }
 
+    func installDebugInstrumentation() async throws {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        _ = try await evaluate(script: BrowserAutomationScripts.debugInstrumentationScript)
+    }
+
+    func debugEvents() async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let value = try await evaluate(script: BrowserAutomationScripts.debugReadScript)
+        try await refreshPageMetadata()
+        return value
+    }
+
+    func screenshotJPEGBase64(quality: Int = 45) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        _ = try? await sendCDPCommand(method: "Page.enable", params: [:])
+        let response = try await sendCDPCommand(
+            method: "Page.captureScreenshot",
+            params: [
+                "format": "jpeg",
+                "quality": max(1, min(100, quality)),
+                "fromSurface": true,
+                "captureBeyondViewport": false
+            ]
+        )
+        try await refreshPageMetadata()
+        guard let result = response["result"] as? [String: Any],
+              let base64 = result["data"] as? String,
+              !base64.isEmpty else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        return base64
+    }
+
     func click(
         selector: String?,
         x: Double?,

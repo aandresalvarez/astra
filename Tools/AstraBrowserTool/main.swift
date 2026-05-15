@@ -497,6 +497,10 @@ struct AstraBrowserTool {
            !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        if let debugCapture = ProcessInfo.processInfo.environment["ASTRA_BROWSER_DEBUG_CAPTURE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !debugCapture.isEmpty {
+            request.setValue(debugCapture, forHTTPHeaderField: "X-ASTRA-Browser-Debug-Capture")
+        }
         if let object {
             request.httpBody = try JSONSerialization.data(withJSONObject: object)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -520,6 +524,7 @@ struct AstraBrowserTool {
                 "usage": [
                 "astra-browser health",
                 "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
+                "ASTRA_BROWSER_DEBUG_CAPTURE=1 astra-browser click --role button --name Save  # capture rich evidence if this action fails, then inspect astra-browser trace",
                 "astra-browser trace",
                 "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",

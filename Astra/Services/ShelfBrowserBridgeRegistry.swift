@@ -152,10 +152,11 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
+        - Inspect compact navigation/action diagnostics: `astra-browser trace`; when debugging a failed browser action, prefix that action with `ASTRA_BROWSER_DEBUG_CAPTURE=1` to retain a privacy-redacted screenshot thumbnail, compact tree, and console/navigation/network events in the trace.
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
-        - Prefer control IDs from analyze when acting: `astra-browser click --analysis ana_... --control ctl_...`
+        - Prefer control IDs from analyze when acting: `astra-browser click --analysis ana_... --control ctl_...`; action responses include actionability and postActionWait diagnostics.
         - Open an analyzed control through its primary open behavior: `astra-browser open --analysis ana_... --control ctl_...`
         - Double-click an analyzed control when that is the listed action: `astra-browser double-click --analysis ana_... --control ctl_...`
         - After a controlID action, read `goalSatisfied`, `observedOutcome`, and `suggestedNextActions`; `ok` only means the browser command executed.
@@ -164,7 +165,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Snapshot compact page state: `astra-browser snapshot --mode summary`
         - Locate controls by role/name/text: `astra-browser locator --role button --name "Save"`
         - Search controls or text: `astra-browser snapshot --mode controls --query "Find"` or `astra-browser snapshot --mode text --query "Saved"`
-        - Navigate: `astra-browser navigate "https://example.com"`
+        - Navigate: `astra-browser navigate "https://example.com"`; navigation waits for URL/title/loading state to settle before returning.
         - Fill a field: `astra-browser type --selector 'input[name=email]' --text 'user@example.com'`
         - Fill by label/placeholder/test id: `astra-browser fill --label Email --text 'user@example.com'`
         - Set a known field without click/selection steps: `astra-browser set-value --selector '#c7' --text '05/07/2026'`
