@@ -664,7 +664,7 @@ struct AgentPolicySheet: View {
         case .review: Stanford.paloAltoGreen
         case .build: Stanford.lagunita
         case .network: Stanford.sky
-        case .autonomous: Stanford.poppy
+        case .autonomous: Stanford.lagunita
         case .custom: Stanford.plum
         }
     }

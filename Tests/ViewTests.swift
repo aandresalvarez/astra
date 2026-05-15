@@ -355,6 +355,23 @@ struct MarkdownTextViewTests {
         #expect(blocks.first?.content.contains("Ada | 10 | **ready**") == true)
     }
 
+    @Test("Parser handles empty table cells without formatter crash")
+    func parserHandlesEmptyTableCellsWithoutFormatterCrash() {
+        let source = """
+        Name | Score | Status
+        --- | ---: | :---
+        Ada | 10 |
+        Grace | | waiting
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .table)
+        #expect(blocks.first?.content.contains("Ada | 10 |") == true)
+        #expect(blocks.first?.content.contains("Grace |  | waiting") == true)
+    }
+
     @Test("Parser formats tables for selectable Markdown preview")
     func parserFormatsTablesForSelectableMarkdownPreview() {
         let source = """
@@ -392,6 +409,75 @@ struct MarkdownTextViewTests {
 
         #expect(headings.map(\.0) == [1, 4, 1])
         #expect(headings.map(\.1) == ["Report Title", "Deep Section", "Compact Heading"])
+    }
+
+    @Test("Parser normalizes soft-wrapped prose paragraphs")
+    func parserNormalizesSoftWrappedProseParagraphs() {
+        let source = """
+        I can use the browser.The page is blank
+        and has no text to summarize.
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .text)
+        #expect(blocks.first?.content == "I can use the browser. The page is blank and has no text to summarize.")
+    }
+
+    @Test("Parser preserves fenced code block line breaks")
+    func parserPreservesFencedCodeBlockLineBreaks() {
+        let source = """
+        ```json
+        {"ok": true}
+        {"done": false}
+        ```
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .codeBlock(language: "json"))
+        #expect(blocks.first?.content == "{\"ok\": true}\n{\"done\": false}")
+    }
+
+    @Test("Parser preserves ordered list markers")
+    func parserPreservesOrderedListMarkers() {
+        let blocks = MarkdownTextView.parse("""
+        1. First step
+        2. Second step
+        """)
+
+        let listItems = blocks.compactMap { block -> (String, String)? in
+            guard case .listItem(_, let marker) = block.kind else { return nil }
+            return (marker, block.content)
+        }
+
+        #expect(listItems.map(\.0) == ["1.", "2."])
+        #expect(listItems.map(\.1) == ["First step", "Second step"])
+    }
+
+    @Test("Parser preserves blockquote paragraph breaks")
+    func parserPreservesBlockquoteParagraphBreaks() {
+        let blocks = MarkdownTextView.parse("""
+        > First quoted paragraph.
+        >
+        > Second quoted paragraph.
+        """)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .blockquote)
+        #expect(blocks.first?.content == "First quoted paragraph.\n\nSecond quoted paragraph.")
+    }
+
+    @Test("Streaming text normalizes soft wraps")
+    func streamingTextNormalizesSoftWraps() {
+        let normalized = MarkdownTextView.normalizedStreamingText("""
+        First sentence.Second sentence
+        continues here.
+        """)
+
+        #expect(normalized == "First sentence. Second sentence continues here.")
     }
 }
 
@@ -772,6 +858,170 @@ struct TaskThreadSnapshotTests {
         ])
         #expect(activity.toolResults.count == 1)
         #expect(activity.toolResults.first?.payload == "result")
+    }
+
+    @Test("Tool activity presentation parses tool details")
+    func toolActivityPresentationParsesDetails() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Bash: astra-browser google-docs-read-document",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read: /tmp/notes.md",
+                timestamp: Date(timeIntervalSince1970: 2),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Running validation tests...",
+                timestamp: Date(timeIntervalSince1970: 3),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using Glob",
+                timestamp: Date(timeIntervalSince1970: 4),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.toolCalls.map(\.toolName) == ["Bash", "Read", "Validation tests", "Glob"])
+        #expect(activity.toolCalls[0].detail == "astra-browser google-docs-read-document")
+        #expect(activity.toolCalls[0].detailKind == .command)
+        #expect(activity.toolCalls[1].detailKind == .path)
+        #expect(activity.tools == [
+            TaskToolSummary(name: "Bash", count: 1),
+            TaskToolSummary(name: "Read", count: 1),
+            TaskToolSummary(name: "Validation tests", count: 1),
+            TaskToolSummary(name: "Glob", count: 1)
+        ])
+    }
+
+    @Test("Permission summary presentation formats compact facts")
+    func permissionSummaryPresentationFormatsFacts() {
+        let payload = """
+        {
+          "status": "failed",
+          "stopReason": "google_docs_safe_edit_unavailable",
+          "toolUseCount": 1,
+          "deniedCount": 0,
+          "fileChangeCount": 0,
+          "toolsUsed": ["Bash"],
+          "commandsRun": ["astra-browser google-docs-read-document"],
+          "externalDomains": ["docs.google.com"],
+          "environmentKeyNames": ["GCP_PROJECT", "GCP_REGION"],
+          "usedBroadProviderPermissions": true,
+          "exceededInitialPermissionLevel": false
+        }
+        """
+
+        let facts = PolicySummaryPresentation.permissionSummaryFacts(from: payload)
+
+        #expect(facts.contains(RunFactPresentation(title: "Status", value: "failed")))
+        #expect(facts.contains(RunFactPresentation(title: "Stop reason", value: "google_docs_safe_edit_unavailable")))
+        #expect(facts.contains(RunFactPresentation(title: "Tools used", value: "1")))
+        #expect(facts.contains(RunFactPresentation(title: "Broad provider mode", value: "Yes")))
+        #expect(facts.contains(RunFactPresentation(title: "Commands", value: "astra-browser google-docs-read-document", isMonospaced: true)))
+        #expect(facts.contains(RunFactPresentation(title: "Env keys", value: "GCP_PROJECT, GCP_REGION", isMonospaced: true)))
+    }
+
+    @Test("Run activity presentation suppresses duplicated actionable notices")
+    func runActivityPresentationSuppressesActionableNotices() {
+        let task = makeTask(status: .failed)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        let events = [
+            makeEvent(
+                task: task,
+                type: "error",
+                payload: "Copilot exited with code 1.\n\nProvider error:\nraw stack output",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let notice = activity.notices.first!
+
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices,
+            suppressedNoticeIDs: [notice.id]
+        )
+
+        #expect(presentation.issues.isEmpty)
+        #expect(presentation.technicalOutputs.count == 1)
+        #expect(presentation.technicalOutputs.first?.title == "Run stopped details")
+        #expect(presentation.technicalOutputs.first?.rawPayload.contains("raw stack output") == true)
+    }
+
+    @Test("Run activity presentation keeps actionable notices when not rendered separately")
+    func runActivityPresentationKeepsActionableIssuesWithoutSuppression() {
+        let task = makeTask(status: .failed)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        let events = [
+            makeEvent(
+                task: task,
+                type: "budget.exceeded",
+                payload: "Browser action budget was exceeded.",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
+
+        #expect(presentation.issues.count == 1)
+        #expect(presentation.issues.first?.title == "Budget exceeded")
+        #expect(presentation.technicalOutputs.isEmpty)
+    }
+
+    @Test("Long tool results are summarized while preserving raw output")
+    func longToolResultsAreSummarizedWithRawOutput() {
+        let payload = String(repeating: "x", count: 6_000)
+        let summary = PayloadFormatter.summary(for: payload)
+
+        #expect(summary.summary.count <= 243)
+        #expect(summary.summary.hasSuffix("..."))
+        #expect(summary.rawPayload.count == 6_000)
     }
 
     @Test("Budget warning is visible in run activity")
