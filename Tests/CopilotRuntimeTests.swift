@@ -577,6 +577,37 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("shell(stanford-graph-mail:*)"))
     }
 
+    @Test("Restricted permissions do not grant local tools without Bash")
+    func restrictedPermissionsDoNotGrantLocalToolsWithoutBash() {
+        let args = CopilotCLIRuntime.copilotPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["Read", "Grep"],
+            localToolCommands: ["gh", "astra-browser"],
+            requiresAllowAllToolsForPrompt: false
+        )
+        let joined = args.joined(separator: " ")
+
+        #expect(joined.contains("read"))
+        #expect(!joined.contains("shell(gh:*)"))
+        #expect(!joined.contains("shell(astra-browser:*)"))
+    }
+
+    @Test("Restricted permissions translate scoped Bash grants")
+    func restrictedPermissionsTranslateScopedBashGrants() {
+        let args = CopilotCLIRuntime.copilotPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["Read", "Bash(curl:*)"],
+            localToolCommands: ["gh"],
+            requiresAllowAllToolsForPrompt: false
+        )
+        let joined = args.joined(separator: " ")
+
+        #expect(joined.contains("read"))
+        #expect(joined.contains("shell(curl:*)"))
+        #expect(!joined.contains("shell(gh:*)"))
+        #expect(!joined.contains("shell(git:*)"))
+    }
+
     @Test("Local CLI commands map to Copilot shell permissions")
     func localToolPermissions() {
         let permissions = CopilotCLIRuntime.copilotShellPermissions(forLocalToolCommands: [

@@ -46,7 +46,11 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
         let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
-        let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        let baseAllowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        let allowedTools = PolicyLocalToolGrants.addClaudeShellGrants(
+            to: baseAllowedTools,
+            localToolCommands: context.localToolCommands
+        )
         let deniedTools = policy.deniedTools
         var diagnostics = diagnostics(for: policy, context: context)
         if context.providerConfigOwnership != .generated, policy.level != .autonomous {
@@ -127,6 +131,9 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
         let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        let localToolCommands = PolicyLocalToolGrants.shouldGrantLocalToolCommands(allowedTools: allowedTools)
+            ? context.localToolCommands
+            : []
         var diagnostics = diagnostics(for: policy, context: context)
         if !policy.deniedTools.isEmpty || !policy.deniedShellPatterns.isEmpty {
             diagnostics.append(PolicyDiagnostic(
@@ -151,7 +158,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
-            localToolCommands: context.localToolCommands,
+            localToolCommands: localToolCommands,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
@@ -178,6 +185,48 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             diagnostics: diagnostics,
             usesBroadProviderPermissions: args.contains("--allow-all-tools")
         )
+    }
+}
+
+private enum PolicyLocalToolGrants {
+    static func addClaudeShellGrants(
+        to allowedTools: [String],
+        localToolCommands: [String]
+    ) -> [String] {
+        guard shouldGrantLocalToolCommands(allowedTools: allowedTools) else {
+            return unique(allowedTools)
+        }
+        return unique(allowedTools + localToolCommands.compactMap(claudeShellGrant))
+    }
+
+    static func shouldGrantLocalToolCommands(allowedTools: [String]) -> Bool {
+        allowedTools.contains { tool in
+            tool.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Bash") == .orderedSame
+        }
+    }
+
+    private static func claudeShellGrant(for command: String) -> String? {
+        guard let executable = shellExecutableToken(command) else { return nil }
+        return "Bash(\(executable):*)"
+    }
+
+    private static func shellExecutableToken(_ command: String) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let token = trimmed.split(whereSeparator: { $0.isWhitespace }).first else {
+            return nil
+        }
+        let executable = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard !executable.isEmpty,
+              executable.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil else {
+            return nil
+        }
+        return executable
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
     }
 }
 
@@ -432,11 +481,15 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func localToolCommands(for task: AgentTask) -> [String] {
-        TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
+        var commands: [String] = TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         }
+        if !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty {
+            commands.append("astra-browser")
+        }
+        return Array(Set(commands)).sorted()
     }
 
     @MainActor

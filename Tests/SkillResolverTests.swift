@@ -86,6 +86,15 @@ struct SkillResolverTests {
         #expect(resolver.resolvedAllowedTools.contains("Read"))
     }
 
+    @Test("Disallowed tools override allowed tools case-insensitively")
+    func disallowedOverridesCaseInsensitively() {
+        let s1 = makeSnapshot(name: "A", allowedTools: ["Read", "Bash"])
+        let s2 = makeSnapshot(name: "B", disallowedTools: ["bash"])
+        let resolver = makeResolver(snapshots: [s1, s2])
+
+        #expect(resolver.resolvedAllowedTools == ["Read"])
+    }
+
     @Test("Conflict detection across skills")
     func conflictDetection() {
         let s1 = makeSnapshot(name: "Dev", allowedTools: ["Bash", "Write"])
@@ -96,6 +105,32 @@ struct SkillResolverTests {
         #expect(conflicts[0].tool == "Bash")
         #expect(conflicts[0].allowedBy == "Dev")
         #expect(conflicts[0].disallowedBy == "Safe")
+    }
+
+    @Test("Conflict detection matches tool names case-insensitively")
+    func conflictDetectionMatchesToolNamesCaseInsensitively() {
+        let dev = makeSnapshot(name: "Dev", allowedTools: ["Bash"])
+        let safe = makeSnapshot(name: "Safe", disallowedTools: ["bash"])
+        let resolver = makeResolver(snapshots: [dev, safe])
+
+        #expect(resolver.toolPermissionConflicts == [
+            SkillResolver.ToolPermissionConflict(tool: "Bash", allowedBy: "Dev", disallowedBy: "Safe")
+        ])
+    }
+
+    @Test("Duplicate disallowed tools do not crash conflict detection")
+    func duplicateDisallowedToolsDoNotCrashConflictDetection() {
+        let dev = makeSnapshot(name: "Dev", allowedTools: ["Bash"])
+        let safeA = makeSnapshot(name: "Safe A", disallowedTools: ["Bash"])
+        let safeB = makeSnapshot(name: "Safe B", disallowedTools: ["Bash"])
+        let resolver = makeResolver(snapshots: [dev, safeA, safeB])
+
+        let conflicts = resolver.toolPermissionConflicts
+
+        #expect(conflicts == [
+            SkillResolver.ToolPermissionConflict(tool: "Bash", allowedBy: "Dev", disallowedBy: "Safe A"),
+            SkillResolver.ToolPermissionConflict(tool: "Bash", allowedBy: "Dev", disallowedBy: "Safe B")
+        ])
     }
 
     @Test("Behavior instructions merge with section headers")

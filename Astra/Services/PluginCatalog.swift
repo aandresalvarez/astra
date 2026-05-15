@@ -299,12 +299,12 @@ final class PluginCatalog {
 
     // MARK: - Built-in Package Definitions (Curated)
 
-    static var builtInPackages: [PluginPackage] {
+    nonisolated(unsafe) static let builtInPackages: [PluginPackage] = {
         let bundledPackages = ApprovedCapabilityBundle.packages()
         return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
-    }
+    }()
 
-    private static let fallbackBuiltInPackages: [PluginPackage] = [
+    private nonisolated(unsafe) static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // NOTE: `test-runner` and `read-only-explorer` used to live here as
         // zero-config packages. Both duplicated skills that every workspace

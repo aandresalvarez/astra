@@ -249,6 +249,97 @@ struct TaskToolSummary: Identifiable, Hashable, Sendable {
     var id: String { name }
 }
 
+enum TaskToolDetailKind: String, Hashable, Sendable {
+    case command
+    case path
+    case url
+    case summary
+    case none
+}
+
+struct TaskToolCall: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let toolName: String
+    let detail: String?
+    let detailKind: TaskToolDetailKind
+    let rawPayload: String
+
+    init(id: UUID = UUID(), payload: String) {
+        self.id = id
+        rawPayload = payload
+
+        let parsed = Self.parse(payload)
+        toolName = parsed.toolName
+        detail = parsed.detail
+        detailKind = parsed.detailKind
+    }
+
+    private static func parse(_ payload: String) -> (toolName: String, detail: String?, detailKind: TaskToolDetailKind) {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ("Unknown tool", nil, .none)
+        }
+
+        if trimmed == "Running validation tests..." {
+            return ("Validation tests", nil, .none)
+        }
+
+        if trimmed == "Running AI self-check..." {
+            return ("AI self-check", nil, .none)
+        }
+
+        if trimmed.hasPrefix("Isolation:") {
+            let detail = trimmed
+                .dropFirst("Isolation:".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return ("Workspace isolation", detail.isEmpty ? nil : detail, .summary)
+        }
+
+        if trimmed.hasPrefix("Using tool:") {
+            let remainder = trimmed
+                .dropFirst("Using tool:".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !remainder.isEmpty else {
+                return ("Unknown tool", nil, .none)
+            }
+            guard let separator = remainder.firstIndex(of: ":") else {
+                return (remainder, nil, .none)
+            }
+
+            let name = remainder[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = remainder[remainder.index(after: separator)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedName = name.isEmpty ? "Unknown tool" : name
+            return (resolvedName, detail.isEmpty ? nil : detail, detailKind(for: resolvedName, detail: detail))
+        }
+
+        if trimmed.hasPrefix("Using ") {
+            let name = trimmed
+                .dropFirst("Using ".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                return (name, nil, .none)
+            }
+        }
+
+        return (trimmed, nil, .none)
+    }
+
+    private static func detailKind(for toolName: String, detail: String) -> TaskToolDetailKind {
+        guard !detail.isEmpty else { return .none }
+        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "bash", "shell":
+            return .command
+        case "read", "write", "edit", "multiedit":
+            return .path
+        case "webfetch", "websearch":
+            return .url
+        default:
+            return .summary
+        }
+    }
+}
+
 struct TaskToolResult: Identifiable, Hashable, Sendable {
     let id: UUID
     let payload: String
@@ -262,12 +353,13 @@ struct TaskRunNotice: Identifiable, Hashable, Sendable {
 
 struct TaskRunActivity: Sendable {
     let tools: [TaskToolSummary]
+    let toolCalls: [TaskToolCall]
     let toolResults: [TaskToolResult]
     let notices: [TaskRunNotice]
     let fileChanges: [StoredFileChange]
     let permissionManifest: RunPermissionManifest?
 
-    static let empty = TaskRunActivity(tools: [], toolResults: [], notices: [], fileChanges: [], permissionManifest: nil)
+    static let empty = TaskRunActivity(tools: [], toolCalls: [], toolResults: [], notices: [], fileChanges: [], permissionManifest: nil)
 
     var hasVisibleActivity: Bool {
         !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || permissionManifest != nil
@@ -444,8 +536,12 @@ struct TaskThreadSnapshot: Sendable {
 
         var activity: [UUID: TaskRunActivity] = [:]
         for run in sortedRuns {
+            let toolCalls = (toolsByRunID[run.id] ?? []).map {
+                TaskToolCall(id: $0.id, payload: $0.payload)
+            }
             activity[run.id] = TaskRunActivity(
-                tools: Self.summarizeToolEvents(toolsByRunID[run.id] ?? []),
+                tools: Self.summarizeToolCalls(toolCalls),
+                toolCalls: toolCalls,
                 toolResults: resultsByRunID[run.id] ?? [],
                 notices: noticesByRunID[run.id] ?? [],
                 fileChanges: run.fileChanges,
@@ -482,12 +578,12 @@ struct TaskThreadSnapshot: Sendable {
         protocolByRunID[run.id] ?? .empty
     }
 
-    private static func summarizeToolEvents(_ events: [TaskEventSnapshot]) -> [TaskToolSummary] {
+    private static func summarizeToolCalls(_ calls: [TaskToolCall]) -> [TaskToolSummary] {
         var seen: [String: Int] = [:]
         var order: [String] = []
 
-        for event in events {
-            let name = event.payload.replacingOccurrences(of: "Using tool: ", with: "")
+        for call in calls {
+            let name = call.toolName
             if seen[name] != nil {
                 seen[name]! += 1
             } else {

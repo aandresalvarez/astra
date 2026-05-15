@@ -774,6 +774,136 @@ struct TaskThreadSnapshotTests {
         #expect(activity.toolResults.first?.payload == "result")
     }
 
+    @Test("Tool activity presentation parses tool details")
+    func toolActivityPresentationParsesDetails() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Bash: astra-browser google-docs-read-document",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Read: /tmp/notes.md",
+                timestamp: Date(timeIntervalSince1970: 2),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Running validation tests...",
+                timestamp: Date(timeIntervalSince1970: 3),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using Glob",
+                timestamp: Date(timeIntervalSince1970: 4),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let activity = snapshot.activity(for: run)
+
+        #expect(activity.toolCalls.map(\.toolName) == ["Bash", "Read", "Validation tests", "Glob"])
+        #expect(activity.toolCalls[0].detail == "astra-browser google-docs-read-document")
+        #expect(activity.toolCalls[0].detailKind == .command)
+        #expect(activity.toolCalls[1].detailKind == .path)
+        #expect(activity.tools == [
+            TaskToolSummary(name: "Bash", count: 1),
+            TaskToolSummary(name: "Read", count: 1),
+            TaskToolSummary(name: "Validation tests", count: 1),
+            TaskToolSummary(name: "Glob", count: 1)
+        ])
+    }
+
+    @Test("Permission summary presentation formats compact facts")
+    func permissionSummaryPresentationFormatsFacts() {
+        let payload = """
+        {
+          "status": "failed",
+          "stopReason": "google_docs_safe_edit_unavailable",
+          "toolUseCount": 1,
+          "deniedCount": 0,
+          "fileChangeCount": 0,
+          "toolsUsed": ["Bash"],
+          "commandsRun": ["astra-browser google-docs-read-document"],
+          "externalDomains": ["docs.google.com"],
+          "environmentKeyNames": ["GCP_PROJECT", "GCP_REGION"],
+          "usedBroadProviderPermissions": true,
+          "exceededInitialPermissionLevel": false
+        }
+        """
+
+        let facts = PolicySummaryPresentation.permissionSummaryFacts(from: payload)
+
+        #expect(facts.contains(RunFactPresentation(title: "Status", value: "failed")))
+        #expect(facts.contains(RunFactPresentation(title: "Stop reason", value: "google_docs_safe_edit_unavailable")))
+        #expect(facts.contains(RunFactPresentation(title: "Tools used", value: "1")))
+        #expect(facts.contains(RunFactPresentation(title: "Broad provider mode", value: "Yes")))
+        #expect(facts.contains(RunFactPresentation(title: "Commands", value: "astra-browser google-docs-read-document", isMonospaced: true)))
+        #expect(facts.contains(RunFactPresentation(title: "Env keys", value: "GCP_PROJECT, GCP_REGION", isMonospaced: true)))
+    }
+
+    @Test("Run activity presentation suppresses duplicated actionable notices")
+    func runActivityPresentationSuppressesActionableNotices() {
+        let task = makeTask(status: .failed)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        let events = [
+            makeEvent(
+                task: task,
+                type: "error",
+                payload: "Copilot exited with code 1.\n\nProvider error:\nraw stack output",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let notice = activity.notices.first!
+
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices,
+            suppressedNoticeIDs: [notice.id]
+        )
+
+        #expect(presentation.issues.isEmpty)
+        #expect(presentation.technicalOutputs.count == 1)
+        #expect(presentation.technicalOutputs.first?.title == "Run stopped details")
+        #expect(presentation.technicalOutputs.first?.rawPayload.contains("raw stack output") == true)
+    }
+
+    @Test("Long tool results are summarized while preserving raw output")
+    func longToolResultsAreSummarizedWithRawOutput() {
+        let payload = String(repeating: "x", count: 6_000)
+        let summary = PayloadFormatter.summary(for: payload)
+
+        #expect(summary.summary.count <= 243)
+        #expect(summary.summary.hasSuffix("..."))
+        #expect(summary.rawPayload.count == 6_000)
+    }
+
     @Test("Budget warning is visible in run activity")
     func budgetWarningCreatesRunNotice() {
         let task = makeTask()

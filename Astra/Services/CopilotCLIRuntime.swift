@@ -208,7 +208,9 @@ enum CopilotCLIRuntime {
         supportsAllowAllTools: Bool = false,
         requiresAllowAllToolsForPrompt: Bool
     ) -> [String] {
-        let localToolPermissions = copilotShellPermissions(forLocalToolCommands: localToolCommands)
+        let localToolPermissions = shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
+            ? copilotShellPermissions(forLocalToolCommands: localToolCommands)
+            : []
         switch policy {
         case .autonomous:
             if supportsAllowAllTools || requiresAllowAllToolsForPrompt {
@@ -234,6 +236,16 @@ enum CopilotCLIRuntime {
         }
     }
 
+    private static func shouldAddLocalToolPermissions(policy: PermissionPolicy, allowedTools: [String]) -> Bool {
+        if policy == .autonomous {
+            return true
+        }
+        return allowedTools.contains { tool in
+            tool.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Bash") == .orderedSame
+        }
+    }
+
     static func copilotShellPermissions(forLocalToolCommands commands: [String]) -> [String] {
         Array(Set(commands.compactMap(copilotShellPermission(forLocalToolCommand:)))).sorted()
     }
@@ -254,7 +266,9 @@ enum CopilotCLIRuntime {
     }
 
     private static func mapClaudeToolToCopilotPermissions(_ tool: String) -> [String] {
-        switch tool.lowercased() {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        switch lower {
         case "read", "grep", "glob", "ls":
             return ["read"]
         case "write", "edit", "multiedit":
@@ -264,8 +278,13 @@ enum CopilotCLIRuntime {
         case "webfetch", "websearch":
             return ["shell(curl:*)"]
         default:
-            if tool.hasPrefix("shell(") || tool == "read" || tool == "write" {
-                return [tool]
+            if lower.hasPrefix("bash("), lower.hasSuffix(")") {
+                let patternStart = trimmed.index(trimmed.startIndex, offsetBy: "Bash(".count)
+                let pattern = String(trimmed[patternStart..<trimmed.index(before: trimmed.endIndex)])
+                return pattern.isEmpty ? [] : ["shell(\(pattern))"]
+            }
+            if lower.hasPrefix("shell(") || lower == "read" || lower == "write" {
+                return [trimmed]
             }
             return []
         }

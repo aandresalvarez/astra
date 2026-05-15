@@ -25,13 +25,22 @@ enum PermissionPolicy: String, Codable, CaseIterable {
         case .restricted:
             let allow = allowedTools.isEmpty
                 ? ["Read(*)", "Glob(*)", "Grep(*)"]
-                : allowedTools.map { "\($0)(*)" }
+                : allowedTools.compactMap(Self.permissionEntry)
             return [
                 ["allow": allow, "deny": [] as [String]]
             ]
         case .interactive:
             return []
         }
+    }
+
+    private static func permissionEntry(for tool: String) -> String? {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains("("), trimmed.hasSuffix(")") {
+            return trimmed
+        }
+        return "\(trimmed)(*)"
     }
 
     var agentPolicyLevel: AgentPolicyLevel {

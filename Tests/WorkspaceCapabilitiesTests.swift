@@ -406,6 +406,110 @@ struct WorkspaceCapabilitiesTests {
         #expect(packages.map(\.name) == ["Enabled Shared"])
     }
 
+    @Test("disabling a workspace-only capability removes its local skill activation")
+    @MainActor
+    func disablingWorkspaceOnlyCapabilityRemovesLocalSkillActivation() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local Capability", primaryPath: "/tmp/local-capability")
+        context.insert(workspace)
+
+        let skill = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        skill.workspace = workspace
+        context.insert(skill)
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        let package = try #require(CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [],
+            capabilities: capabilities,
+            workspace: workspace
+        ).first)
+
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: context,
+            availablePackages: []
+        )
+        try context.save()
+
+        #expect(result.removedWorkspaceSkillIDs == [skill.id])
+        #expect(workspace.skills.filter { $0.id == skill.id }.isEmpty)
+        #expect(CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [],
+            capabilities: WorkspaceCapabilities(workspace: workspace),
+            workspace: workspace
+        ).isEmpty)
+    }
+
+    @Test("disabling a package removes matching local skill activation")
+    @MainActor
+    func disablingPackageRemovesMatchingLocalSkillActivation() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local Package Match", primaryPath: "/tmp/local-package-match")
+        context.insert(workspace)
+
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.workspace = workspace
+        context.insert(skill)
+
+        let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        workspace.enabledCapabilityIDs = [package.id]
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
+
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: context,
+            availablePackages: [package]
+        )
+        try context.save()
+
+        #expect(result.removedWorkspaceSkillIDs == [skill.id])
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
+        #expect(workspace.skills.filter { $0.id == skill.id }.isEmpty)
+        #expect(CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace)
+        ).isEnabled == false)
+    }
+
+    @Test("disabling one package keeps shared skill active when another enabled package claims it")
+    @MainActor
+    func disablingPackageKeepsSharedSkillClaimedByRemainingPackage() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared Claims", primaryPath: "/tmp/shared-claims")
+        context.insert(workspace)
+
+        let skill = Skill(name: "Shared Analyst", allowedTools: ["Read"])
+        skill.isGlobal = true
+        context.insert(skill)
+
+        let firstPackage = makeCapabilityPackage(id: "first-package", skillName: "Shared Analyst")
+        let secondPackage = makeCapabilityPackage(id: "second-package", skillName: "Shared Analyst")
+        workspace.enabledCapabilityIDs = [firstPackage.id, secondPackage.id]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+
+        let result = CapabilityActivationDisabler().disable(
+            firstPackage,
+            in: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill]),
+            modelContext: context,
+            availablePackages: [firstPackage, secondPackage]
+        )
+
+        #expect(result.disabledSkillIDs.isEmpty)
+        #expect(workspace.enabledCapabilityIDs == [secondPackage.id])
+        #expect(workspace.enabledGlobalSkillIDs == [skill.id.uuidString])
+    }
+
     @Test("catalog inventory does not duplicate capabilities represented by approved packages")
     @MainActor
     func catalogInventorySkipsSkillsRepresentedByApprovedPackages() {
@@ -752,4 +856,31 @@ struct WorkspaceCapabilitiesTests {
         #expect(matchingTools.first?.name == "Shared gcloud")
         #expect(imported.enabledGlobalToolIDs == [toolID.uuidString])
     }
+}
+
+private func makeCapabilityPackage(id: String, skillName: String) -> PluginPackage {
+    PluginPackage(
+        id: id,
+        name: id,
+        icon: "puzzlepiece.extension",
+        description: "Shared skill package",
+        author: "Tests",
+        category: "Tests",
+        tags: [],
+        version: "1.0.0",
+        skills: [PluginSkill(
+            name: skillName,
+            icon: "puzzlepiece.extension",
+            description: "Shared behavior",
+            allowedTools: ["Read"],
+            disallowedTools: [],
+            customTools: [],
+            behaviorInstructions: "Read carefully.",
+            environmentKeys: [],
+            environmentValues: []
+        )],
+        connectors: [],
+        localTools: [],
+        templates: []
+    )
 }

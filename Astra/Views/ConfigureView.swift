@@ -46,6 +46,7 @@ struct ConfigureView: View {
     var workspace: Workspace
     var initialTab: ConfigureTab = .capabilities
     var focusItemID: UUID?
+    var focusCapabilityPackageID: String?
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
@@ -55,6 +56,7 @@ struct ConfigureView: View {
     private var globalTools: [LocalTool]
     @State private var selectedTab: ConfigureTab = .capabilities
     @State private var selectedFocusItemID: UUID?
+    @State private var selectedFocusCapabilityPackageID: String?
     @State private var libraryCapabilityPackages: [PluginPackage] = []
 
     private var capabilities: WorkspaceCapabilities {
@@ -75,9 +77,8 @@ struct ConfigureView: View {
     }
 
     private var configureCapabilityPackages: [PluginPackage] {
-        CapabilityCatalogInventory.packages(
-            catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages,
-            capabilities: capabilities
+        CapabilityGalleryInventory.packages(
+            catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages
         )
     }
 
@@ -104,14 +105,25 @@ struct ConfigureView: View {
         )
     }
 
+    private var headerTitle: String {
+        selectedTab == .capabilities ? "Manage Capabilities" : selectedTab.rawValue
+    }
+
+    private var headerSubtitle: String {
+        if selectedTab == .capabilities {
+            return "\(workspace.name) · \(configureCapabilityPackages.count) available · \(enabledCapabilityCount) enabled"
+        }
+        return "\(workspace.name) · \(selectedTab.subtitle)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Configure")
+                    Text(headerTitle)
                         .font(Stanford.heading(24))
                         .foregroundStyle(Stanford.black)
-                    Text(workspace.name)
+                    Text(headerSubtitle)
                         .font(Stanford.caption(13))
                         .foregroundStyle(.secondary)
                 }
@@ -126,59 +138,14 @@ struct ConfigureView: View {
 
             Divider()
 
-            NavigationSplitView {
-                List(ConfigureTab.allCases, id: \.self, selection: $selectedTab) { tab in
-                    ConfigureSidebarRow(
-                        tab: tab,
-                        count: count(for: tab)
-                    )
-                    .tag(tab)
-                }
-                .listStyle(.sidebar)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 260)
-            } detail: {
-                ZStack(alignment: .topLeading) {
-                    switch selectedTab {
-                    case .capabilities:
-                        CapabilitiesTabContent(
-                            workspace: workspace,
-                            onCatalogChanged: { reloadCapabilityPackages() },
-                            onEditElement: { tab, itemID in
-                                selectedFocusItemID = itemID
-                                selectedTab = tab
-                            }
-                        )
-                    case .connectors:
-                        ConnectorsTabContent(
-                            workspace: workspace,
-                            focusItemID: selectedFocusItemID,
-                            onManageCapabilities: {
-                                selectedFocusItemID = nil
-                                selectedTab = .capabilities
-                            }
-                        )
-                    case .tools:
-                        ToolsTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
-                    case .skills:
-                        SkillsTabContent(
-                            workspace: workspace,
-                            focusItemID: selectedFocusItemID,
-                            onManageCapabilities: {
-                                selectedFocusItemID = nil
-                                selectedTab = .capabilities
-                            }
-                        )
-                    case .templates:
-                        TemplatesTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
-                    }
-                }
+            configureContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
         }
-        .frame(minWidth: 1080, idealWidth: 1260, maxWidth: 1440, minHeight: 720, idealHeight: 820)
+        .frame(minWidth: 1040, idealWidth: 1180, maxWidth: 1320, minHeight: 760, idealHeight: 880)
         .onAppear {
             selectedTab = initialTab
             selectedFocusItemID = focusItemID
+            selectedFocusCapabilityPackageID = focusCapabilityPackageID
             reloadCapabilityPackages()
         }
     }
@@ -195,40 +162,97 @@ struct ConfigureView: View {
             fields: ["package_count": String(libraryCapabilityPackages.count)]
         )
     }
-}
 
-private struct ConfigureSidebarRow: View {
-    let tab: ConfigureTab
-    let count: Int
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: tab.icon)
-                .font(Stanford.ui(14))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tab.rawValue)
-                    .font(Stanford.body(14).weight(.medium))
-                    .foregroundStyle(.primary)
-                Text(tab.subtitle)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    @ViewBuilder
+    private var configureContent: some View {
+        switch selectedTab {
+        case .capabilities:
+            CapabilitiesTabContent(
+                workspace: workspace,
+                focusPackageID: selectedFocusCapabilityPackageID,
+                onCatalogChanged: { reloadCapabilityPackages() },
+                onPackageFocusChanged: { selectedFocusCapabilityPackageID = $0 },
+                onEditElement: { tab, itemID in
+                    selectedFocusItemID = itemID
+                    selectedFocusCapabilityPackageID = nil
+                    selectedTab = tab
+                }
+            )
+        case .connectors:
+            resourceConfigurationContent(.connectors) {
+                ConnectorsTabContent(
+                    workspace: workspace,
+                    focusItemID: selectedFocusItemID,
+                    onManageCapabilities: showCapabilities
+                )
             }
-
-            Spacer(minLength: 0)
-
-            Text("\(count)")
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(Color.primary.opacity(0.05))
-                .clipShape(Capsule())
+        case .tools:
+            resourceConfigurationContent(.tools) {
+                ToolsTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
+            }
+        case .skills:
+            resourceConfigurationContent(.skills) {
+                SkillsTabContent(
+                    workspace: workspace,
+                    focusItemID: selectedFocusItemID,
+                    onManageCapabilities: showCapabilities
+                )
+            }
+        case .templates:
+            resourceConfigurationContent(.templates) {
+                TemplatesTabContent(workspace: workspace, focusItemID: selectedFocusItemID)
+            }
         }
-        .padding(.vertical, 4)
+    }
+
+    private func resourceConfigurationContent<Content: View>(
+        _ tab: ConfigureTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    showCapabilities()
+                } label: {
+                    Label("Capabilities", systemImage: "chevron.left")
+                        .font(Stanford.body(13).weight(.medium))
+                }
+                .buttonStyle(.bordered)
+
+                ConfigureCardIcon(systemName: tab.icon, color: tab.color)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tab.rawValue)
+                        .font(Stanford.heading(20))
+                        .foregroundStyle(Stanford.black)
+                    Text(tab.subtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text("\(count(for: tab)) active")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            content()
+        }
+    }
+
+    private func showCapabilities() {
+        selectedFocusItemID = nil
+        selectedFocusCapabilityPackageID = nil
+        selectedTab = .capabilities
     }
 }
 
@@ -337,7 +361,9 @@ private struct ConfigureCardChip: View {
 
 struct CapabilitiesTabContent: View {
     var workspace: Workspace
+    var focusPackageID: String?
     var onCatalogChanged: () -> Void = {}
+    var onPackageFocusChanged: (String?) -> Void = { _ in }
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
     @State private var catalog = PluginCatalog()
 
@@ -347,7 +373,9 @@ struct CapabilitiesTabContent: View {
             catalog: catalog,
             focus: .all,
             presentation: .embedded,
+            focusedPackageID: focusPackageID,
             onCatalogChanged: onCatalogChanged,
+            onPackageFocusChanged: onPackageFocusChanged,
             onEditElement: onEditElement
         )
     }

@@ -41,6 +41,18 @@ struct PermissionPolicyTests {
         #expect(!allow.contains("Bash(*)"))
     }
 
+    @Test("Restricted sub-agent permissions preserve scoped tool grants")
+    func restrictedSubAgentPreservesScopedToolGrants() {
+        let perms = PermissionPolicy.restricted.subAgentPermissions(
+            allowedTools: ["Read", "Bash(gh:*)"]
+        )
+        let allow = perms[0]["allow"] as? [String] ?? []
+
+        #expect(allow.contains("Read(*)"))
+        #expect(allow.contains("Bash(gh:*)"))
+        #expect(!allow.contains("Bash(gh:*)(*)"))
+    }
+
     @Test("Interactive sub-agent returns empty permissions")
     func interactiveSubAgent() {
         let perms = PermissionPolicy.interactive.subAgentPermissions(allowedTools: ["Read"])
@@ -274,6 +286,24 @@ struct LegacyCredentialTests {
         let transport = RecordingConnectorHTTPTransport()
 
         let result = await connector.testConnection(store: store, transport: transport)
+
+        #expect(!result.0)
+        #expect(result.1.contains("HTTPS"))
+        #expect(transport.requests.isEmpty)
+    }
+
+    @Test("Connector credential keys require protected transport even with auth none")
+    func credentialKeysRequireProtectedTransportEvenWithAuthNone() async {
+        let connector = Connector(
+            name: "Misconfigured API",
+            serviceType: "rest_api",
+            baseURL: "http://evil.example/api",
+            authMethod: "none"
+        )
+        connector.credentialKeys = ["API_TOKEN"]
+        let transport = RecordingConnectorHTTPTransport()
+
+        let result = await connector.testConnection(store: MockSecretStore(), transport: transport)
 
         #expect(!result.0)
         #expect(result.1.contains("HTTPS"))

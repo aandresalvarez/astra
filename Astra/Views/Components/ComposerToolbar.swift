@@ -12,6 +12,7 @@ struct ComposerToolbar: View {
     var availableSkills: [Skill] = []
     var workspace: Workspace?
     var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    var taskStatus: TaskStatus?
     let isRunning: Bool
     let hasInput: Bool
     let onAttachFile: () -> Void
@@ -68,6 +69,7 @@ struct ComposerToolbar: View {
 
             Spacer(minLength: 8)
 
+            taskStatusPill
             runtimeStatusPill
             submitArea
         }
@@ -178,6 +180,28 @@ struct ComposerToolbar: View {
 
     private var runtimeStatusPill: some View {
         modelBudgetPill(compact: false)
+    }
+
+    @ViewBuilder
+    private var taskStatusPill: some View {
+        if let status = taskStatus,
+           let presentation = taskStatusPresentation(for: status) {
+            HStack(spacing: 5) {
+                Image(systemName: presentation.icon)
+                    .font(Stanford.ui(11, weight: .semibold))
+                Text(presentation.label)
+                    .font(Stanford.caption(12).weight(.medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(presentation.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(presentation.color.opacity(0.10))
+            .clipShape(Capsule())
+            .help(presentation.help)
+            .accessibilityLabel("Task status")
+            .accessibilityValue(presentation.label)
+        }
     }
 
     private func modelBudgetPill(compact: Bool) -> some View {
@@ -772,6 +796,48 @@ struct ComposerToolbar: View {
         switch runtime {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
+        }
+    }
+
+    private func taskStatusPresentation(for status: TaskStatus) -> (label: String, icon: String, color: Color, help: String)? {
+        switch status {
+        case .pendingUser:
+            return (
+                "Needs input",
+                "person.crop.circle.badge.questionmark",
+                Stanford.poppy,
+                "The task is waiting for your review or approval."
+            )
+        case .failed:
+            return (
+                "Failed",
+                "exclamationmark.triangle.fill",
+                Stanford.cardinalRed,
+                "The task stopped with an error. Resume or retry when ready."
+            )
+        case .budgetExceeded:
+            return (
+                "Budget exceeded",
+                "exclamationmark.triangle.fill",
+                Stanford.cardinalRed,
+                "The task ran out of token budget. Raise the budget, resume, or retry."
+            )
+        case .cancelled:
+            return (
+                "Cancelled",
+                "xmark.circle.fill",
+                Stanford.coolGrey,
+                "The task was stopped before completion."
+            )
+        case .completed:
+            return (
+                "Completed",
+                "checkmark.circle.fill",
+                Stanford.paloAltoGreen,
+                "The task completed."
+            )
+        case .draft, .queued, .running:
+            return nil
         }
     }
 

@@ -129,6 +129,20 @@ struct SkillResolutionTests {
         #expect(!resolved.contains("Bash"))
     }
 
+    @Test("Disallowed tools from model skills match case-insensitively")
+    func disallowedWinsCaseInsensitively() {
+        let task = makeTask()
+        let skill = makeSkill(
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["bash"]
+        )
+        task.skills = [skill]
+
+        let resolved = Set(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools)
+
+        #expect(resolved == Set(["Read"]))
+    }
+
     @Test("Multiple skills union allowed tools")
     func multipleSkillsUnion() {
         let task = makeTask()
