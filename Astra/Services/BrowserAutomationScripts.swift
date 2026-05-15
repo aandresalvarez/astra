@@ -1,6 +1,166 @@
 import Foundation
 
 enum BrowserAutomationScripts {
+    static let debugInstrumentationScript = """
+    (() => {
+      if (window.__astraDebugInstalled) return true;
+      window.__astraDebugInstalled = true;
+      const maxEvents = 80;
+      const trim = (value, max = 500) => String(value ?? "").replace(/\\s+/g, " ").trim().slice(0, max);
+      const now = () => new Date().toISOString();
+      const redactedURL = (value) => {
+        try {
+          const url = new URL(String(value), location.href);
+          url.username = "";
+          url.password = "";
+          url.search = "";
+          url.hash = "";
+          return url.toString();
+        } catch (_) {
+          return trim(value, 300);
+        }
+      };
+      const push = (name, event) => {
+        const bucketName = "__astra" + name;
+        const bucket = Array.isArray(window[bucketName]) ? window[bucketName] : [];
+        bucket.push(Object.assign({ timestamp: now() }, event));
+        while (bucket.length > maxEvents) bucket.shift();
+        window[bucketName] = bucket;
+      };
+
+      window.__astraConsoleEvents = Array.isArray(window.__astraConsoleEvents) ? window.__astraConsoleEvents : [];
+      window.__astraNavigationEvents = Array.isArray(window.__astraNavigationEvents) ? window.__astraNavigationEvents : [];
+      window.__astraNetworkEvents = Array.isArray(window.__astraNetworkEvents) ? window.__astraNetworkEvents : [];
+
+      const wrapConsole = (level) => {
+        const original = console[level];
+        if (typeof original !== "function") return;
+        console[level] = function(...args) {
+          try {
+            push("ConsoleEvents", {
+              level,
+              message: trim(args.map((arg) => {
+                if (arg instanceof Error) return arg.name + ": " + arg.message;
+                if (typeof arg === "string") return arg;
+                try { return JSON.stringify(arg); } catch (_) { return String(arg); }
+              }).join(" "), 700)
+            });
+          } catch (_) {}
+          return original.apply(this, args);
+        };
+      };
+      wrapConsole("error");
+      wrapConsole("warn");
+
+      window.addEventListener("error", (event) => {
+        push("ConsoleEvents", {
+          level: "pageerror",
+          message: trim(event.message || event.error?.message || "error", 700),
+          source: redactedURL(event.filename || ""),
+          line: event.lineno || 0,
+          column: event.colno || 0
+        });
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        push("ConsoleEvents", {
+          level: "unhandledrejection",
+          message: trim(event.reason?.message || event.reason || "unhandled rejection", 700)
+        });
+      });
+      for (const type of ["DOMContentLoaded", "load", "hashchange", "popstate", "beforeunload"]) {
+        window.addEventListener(type, () => {
+          push("NavigationEvents", { type, url: redactedURL(location.href) });
+        });
+      }
+
+      if (typeof window.fetch === "function" && !window.fetch.__astraWrapped) {
+        const originalFetch = window.fetch;
+        const wrappedFetch = async function(input, init) {
+          const started = Date.now();
+          const method = trim(init?.method || input?.method || "GET", 20);
+          const url = redactedURL(input?.url || input);
+          try {
+            const response = await originalFetch.apply(this, arguments);
+            if (!response.ok) {
+              push("NetworkEvents", {
+                type: "fetch",
+                method,
+                url,
+                status: response.status,
+                elapsedMs: Date.now() - started
+              });
+            }
+            return response;
+          } catch (error) {
+            push("NetworkEvents", {
+              type: "fetch",
+              method,
+              url,
+              error: trim(error?.message || error, 500),
+              elapsedMs: Date.now() - started
+            });
+            throw error;
+          }
+        };
+        wrappedFetch.__astraWrapped = true;
+        window.fetch = wrappedFetch;
+      }
+
+      if (window.XMLHttpRequest && !window.XMLHttpRequest.prototype.__astraWrapped) {
+        const originalOpen = window.XMLHttpRequest.prototype.open;
+        const originalSend = window.XMLHttpRequest.prototype.send;
+        window.XMLHttpRequest.prototype.open = function(method, url) {
+          this.__astraRequest = { method: trim(method || "GET", 20), url: redactedURL(url), started: Date.now() };
+          return originalOpen.apply(this, arguments);
+        };
+        window.XMLHttpRequest.prototype.send = function() {
+          const request = this.__astraRequest || { method: "GET", url: "", started: Date.now() };
+          this.addEventListener("loadend", () => {
+            if (this.status >= 400) {
+              push("NetworkEvents", {
+                type: "xhr",
+                method: request.method,
+                url: request.url,
+                status: this.status,
+                elapsedMs: Date.now() - request.started
+              });
+            }
+          });
+          this.addEventListener("error", () => {
+            push("NetworkEvents", {
+              type: "xhr",
+              method: request.method,
+              url: request.url,
+              error: "network_error",
+              elapsedMs: Date.now() - request.started
+            });
+          });
+          return originalSend.apply(this, arguments);
+        };
+        window.XMLHttpRequest.prototype.__astraWrapped = true;
+      }
+
+      push("NavigationEvents", { type: "instrumented", url: redactedURL(location.href) });
+      return true;
+    })()
+    """
+
+    static var debugReadScript: String {
+        """
+    (() => {
+      try { \(debugInstrumentationScript); } catch (_) {}
+      return JSON.stringify({
+        ok: true,
+        url: location.href,
+        title: document.title,
+        consoleEvents: Array.isArray(window.__astraConsoleEvents) ? window.__astraConsoleEvents.slice(-80) : [],
+        navigationEvents: Array.isArray(window.__astraNavigationEvents) ? window.__astraNavigationEvents.slice(-80) : [],
+        networkEvents: Array.isArray(window.__astraNetworkEvents) ? window.__astraNetworkEvents.slice(-80) : []
+      });
+    })()
+    """
+    }
+
     static let snapshotScript = """
     (() => {
       const esc = (value) => {

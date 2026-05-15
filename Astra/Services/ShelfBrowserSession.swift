@@ -107,11 +107,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
     private var lastBrowserTrace: [String: Any]?
+    private var lastBrowserDebugCapture: [String: Any]?
     private var browserFlightRecorder = BrowserFlightRecorder()
     private var lastPageFingerprint: String?
     private var lastLoggedURL = ""
     private var keypressSafetyState = BrowserKeypressSafetyState()
     private var browserRunGuard = BrowserRunGuard()
+    private var isWebKitDebugInstrumentationScriptRegistered = false
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
@@ -258,6 +260,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         browserRunGuard.reset()
         browserFlightRecorder.reset()
         lastBrowserTrace = nil
+        lastBrowserDebugCapture = nil
         publishBridgeState()
     }
 
@@ -714,12 +717,24 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return await handleBridgeRequestCore(request)
         }
 
+        let debugCapturePolicy = BrowserFailureDebugCapture.policy(for: request)
+        await installBrowserDebugInstrumentationIfNeeded(policy: debugCapturePolicy)
+
         let started = Date()
         let before = browserFlightPageSnapshot()
         let response = await handleBridgeRequestCore(request)
+        let result = Self.responseObject(from: response)
+        let debugCapture = await browserFailureDebugCapture(
+            policy: debugCapturePolicy,
+            request: request,
+            response: response,
+            result: result
+        )
         recordBrowserFlightStep(
             request: request,
             response: response,
+            result: result,
+            debugCapture: debugCapture,
             before: before,
             started: started
         )
@@ -751,6 +766,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             health["browserFlightRecorder"] = browserFlightRecorder.snapshot()
             if let lastBrowserTrace {
                 health["lastBrowserTrace"] = lastBrowserTrace
+            }
+            if let lastBrowserDebugCapture {
+                health["lastBrowserDebugCapture"] = lastBrowserDebugCapture
             }
             if let debugPort = controlledBrowser.debugPort {
                 health["controlledBrowserDebugPort"] = Int(debugPort)
@@ -792,7 +810,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     [
                         "method": "GET",
                         "path": "/trace",
-                        "description": "Return the most recent compact browser action trace and the retained per-task browser flight timeline for supervision."
+                        "description": "Return the most recent compact browser action trace and the retained per-task browser flight timeline for supervision. With ASTRA_BROWSER_DEBUG_CAPTURE=1, failed browser actions also retain a privacy-redacted screenshot thumbnail, compact tree, and console/navigation/network events."
                     ],
                     [
                         "method": "GET",
@@ -1011,6 +1029,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 var response: [String: Any] = ["ok": true]
                 response["trace"] = lastBrowserTrace ?? NSNull()
                 response["flight"] = browserFlightRecorder.snapshot()
+                response["lastDebugCapture"] = lastBrowserDebugCapture ?? NSNull()
                 return .json(response)
             case ("GET", "/benchmark"):
                 return .json(browserBenchmarkSuite())
@@ -1407,13 +1426,160 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
     }
 
+    private func installBrowserDebugInstrumentationIfNeeded(policy: BrowserFailureDebugCapture.Policy) async {
+        guard policy.isEnabled else { return }
+        do {
+            if isUsingControlledBrowser {
+                try await controlledBrowser.installDebugInstrumentation()
+            } else {
+                if !isWebKitDebugInstrumentationScriptRegistered {
+                    let userScript = WKUserScript(
+                        source: BrowserAutomationScripts.debugInstrumentationScript,
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: false
+                    )
+                    webView.configuration.userContentController.addUserScript(userScript)
+                    isWebKitDebugInstrumentationScriptRegistered = true
+                }
+                _ = try await evaluateJavaScriptString(BrowserAutomationScripts.debugInstrumentationScript)
+            }
+        } catch {
+            AppLogger.audit(
+                .shelfBrowserAction,
+                category: "Browser",
+                taskID: boundTaskID,
+                fields: [
+                    "phase": "failed",
+                    "action": "browser_debug_instrumentation",
+                    "error": error.localizedDescription
+                ],
+                level: .debug
+            )
+        }
+    }
+
+    private func browserFailureDebugCapture(
+        policy: BrowserFailureDebugCapture.Policy,
+        request: BrowserBridgeRequest,
+        response: BrowserBridgeResponse,
+        result: [String: Any]?
+    ) async -> [String: Any]? {
+        guard BrowserFailureDebugCapture.shouldCapture(statusCode: response.statusCode, result: result) else {
+            return nil
+        }
+
+        let page = browserFlightPageSnapshot(result: result)
+        guard policy.isEnabled else {
+            let capture = BrowserFailureDebugCapture.skippedCapture(
+                policy: policy,
+                request: request,
+                statusCode: response.statusCode,
+                result: result,
+                page: page
+            )
+            lastBrowserDebugCapture = capture
+            return capture
+        }
+
+        var capture = BrowserFailureDebugCapture.captureEnvelope(
+            policy: policy,
+            request: request,
+            statusCode: response.statusCode,
+            result: result,
+            page: page
+        )
+        var captureErrors: [String: String] = [:]
+
+        do {
+            let debugEventsJSON = isUsingControlledBrowser
+                ? try await controlledBrowser.debugEvents()
+                : try await evaluateJavaScriptString(BrowserAutomationScripts.debugReadScript)
+            capture["debugEvents"] = BrowserFailureDebugCapture.compactDebugEvents(
+                from: try Self.jsonObject(from: debugEventsJSON)
+            )
+        } catch {
+            captureErrors["debugEvents"] = error.localizedDescription
+        }
+
+        do {
+            if isUsingControlledBrowser {
+                let base64 = try await controlledBrowser.screenshotJPEGBase64()
+                if let screenshot = BrowserFailureDebugCapture.screenshotObject(
+                    fromBase64JPEG: base64,
+                    source: "controlled_chromium_viewport"
+                ) {
+                    capture["screenshot"] = screenshot
+                } else {
+                    captureErrors["screenshot"] = "controlled_browser_screenshot_decode_failed"
+                }
+            } else {
+                let image = try await embeddedSnapshotImage()
+                if let screenshot = BrowserFailureDebugCapture.screenshotObject(
+                    from: image,
+                    source: "embedded_webkit_viewport"
+                ) {
+                    capture["screenshot"] = screenshot
+                } else {
+                    captureErrors["screenshot"] = "embedded_webkit_screenshot_encode_failed"
+                }
+            }
+        } catch {
+            captureErrors["screenshot"] = error.localizedDescription
+        }
+
+        do {
+            capture["snapshotTree"] = BrowserFailureDebugCapture.compactSnapshotTree(
+                from: try await rawSnapshotObject()
+            )
+        } catch {
+            captureErrors["snapshotTree"] = error.localizedDescription
+        }
+
+        if let accessibilitySnapshot = await rawAccessibilitySnapshotObject() {
+            capture["accessibilityTree"] = BrowserFailureDebugCapture.compactAccessibilityTree(
+                from: accessibilitySnapshot
+            )
+        } else if isUsingControlledBrowser {
+            captureErrors["accessibilityTree"] = "accessibility_snapshot_unavailable"
+        }
+
+        if !captureErrors.isEmpty {
+            capture["captureErrors"] = captureErrors
+        }
+
+        lastBrowserDebugCapture = capture
+        return capture
+    }
+
+    private func embeddedSnapshotImage() async throws -> NSImage {
+        try await withCheckedThrowingContinuation { continuation in
+            webView.takeSnapshot(with: nil) { image, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let image {
+                    continuation.resume(returning: image)
+                } else {
+                    continuation.resume(throwing: CocoaError(.coderInvalidValue))
+                }
+            }
+        }
+    }
+
+    private static func responseObject(from response: BrowserBridgeResponse) -> [String: Any]? {
+        guard let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
     private func recordBrowserFlightStep(
         request: BrowserBridgeRequest,
         response: BrowserBridgeResponse,
+        result: [String: Any]?,
+        debugCapture: [String: Any]?,
         before: BrowserFlightPageSnapshot,
         started: Date
     ) {
-        let result = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
         let after = browserFlightPageSnapshot(result: result)
         let runGuard = result?["runGuard"] as? [String: Any]
         let trace = result?["browserTrace"] as? [String: Any]
@@ -1426,7 +1592,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             duration: Date().timeIntervalSince(started),
             result: result,
             runGuard: runGuard,
-            lastBrowserTraceID: browserTraceID
+            lastBrowserTraceID: browserTraceID,
+            debugCapture: debugCapture
         )
         AppLogger.audit(
             .shelfBrowserAction,

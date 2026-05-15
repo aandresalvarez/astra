@@ -60,7 +60,8 @@ struct BrowserFlightRecorder {
         duration: TimeInterval,
         result: [String: Any]?,
         runGuard: [String: Any]? = nil,
-        lastBrowserTraceID: String? = nil
+        lastBrowserTraceID: String? = nil,
+        debugCapture: [String: Any]? = nil
     ) -> [String: Any] {
         totalSteps += 1
         var entry: [String: Any] = [
@@ -115,6 +116,9 @@ struct BrowserFlightRecorder {
         }
         if let lastBrowserTraceID, !lastBrowserTraceID.isEmpty {
             entry["browserTraceID"] = lastBrowserTraceID
+        }
+        if let debugCapture {
+            entry["debugCapture"] = debugCapture
         }
 
         entries.append(entry)
