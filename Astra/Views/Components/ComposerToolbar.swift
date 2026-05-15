@@ -12,6 +12,7 @@ struct ComposerToolbar: View {
     var availableSkills: [Skill] = []
     var workspace: Workspace?
     var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
+    var taskStatus: TaskStatus?
     let isRunning: Bool
     let hasInput: Bool
     let onAttachFile: () -> Void
@@ -68,6 +69,7 @@ struct ComposerToolbar: View {
 
             Spacer(minLength: 8)
 
+            taskStatusPill
             runtimeStatusPill
             submitArea
         }
@@ -178,6 +180,28 @@ struct ComposerToolbar: View {
 
     private var runtimeStatusPill: some View {
         modelBudgetPill(compact: false)
+    }
+
+    @ViewBuilder
+    private var taskStatusPill: some View {
+        if let status = taskStatus,
+           let presentation = taskStatusPresentation(for: status) {
+            HStack(spacing: 5) {
+                Image(systemName: presentation.icon)
+                    .font(Stanford.ui(11))
+                Text(presentation.label)
+                    .font(Stanford.chatMeta(12))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(presentation.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(presentation.color.opacity(0.10))
+            .clipShape(Capsule())
+            .help(presentation.help)
+            .accessibilityLabel("Task status")
+            .accessibilityValue(presentation.label)
+        }
     }
 
     private func modelBudgetPill(compact: Bool) -> some View {
@@ -307,19 +331,19 @@ struct ComposerToolbar: View {
                     .frame(width: 14, height: 14)
             } else {
                 Image(systemName: "cpu")
-                    .font(Stanford.ui(11, weight: .medium))
+                    .font(Stanford.ui(11))
             }
 
             switch style {
             case .full:
                 Text(runtimeStatusText(includeRuntime: true))
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.chatMeta(12))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 260, alignment: .trailing)
             case .medium:
                 Text(runtimeStatusText(includeRuntime: false))
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.chatMeta(12))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 180, alignment: .trailing)
@@ -362,12 +386,12 @@ struct ComposerToolbar: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     Image(systemName: currentPolicyLevel.symbolName)
-                        .font(Stanford.ui(12, weight: .semibold))
+                        .font(Stanford.ui(12))
                     Text(currentPolicyLevel.displayName)
-                        .font(Stanford.caption(13).weight(.medium))
+                        .font(Stanford.chatMeta(13))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
-                        .font(Stanford.ui(9, weight: .bold))
+                        .font(Stanford.ui(9))
                 }
             }
             .foregroundStyle(policyColor(currentPolicyLevel))
@@ -400,7 +424,7 @@ struct ComposerToolbar: View {
         case .review: Stanford.paloAltoGreen
         case .build: Stanford.lagunita
         case .network: Stanford.sky
-        case .autonomous: Stanford.poppy
+        case .autonomous: Stanford.lagunita
         case .custom: Stanford.plum
         }
     }
@@ -420,7 +444,7 @@ struct ComposerToolbar: View {
                         .fixedSize(horizontal: true, vertical: false)
                 } else if useAgentTeam {
                     Text("×\(teamSize)")
-                        .font(Stanford.caption(11).weight(.semibold))
+                        .font(Stanford.caption(11))
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
@@ -451,14 +475,14 @@ struct ComposerToolbar: View {
         Toggle(isOn: $isPlanMode) {
             HStack(spacing: 4) {
                 Image(systemName: "text.badge.checkmark")
-                    .font(Stanford.ui(11, weight: .medium))
+                    .font(Stanford.ui(11))
                 if !compact {
                     Text("Plan mode")
-                        .font(Stanford.caption(13))
+                        .font(Stanford.chatMeta(13))
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
-            .foregroundStyle(isPlanMode ? Stanford.cardinalRed : Stanford.coolGrey)
+            .foregroundStyle(isPlanMode ? Stanford.lagunita : Stanford.coolGrey)
             .fixedSize()
         }
         .toggleStyle(.switch)
@@ -492,7 +516,7 @@ struct ComposerToolbar: View {
                         }
                     } label: {
                         Text("+\(sorted.count - visibleSkillLimit)")
-                            .font(Stanford.caption(11))
+                            .font(Stanford.chatMeta())
                             .foregroundStyle(Stanford.lagunita)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -521,9 +545,9 @@ struct ComposerToolbar: View {
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "puzzlepiece.fill")
-                        .font(Stanford.ui(10, weight: .medium))
+                        .font(Stanford.ui(10))
                     Text("\(sorted.count)")
-                        .font(Stanford.caption(11).weight(.semibold))
+                        .font(Stanford.chatMeta())
                         .fixedSize(horizontal: true, vertical: false)
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -546,7 +570,7 @@ struct ComposerToolbar: View {
     private func skillChip(_ skill: Skill) -> some View {
         HStack(spacing: 3) {
             Text(skill.name)
-                .font(Stanford.caption(11))
+                .font(Stanford.chatMeta())
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: 90)
@@ -555,7 +579,7 @@ struct ComposerToolbar: View {
                 onRemoveSkill?(skill)
             } label: {
                 Image(systemName: "xmark")
-                    .font(Stanford.ui(10, weight: .bold))
+                    .font(Stanford.ui(10))
                     .foregroundStyle(Stanford.lagunita.opacity(0.6))
             }
             .buttonStyle(.plain)
@@ -598,18 +622,18 @@ struct ComposerToolbar: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(Stanford.ui(10, weight: .medium))
+                    .font(Stanford.ui(10))
                     .foregroundStyle(statusColor)
                 if compact {
                     if !connected.isEmpty && connected.count > 1 {
                         Text("\(connected.count)")
-                            .font(Stanford.caption(11).weight(.semibold))
+                            .font(Stanford.chatMeta())
                             .foregroundStyle(statusColor)
                             .fixedSize(horizontal: true, vertical: false)
                     }
                 } else {
                     Text(label)
-                        .font(Stanford.caption(11))
+                        .font(Stanford.chatMeta())
                         .lineLimit(1)
                         .foregroundStyle(statusColor)
                         .fixedSize(horizontal: true, vertical: false)
@@ -653,10 +677,9 @@ struct ComposerToolbar: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: submitIcon)
-                        .font(Stanford.ui(14, weight: .semibold))
+                        .font(Stanford.ui(14))
                     Text(submitTitle)
-                        .font(Stanford.body(15))
-                        .fontWeight(.medium)
+                        .font(Stanford.chatBody(15))
                 }
                 .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.55))
                 .padding(.horizontal, 16)
@@ -772,6 +795,48 @@ struct ComposerToolbar: View {
         switch runtime {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
+        }
+    }
+
+    private func taskStatusPresentation(for status: TaskStatus) -> (label: String, icon: String, color: Color, help: String)? {
+        switch status {
+        case .pendingUser:
+            return (
+                "Needs input",
+                "person.crop.circle.badge.questionmark",
+                Stanford.poppy,
+                "The task is waiting for your review or approval."
+            )
+        case .failed:
+            return (
+                "Failed",
+                "exclamationmark.triangle.fill",
+                Stanford.cardinalRed,
+                "The task stopped with an error. Resume or retry when ready."
+            )
+        case .budgetExceeded:
+            return (
+                "Budget exceeded",
+                "exclamationmark.triangle.fill",
+                Stanford.cardinalRed,
+                "The task ran out of token budget. Raise the budget, resume, or retry."
+            )
+        case .cancelled:
+            return (
+                "Cancelled",
+                "xmark.circle.fill",
+                Stanford.coolGrey,
+                "The task was stopped before completion."
+            )
+        case .completed:
+            return (
+                "Completed",
+                "checkmark.circle.fill",
+                Stanford.paloAltoGreen,
+                "The task completed."
+            )
+        case .draft, .queued, .running:
+            return nil
         }
     }
 

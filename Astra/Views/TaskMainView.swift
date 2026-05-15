@@ -80,6 +80,7 @@ struct TaskMainView: View {
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
+    @State private var expandedRunNotices: Set<UUID> = []
     @State private var showScheduleEditor = false
     @State private var scheduleCreationTaskID: UUID?
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
@@ -247,6 +248,19 @@ struct TaskMainView: View {
         let latestOutputCount = currentThreadSnapshot.latestRun?.output.count ?? 0
         let latestStatus = currentThreadSnapshot.latestRun?.status.rawValue ?? "none"
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
+    }
+
+    private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
+        width < 760 ? 12 : 18
+    }
+
+    private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
+        let horizontalPadding = chatHorizontalPadding(for: width) * 2
+        let usableWidth = max(320, width - horizontalPadding)
+        guard usableWidth >= 860 else { return usableWidth }
+
+        let proportionalWidth = max(900, usableWidth * 0.78)
+        return min(usableWidth, proportionalWidth, 1280)
     }
 
     var body: some View {
@@ -887,8 +901,8 @@ struct TaskMainView: View {
                             .id("chatBottom")
                             .background(chatBottomPositionReader())
                     }
-                    .frame(maxWidth: 780)
-                    .padding(.horizontal, 18)
+                    .frame(maxWidth: Self.chatColumnMaxWidth(for: viewport.size.width), alignment: .leading)
+                    .padding(.horizontal, Self.chatHorizontalPadding(for: viewport.size.width))
                     .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 }
@@ -965,7 +979,7 @@ struct TaskMainView: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: isThreadStatusExpanded ? "chevron.down" : "chevron.right")
-                            .font(Stanford.ui(10, weight: .semibold))
+                            .font(Stanford.ui(10))
                             .frame(width: 12)
 
                         if task.status == .running && !runtimeHealth.isAttentionState {
@@ -974,20 +988,20 @@ struct TaskMainView: View {
                                 .frame(width: 14, height: 14)
                         } else {
                             Image(systemName: threadStatusIcon)
-                                .font(Stanford.ui(12, weight: .semibold))
+                                .font(Stanford.ui(12))
                                 .frame(width: 14)
                         }
 
                         Text("Task status")
-                            .font(Stanford.caption(12).weight(.semibold))
+                            .font(Stanford.chatSection())
                         Text(summary)
-                            .font(Stanford.caption(11).weight(.medium))
+                            .font(Stanford.chatMeta())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         if count > 1 {
                             Text("\(count)")
-                                .font(Stanford.caption(10).weight(.semibold))
+                                .font(Stanford.chatMeta(10))
                                 .foregroundStyle(accent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
@@ -1066,15 +1080,6 @@ struct TaskMainView: View {
                 )
             }
 
-            if task.isTerminal && task.status != .completed {
-                threadStatusDetailRow(
-                    title: terminalStatusLabel,
-                    detail: nil,
-                    icon: terminalStatusIcon,
-                    color: terminalStatusColor
-                )
-            }
-
             if let statusMsg = currentScheduleStatusMessage {
                 threadStatusAttributedRow(
                     text: MarkdownTextView.markdownAttributed(statusMsg),
@@ -1107,7 +1112,8 @@ struct TaskMainView: View {
         }
         let activity = currentThreadSnapshot.activity(for: run)
         let notices = runNoticesToDisplay(activity.notices, for: run)
-        return shouldShowRunActivityDisclosure(activity: activity, notices: notices)
+        let presentation = RunActivityPresentation(run: run, activity: activity, notices: notices)
+        return shouldShowRunActivityDisclosure(presentation)
     }
 
     private var threadStatusCount: Int {
@@ -1117,7 +1123,6 @@ struct TaskMainView: View {
         if isCreatingScheduleForCurrentTask { count += 1 }
         if isGeneratingRecap { count += 1 }
         if recapStatusMessage != nil { count += 1 }
-        if task.isTerminal && task.status != .completed { count += 1 }
         if currentScheduleStatusMessage != nil { count += 1 }
         return count
     }
@@ -1160,9 +1165,6 @@ struct TaskMainView: View {
         if recapStatusMessage != nil {
             parts.append("Recap needs attention")
         }
-        if task.isTerminal && task.status != .completed {
-            parts.append(terminalStatusLabel)
-        }
         if currentScheduleStatusMessage != nil {
             parts.append(isScheduleStatusError ? "Routine needs attention" : "Routine created")
         }
@@ -1173,13 +1175,8 @@ struct TaskMainView: View {
         if runtimeHealth.isAttentionState ||
             shouldShowPendingApprovalStatus ||
             recapStatusMessage != nil ||
-            isScheduleStatusError ||
-            task.status == .failed ||
-            task.status == .budgetExceeded {
+            isScheduleStatusError {
             return Stanford.poppy
-        }
-        if task.isTerminal && task.status != .completed {
-            return terminalStatusColor
         }
         return Stanford.lagunita
     }
@@ -1190,9 +1187,6 @@ struct TaskMainView: View {
         }
         if shouldShowPendingApprovalStatus {
             return "person.crop.circle.badge.questionmark"
-        }
-        if task.isTerminal && task.status != .completed {
-            return terminalStatusIcon
         }
         return "list.bullet.rectangle"
     }
@@ -1212,14 +1206,14 @@ struct TaskMainView: View {
                     .frame(width: 16, height: 17)
             } else {
                 Image(systemName: icon)
-                    .font(Stanford.ui(12, weight: .semibold))
+                    .font(Stanford.ui(12))
                     .foregroundStyle(color)
                     .frame(width: 16, height: 17)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.chatSection())
                     .foregroundStyle(Stanford.black)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail, !detail.isEmpty {
@@ -1235,7 +1229,7 @@ struct TaskMainView: View {
             if let dismissAction {
                 Button(action: dismissAction) {
                     Image(systemName: "xmark")
-                        .font(Stanford.ui(10, weight: .bold))
+                        .font(Stanford.ui(10))
                         .foregroundStyle(Stanford.coolGrey)
                         .frame(width: 18, height: 18)
                 }
@@ -1257,12 +1251,12 @@ struct TaskMainView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: icon)
-                .font(Stanford.ui(12, weight: .semibold))
+                .font(Stanford.ui(12))
                 .foregroundStyle(color)
                 .frame(width: 16, height: 17)
 
             Text(text)
-                .font(Stanford.caption(12).weight(.medium))
+                .font(Stanford.chatSection())
                 .foregroundStyle(Stanford.black)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -1271,7 +1265,7 @@ struct TaskMainView: View {
             if let dismissAction {
                 Button(action: dismissAction) {
                     Image(systemName: "xmark")
-                        .font(Stanford.ui(10, weight: .bold))
+                        .font(Stanford.ui(10))
                         .foregroundStyle(Stanford.coolGrey)
                         .frame(width: 18, height: 18)
                 }
@@ -1322,9 +1316,9 @@ struct TaskMainView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.down")
-                        .font(Stanford.ui(11, weight: .bold))
+                        .font(Stanford.ui(11))
                     Text("New activity")
-                        .font(Stanford.caption(12).weight(.semibold))
+                        .font(Stanford.chatSection())
                 }
                 .foregroundStyle(Stanford.lagunita)
                 .padding(.horizontal, 12)
@@ -1412,12 +1406,12 @@ struct TaskMainView: View {
             Spacer(minLength: 120)
             VStack(alignment: .trailing, spacing: 4) {
                 Text(text)
-                    .font(Stanford.body(15))
-                    .lineSpacing(5)
+                    .font(Stanford.chatBody())
+                    .lineSpacing(Stanford.chatBodyLineSpacing)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(Stanford.cardinalRed.opacity(0.08))
-                    .foregroundStyle(Stanford.black)
+                    .background(Stanford.sky.opacity(0.055))
+                    .foregroundStyle(Stanford.readingText)
                     .clipShape(UnevenRoundedRectangle(
                         topLeadingRadius: 16,
                         bottomLeadingRadius: 16,
@@ -1431,12 +1425,12 @@ struct TaskMainView: View {
                             bottomTrailingRadius: 4,
                             topTrailingRadius: 16
                         )
-                        .stroke(Stanford.cardinalRed.opacity(0.15), lineWidth: 1)
+                        .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
                     )
                     .textSelection(.enabled)
 
                 Text(timestamp, style: .relative)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
                     .padding(.trailing, 4)
             }
@@ -1454,12 +1448,13 @@ struct TaskMainView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(MarkdownTextView.markdownAttributed(text))
-                    .font(Stanford.body(14))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.chatBody(15))
+                    .foregroundStyle(Stanford.readingText)
+                    .lineSpacing(Stanford.chatCompactLineSpacing)
                     .textSelection(.enabled)
 
                 Text(timestamp, style: .relative)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
@@ -1487,11 +1482,12 @@ struct TaskMainView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(text)
-                    .font(Stanford.body(14))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.chatBody(15))
+                    .foregroundStyle(Stanford.readingText)
+                    .lineSpacing(Stanford.chatCompactLineSpacing)
 
                 Text(timestamp, style: .relative)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
@@ -1518,10 +1514,10 @@ struct TaskMainView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownTextView(text: text)
+                MarkdownTextView(text: text, maxContentWidth: Stanford.chatParagraphMaxWidth)
 
                 Text(timestamp, style: .relative)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
@@ -1548,9 +1544,9 @@ struct TaskMainView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownTextView(text: text)
+                MarkdownTextView(text: text, maxContentWidth: Stanford.chatParagraphMaxWidth)
                 Text(timestamp, style: .relative)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
@@ -1573,40 +1569,27 @@ struct TaskMainView: View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
-        let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
+        let runActivityPresentation = RunActivityPresentation(
+            run: run,
+            activity: activity,
+            notices: displayNotices
+        )
+        let hasUserFacingOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !run.hasVPNWarning
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
         let showResponseActions = run.status != .running
         let hasRunMetadata = run.tokensUsed > 0 || run.completedAt != nil
 
         return VStack(alignment: .leading, spacing: 8) {
-            if run.hasVPNWarning {
-                networkAccessNotice()
-            }
-
-            if run.status == .cancelled {
-                runCancellationNotice(run)
-            }
-
-            if protocolState.hasCompletion {
-                agentCompletionPanel(protocolState)
-            }
-
-            ForEach(actionableNotices) { notice in
-                runNoticeView(notice, prominence: .actionable)
-            }
-
-            if !run.output.isEmpty {
-                if run.hasVPNWarning {
-                    networkAccessTechnicalDetails(run)
-                } else if run.status == .running {
-                    Text(run.output)
-                        .font(Stanford.ui(15))
-                        .foregroundStyle(Stanford.black)
+            if hasUserFacingOutput {
+                if run.status == .running {
+                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(run.output)))
+                        .font(Stanford.chatBody())
+                        .foregroundStyle(Stanford.readingText)
                         .textSelection(.enabled)
-                        .lineSpacing(6)
+                        .lineSpacing(Stanford.chatBodyLineSpacing)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    MarkdownTextView(text: run.output)
+                    MarkdownTextView(text: run.output, maxContentWidth: Stanford.chatParagraphMaxWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -1638,8 +1621,27 @@ struct TaskMainView: View {
                 }
             }
 
-            if shouldShowRunActivityDisclosure(activity: activity, notices: displayNotices) {
-                runActivityDisclosure(run: run, activity: activity, notices: displayNotices)
+            if protocolState.hasCompletion {
+                agentCompletionPanel(protocolState)
+            }
+
+            if run.hasVPNWarning {
+                networkAccessNotice()
+                if !run.output.isEmpty {
+                    networkAccessTechnicalDetails(run)
+                }
+            }
+
+            if run.status == .cancelled {
+                runCancellationNotice(run)
+            }
+
+            if shouldShowRunActivityDisclosure(runActivityPresentation) {
+                runActivityDisclosure(
+                    run: run,
+                    presentation: runActivityPresentation,
+                    notices: displayNotices
+                )
             }
 
             if showResponseActions || hasRunMetadata {
@@ -1682,12 +1684,12 @@ struct TaskMainView: View {
                     HStack(spacing: 8) {
                         if run.tokensUsed > 0 {
                             Text(Formatters.formatTokens(run.tokensUsed))
-                                .font(Stanford.caption(11))
+                                .font(Stanford.chatMeta())
                                 .foregroundStyle(Stanford.coolGrey.opacity(0.5))
                         }
                         if let completed = run.completedAt {
                             Text(formatDuration(Int(completed.timeIntervalSince(run.startedAt))))
-                                .font(Stanford.caption(11))
+                                .font(Stanford.chatMeta())
                                 .foregroundStyle(Stanford.coolGrey.opacity(0.5))
                         }
                     }
@@ -1700,24 +1702,20 @@ struct TaskMainView: View {
         .accessibilityLabel("Agent response")
     }
 
-    private func shouldShowRunActivityDisclosure(activity: TaskRunActivity, notices: [TaskRunNotice]) -> Bool {
-        !activity.tools.isEmpty ||
-            !activity.toolResults.isEmpty ||
-            !notices.isEmpty ||
-            !activity.fileChanges.isEmpty ||
-            activity.permissionManifest != nil
+    private func shouldShowRunActivityDisclosure(_ presentation: RunActivityPresentation) -> Bool {
+        presentation.hasVisibleDetails
     }
 
     private func runActivityDisclosure(
         run: TaskRunSnapshot,
-        activity: TaskRunActivity,
+        presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> some View {
         let isExpanded = expandedRunActivity.contains(run.id)
         let accent = runActivitySummaryColor(run: run, notices: notices)
-        let parts = runActivitySummaryParts(run: run, activity: activity, notices: notices)
+        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices)
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     if isExpanded {
@@ -1729,20 +1727,20 @@ struct TaskMainView: View {
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
+                        .font(Stanford.ui(10))
                         .frame(width: 12)
                     Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
-                        .font(Stanford.ui(12, weight: .semibold))
-                    Text(run.status == .running ? "Working" : "Run details")
-                        .font(Stanford.caption(12).weight(.semibold))
+                        .font(Stanford.ui(12))
+                    Text(runActivityDisclosureTitle(run: run, notices: notices))
+                        .font(Stanford.chatSection())
                     Text(parts.joined(separator: " · "))
-                        .font(Stanford.caption(11).weight(.medium))
+                        .font(Stanford.chatMeta())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     if run.status == .running {
                         Text("Live")
-                            .font(Stanford.caption(10).weight(.semibold))
+                            .font(Stanford.chatMeta(10))
                             .foregroundStyle(Stanford.lagunita)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -1756,59 +1754,94 @@ struct TaskMainView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                runActivityDetails(run: run, activity: activity, notices: notices)
+                runActivityDetails(run: run, presentation: presentation)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Stanford.fog.opacity(0.45))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Stanford.fog.opacity(0.24))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Run details. \(parts.joined(separator: ", "))")
+        .accessibilityLabel("\(runActivityDisclosureTitle(run: run, notices: notices)). \(parts.joined(separator: ", "))")
+    }
+
+    private func runActivityDisclosureTitle(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
+        if run.status == .running {
+            return "Working"
+        }
+        if notices.contains(where: { notice in
+            notice.type == "error" ||
+                notice.type == "budget.exceeded" ||
+                notice.type == "budget.warning" ||
+                notice.type == "permission.approval.requested"
+        }) || run.status == .cancelled {
+            return "Run status"
+        }
+        return "Run details"
     }
 
     private func runActivityDetails(
         run: TaskRunSnapshot,
-        activity: TaskRunActivity,
-        notices: [TaskRunNotice]
+        presentation: RunActivityPresentation
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let manifest = activity.permissionManifest {
-                runPolicyManifestView(manifest, for: run)
-            }
-
-            if !activity.tools.isEmpty || !activity.toolResults.isEmpty {
-                runActivityDetailSection(title: "Tool calls", systemImage: "wrench") {
-                    toolActivityList(activity.tools, results: activity.toolResults)
-                }
-            }
-
-            if !notices.isEmpty {
-                runActivityDetailSection(title: "Warnings and logs", systemImage: "exclamationmark.triangle") {
-                    ForEach(notices) { notice in
-                        runNoticeView(notice, prominence: .detail)
+        VStack(alignment: .leading, spacing: 8) {
+            if !presentation.issues.isEmpty {
+                runActivityDetailSection(
+                    title: presentation.issues.count == 1 ? "Issue" : "Issues",
+                    systemImage: "exclamationmark.circle"
+                ) {
+                    ForEach(presentation.issues) { issue in
+                        runIssueView(issue)
                     }
                 }
             }
 
-            if !activity.fileChanges.isEmpty {
+            if !presentation.tools.isEmpty {
+                runActivityDetailSection(title: "Tool activity", systemImage: "wrench.and.screwdriver") {
+                    toolActivityList(presentation.tools)
+                }
+            }
+
+            if !presentation.files.isEmpty {
                 runActivityDetailSection(title: "Files", systemImage: "doc.text") {
                     Button {
                         selectedTab = .files
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "doc.text")
-                                .font(Stanford.ui(11, weight: .semibold))
-                            Text("\(activity.fileChanges.count) changed \(activity.fileChanges.count == 1 ? "file" : "files")")
-                                .font(Stanford.caption(12).weight(.medium))
+                                .font(Stanford.ui(11))
+                            Text("\(presentation.files.count) changed \(presentation.files.count == 1 ? "file" : "files")")
+                                .font(Stanford.chatSection())
                             Spacer(minLength: 8)
                             Image(systemName: "arrow.right")
-                                .font(Stanford.ui(10, weight: .semibold))
+                                .font(Stanford.ui(10))
                         }
                         .foregroundStyle(Stanford.lagunita)
                     }
                     .buttonStyle(.plain)
+                }
+            }
+
+            if let policy = presentation.policy {
+                runActivityDetailSection(title: "Policy", systemImage: "checklist.shield") {
+                    runPolicySummaryView(policy, for: run)
+                }
+            }
+
+            if !presentation.technicalOutputs.isEmpty {
+                runActivityDetailSection(title: "Technical output", systemImage: "terminal") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(presentation.technicalOutputs) { output in
+                            technicalOutputView(output)
+                        }
+                    }
+                }
+            }
+
+            if !presentation.stats.isEmpty {
+                runActivityDetailSection(title: "Stats", systemImage: "chart.bar") {
+                    factList(presentation.stats)
                 }
             }
         }
@@ -1820,27 +1853,27 @@ struct TaskMainView: View {
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             Label(title, systemImage: systemImage)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(Stanford.coolGrey)
+                .font(Stanford.chatMeta())
+                .foregroundStyle(Stanford.coolGrey.opacity(0.86))
             content()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Stanford.cardBackground.opacity(0.55))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(Stanford.cardBackground.opacity(0.36))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func runActivitySummaryParts(
         run: TaskRunSnapshot,
-        activity: TaskRunActivity,
+        presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> [String] {
         var parts: [String] = []
-        let toolCallCount = activity.tools.reduce(0) { $0 + $1.count }
-        let warningCount = notices.filter { $0.type == "budget.warning" }.count
-        let issueCount = notices.filter { $0.type == "error" || $0.type == "budget.exceeded" }.count
+        let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
+        let warningCount = presentation.issues.filter { $0.severity == .warning }.count
+        let issueCount = presentation.issues.filter { $0.severity == .error }.count
 
         if run.status == .running {
             let message = runtimeHealth.message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1861,14 +1894,14 @@ struct TaskMainView: View {
         } else if issueCount > 0 {
             parts.append("\(issueCount) \(issueCount == 1 ? "issue" : "issues")")
         }
-        if activity.fileChanges.count > 0 {
-            parts.append("\(activity.fileChanges.count) \(activity.fileChanges.count == 1 ? "file" : "files") changed")
+        if presentation.files.count > 0 {
+            parts.append("\(presentation.files.count) \(presentation.files.count == 1 ? "file" : "files") changed")
         }
-        if activity.permissionManifest != nil && !parts.contains(where: { $0.contains("policy") }) {
+        if presentation.policy != nil && !parts.contains(where: { $0.contains("policy") }) {
             parts.append("policy")
         }
-        if activity.toolResults.count > 0 && toolCallCount == 0 {
-            parts.append("\(activity.toolResults.count) tool \(activity.toolResults.count == 1 ? "result" : "results")")
+        if presentation.technicalOutputs.count > 0 && toolCallCount == 0 {
+            parts.append("\(presentation.technicalOutputs.count) technical \(presentation.technicalOutputs.count == 1 ? "output" : "outputs")")
         }
 
         return parts.isEmpty ? [runStatusLabel(run).lowercased()] : Array(parts.prefix(4))
@@ -1931,10 +1964,10 @@ struct TaskMainView: View {
             payload.contains("not in the provider allow-list")
     }
 
-    private func runPolicyManifestView(_ manifest: RunPermissionManifest, for run: TaskRunSnapshot) -> some View {
+    private func runPolicySummaryView(_ policy: PolicySummaryPresentation, for run: TaskRunSnapshot) -> some View {
         let isExpanded = expandedRunPolicyManifests.contains(run.id)
-        let color = manifest.providerRender.usesBroadProviderPermissions ? Stanford.poppy : policyColor(manifest.policyLevel)
-        return VStack(alignment: .leading, spacing: 8) {
+        let color = policy.badge == nil ? Stanford.coolGrey : Stanford.poppy
+        return VStack(alignment: .leading, spacing: 7) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     if isExpanded {
@@ -1945,80 +1978,161 @@ struct TaskMainView: View {
                 }
             } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: manifest.policyLevel.symbolName)
-                        .font(Stanford.ui(12, weight: .semibold))
-                    Text("\(manifest.policyLevel.displayName) policy")
-                        .font(Stanford.caption(12).weight(.semibold))
-                    Text(manifest.policyScope.displayName)
-                        .font(Stanford.caption(11).weight(.medium))
+                    Image(systemName: "checklist.shield")
+                        .font(Stanford.ui(11))
+                        .frame(width: 14)
+                    Text(policy.title)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(Stanford.black)
+                    Text(policy.subtitle)
+                        .font(Stanford.chatMeta())
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    if manifest.providerRender.usesBroadProviderPermissions {
-                        Text("Broad provider mode")
-                            .font(Stanford.caption(10).weight(.semibold))
+                    if let badge = policy.badge {
+                        Text(badge)
+                            .font(Stanford.chatMeta(10))
                             .foregroundStyle(Stanford.poppy)
                     }
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
+                        .font(Stanford.ui(10))
                 }
                 .foregroundStyle(color)
             }
             .buttonStyle(.plain)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    manifestFact("Provider", "\(manifest.providerID.displayName) · \(manifest.model)")
-                    manifestFact("Provider version", manifest.providerVersion ?? "Unknown")
-                    manifestFact("Enforcement", manifest.providerRender.enforcementTiers.map(\.displayName).joined(separator: ", "))
-                    manifestFact("Config source", manifest.providerRender.configOwnership.displayName)
-                    manifestFact("Allowed tools", manifest.providerRender.allowedTools.isEmpty ? "None" : manifest.providerRender.allowedTools.joined(separator: ", "))
-                    manifestFact("Denied tools", manifest.providerRender.deniedTools.isEmpty ? "None" : manifest.providerRender.deniedTools.joined(separator: ", "))
-                    manifestFact("Allowed shell", manifest.providerRender.allowedShellPatterns.isEmpty ? "None" : manifest.providerRender.allowedShellPatterns.joined(separator: ", "))
-                    manifestFact("Denied shell", manifest.providerRender.deniedShellPatterns.isEmpty ? "None" : manifest.providerRender.deniedShellPatterns.joined(separator: ", "))
-                    manifestFact("Network", manifest.providerRender.allowedURLPatterns.isEmpty ? "Ask or connector scoped" : manifest.providerRender.allowedURLPatterns.joined(separator: ", "))
-                    manifestFact("Paths", ([manifest.workspacePath] + manifest.additionalPaths).joined(separator: ", "))
-                    manifestFact("Environment keys", manifest.environmentKeyNames.isEmpty ? "None" : manifest.environmentKeyNames.joined(separator: ", "))
-                    manifestFact("Credential labels", manifest.credentialLabels.isEmpty ? "None" : manifest.credentialLabels.joined(separator: ", "))
-                    manifestFact("Approvals", manifest.approvalsGranted.isEmpty ? "None" : manifest.approvalsGranted.joined(separator: ", "))
-                    if !manifest.providerRender.generatedConfigPreview.isEmpty {
-                        manifestFact("Generated config", manifest.providerRender.generatedConfigPreview)
-                    }
-                    if !manifest.providerRender.diagnostics.isEmpty {
-                        manifestFact(
-                            "Diagnostics",
-                            manifest.providerRender.diagnostics
-                                .map { "\($0.severity.rawValue): \($0.title)" }
-                                .joined(separator: "; ")
-                        )
+                VStack(alignment: .leading, spacing: 8) {
+                    factList(policy.facts)
+                    if let rawPayload = policy.rawPayload, !rawPayload.isEmpty {
+                        rawOutputDisclosure(rawPayload)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(color.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(color.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(color.opacity(0.22), lineWidth: 1)
-        )
+        .padding(.vertical, 1)
     }
 
-    private func manifestFact(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(title)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
-            Text(value)
-                .font(Stanford.caption(11))
-                .foregroundStyle(Stanford.black)
+    private func runIssueView(_ issue: RunIssuePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: issueIcon(issue.severity))
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(issueColor(issue.severity))
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(issue.title)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(issueColor(issue.severity))
+                    Text(issue.summary)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(Stanford.readingText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+            if let rawPayload = issue.rawPayload, !rawPayload.isEmpty {
+                rawOutputDisclosure(rawPayload)
+                    .padding(.leading, 22)
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func technicalOutputView(_ output: TechnicalOutputPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: output.severity == .error ? "xmark.octagon" : "doc.text.magnifyingglass")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(issueColor(output.severity))
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(output.title)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(Stanford.black)
+                    if !output.summary.isEmpty {
+                        Text(output.summary)
+                            .font(Stanford.chatSection())
+                            .foregroundStyle(Stanford.coolGrey)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            if !output.facts.isEmpty {
+                factList(output.facts)
+                    .padding(.leading, 22)
+            }
+            if !output.rawPayload.isEmpty {
+                rawOutputDisclosure(output.rawPayload)
+                    .padding(.leading, 22)
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func factList(_ facts: [RunFactPresentation]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(facts) { fact in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(fact.title)
+                        .font(Stanford.chatMeta())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 112, alignment: .leading)
+                    Text(fact.value)
+                        .font(fact.isMonospaced ? Stanford.chatRaw(11) : Stanford.chatMeta())
+                        .foregroundStyle(Stanford.readingText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func rawOutputDisclosure(_ rawPayload: String) -> some View {
+        DisclosureGroup {
+            rawOutputBlock(rawPayload)
+                .padding(.top, 4)
+        } label: {
+            Text("Show raw output")
+                .font(Stanford.chatMeta())
+                .foregroundStyle(Stanford.coolGrey)
+        }
+        .accentColor(Stanford.coolGrey)
+    }
+
+    private func rawOutputBlock(_ rawPayload: String) -> some View {
+        let displayContent = rawPayload.count > 5000 ? String(rawPayload.prefix(5000)) + "\n... (truncated)" : rawPayload
+        return ScrollView(.horizontal, showsIndicators: false) {
+            Text(displayContent)
+                .font(Stanford.chatRaw())
+                .foregroundStyle(Stanford.coolGrey)
+                .lineSpacing(3)
                 .textSelection(.enabled)
+                .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: 180, alignment: .leading)
+        .background(Stanford.fog.opacity(0.32))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    private func issueColor(_ severity: RunActivitySeverity) -> Color {
+        switch severity {
+        case .info: Stanford.coolGrey
+        case .warning: Stanford.poppy
+        case .error: Stanford.cardinalRed
+        }
+    }
+
+    private func issueIcon(_ severity: RunActivitySeverity) -> String {
+        switch severity {
+        case .info: "info.circle"
+        case .warning: "exclamationmark.triangle"
+        case .error: "xmark.octagon"
         }
     }
 
@@ -2028,7 +2142,7 @@ struct TaskMainView: View {
         case .review: Stanford.paloAltoGreen
         case .build: Stanford.lagunita
         case .network: Stanford.sky
-        case .autonomous: Stanford.poppy
+        case .autonomous: Stanford.lagunita
         case .custom: Stanford.plum
         }
     }
@@ -2039,37 +2153,45 @@ struct TaskMainView: View {
     ) -> some View {
         let presentation = runNoticePresentation(for: notice)
         let body = runNoticeBody(for: notice)
-        let rawDetail = prominence == .detail ? runNoticeRawDetail(for: notice, body: body) : nil
-        let backgroundOpacity = prominence == .actionable ? 0.08 : 0.045
-        let strokeOpacity = prominence == .actionable ? 0.25 : 0.14
+        let isCollapsible = prominence == .actionable
+        let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
+        let rawDetail = isExpanded ? runNoticeRawDetail(for: notice, body: body) : nil
+        let backgroundOpacity = prominence == .actionable ? 0.04 : 0.045
+        let strokeOpacity = prominence == .actionable ? 0.14 : 0.14
 
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: presentation.icon)
-                .font(Stanford.ui(13, weight: .semibold))
-                .foregroundStyle(presentation.color)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(presentation.title)
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(presentation.color)
-                Text(body)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(Stanford.black)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if let rawDetail {
-                    Text(rawDetail)
-                        .font(Stanford.mono(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .padding(.top, 3)
+        return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
+            if isCollapsible {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        if isExpanded {
+                            expandedRunNotices.remove(notice.id)
+                        } else {
+                            expandedRunNotices.insert(notice.id)
+                        }
+                    }
+                } label: {
+                    runNoticeTitleRow(
+                        presentation: presentation,
+                        showsChevron: true,
+                        isExpanded: isExpanded
+                    )
                 }
+                .buttonStyle(.plain)
+            } else {
+                runNoticeTitleRow(
+                    presentation: presentation,
+                    showsChevron: false,
+                    isExpanded: true
+                )
+            }
+
+            if isExpanded {
+                runNoticeDetailBody(body: body, rawDetail: rawDetail)
+                    .padding(.leading, isCollapsible ? 32 : 24)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, isExpanded ? 8 : 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(presentation.color.opacity(backgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -2077,6 +2199,65 @@ struct TaskMainView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(presentation.color.opacity(strokeOpacity), lineWidth: 1)
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(runNoticeAccessibilityLabel(
+            title: presentation.title,
+            body: body,
+            isCollapsible: isCollapsible,
+            isExpanded: isExpanded
+        ))
+    }
+
+    private func runNoticeTitleRow(
+        presentation: (title: String, icon: String, color: Color),
+        showsChevron: Bool,
+        isExpanded: Bool
+    ) -> some View {
+        HStack(spacing: 7) {
+            if showsChevron {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(Stanford.ui(10))
+                    .foregroundStyle(presentation.color.opacity(0.82))
+                    .frame(width: 12)
+            }
+
+            Image(systemName: presentation.icon)
+                .font(Stanford.ui(12))
+                .foregroundStyle(presentation.color)
+                .frame(width: 16)
+
+            Text(presentation.title)
+                .font(Stanford.chatSection())
+                .foregroundStyle(presentation.color)
+
+            Spacer(minLength: 8)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func runNoticeDetailBody(body: String, rawDetail: String?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(body)
+                .font(Stanford.chatSection())
+                .foregroundStyle(Stanford.readingText)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if let rawDetail {
+                rawOutputDisclosure(rawDetail)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func runNoticeAccessibilityLabel(
+        title: String,
+        body: String,
+        isCollapsible: Bool,
+        isExpanded: Bool
+    ) -> String {
+        guard isCollapsible else { return "\(title). \(body)" }
+        return isExpanded ? "\(title). \(body)" : "\(title). Collapsed. Expand for details."
     }
 
     private func runNoticesToDisplay(_ notices: [TaskRunNotice], for run: TaskRunSnapshot) -> [TaskRunNotice] {
@@ -2087,19 +2268,19 @@ struct TaskMainView: View {
     private func networkAccessNotice() -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "lock.shield")
-                .font(Stanford.ui(17, weight: .semibold))
+                .font(Stanford.ui(17))
                 .foregroundStyle(Stanford.statusInfo)
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Network access needed")
-                        .font(Stanford.ui(14, weight: .semibold))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(Stanford.readingText)
                     Text("This task needs your organization's network. Connect to VPN, then retry.")
-                        .font(Stanford.ui(13))
-                        .foregroundStyle(Stanford.black)
-                        .lineSpacing(3)
+                        .font(Stanford.chatMeta(13))
+                        .foregroundStyle(Stanford.readingText)
+                        .lineSpacing(Stanford.chatCompactLineSpacing)
                 }
 
                 ViewThatFits(in: .horizontal) {
@@ -2130,7 +2311,7 @@ struct TaskMainView: View {
 
     private func networkAccessStep(_ title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
-            .font(Stanford.caption(11).weight(.semibold))
+            .font(Stanford.chatMeta())
             .foregroundStyle(Stanford.statusInfo)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -2152,12 +2333,12 @@ struct TaskMainView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
+                        .font(Stanford.ui(10))
                     Text("Technical details")
-                        .font(Stanford.caption(12).weight(.semibold))
+                        .font(Stanford.chatSection())
                     Spacer(minLength: 8)
                     Text("Google Cloud policy response")
-                        .font(Stanford.caption(11).weight(.medium))
+                        .font(Stanford.chatMeta())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -2167,9 +2348,9 @@ struct TaskMainView: View {
 
             if isExpanded {
                 Text(run.output)
-                    .font(Stanford.mono(11))
+                    .font(Stanford.chatRaw())
                     .foregroundStyle(Stanford.coolGrey)
-                    .lineSpacing(4)
+                    .lineSpacing(3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -2206,9 +2387,7 @@ struct TaskMainView: View {
         case "budget.exceeded":
             return "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
         case "permission.approval.requested":
-            return notice.payload.isEmpty
-                ? "Review the policy request to continue this run."
-                : notice.payload
+            return permissionApprovalBody(for: notice.payload)
         case "error" where runNoticeLooksPolicyBlocked(notice):
             return "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
         case "error":
@@ -2251,6 +2430,72 @@ struct TaskMainView: View {
         if !envKeys.isEmpty { parts.append("Env keys: \(envKeys)") }
         if !approvals.isEmpty { parts.append("Approvals: \(approvals)") }
         return parts.joined(separator: ". ") + "."
+    }
+
+    private func permissionApprovalBody(for payload: String) -> String {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "Review the policy request to continue this run."
+        }
+
+        guard let providerRange = trimmed.range(of: "Provider detail:", options: [.caseInsensitive]) else {
+            return compactNoticeText(trimmed, limit: 420)
+        }
+
+        let intro = trimmed[..<providerRange.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerDetail = trimmed[providerRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerSummary = providerApprovalSummary(for: providerDetail)
+
+        var parts: [String] = []
+        if !intro.isEmpty {
+            parts.append(compactNoticeText(intro, limit: 340))
+        }
+        if !providerSummary.isEmpty {
+            parts.append("Provider detail: \(providerSummary)")
+        }
+        return parts.isEmpty ? compactNoticeText(trimmed, limit: 420) : parts.joined(separator: "\n\n")
+    }
+
+    private func providerApprovalSummary(for detail: String) -> String {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let jsonStart = trimmed.firstIndex(of: "{")
+        let leadingText = jsonStart.map { String(trimmed[..<$0]) } ?? trimmed
+        var parts: [String] = []
+        let compactLeadingText = compactNoticeText(leadingText, limit: 180)
+        if !compactLeadingText.isEmpty {
+            parts.append(compactLeadingText)
+        }
+
+        if let jsonStart,
+           let object = PayloadFormatter.jsonObject(from: String(trimmed[jsonStart...])) as? [String: Any] {
+            let data = object["data"] as? [String: Any] ?? object
+            if let model = data["model"] as? String, !model.isEmpty {
+                parts.append("Model: \(model)")
+            }
+            if let error = data["error"] as? [String: Any] {
+                if let message = error["message"] as? String, !message.isEmpty {
+                    parts.append("Error: \(message)")
+                }
+                if let code = error["code"] as? String, !code.isEmpty {
+                    parts.append("Code: \(code)")
+                }
+            }
+        }
+
+        return parts.isEmpty ? compactNoticeText(trimmed, limit: 260) : parts.joined(separator: ". ")
+    }
+
+    private func compactNoticeText(_ text: String, limit: Int) -> String {
+        let oneLine = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard oneLine.count > limit else { return oneLine }
+        return "\(oneLine.prefix(limit))..."
     }
 
     private func budgetWarningBody(for payload: String) -> String {
@@ -2303,13 +2548,13 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "checklist")
-                    .font(Stanford.ui(12, weight: .semibold))
+                    .font(Stanford.ui(12))
                 Text("Agent Plan")
-                    .font(Stanford.caption(12).weight(.semibold))
+                    .font(Stanford.chatSection())
                 Spacer()
                 if !completedItems.isEmpty {
                     Text("\(completedItems.count) done")
-                        .font(Stanford.caption(10).weight(.semibold))
+                        .font(Stanford.chatMeta(10))
                         .foregroundStyle(Stanford.paloAltoGreen)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -2323,11 +2568,11 @@ struct TaskMainView: View {
                 if activeItems.isEmpty, !completedItems.isEmpty {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(Stanford.ui(12, weight: .semibold))
+                            .font(Stanford.ui(12))
                             .foregroundStyle(Stanford.paloAltoGreen)
                             .frame(width: 14, height: 16)
                         Text("All plan steps are complete")
-                            .font(Stanford.body(13))
+                            .font(Stanford.chatMeta(13))
                             .foregroundStyle(Stanford.black)
                         Spacer(minLength: 0)
                     }
@@ -2345,10 +2590,10 @@ struct TaskMainView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: isAgentPlanCompletedExpanded ? "chevron.down" : "chevron.right")
-                                .font(Stanford.ui(10, weight: .semibold))
+                                .font(Stanford.ui(10))
                                 .frame(width: 12)
                             Text("\(completedItems.count) completed \(completedItems.count == 1 ? "step" : "steps")")
-                                .font(Stanford.caption(12).weight(.medium))
+                                .font(Stanford.chatSection())
                             Spacer(minLength: 0)
                         }
                         .foregroundStyle(Stanford.coolGrey)
@@ -2381,11 +2626,11 @@ struct TaskMainView: View {
     private func agentPlanItemRow(_ item: TaskProtocolTodoItem) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
-                .font(Stanford.ui(12, weight: .semibold))
+                .font(Stanford.ui(12))
                 .foregroundStyle(item.isDone ? Stanford.paloAltoGreen : Stanford.coolGrey)
                 .frame(width: 14, height: 16)
             Text(item.text)
-                .font(Stanford.body(13))
+                .font(Stanford.chatMeta(13))
                 .foregroundStyle(item.isDone ? Stanford.coolGrey : Stanford.black)
                 .strikethrough(item.isDone, color: Stanford.coolGrey)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2402,14 +2647,15 @@ struct TaskMainView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let summary = state.completionSummary {
                     Text(summary)
-                        .font(Stanford.body(14))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.chatBody(15))
+                        .foregroundStyle(Stanford.readingText)
+                        .lineSpacing(Stanford.chatCompactLineSpacing)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
                 if let verifiedBy = state.verifiedBy, !verifiedBy.isEmpty {
                     Text("Verified by \(verifiedBy)")
-                        .font(Stanford.caption(12))
+                        .font(Stanford.chatSection())
                         .foregroundStyle(Stanford.coolGrey)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
@@ -2430,16 +2676,16 @@ struct TaskMainView: View {
     private func runCancellationNotice(_ run: TaskRunSnapshot) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "xmark.circle.fill")
-                .font(Stanford.ui(13, weight: .semibold))
+                .font(Stanford.ui(13))
                 .foregroundStyle(Stanford.coolGrey)
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.stopReason == "app_restarted" ? "Run interrupted" : "Run cancelled")
-                    .font(Stanford.caption(12).weight(.semibold))
+                    .font(Stanford.chatSection())
                     .foregroundStyle(Stanford.black)
                 Text(run.stopReason == "app_restarted"
                      ? "ASTRA restarted before this run could finish. The preserved tool output below is from before the interruption."
-                     : "This run stopped before completion. Any preserved tool output below is partial.")
-                    .font(Stanford.caption(11))
+                    : "This run stopped before completion. Any preserved tool output below is partial.")
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2451,56 +2697,67 @@ struct TaskMainView: View {
     }
 
     @ViewBuilder
-    private func toolActivityList(_ tools: [TaskToolSummary], results: [TaskToolResult]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func toolActivityList(_ tools: [ToolActivityPresentation]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
             ForEach(tools) { item in
-                HStack(spacing: 6) {
-                    Image(systemName: toolIcon(item.name))
-                        .font(Stanford.ui(11))
-                        .foregroundStyle(Stanford.poppy)
-                        .frame(width: 14)
-                    Text(item.name)
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.black)
-                    if item.count > 1 {
-                        Text("×\(item.count)")
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(Stanford.poppy.opacity(0.7))
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: toolIcon(item.toolName))
+                            .font(Stanford.ui(11))
+                            .foregroundStyle(Stanford.coolGrey)
+                            .frame(width: 14)
+                        Text(item.toolName)
+                            .font(Stanford.chatSection())
+                            .foregroundStyle(Stanford.black)
+                        Text(item.countLabel)
+                            .font(Stanford.chatMeta())
+                            .foregroundStyle(Stanford.coolGrey)
+                        Spacer(minLength: 0)
+                    }
+                    if let detail = item.detail, !detail.isEmpty {
+                        HStack(alignment: .top, spacing: 8) {
+                            if let detailLabel = item.detailLabel {
+                                Text(detailLabel)
+                                    .font(Stanford.chatMeta())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 70, alignment: .leading)
+                            }
+                            Text(detail)
+                                .font(item.detailKind == .command ? Stanford.chatRaw(11) : Stanford.chatMeta())
+                                .foregroundStyle(Stanford.coolGrey)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.leading, 20)
+                    }
+                    if item.rawPayloads.count > 1 {
+                        rawOutputDisclosure(item.rawPayloads.joined(separator: "\n"))
+                            .padding(.leading, 20)
                     }
                 }
-            }
-            // Show tool results inline
-            ForEach(results) { result in
-                toolResultView(result.payload)
+                .padding(.vertical, 1)
             }
         }
     }
 
     @ViewBuilder
     private func toolResultView(_ content: String) -> some View {
-        let displayContent = content.count > 5000 ? String(content.prefix(5000)) + "\n… (truncated)" : content
-        ScrollView(.horizontal, showsIndicators: false) {
-            Text(displayContent)
-                .font(Stanford.ui(12, design: .monospaced))
-                .foregroundStyle(Stanford.black)
-                .textSelection(.enabled)
-                .lineSpacing(2)
-                .padding(8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: 300, alignment: .leading)
-        .background(Stanford.fog.opacity(0.4))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        rawOutputBlock(content)
     }
 
     private func toolIcon(_ name: String) -> String {
         switch name {
         case "Read": return "doc.text"
         case "Write": return "doc.badge.plus"
-        case "Edit": return "pencil"
-        case "Bash": return "terminal"
+        case "Edit", "MultiEdit": return "pencil"
+        case "Bash", "Shell": return "terminal"
         case "Glob": return "magnifyingglass"
         case "Grep": return "text.magnifyingglass"
         case "Agent": return "person.2"
+        case "Validation tests": return "checkmark.seal"
+        case "AI self-check": return "sparkles"
+        case "Workspace isolation": return "square.dashed.inset.filled"
         default: return "wrench"
         }
     }
@@ -2669,37 +2926,6 @@ struct TaskMainView: View {
             return "Process killed (SIGTERM) — likely timeout."
         }
         return "The agent encountered an error. Check the activity log."
-    }
-
-    // MARK: - Terminal Status Helpers
-
-    private var terminalStatusIcon: String {
-        switch task.status {
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.circle.fill"
-        case .budgetExceeded: return "exclamationmark.triangle.fill"
-        case .cancelled: return "minus.circle.fill"
-        default: return "circle.fill"
-        }
-    }
-
-    private var terminalStatusColor: Color {
-        switch task.status {
-        case .completed: return Stanford.paloAltoGreen
-        case .failed, .budgetExceeded: return Stanford.cardinalRed
-        case .cancelled: return Stanford.coolGrey
-        default: return Stanford.coolGrey
-        }
-    }
-
-    private var terminalStatusLabel: String {
-        switch task.status {
-        case .completed: return "Completed"
-        case .failed: return "Failed"
-        case .budgetExceeded: return "Budget Exceeded"
-        case .cancelled: return "Cancelled"
-        default: return ""
-        }
     }
 
     // MARK: - Composer
@@ -2994,7 +3220,7 @@ struct TaskMainView: View {
 
                 TextField(composerPlaceholder, text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(Stanford.ui(16))
+                    .font(Stanford.chatBody())
                     .lineLimit(2...10)
                     .padding(.horizontal, 18)
                     .padding(.top, attachedFiles.isEmpty ? 14 : 8)
@@ -3039,6 +3265,7 @@ struct TaskMainView: View {
                     availableSkills: availableSkills,
                     workspace: task.workspace,
                     runtimeReadinessStates: runtimeReadinessStates,
+                    taskStatus: task.status,
                     isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
@@ -3915,7 +4142,7 @@ struct TaskMainView: View {
                 attachedFiles.removeAll { $0 == file }
             } label: {
                 Image(systemName: "xmark")
-                    .font(Stanford.ui(10, weight: .bold))
+                    .font(Stanford.ui(10))
                     .foregroundStyle(Stanford.coolGrey)
             }
             .buttonStyle(.plain)
@@ -3956,102 +4183,138 @@ struct TaskMainView: View {
 /// code blocks, lists, tables, dividers, blockquotes, and system notices.
 struct MarkdownTextView: View {
     let text: String
+    let maxContentWidth: CGFloat?
     @State private var blocks: [MarkdownBlock] = []
 
-    init(text: String) {
+    init(text: String, maxContentWidth: CGFloat? = Stanford.chatParagraphMaxWidth) {
         self.text = text
+        self.maxContentWidth = maxContentWidth
         _blocks = State(initialValue: Self.cachedParse(text))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(blocks) { block in
-                switch block.kind {
-                case .codeBlock(let lang):
-                    codeBlockView(lang: lang, code: block.content)
-
-                case .table:
-                    tableView(block.content)
-
-                case .divider:
-                    Divider()
-                        .padding(.vertical, 6)
-
-                case .heading(let level):
-                    Text(Self.markdownAttributed(block.content))
-                        .font(level == 1 ? Stanford.heading(22, weight: .bold) : level == 2 ? Stanford.heading(18) : Stanford.heading(16))
-                        .foregroundStyle(Stanford.black)
-                        .padding(.top, level == 1 ? 14 : 10)
-                        .padding(.bottom, 2)
-
-                case .listItem(let depth):
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(depth == 0 ? "\u{2022}" : "\u{25E6}")
-                            .font(Stanford.ui(depth == 0 ? 15 : 13))
-                            .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                            .frame(width: 14, alignment: .center)
-                            .padding(.leading, CGFloat(depth) * 16)
-                        Text(Self.markdownAttributed(block.content))
-                            .font(Stanford.ui(15))
-                            .foregroundStyle(Stanford.black)
-                            .textSelection(.enabled)
-                            .lineSpacing(5)
-                    }
-
-                case .blockquote:
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(Stanford.sandstone.opacity(0.5))
-                            .frame(width: 3)
-                        Text(Self.markdownAttributed(block.content))
-                            .font(Stanford.ui(15))
-                            .italic()
-                            .foregroundStyle(.primary.opacity(0.75))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .lineSpacing(5)
-                    }
-                    .background(Stanford.fog.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                case .notice:
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "info.circle.fill")
-                            .font(Stanford.ui(14))
-                            .foregroundStyle(Stanford.lagunita)
-                            .padding(.top, 1)
-                        Text(block.content)
-                            .font(Stanford.ui(14))
-                            .foregroundStyle(Stanford.black)
-                            .lineSpacing(4)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Stanford.lagunita.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                case .label:
-                    Text(Self.markdownAttributed(block.content))
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(Stanford.black)
-                        .padding(.top, 8)
-
-                case .blank:
-                    Spacer().frame(height: 12)
-
-                case .text:
-                    Text(Self.markdownAttributed(block.content))
-                        .font(Stanford.ui(15))
-                        .foregroundStyle(Stanford.black)
-                        .textSelection(.enabled)
-                        .lineSpacing(6)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                markdownBlockView(block)
+                    .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
             }
         }
         .textSelection(.enabled)
-        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: maxContentWidth ?? .infinity, alignment: .leading)
         .onChange(of: text) { _, newText in blocks = Self.cachedParse(newText) }
+    }
+
+    @ViewBuilder
+    private func markdownBlockView(_ block: MarkdownBlock) -> some View {
+        switch block.kind {
+        case .codeBlock(let lang):
+            codeBlockView(lang: lang, code: block.content)
+
+        case .table:
+            tableView(block.content)
+
+        case .divider:
+            Divider()
+                .padding(.vertical, 6)
+
+        case .heading(let level):
+            Text(Self.markdownAttributed(block.content))
+                .font(level == 1 ? Stanford.heading(20) : level == 2 ? Stanford.heading(18) : Stanford.heading(16))
+                .foregroundStyle(Stanford.readingText)
+                .padding(.bottom, 2)
+
+        case .listItem(let depth, let marker):
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(marker)
+                    .font(Stanford.chatBody(depth == 0 ? 15 : 13))
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.72))
+                    .frame(width: 24, alignment: .trailing)
+                    .padding(.leading, CGFloat(depth) * 18)
+                Text(Self.markdownAttributed(block.content))
+                    .font(Stanford.chatBody())
+                    .foregroundStyle(Stanford.readingText)
+                    .textSelection(.enabled)
+                    .lineSpacing(Stanford.chatCompactLineSpacing)
+            }
+
+        case .blockquote:
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.5))
+                    .frame(width: 3)
+                Text(Self.markdownAttributed(block.content, whitespaceMode: .preserving))
+                    .font(Stanford.documentExcerpt())
+                    .italic()
+                    .foregroundStyle(Stanford.readingText.opacity(0.78))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .lineSpacing(Stanford.chatBodyLineSpacing)
+            }
+            .background(Stanford.fog.opacity(0.3))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+        case .notice:
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle.fill")
+                    .font(Stanford.ui(14))
+                    .foregroundStyle(Stanford.lagunita)
+                    .padding(.top, 1)
+                Text(Self.markdownAttributed(block.content))
+                    .font(Stanford.chatBody(15))
+                    .foregroundStyle(Stanford.readingText)
+                    .lineSpacing(Stanford.chatCompactLineSpacing)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Stanford.lagunita.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+        case .label:
+            Text(Self.markdownAttributed(block.content))
+                .font(Stanford.chatSection())
+                .foregroundStyle(Stanford.readingText)
+
+        case .blank:
+            Color.clear.frame(height: 2)
+
+        case .text:
+            Text(Self.markdownAttributed(block.content))
+                .font(Stanford.chatBody())
+                .foregroundStyle(Stanford.readingText)
+                .textSelection(.enabled)
+                .lineSpacing(Stanford.chatBodyLineSpacing)
+        }
+    }
+
+    private func topSpacing(for block: MarkdownBlock, previous: MarkdownBlock?) -> CGFloat {
+        guard let previous else { return 0 }
+        if previous.kind == .blank { return 0 }
+
+        switch block.kind {
+        case .blank:
+            return 6
+        case .heading:
+            return previous.kind == .divider ? 8 : 14
+        case .listItem:
+            if case .listItem = previous.kind { return 4 }
+            return 8
+        case .codeBlock, .table, .blockquote, .notice:
+            return 10
+        case .divider:
+            return 12
+        case .label:
+            return 10
+        case .text:
+            switch previous.kind {
+            case .heading, .label:
+                return 6
+            case .text:
+                return 9
+            default:
+                return 8
+            }
+        }
     }
 
     private final class MarkdownBlockCacheEntry {
@@ -4085,7 +4348,7 @@ struct MarkdownTextView: View {
             if !lang.isEmpty {
                 HStack {
                     Text(lang)
-                        .font(Stanford.ui(12, weight: .medium, design: .monospaced))
+                        .font(Stanford.chatRaw())
                         .foregroundStyle(Stanford.coolGrey)
                     Spacer()
                     Button {
@@ -4108,8 +4371,8 @@ struct MarkdownTextView: View {
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
-                    .font(Stanford.ui(14, design: .monospaced))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.chatRaw())
+                    .foregroundStyle(Stanford.readingText)
                     .textSelection(.enabled)
                     .lineSpacing(3)
                     .padding(.horizontal, 12)
@@ -4136,8 +4399,8 @@ struct MarkdownTextView: View {
                             let alignment = table.alignment(for: colIdx)
 
                             Text(Self.markdownAttributed(cell))
-                                .font(Stanford.ui(14, weight: rowIdx == 0 ? .semibold : .regular))
-                                .foregroundStyle(Stanford.black)
+                                .font(rowIdx == 0 ? Stanford.chatSection(13) : Stanford.chatBody(14))
+                                .foregroundStyle(Stanford.readingText)
                                 .textSelection(.enabled)
                                 .multilineTextAlignment(alignment.textAlignment)
                                 .lineLimit(nil)
@@ -4249,7 +4512,7 @@ struct MarkdownTextView: View {
         case table
         case divider
         case heading(level: Int)
-        case listItem(depth: Int)
+        case listItem(depth: Int, marker: String)
         case blockquote
         case notice
         case label
@@ -4263,13 +4526,21 @@ struct MarkdownTextView: View {
     }
 
     static func parse(_ text: String) -> [MarkdownBlock] {
+        if let astBlocks = MarkdownASTBlockParser.parse(text), !astBlocks.isEmpty {
+            return astBlocks
+        }
+
+        return parseLegacy(text)
+    }
+
+    private static func parseLegacy(_ text: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
         let lines = text.components(separatedBy: "\n")
         var i = 0
         var textBuffer: [String] = []
 
         func flushText() {
-            let joined = textBuffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            let joined = normalizedParagraph(textBuffer)
             if !joined.isEmpty {
                 blocks.append(MarkdownBlock(kind: .text, content: joined))
             }
@@ -4343,26 +4614,30 @@ struct MarkdownTextView: View {
             if let listMatch = Self.listItemMatch(trimmed) {
                 flushText()
                 let depth = (line.count - line.drop(while: { $0 == " " }).count) / 2
-                blocks.append(MarkdownBlock(kind: .listItem(depth: min(depth, 3)), content: listMatch))
+                let marker = listMatch.marker == "\u{2022}" && depth > 0 ? "\u{25E6}" : listMatch.marker
+                blocks.append(MarkdownBlock(
+                    kind: .listItem(depth: min(depth, 3), marker: marker),
+                    content: listMatch.content
+                ))
                 i += 1
                 continue
             }
 
-            // Blockquotes (> text)
-            if trimmed.hasPrefix("> ") {
+            // Blockquotes (> text), including quoted blank lines as paragraph breaks.
+            if let firstQuoteLine = Self.blockquoteLineContent(trimmed) {
                 flushText()
-                var quoteLines: [String] = [String(trimmed.dropFirst(2))]
+                var quoteLines: [String] = [firstQuoteLine]
                 i += 1
                 while i < lines.count {
                     let nextTrimmed = lines[i].trimmingCharacters(in: .whitespaces)
-                    if nextTrimmed.hasPrefix("> ") {
-                        quoteLines.append(String(nextTrimmed.dropFirst(2)))
+                    if let quoteLine = Self.blockquoteLineContent(nextTrimmed) {
+                        quoteLines.append(quoteLine)
                         i += 1
                     } else {
                         break
                     }
                 }
-                blocks.append(MarkdownBlock(kind: .blockquote, content: quoteLines.joined(separator: "\n")))
+                blocks.append(MarkdownBlock(kind: .blockquote, content: normalizedBlockquote(quoteLines)))
                 continue
             }
 
@@ -4400,6 +4675,115 @@ struct MarkdownTextView: View {
 
         flushText()
         return blocks
+    }
+
+    static func normalizedStreamingText(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var normalizedLines: [String] = []
+        var paragraph: [String] = []
+        var isInsideCodeBlock = false
+
+        func flushParagraph() {
+            let normalized = normalizedParagraph(paragraph)
+            if !normalized.isEmpty {
+                normalizedLines.append(normalized)
+            }
+            paragraph = []
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                flushParagraph()
+                isInsideCodeBlock.toggle()
+                normalizedLines.append(line)
+                continue
+            }
+            if isInsideCodeBlock {
+                normalizedLines.append(line)
+                continue
+            }
+            if trimmed.isEmpty {
+                flushParagraph()
+                if normalizedLines.last?.isEmpty != true {
+                    normalizedLines.append("")
+                }
+                continue
+            }
+            if headingMatch(trimmed) != nil ||
+                listItemMatch(trimmed) != nil ||
+                blockquoteLineContent(trimmed) != nil ||
+                tableHeaderCells(line) != nil {
+                flushParagraph()
+                normalizedLines.append(line)
+                continue
+            }
+            paragraph.append(line)
+        }
+
+        flushParagraph()
+        return normalizedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedParagraph(_ lines: [String]) -> String {
+        var segments: [String] = []
+        var current = ""
+
+        for rawLine in lines {
+            let trimmedLine = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !trimmedLine.isEmpty else { continue }
+
+            let hasMarkdownHardBreak = rawLine.hasSuffix("  ") || trimmedLine.hasSuffix("\\")
+            let segment = trimmedLine.hasSuffix("\\")
+                ? String(trimmedLine.dropLast()).trimmingCharacters(in: .whitespaces)
+                : trimmedLine
+            guard !segment.isEmpty else { continue }
+
+            if current.isEmpty {
+                current = segment
+            } else {
+                current += " " + segment
+            }
+
+            if hasMarkdownHardBreak {
+                segments.append(current)
+                current = ""
+            }
+        }
+
+        if !current.isEmpty {
+            segments.append(current)
+        }
+
+        return repairMissingSentenceSpaces(segments.joined(separator: "\n"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedBlockquote(_ lines: [String]) -> String {
+        let nonEmptyLines = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let shouldPreserveLineBreaks = lines.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ||
+            nonEmptyLines.filter { $0.count <= 72 }.count > nonEmptyLines.count / 2
+
+        if shouldPreserveLineBreaks {
+            return lines
+                .map { repairMissingSentenceSpaces($0.trimmingCharacters(in: .whitespaces)) }
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return normalizedParagraph(lines)
+    }
+
+    private static func repairMissingSentenceSpaces(_ text: String) -> String {
+        let pattern = #"([a-z0-9][.!?])([A-Z][a-z])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: "$1 $2"
+        )
     }
 
     private static func headingMatch(_ line: String) -> (level: Int, content: String)? {
@@ -4550,24 +4934,37 @@ struct MarkdownTextView: View {
     }
 
     /// Match list item prefixes: "- ", "* ", "+ ", "1. ", "2. " etc.
-    private static func listItemMatch(_ line: String) -> String? {
+    private static func listItemMatch(_ line: String) -> (marker: String, content: String)? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("- ") { return String(trimmed.dropFirst(2)) }
-        if trimmed.hasPrefix("* ") && !trimmed.hasPrefix("**") { return String(trimmed.dropFirst(2)) }
-        if trimmed.hasPrefix("+ ") { return String(trimmed.dropFirst(2)) }
+        if trimmed.hasPrefix("- ") { return ("\u{2022}", String(trimmed.dropFirst(2))) }
+        if trimmed.hasPrefix("* ") && !trimmed.hasPrefix("**") { return ("\u{2022}", String(trimmed.dropFirst(2))) }
+        if trimmed.hasPrefix("+ ") { return ("\u{2022}", String(trimmed.dropFirst(2))) }
         // Numbered: "1. ", "2. ", etc.
         if let dotIdx = trimmed.firstIndex(of: "."),
            dotIdx != trimmed.startIndex,
            trimmed[trimmed.startIndex..<dotIdx].allSatisfy(\.isNumber),
            trimmed.index(after: dotIdx) < trimmed.endIndex,
            trimmed[trimmed.index(after: dotIdx)] == " " {
-            return String(trimmed[trimmed.index(dotIdx, offsetBy: 2)...])
+            let marker = String(trimmed[trimmed.startIndex...dotIdx])
+            return (marker, String(trimmed[trimmed.index(dotIdx, offsetBy: 2)...]))
         }
         return nil
     }
 
-    static func markdownAttributed(_ text: String) -> AttributedString {
-        MarkdownLinkifier.markdownAttributed(text)
+    private static func blockquoteLineContent(_ line: String) -> String? {
+        guard line.hasPrefix(">") else { return nil }
+        var content = String(line.dropFirst())
+        if content.first?.isWhitespace == true {
+            content.removeFirst()
+        }
+        return content
+    }
+
+    static func markdownAttributed(
+        _ text: String,
+        whitespaceMode: MarkdownLinkifier.WhitespaceMode = .normalized
+    ) -> AttributedString {
+        MarkdownLinkifier.markdownAttributed(text, whitespaceMode: whitespaceMode)
     }
 
     static func monospacedTableText(_ raw: String) -> String {
@@ -4648,7 +5045,7 @@ struct ClickablePathText: View {
                                         Text(seg.text)
                                             .underline()
                                     }
-                                    .font(Stanford.ui(14, design: .monospaced))
+                                    .font(Stanford.chatRaw())
                                     .foregroundStyle(Stanford.lagunita)
                                 }
                                 .buttonStyle(.plain)
@@ -4662,20 +5059,20 @@ struct ClickablePathText: View {
                                 }
                             } else {
                                 Text(markdownInline(seg.text))
-                                    .font(Stanford.body(15))
-                                    .foregroundStyle(Stanford.black)
+                                    .font(Stanford.chatBody())
+                                    .foregroundStyle(Stanford.readingText)
                             }
                         }
                     }
                 } else {
                     Text(markdownInline(line))
-                        .font(Stanford.body(15))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.chatBody())
+                        .foregroundStyle(Stanford.readingText)
                         .textSelection(.enabled)
                 }
             }
         }
-        .lineSpacing(4)
+        .lineSpacing(Stanford.chatBodyLineSpacing)
     }
 
     private func markdownInline(_ text: String) -> AttributedString {

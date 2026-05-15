@@ -559,10 +559,10 @@ private enum MarkdownShelfTextRenderer {
                     lineSpacing: 4,
                     paragraphSpacing: 12
                 )
-            case .listItem(let depth):
+            case .listItem(let depth, let marker):
                 let indent = String(repeating: "    ", count: depth)
                 append(
-                    "\(indent)\(depth == 0 ? "•" : "◦") \(block.content)\n",
+                    "\(indent)\(marker) \(block.content)\n",
                     to: result,
                     font: .systemFont(ofSize: 15),
                     color: .labelColor,
