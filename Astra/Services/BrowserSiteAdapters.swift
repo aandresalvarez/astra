@@ -84,6 +84,18 @@ enum GoogleDriveBrowserAdapter {
         href: String
     ) -> Bool {
         guard matches(pageURL: pageURL) else { return false }
+        guard !isSearchOrFilterControl(
+            selector: selector,
+            label: label,
+            name: name,
+            value: "",
+            role: role,
+            tag: tag,
+            type: "",
+            placeholder: ""
+        ) else {
+            return false
+        }
         let text = [selector, label, name, role, tag, href].joined(separator: " ").lowercased()
         let roleText = role.lowercased()
         let likelyFileRole = roleText.contains("gridcell")
@@ -104,6 +116,66 @@ enum GoogleDriveBrowserAdapter {
         let fileNameHint = !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !containsAny(text, ["search in drive", "new folder", "upload file"])
         return likelyFileRole && (fileTypeHint || fileNameHint)
+    }
+
+    static func isSearchOrFilterControl(
+        selector: String,
+        label: String,
+        name: String,
+        value: String,
+        role: String,
+        tag: String,
+        type: String,
+        placeholder: String
+    ) -> Bool {
+        let primaryText = [label, name, placeholder]
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let combined = [selector, label, name, value, role, tag, type, placeholder]
+            .joined(separator: " ")
+            .lowercased()
+        let exactPrimaryValues = [label, name, placeholder]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        let exactFilterControls: Set<String> = [
+            "advanced search",
+            "search in drive",
+            "search options",
+            "search button",
+            "clear search",
+            "clear search query",
+            "view sort options",
+            "title only"
+        ]
+        if exactPrimaryValues.contains(where: { exactFilterControls.contains($0) }) {
+            return true
+        }
+
+        if containsAny(primaryText, [
+            "advanced search",
+            "search in drive",
+            "search options",
+            "search button",
+            "clear search",
+            "clear search query",
+            "view sort options",
+            "no filters applied"
+        ]) {
+            return true
+        }
+
+        let roleText = role.lowercased()
+        let tagText = tag.lowercased()
+        if tagText == "input" || roleText.contains("textbox") || roleText == "search" {
+            return true
+        }
+
+        return containsAny(combined, [
+            "aria-label=\"advanced search\"",
+            "aria-label=\"search options\"",
+            "aria-label=\"search in drive\"",
+            "placeholder=\"search in drive\""
+        ])
     }
 
     static func nameHint(from label: String) -> String {

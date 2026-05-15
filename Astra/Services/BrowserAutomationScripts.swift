@@ -277,9 +277,34 @@ enum BrowserAutomationScripts {
         collect(document, 0, []);
         return out;
       };
+      const viewportInfoFor = (el) => {
+        const rect = el.getBoundingClientRect();
+        const inViewport = rect.bottom >= 0
+          && rect.right >= 0
+          && rect.x <= window.innerWidth
+          && rect.y <= window.innerHeight;
+        return {
+          inViewport,
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          area: Math.round(Math.max(0, rect.width) * Math.max(0, rect.height))
+        };
+      };
+      const compareViewportOrder = (a, b) => {
+        const av = a.viewportInfo;
+        const bv = b.viewportInfo;
+        if (av.inViewport !== bv.inViewport) return av.inViewport ? -1 : 1;
+        const ay = av.inViewport ? Math.max(0, av.y) : Math.abs(av.y);
+        const by = bv.inViewport ? Math.max(0, bv.y) : Math.abs(bv.y);
+        if (ay !== by) return ay - by;
+        if (av.x !== bv.x) return av.x - bv.x;
+        return bv.area - av.area;
+      };
       const controls = allControls()
         .filter((entry) => visible(entry.el))
-        .slice(0, 200)
+        .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }))
+        .sort(compareViewportOrder)
+        .slice(0, 300)
         .map((entry) => {
           const el = entry.el;
           return ({
@@ -297,6 +322,7 @@ enum BrowserAutomationScripts {
           href: el.href || "",
           framePath: entry.framePath,
           shadowDepth: entry.shadowDepth,
+          inViewport: entry.viewportInfo.inViewport,
           bounds: boundsFor(el)
         });
         });

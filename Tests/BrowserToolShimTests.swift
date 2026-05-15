@@ -6,8 +6,8 @@ import Testing
 @Suite("Browser Tool Shim")
 @MainActor
 struct BrowserToolShimTests {
-    @Test("Task-local astra-browser shim injects the bridge endpoint")
-    func taskLocalShimInjectsEndpoint() throws {
+    @Test("Task-local astra-browser shim injects bridge endpoint and token")
+    func taskLocalShimInjectsEndpointAndToken() throws {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -24,7 +24,7 @@ struct BrowserToolShimTests {
         let realTool = root.appendingPathComponent("real-astra-browser")
         try """
         #!/bin/sh
-        printf '%s' "$ASTRA_BROWSER_URL"
+        printf '%s|%s' "$ASTRA_BROWSER_URL" "$ASTRA_BROWSER_TOKEN"
         """.write(to: realTool, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: realTool.path)
 
@@ -42,8 +42,10 @@ struct BrowserToolShimTests {
         ))
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
         #expect(FileManager.default.isExecutableFile(atPath: shimPath))
-        let shimScript = try String(contentsOfFile: shimPath, encoding: .utf8)
-        #expect(!shimScript.contains("ASTRA_TEST_BROWSER_TOKEN"))
+        let shimAttributes = try FileManager.default.attributesOfItem(atPath: shimPath)
+        let shimDirectoryAttributes = try FileManager.default.attributesOfItem(atPath: shimDirectory)
+        #expect((shimAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        #expect((shimDirectoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shimPath)
@@ -55,6 +57,6 @@ struct BrowserToolShimTests {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(data: data, encoding: .utf8) ?? ""
         #expect(process.terminationStatus == 0)
-        #expect(text == endpoint)
+        #expect(text == "\(endpoint)|ASTRA_TEST_BROWSER_TOKEN")
     }
 }

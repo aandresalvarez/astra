@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ASTRA
 
-@Suite("Browser Failure Debug Capture")
+@Suite("Browser Failure Debug Capture", .serialized)
 struct BrowserFailureDebugCaptureTests {
     @Test("Debug capture is failure-only and explicitly opt-in")
     func debugCapturePolicyAndTrigger() {
@@ -28,6 +28,37 @@ struct BrowserFailureDebugCaptureTests {
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 500, result: ["ok": true]) == true)
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 200, result: ["ok": false, "error": "target_obscured"]) == true)
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 200, result: ["ok": true, "loopWarning": "unchanged"]) == true)
+    }
+
+    @Test("Settings toggle injects debug capture environment for browser tasks")
+    @MainActor
+    func settingsToggleInjectsDebugCaptureEnvironment() throws {
+        let key = AppStorageKeys.browserDebugCapture
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            ShelfBrowserBridgeRegistry.shared.reset()
+        }
+
+        let taskID = UUID()
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: taskID,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        UserDefaults.standard.set(false, forKey: key)
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: taskID)[BrowserFailureDebugCapture.environmentVariable] == nil)
+
+        UserDefaults.standard.set(true, forKey: key)
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: taskID)[BrowserFailureDebugCapture.environmentVariable] == "1")
     }
 
     @Test("Compact snapshot tree redacts URLs and hashes page text fields")

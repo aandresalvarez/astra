@@ -15,6 +15,8 @@ enum AgentPromptBuilder {
         var parts: [String] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
 
+        parts.append(currentTaskBlock(for: task))
+
         if let instructions = task.workspace?.instructions,
            !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append("Workspace Context:\n\(instructions)")
@@ -64,6 +66,8 @@ enum AgentPromptBuilder {
             appendAstraRunProtocolInstructions(to: &parts)
         }
 
+        parts.append(currentTaskReminder(for: task))
+
         if task.useAgentTeam {
             var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
             if !task.teamInstructions.isEmpty {
@@ -73,6 +77,19 @@ enum AgentPromptBuilder {
         }
 
         return parts.joined(separator: "\n\n")
+    }
+
+    private static func currentTaskBlock(for task: AgentTask) -> String {
+        """
+        Current Task:
+        \(task.goal)
+
+        Complete this task now. Treat recent tasks, memories, skills, browser state, and protocol notes as supporting context only.
+        """
+    }
+
+    private static func currentTaskReminder(for task: AgentTask) -> String {
+        "Current Task Reminder: complete this task now: \(task.goal)"
     }
 
     static func buildApprovedPlanExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload) -> String {

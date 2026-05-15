@@ -761,6 +761,8 @@ struct AgentProcessResult {
     let policyViolationMessage: String?
     let policyApprovalRequired: Bool
     let policyApprovalMessage: String?
+    let runtimeStopReason: String?
+    let runtimeStopMessage: String?
     let budgetExceeded: Bool
     let budgetWarning: Bool
     let finalReportedBudgetExceededAfterCompletion: Bool
@@ -776,6 +778,8 @@ struct AgentProcessResult {
         policyViolationMessage: String? = nil,
         policyApprovalRequired: Bool = false,
         policyApprovalMessage: String? = nil,
+        runtimeStopReason: String? = nil,
+        runtimeStopMessage: String? = nil,
         budgetExceeded: Bool = false,
         budgetWarning: Bool = false,
         finalReportedBudgetExceededAfterCompletion: Bool = false,
@@ -790,12 +794,18 @@ struct AgentProcessResult {
         self.policyViolationMessage = policyViolationMessage
         self.policyApprovalRequired = policyApprovalRequired
         self.policyApprovalMessage = policyApprovalMessage
+        self.runtimeStopReason = runtimeStopReason
+        self.runtimeStopMessage = runtimeStopMessage
         self.budgetExceeded = budgetExceeded
         self.budgetWarning = budgetWarning
         self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
         self.timedOut = timedOut
         self.repetitionKilled = repetitionKilled
         self.maxTurnsExceeded = maxTurnsExceeded
+    }
+
+    var runtimeStopped: Bool {
+        runtimeStopReason?.isEmpty == false
     }
 }
 
@@ -824,8 +834,12 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _policyViolationMessage: String?
     private var _policyApprovalRequired: Bool = false
     private var _policyApprovalMessage: String?
+    private var _runtimeStopReason: String?
+    private var _runtimeStopMessage: String?
     private var _sawAstraComplete: Bool = false
 
+    private var browserToolUseIDs: Set<String> = []
+    private var browserShellIDs: Set<String> = []
     private var lastEventSignature: String = ""
     private var repetitionCount: Int = 0
     private var lastActivityTime = Date()
@@ -843,6 +857,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var policyViolationMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyViolationMessage }
     var policyApprovalRequired: Bool { lock.lock(); defer { lock.unlock() }; return _policyApprovalRequired }
     var policyApprovalMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyApprovalMessage }
+    var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
+    var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
+    var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
 
     init(
         tokenBudget: Int,
@@ -882,8 +899,28 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return false
         }
 
+        if case .toolUse(let name, let id, let input) = parsed, !id.isEmpty {
+            let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
+            let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
+            if isBrowserTool || isBrowserShellContinuation {
+                browserToolUseIDs.insert(id)
+            }
+        }
+
         if let violation = policyGuard?.violation(for: parsed) {
             return recordPolicyViolation(violation, process: process)
+        }
+
+        if case .toolResult(let toolID, let content) = parsed {
+            let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
+            if isKnownBrowserTool {
+                for shellID in Self.browserShellIDs(fromToolResult: content) {
+                    browserShellIDs.insert(shellID)
+                }
+            }
+            if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
+                return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
+            }
         }
 
         if case .result = parsed {
@@ -1014,6 +1051,181 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return false
     }
 
+    private static func isBrowserToolUse(name: String, input: [String: Any]?) -> Bool {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedName == "astra-browser" || normalizedName.contains("astra-browser") {
+            return true
+        }
+        guard let input else { return false }
+        return inputContainsAstraBrowser(input)
+    }
+
+    private static func inputContainsAstraBrowser(_ value: Any) -> Bool {
+        if let string = value as? String {
+            return string.lowercased().contains("astra-browser")
+        }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.values.contains(where: inputContainsAstraBrowser)
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: inputContainsAstraBrowser)
+        }
+        return false
+    }
+
+    private static func browserShellIDs(fromToolInput input: [String: Any]?) -> Set<String> {
+        guard let input else { return [] }
+        return browserShellIDs(fromInputValue: input)
+    }
+
+    private static func browserShellIDs(fromInputValue value: Any) -> Set<String> {
+        var ids: Set<String> = []
+        if let dictionary = value as? [String: Any] {
+            for (key, nested) in dictionary {
+                let normalizedKey = key.lowercased().replacingOccurrences(of: "_", with: "")
+                if normalizedKey == "shellid", let shellID = browserShellID(fromValue: nested) {
+                    ids.insert(shellID)
+                }
+                ids.formUnion(browserShellIDs(fromInputValue: nested))
+            }
+        } else if let array = value as? [Any] {
+            for nested in array {
+                ids.formUnion(browserShellIDs(fromInputValue: nested))
+            }
+        }
+        return ids
+    }
+
+    private static func browserShellID(fromValue value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let int = value as? Int {
+            return String(int)
+        }
+        if let int64 = value as? Int64 {
+            return String(int64)
+        }
+        if let double = value as? Double, double.rounded(.towardZero) == double {
+            return String(Int(double))
+        }
+        return nil
+    }
+
+    private static func browserShellIDs(fromToolResult content: String) -> Set<String> {
+        let nsRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        let pattern = #"\bshellId\b\s*[:=]\s*["']?([A-Za-z0-9_-]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        var ids: Set<String> = []
+        for match in regex.matches(in: content, range: nsRange) {
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: content) else {
+                continue
+            }
+            ids.insert(String(content[range]))
+        }
+        return ids
+    }
+
+    private static func browserTerminalStop(content: String, isKnownBrowserTool: Bool) -> (reason: String, message: String)? {
+        let lower = content.lowercased()
+        let code: String?
+        if lower.contains("google_docs_controlled_browser_required") {
+            code = "google_docs_controlled_browser_required"
+        } else if lower.contains("google_docs_browser_copy_unavailable") {
+            code = "google_docs_browser_copy_unavailable"
+        } else if lower.contains("drive_file_name_mismatch") {
+            code = "drive_file_name_mismatch"
+        } else if lower.contains("drive_file_not_opened") {
+            code = "drive_file_not_opened"
+        } else if lower.contains("google_docs_safe_edit_unavailable") {
+            code = "google_docs_safe_edit_unavailable"
+        } else if lower.contains("google_docs_safe_edit_verification_failed") {
+            code = "google_docs_safe_edit_verification_failed"
+        } else if lower.contains("controlled_browser_unavailable") {
+            code = "controlled_browser_unavailable"
+        } else if lower.contains("unauthorized_browser_bridge_request") {
+            code = "unauthorized_browser_bridge_request"
+        } else if lower.contains("browser_action_budget_exceeded") {
+            code = "browser_action_budget_exceeded"
+        } else if lower.contains("dangerous_keypress_sequence") {
+            code = "dangerous_keypress_sequence"
+        } else {
+            code = nil
+        }
+        guard let code else { return nil }
+        guard isKnownBrowserTool || looksLikeBrowserToolResult(content) else { return nil }
+
+        switch code {
+        case "drive_file_name_mismatch":
+            return (
+                code,
+                "ASTRA stopped browser control because Google Drive opened a different file than the requested name. It did not continue into read or edit actions on the wrong file."
+            )
+        case "drive_file_not_opened":
+            return (
+                code,
+                "ASTRA stopped browser control because the Google Drive open helper could not open the requested file. It did not fall back to generic row clicks or editor probing."
+            )
+        case "google_docs_browser_copy_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because it could not safely copy/read the Google Docs content from the browser. It did not fall back to manual probing or destructive editor shortcuts."
+            )
+        case "google_docs_controlled_browser_required":
+            return (
+                code,
+                "ASTRA stopped browser control because full-document Google Docs read/replace requires Controlled mode. Embedded WebKit cannot verify a fresh clipboard copy from the Docs editor iframe, so ASTRA did not select or replace document content."
+            )
+        case "google_docs_safe_edit_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because the safe Google Docs browser read/replace helper is unavailable. It did not fall back to manual select-all/delete. Use the controlled browser, handle the document manually, or retry with a narrower non-destructive edit."
+            )
+        case "google_docs_safe_edit_verification_failed":
+            return (
+                code,
+                "ASTRA stopped browser control because the Google Docs safe edit path could not verify the final document content. It did not fall back to manual select-all/delete."
+            )
+        case "controlled_browser_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because Google Drive/Docs automation requires controlled Chromium, but controlled browser was unavailable. Fix controlled browser setup or permissions before retrying."
+            )
+        case "unauthorized_browser_bridge_request":
+            return (
+                code,
+                "ASTRA stopped browser control because the astra-browser command could not authenticate to the Shelf browser bridge. Restart or reattach the Shelf browser, then retry."
+            )
+        case "browser_action_budget_exceeded":
+            return (
+                code,
+                "ASTRA stopped browser control because the browser action budget was exceeded. Inspect the browser logs or start a new task with a more specific browser strategy before retrying."
+            )
+        case "dangerous_keypress_sequence":
+            return (
+                code,
+                "ASTRA stopped browser control because the browser bridge blocked a destructive keyboard sequence in an editor. Use a safe site-specific helper or explicit non-destructive edit path instead."
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func looksLikeBrowserToolResult(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        if lower.contains("astra-browser") || lower.contains("browsertrace") || lower.contains("browserflight") {
+            return true
+        }
+        guard lower.contains("\"ok\"") || lower.contains("\"error\"") else { return false }
+        guard let data = content.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return object["ok"] != nil || object["error"] != nil || object["browserTrace"] != nil || object["debugCapture"] != nil
+    }
+
     private func recordPolicyViolation(_ violation: AgentRuntimePolicyViolation, process: AgentRuntimeProcessControl?) -> Bool {
         guard !_policyViolation, !_policyApprovalRequired else { return false }
         let redactedDetail = violation.detail.map { LogSanitizer.sanitize($0, maxLength: 240) }
@@ -1039,6 +1251,19 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             _policyViolation = true
             _policyViolationMessage = message
         }
+        process?.terminate()
+        return true
+    }
+
+    private func recordRuntimeStop(reason: String, message: String, process: AgentRuntimeProcessControl?) -> Bool {
+        guard _runtimeStopReason == nil else { return false }
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+            "reason": reason,
+            "source": "browser_terminal_error",
+            "message": message
+        ], level: .error, fieldMaxLength: 260)
+        _runtimeStopReason = reason
+        _runtimeStopMessage = message
         process?.terminate()
         return true
     }

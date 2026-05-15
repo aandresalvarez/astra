@@ -234,6 +234,42 @@ struct BuildPromptTests {
         #expect(prompt.contains("Goal: Fix the login bug"))
     }
 
+    @Test("Prompt makes current task explicit before context and at end")
+    func currentTaskIsExplicitBeforeContextAndAtEnd() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-current-task")
+        ctx.insert(ws)
+
+        let oldTask = AgentTask(title: "Old browser task", goal: "Open the wrong old file", workspace: ws)
+        oldTask.status = .completed
+        oldTask.completedAt = Date().addingTimeInterval(-60)
+        let oldRun = TaskRun(task: oldTask)
+        oldRun.status = .completed
+        oldRun.output = "This old task is context only and must not become the current task."
+        oldTask.runs = [oldRun]
+        ctx.insert(oldTask)
+        ctx.insert(oldRun)
+
+        let task = AgentTask(
+            title: "Translate Alvaro1 t",
+            goal: "open the doccument called  'Alvaro1 t' and translate all text to Spanish",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let worker = AgentRuntimeWorker()
+        let prompt = worker.buildPrompt(for: task)
+
+        #expect(prompt.hasPrefix("Current Task:\nopen the doccument called  'Alvaro1 t' and translate all text to Spanish"))
+        #expect(prompt.contains("Recent tasks in this workspace (for context):"))
+        let currentTaskIndex = try #require(prompt.range(of: "Current Task:")?.lowerBound)
+        let recentTasksIndex = try #require(prompt.range(of: "Recent tasks in this workspace")?.lowerBound)
+        #expect(currentTaskIndex < recentTasksIndex)
+        #expect(prompt.hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
+    }
+
     @Test("Prompt includes workspace instructions")
     func includesInstructions() throws {
         let container = try makeContainer()
@@ -473,6 +509,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("astra-browser google-docs-find"))
         #expect(prompt.contains("astra-browser google-docs-read-document"))
         #expect(prompt.contains("astra-browser google-docs-replace-document"))
+        #expect(prompt.contains("google_docs_controlled_browser_required"))
+        #expect(prompt.contains("requires Controlled mode"))
         #expect(prompt.contains("Never use `keypress --key a --mod command` followed by Backspace/Delete"))
         #expect(!prompt.contains("astra-browser google-drive-open"))
         #expect(prompt.contains("Do not use osascript"))
@@ -515,6 +553,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("http://127.0.0.1:49152"))
         #expect(!prompt.contains("http://127.0.0.1:49153"))
         #expect(prompt.contains("astra-browser google-drive-open"))
+        #expect(prompt.contains("respects the selected browser engine"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 
@@ -818,6 +857,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("viewport"))
         #expect(script.contains("actionable"))
         #expect(script.contains("shadowRoot"))
+        #expect(script.contains("compareViewportOrder"))
+        #expect(script.contains("inViewport"))
     }
 
     @Test("existing controlled profile process parser finds DevTools port")

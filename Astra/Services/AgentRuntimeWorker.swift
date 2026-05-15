@@ -335,7 +335,7 @@ final class AgentRuntimeWorker {
             "token_budget": String(task.tokenBudget)
         ], level: result.exitCode == 0 ? .info : .warning)
 
-        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .claudeCode,
             model: task.model,
             exitCode: result.exitCode,
@@ -382,6 +382,7 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "run") {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -966,7 +967,7 @@ final class AgentRuntimeWorker {
             )
         }
 
-        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .claudeCode,
             model: task.model,
             exitCode: result.exitCode,
@@ -1014,6 +1015,7 @@ final class AgentRuntimeWorker {
                 "reason": "max_turns_reached",
                 "max_turns": String(task.maxTurns)
             ], level: .error)
+        } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "resume") {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -1404,7 +1406,7 @@ final class AgentRuntimeWorker {
                 exitCode: result.exitCode
             )
         }
-        let failureDiagnostic = result.exitCode == 0 ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .copilotCLI,
             model: task.model,
             exitCode: result.exitCode,
@@ -1448,6 +1450,7 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
             modelContext.insert(event)
+        } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -1904,6 +1907,31 @@ final class AgentRuntimeWorker {
         let lower = text.lowercased()
         return ["http://", "https://", "web", "fetch", "research", "curl", "api", "ncbi"]
             .contains { lower.contains($0) }
+    }
+
+    @MainActor
+    private func applyRuntimeStopIfNeeded(
+        _ result: AgentProcessResult,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
+
+        run.status = .failed
+        run.stopReason = reason
+        task.status = .pendingUser
+
+        let payload = result.runtimeStopMessage
+            ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
+        modelContext.insert(TaskEvent(task: task, type: "error", payload: payload, run: run))
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+            "phase": phase,
+            "reason": reason,
+            "source": "runtime_stop"
+        ], level: .error)
+        return true
     }
 
     @MainActor

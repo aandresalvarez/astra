@@ -3,6 +3,16 @@ import Foundation
 @testable import ASTRA
 import ASTRACore
 
+private final class MonitorMockProcess: AgentRuntimeProcessControl {
+    private(set) var didTerminate = false
+    var isRunning: Bool { !didTerminate }
+    var terminationStatus: Int32 { didTerminate ? 143 : 0 }
+
+    func terminate() {
+        didTerminate = true
+    }
+}
+
 @Suite("Claude permission policy")
 @MainActor
 struct ClaudePermissionPolicyTests {
@@ -102,6 +112,262 @@ struct ProcessMonitorTests {
 
         #expect(shouldKill == false)
         #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Terminal browser tool result stops provider")
+    func terminalBrowserToolResultStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let commandKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "toolu_browser", input: [
+                "command": "astra-browser google-docs-read-document"
+            ]),
+            process: process
+        )
+        let resultKill = monitor.processEvent(
+            .toolResult(
+                toolId: "toolu_browser",
+                content: #"{"ok":false,"error":"google_docs_safe_edit_unavailable"}"#
+            ),
+            process: process
+        )
+
+        #expect(commandKill == false)
+        #expect(resultKill == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "google_docs_safe_edit_unavailable")
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Browser action budget result stops provider")
+    func browserActionBudgetResultStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"browser_action_budget_exceeded"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "browser_action_budget_exceeded")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Drive file name mismatch stops provider")
+    func driveFileNameMismatchStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"drive_file_name_mismatch","title":"Death Data Integration - Google Slides"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "drive_file_name_mismatch")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Drive file not opened stops provider")
+    func driveFileNotOpenedStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"drive_file_not_opened","candidateCount":1}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "drive_file_not_opened")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Google Docs verification failure stops provider")
+    func googleDocsVerificationFailureStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"google_docs_safe_edit_verification_failed"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "google_docs_safe_edit_verification_failed")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Async browser shell continuation failure stops provider")
+    func asyncBrowserShellContinuationFailureStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let commandKill = monitor.processEvent(
+            .toolUse(name: "bash", id: "browser_command", input: [
+                "command": "astra-browser google-docs-replace-document --text 'translated' --verify 'translated'"
+            ]),
+            process: process
+        )
+        let pendingKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_command",
+                content: #"<command with shellId: 2 is still running after 30 seconds. Use read_bash with shellId "2" to retrieve the output.>"#
+            ),
+            process: process
+        )
+        let readKill = monitor.processEvent(
+            .toolUse(name: "read_bash", id: "browser_read", input: [
+                "shellId": "2"
+            ]),
+            process: process
+        )
+        let resultKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_read",
+                content: #"{"ok":false,"error":"google_docs_safe_edit_verification_failed"}"#
+            ),
+            process: process
+        )
+
+        #expect(commandKill == false)
+        #expect(pendingKill == false)
+        #expect(readKill == false)
+        #expect(resultKill == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "google_docs_safe_edit_verification_failed")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Google Docs browser copy unavailable stops provider")
+    func googleDocsBrowserCopyUnavailableStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"google_docs_browser_copy_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "google_docs_browser_copy_unavailable")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Google Docs controlled browser required stops provider")
+    func googleDocsControlledBrowserRequiredStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"google_docs_controlled_browser_required","reason":"embedded_webkit_clipboard_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "google_docs_controlled_browser_required")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Controlled browser unavailable stops provider")
+    func controlledBrowserUnavailableStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "browser_tool", input: nil),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"ok":false,"error":"controlled_browser_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "controlled_browser_unavailable")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Unauthorized browser bridge stops provider")
+    func unauthorizedBrowserBridgeStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "Bash", id: "browser_tool", input: [
+                "command": "astra-browser google-drive-open --name 'Alvaro1 t'"
+            ]),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "browser_tool",
+                content: #"{"error":"{\n  \"error\" : \"unauthorized_browser_bridge_request\",\n  \"ok\" : false\n}","ok":false}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "unauthorized_browser_bridge_request")
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Terminal browser error text from unrelated tools does not stop provider")
+    func terminalBrowserErrorFromUnrelatedToolDoesNotStopProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "read_tool",
+                content: "A note mentioned google_docs_safe_edit_unavailable, but this was not a browser tool result."
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.runtimeStopped == false)
     }
 
     @Test("Budget exceeded via result event exact count")

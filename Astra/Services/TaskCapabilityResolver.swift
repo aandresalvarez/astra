@@ -435,7 +435,7 @@ struct TaskCapabilityResolver {
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {
-        if skill.isSystemBuiltIn || !skill.disallowedTools.isEmpty {
+        if !skill.disallowedTools.isEmpty {
             return true
         }
         return matchesSkill(skill, taskText: taskText)
@@ -581,8 +581,11 @@ struct TaskCapabilityResolver {
 
     private static let genericCapabilityTokens: Set<String> = [
         "agent",
+        "and",
         "api",
         "app",
+        "after",
+        "before",
         "browser",
         "capability",
         "check",
@@ -605,7 +608,9 @@ struct TaskCapabilityResolver {
         "local",
         "look",
         "manage",
+        "must",
         "open",
+        "only",
         "page",
         "project",
         "query",
@@ -621,11 +626,16 @@ struct TaskCapabilityResolver {
         "task",
         "the",
         "this",
+        "through",
         "tool",
         "tools",
         "use",
         "user",
+        "via",
         "web",
+        "when",
+        "with",
+        "work",
         "workflow",
         "workspace",
         "write"

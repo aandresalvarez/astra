@@ -348,6 +348,7 @@ struct TaskCapabilityResolverTests {
             behaviorInstructions: "GCloud must inspect projects and deployment regions before doing cloud work.",
             environmentVariables: ["GCP_PROJECT": "prod-project"]
         )
+        gcloudSkill.isBuiltIn = true
         gcloudSkill.workspace = workspace
         context.insert(gcloudSkill)
 
@@ -365,12 +366,13 @@ struct TaskCapabilityResolverTests {
             allowedTools: ["Read", "Bash"],
             behaviorInstructions: "Stanford mail tasks must use the Apple Mail mailbox bridge."
         )
+        mailSkill.isBuiltIn = true
         mailSkill.workspace = workspace
         context.insert(mailSkill)
 
         let task = AgentTask(
-            title: "Open the untitled document",
-            goal: "Open the untitled document",
+            title: "Translate Alvaro1 t",
+            goal: "open the doccument called 'Alvaro1 t' and translate all text to Spanish",
             workspace: workspace
         )
         task.skills = [gcloudSkill, mailSkill]

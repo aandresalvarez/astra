@@ -102,6 +102,36 @@ struct AppLoggerTests {
         #expect(AppLogger.mainLogFile.path.contains("AstraTests"))
     }
 
+    @Test("Browser category is available for logs filtering")
+    func browserCategoryIsAvailableForFiltering() {
+        #expect(AppLogCategory.all.contains("Browser"))
+    }
+
+    @Test("Browser flight entries persist rich debug payloads")
+    func browserFlightEntriesPersistRichDebugPayloads() throws {
+        let taskID = UUID()
+        let url = AppLogger.browserFlightLogFile(taskID: taskID)
+        try? FileManager.default.removeItem(at: url)
+
+        AppLogger.appendBrowserFlightEntry([
+            "id": "bflight_test",
+            "sequence": 1,
+            "debugCapture": [
+                "enabled": true,
+                "screenshot": [
+                    "format": "jpeg",
+                    "base64": "abc123"
+                ]
+            ]
+        ], taskID: taskID)
+        AppLogger.flushForTesting()
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        #expect(content.contains("\"debugCapture\""))
+        #expect(content.contains("\"screenshot\""))
+        #expect(content.contains("\"base64\":\"abc123\""))
+    }
+
     @Test("onNewEntry callback fires on main thread")
     @MainActor
     func onNewEntryMainThread() async {
