@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct WorkspaceCapabilities {
     let workspace: Workspace
@@ -37,7 +38,7 @@ struct WorkspaceCapabilities {
     }
 
     var activeSkills: [Skill] {
-        uniqueSkills(workspaceSkills + enabledGlobalSkills)
+        uniqueSkills(workspaceSkills + enabledGlobalSkills + enabledPackageSkills)
     }
 
     var workspaceConnectors: [Connector] {
@@ -62,10 +63,13 @@ struct WorkspaceCapabilities {
         let attached = activeSkills.flatMap(\.connectors).filter { connector in
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
+                    || enabledPackageConnectorSpecs.contains {
+                        CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
+                    }
             }
             return connector.workspace?.id == workspace.id
         }
-        return uniqueConnectors(workspaceConnectors + attached + enabledGlobalConnectors)
+        return uniqueConnectors(workspaceConnectors + attached + enabledGlobalConnectors + enabledPackageConnectors)
     }
 
     var workspaceTools: [LocalTool] {
@@ -87,7 +91,47 @@ struct WorkspaceCapabilities {
 
     var activeTools: [LocalTool] {
         let attached = activeSkills.flatMap(\.localTools)
-        return uniqueTools(workspaceTools + attached + enabledGlobalTools)
+        return uniqueTools(workspaceTools + attached + enabledGlobalTools + enabledPackageTools)
+    }
+
+    private var enabledPackages: [PluginPackage] {
+        CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace)
+    }
+
+    private var enabledPackageSkillSpecs: [PluginSkill] {
+        enabledPackages.flatMap(\.skills)
+    }
+
+    private var enabledPackageConnectorSpecs: [PluginConnector] {
+        enabledPackages.flatMap(\.connectors)
+    }
+
+    private var enabledPackageToolSpecs: [PluginLocalTool] {
+        enabledPackages.flatMap(\.localTools)
+    }
+
+    private var enabledPackageSkills: [Skill] {
+        let specs = enabledPackageSkillSpecs
+        guard !specs.isEmpty else { return [] }
+        return sortedSkills((workspaceSkills + availableGlobalSkills).filter { skill in
+            specs.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
+        })
+    }
+
+    private var enabledPackageConnectors: [Connector] {
+        let specs = enabledPackageConnectorSpecs
+        guard !specs.isEmpty else { return [] }
+        return sortedConnectors((workspaceConnectors + availableGlobalConnectors).filter { connector in
+            specs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
+        })
+    }
+
+    private var enabledPackageTools: [LocalTool] {
+        let specs = enabledPackageToolSpecs
+        guard !specs.isEmpty else { return [] }
+        return sortedTools((workspaceTools + availableGlobalTools).filter { tool in
+            specs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
+        })
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {

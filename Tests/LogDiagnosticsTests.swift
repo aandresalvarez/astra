@@ -327,6 +327,34 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("connector.tested result=authenticated"))
     }
 
+    @Test("Jira skill without active Jira connector is reported")
+    func jiraSkillWithoutActiveConnectorIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "task_short=688EC1FE capability.chat_context source=connector_preflight_candidates resolved_skill_count=2 resolved_skill_names=Jira Agent,Safe Bash connector_count=2 connector_names=Google Cloud,New Connector connector_service_types=gcloud,custom preflight_connector_count=0 workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=1"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Jira skill resolved without an active Jira connector" })
+        #expect(report.markdown.contains("connector_service_types!=jira"))
+    }
+
+    @Test("Capability runtime integrity failure is reported")
+    func capabilityRuntimeIntegrityFailureIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .error,
+                category: "Worker",
+                message: "task_short=688EC1FE capability.runtime_integrity result=missing_resources source=capability_runtime_integrity missing_count=1 package_names=Jira resource_kinds=connector resource_names=Jira sources=selected_package_skill"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Capability runtime resources are missing" })
+        #expect(report.markdown.contains("capability.runtime_integrity result=missing_resources"))
+    }
+
     @Test("Trace IDs group capability and connector attempts")
     func traceIDsGroupCapabilityAndConnectorAttempts() {
         let traceID = "capability-enable-1234abcd"

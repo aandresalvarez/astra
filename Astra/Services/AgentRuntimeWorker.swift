@@ -1778,6 +1778,7 @@ final class AgentRuntimeWorker {
             "skill_names": compactNames(task.skills.map(\.name)),
             "resolved_skill_names": compactNames(skills.map(\.name)),
             "connector_names": compactNames(connectors.map(\.name)),
+            "connector_service_types": compactNames(connectors.map(\.serviceType)),
             "local_tool_names": compactNames(tools.map(\.name))
         ], level: .debug, fieldMaxLength: 240)
     }

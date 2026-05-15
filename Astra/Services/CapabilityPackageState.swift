@@ -28,9 +28,9 @@ struct CapabilityPackageState {
     }
 
     var linkedConnectors: [Connector] {
-        let packageConnectorNames = Set(package.connectors.map(\.name))
+        let packageConnectorSpecs = package.connectors
         let packageConnectors = (capabilities.workspaceConnectors + capabilities.availableGlobalConnectors).filter { connector in
-            packageConnectorNames.contains(connector.name)
+            packageConnectorSpecs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
         }
         return uniqueConnectors(packageConnectors + linkedSkills.flatMap(\.connectors))
     }
@@ -81,11 +81,12 @@ struct CapabilityPackageState {
         }
 
         let activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
-        let messages = linkedConnectors
+        let activeLinkedConnectors = linkedConnectors
             .filter { connector in
                 activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector)
             }
-            .flatMap(readinessMessages(for:))
+        let messages = missingPackageConnectorMessages(activeLinkedConnectors: activeLinkedConnectors)
+            + activeLinkedConnectors.flatMap(readinessMessages(for:))
 
         return messages.isEmpty
             ? .ready
@@ -138,6 +139,17 @@ struct CapabilityPackageState {
         }
 
         return []
+    }
+
+    private func missingPackageConnectorMessages(activeLinkedConnectors: [Connector]) -> [String] {
+        package.connectors.compactMap { packageConnector in
+            let hasActiveConnector = activeLinkedConnectors.contains { connector in
+                CapabilityRuntimeResourceMatcher.connectorMatches(packageConnector, connector: connector)
+            }
+            guard !hasActiveConnector else { return nil }
+            let name = packageConnector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(name.isEmpty ? package.name : name): connector not active for this workspace"
+        }
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {

@@ -133,6 +133,35 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(task.unreadAt != nil)
         #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload == "Connector failed" })
     }
+
+    @Test("Capability preflight blocks selected package skill without required connector")
+    func capabilityPreflightBlocksSelectedPackageSkillWithoutConnector() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy Jira", primaryPath: NSTemporaryDirectory())
+        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
+        jiraSkill.workspace = workspace
+        let task = AgentTask(title: "Use Jira", goal: "List Jira tickets", workspace: workspace)
+        task.skills = [jiraSkill]
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(jiraSkill)
+        context.insert(task)
+        context.insert(run)
+
+        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run"
+        )
+
+        #expect(!passed)
+        #expect(task.status == .failed)
+        #expect(run.stopReason == "capability_runtime_resources_missing")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
+    }
 }
 
 @Suite("Agent Runtime Run Persistence")

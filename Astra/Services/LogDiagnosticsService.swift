@@ -698,6 +698,7 @@ enum LogDiagnosticsService {
 
         if lower.contains(AuditEvent.capabilityChatContext.rawValue) {
             guard !isCapabilityChatContextGap(message) else { return nil }
+            guard !isJiraSkillResolvedWithoutConnector(message) else { return nil }
             return (
                 key: "capability.chat_context.\(field("source", in: message) ?? "unknown")",
                 title: "Chat capability context was captured",
@@ -708,11 +709,22 @@ enum LogDiagnosticsService {
 
         if lower.contains(AuditEvent.capabilityResolved.rawValue) {
             guard !isCapabilityResolutionGap(message) else { return nil }
+            guard !isJiraSkillResolvedWithoutConnector(message) else { return nil }
             return (
                 key: "capability.resolved",
                 title: "Task capability context was resolved",
                 signal: AuditEvent.capabilityResolved.rawValue,
                 analysis: "The worker resolved the task's skills, connectors, and local tools before launching the runtime. This is useful when verifying that enabled workspace capabilities reached the agent."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityRuntimeIntegrity.rawValue),
+           field("result", in: message) == "passed" {
+            return (
+                key: "capability.runtime_integrity.passed",
+                title: "Capability runtime integrity passed",
+                signal: "capability.runtime_integrity result=passed",
+                analysis: "ASTRA verified that selected or enabled package capabilities had their declared runtime resources before launching the provider."
             )
         }
 
@@ -845,6 +857,39 @@ enum LogDiagnosticsService {
                 severity: maxSeverity(entry.logLevel, .warning),
                 signal: AuditEvent.capabilityEnableFailed.rawValue,
                 analysis: "ASTRA attempted to enable a capability but the install, credential, or configuration step failed. Check the source, package, and reason fields, then retry after fixing the missing requirement."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityChatContext.rawValue),
+           isJiraSkillResolvedWithoutConnector(message) {
+            return (
+                key: "capability.jira_connector.missing",
+                title: "Jira skill resolved without an active Jira connector",
+                severity: .warning,
+                signal: "capability.chat_context connector_service_types!=jira",
+                analysis: "The task had Jira behavior instructions selected, but the worker did not resolve any connector with service_type=jira. Jira credentials and connector configuration were not injected, and Jira preflight had no connector candidate to test."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityResolved.rawValue),
+           isJiraSkillResolvedWithoutConnector(message) {
+            return (
+                key: "capability.jira_connector.missing",
+                title: "Jira skill resolved without an active Jira connector",
+                severity: .warning,
+                signal: "capability.resolved connector_service_types!=jira",
+                analysis: "The task had Jira behavior instructions selected, but the worker did not resolve any connector with service_type=jira. Jira credentials and connector configuration were not injected, and Jira preflight had no connector candidate to test."
+            )
+        }
+
+        if lower.contains(AuditEvent.capabilityRuntimeIntegrity.rawValue),
+           field("result", in: message) == "missing_resources" {
+            return (
+                key: "capability.runtime_integrity.missing_resources",
+                title: "Capability runtime resources are missing",
+                severity: .error,
+                signal: "capability.runtime_integrity result=missing_resources",
+                analysis: "ASTRA blocked task launch because an enabled or selected package capability did not resolve its declared skill, connector, local tool, browser adapter, credential, or executable resource. Fix the capability or exclude it before retrying."
             )
         }
 
@@ -1510,6 +1555,29 @@ enum LogDiagnosticsService {
         return intField("resolved_skill_count", in: message) == 0
             && intField("connector_count", in: message) == 0
             && intField("local_tool_count", in: message) == 0
+    }
+
+    private static func isJiraSkillResolvedWithoutConnector(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        guard lower.contains("jira agent")
+                || lower.contains("skill_names=jira")
+                || lower.contains("resolved_skill_names=jira")
+                || lower.contains("selected_skill_names=jira")
+        else { return false }
+
+        if let serviceTypes = field("connector_service_types", in: message)?.lowercased() {
+            let normalizedTypes = serviceTypes
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            return !normalizedTypes.contains("jira")
+        }
+
+        guard lower.contains("connector_count=") else { return false }
+        guard intField("connector_count", in: message) == 0 else { return false }
+        if lower.contains("preflight_connector_count=") {
+            return intField("preflight_connector_count", in: message) == 0
+        }
+        return true
     }
 
     private static func connectorTestResultIsNonActionable(_ result: String) -> Bool {

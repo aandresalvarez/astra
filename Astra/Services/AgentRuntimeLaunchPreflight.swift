@@ -44,6 +44,15 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String
     ) async -> Bool {
+        guard preflightCapabilitiesBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase
+        ) else {
+            return false
+        }
+
         let fullContext = [
             task.goal,
             task.title,
@@ -98,6 +107,36 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             reason: "connector_preflight_failed",
             payload: message
+        )
+        return false
+    }
+
+    static func preflightCapabilitiesBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        let issues = CapabilityRuntimeIntegrityService.issues(for: task)
+        var fields = CapabilityAudit.taskContextFields(source: "capability_runtime_integrity", task: task)
+        fields["phase"] = phase
+        fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
+        for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {
+            fields[key] = value
+        }
+
+        guard !issues.isEmpty else {
+            AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+            return true
+        }
+
+        AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "capability_runtime_resources_missing",
+            payload: CapabilityRuntimeIntegrityService.userMessage(for: issues)
         )
         return false
     }

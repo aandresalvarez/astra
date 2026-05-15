@@ -76,6 +76,29 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeConnectors.map(\.name) == ["Attached API", "Local Jira", "Shared GCP"])
     }
 
+    @Test("active resources include enabled package definitions even when per-resource IDs drift")
+    @MainActor
+    func activeResourcesIncludeEnabledPackageDefinitions() {
+        let workspace = Workspace(name: "Package Active", primaryPath: "/tmp/package-active")
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+
+        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
+        jiraSkill.isGlobal = true
+
+        let jiraConnector = Connector(name: "Configured Jira", serviceType: "jira")
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [jiraSkill],
+            globalConnectors: [jiraConnector]
+        )
+
+        #expect(capabilities.activeSkills.map(\.name) == ["Jira Agent"])
+        #expect(capabilities.activeConnectors.map(\.name) == ["Configured Jira"])
+    }
+
     @Test("active connectors ignore unenabled global skill attachments")
     @MainActor
     func activeConnectorsIgnoreUnenabledGlobalSkillAttachments() {
@@ -198,6 +221,109 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.connectorIDStrings == [connector.id.uuidString])
         #expect(state.readiness.level == .needsAttention)
         #expect(state.readiness.messages == ["Jira: missing JIRA_EMAIL, JIRA_API_TOKEN"])
+    }
+
+    @Test("package state reports when only a matching skill is active without its connector")
+    @MainActor
+    func packageStateReportsMissingPackageConnector() {
+        let workspace = Workspace(name: "Skill Only Package State", primaryPath: "/tmp/skill-only-package-state")
+
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.workspace = workspace
+
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "list.clipboard",
+            description: "Query and update Jira tickets",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Jira Agent",
+                icon: "list.clipboard",
+                description: "Jira behavior",
+                allowedTools: ["Read"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use Jira carefully.",
+                environmentKeys: [],
+                environmentValues: []
+            )],
+            connectors: [PluginConnector(
+                name: "Jira",
+                serviceType: "jira",
+                icon: "list.clipboard",
+                description: "Jira API",
+                baseURL: "",
+                authMethod: "basic",
+                credentialHints: [],
+                configHints: [],
+                notes: ""
+            )],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
+
+        #expect(state.isEnabled)
+        #expect(state.linkedSkills.map(\.name) == ["Jira Agent"])
+        #expect(state.linkedConnectors.isEmpty)
+        #expect(state.readiness.level == .needsAttention)
+        #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
+    }
+
+    @Test("package state links configured connectors by non-custom service type")
+    @MainActor
+    func packageStateLinksConnectorsByServiceType() {
+        let workspace = Workspace(name: "Package Connector Alias", primaryPath: "/tmp/package-connector-alias")
+
+        let connector = Connector(name: "Jira-new", serviceType: "jira", authMethod: "none")
+        connector.isGlobal = true
+        workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "list.clipboard",
+            description: "Query and update Jira tickets",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [PluginConnector(
+                name: "Jira",
+                serviceType: "jira",
+                icon: "list.clipboard",
+                description: "Jira API",
+                baseURL: "",
+                authMethod: "none",
+                credentialHints: [],
+                configHints: [],
+                notes: ""
+            )],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace, globalConnectors: [connector])
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities
+        )
+
+        #expect(state.isEnabled)
+        #expect(state.linkedConnectors.map(\.name) == ["Jira-new"])
+        #expect(state.readiness == .ready)
     }
 
     @Test("catalog inventory includes workspace-only capabilities")
