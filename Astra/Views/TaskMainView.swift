@@ -953,7 +953,7 @@ struct TaskMainView: View {
     @ViewBuilder
     private var threadStatusDisclosure: some View {
         let count = threadStatusCount
-        if count > 0 {
+        if shouldShowThreadStatusDisclosure {
             let accent = threadStatusAccentColor
             let summary = threadStatusSummaryText
 
@@ -1085,6 +1085,29 @@ struct TaskMainView: View {
             }
         }
         .padding(.top, 2)
+    }
+
+    private var shouldShowThreadStatusDisclosure: Bool {
+        let count = threadStatusCount
+        guard count > 0 else { return false }
+        if count == 1,
+           task.status == .running,
+           !runtimeHealth.isAttentionState,
+           latestRunningRunHasActivityDisclosure {
+            return false
+        }
+        return true
+    }
+
+    private var latestRunningRunHasActivityDisclosure: Bool {
+        guard task.status == .running,
+              let run = latestRun,
+              run.status == .running else {
+            return false
+        }
+        let activity = currentThreadSnapshot.activity(for: run)
+        let notices = runNoticesToDisplay(activity.notices, for: run)
+        return shouldShowRunActivityDisclosure(activity: activity, notices: notices)
     }
 
     private var threadStatusCount: Int {
@@ -1552,6 +1575,8 @@ struct TaskMainView: View {
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
+        let showResponseActions = run.status != .running
+        let hasRunMetadata = run.tokensUsed > 0 || run.completedAt != nil
 
         return VStack(alignment: .leading, spacing: 8) {
             if run.hasVPNWarning {
@@ -1617,55 +1642,58 @@ struct TaskMainView: View {
                 runActivityDisclosure(run: run, activity: activity, notices: displayNotices)
             }
 
-            // Action icons row
-            HStack(spacing: 12) {
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(copyText, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(Stanford.ui(12))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                .help("Copy")
+            if showResponseActions || hasRunMetadata {
+                HStack(spacing: 12) {
+                    if showResponseActions {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(copyText, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(Stanford.ui(12))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Stanford.coolGrey.opacity(0.7))
+                        .help("Copy")
 
-                if !activity.fileChanges.isEmpty {
-                    Button { selectedTab = .files } label: {
-                        Image(systemName: "doc.text")
+                        if !activity.fileChanges.isEmpty {
+                            Button { selectedTab = .files } label: {
+                                Image(systemName: "doc.text")
+                                    .font(Stanford.ui(12))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Stanford.coolGrey.opacity(0.7))
+                            .help("\(activity.fileChanges.count) changed files")
+                        }
+
+                        Button {
+                            forkTask(from: run)
+                        } label: {
+                            Image(systemName: "arrow.branch")
                             .font(Stanford.ui(12))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Stanford.coolGrey.opacity(0.7))
+                        .help("Fork from here")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                    .help("\(activity.fileChanges.count) changed files")
-                }
 
-                Button {
-                    forkTask(from: run)
-                } label: {
-                    Image(systemName: "arrow.branch")
-                        .font(Stanford.ui(12))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                .help("Fork from here")
+                    Spacer()
 
-                Spacer()
-
-                HStack(spacing: 8) {
-                    if run.tokensUsed > 0 {
-                        Text(Formatters.formatTokens(run.tokensUsed))
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(Stanford.coolGrey.opacity(0.5))
-                    }
-                    if let completed = run.completedAt {
-                        Text(formatDuration(Int(completed.timeIntervalSince(run.startedAt))))
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                    HStack(spacing: 8) {
+                        if run.tokensUsed > 0 {
+                            Text(Formatters.formatTokens(run.tokensUsed))
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                        }
+                        if let completed = run.completedAt {
+                            Text(formatDuration(Int(completed.timeIntervalSince(run.startedAt))))
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                        }
                     }
                 }
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
@@ -1814,6 +1842,12 @@ struct TaskMainView: View {
         let warningCount = notices.filter { $0.type == "budget.warning" }.count
         let issueCount = notices.filter { $0.type == "error" || $0.type == "budget.exceeded" }.count
 
+        if run.status == .running {
+            let message = runtimeHealth.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !message.isEmpty {
+                parts.append(message)
+            }
+        }
         if toolCallCount > 0 {
             parts.append("\(toolCallCount) tool \(toolCallCount == 1 ? "call" : "calls")")
         }
