@@ -17,6 +17,8 @@ enum AppStorageKeys {
     static let queryShelfWidth = "astra.queryShelf.width.v1"
     static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
     static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
+    static let browserDebugCapture = "astra.browser.debugCapture.v1"
+    static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
     static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
     static let claudeProvider = "astra.claudeProvider.v1"

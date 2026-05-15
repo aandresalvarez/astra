@@ -86,6 +86,9 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         if let accessToken, !accessToken.isEmpty {
             variables["ASTRA_BROWSER_TOKEN"] = accessToken
         }
+        if UserDefaults.standard.bool(forKey: AppStorageKeys.browserDebugCapture) {
+            variables[BrowserFailureDebugCapture.environmentVariable] = "1"
+        }
         return variables
     }
 
@@ -129,13 +132,13 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         }
 
         let driveCommandLine = shouldSurfaceGoogleDriveHelper
-            ? "- For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`"
+            ? "- For Google Drive file opening by visible name: `astra-browser google-drive-open --name 'Untitled document'`; the helper respects the selected browser engine unless Settings > Appearance > Privacy & Logging > Auto-promote Google Workspace helpers is enabled."
             : ""
         let githubCommandLine = hasGitHubAdapter
             ? "- On GitHub pages, prefer the GitHub capability (`gh` CLI/API) for durable issue, PR, repository, and Actions reads; use browser control for authenticated visual state or page navigation."
             : ""
         let driveSafetyLine = shouldSurfaceGoogleDriveHelper
-            ? "- On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots. A Drive row click commonly selects a file without opening it; if `goalSatisfied` is false, follow `suggestedNextActions` instead of repeating the click."
+            ? "- On Google Drive, use `google-drive-open` before manual row clicks, double-clicks, context menus, or broad control snapshots. A Drive row click commonly selects a file without opening it; if `drive_file_not_opened`, `drive_file_name_mismatch`, or `controlled_browser_unavailable` is returned, stop instead of probing rows or editing the opened page."
             : "- Site-specific helpers are capability-gated. If `analyze` reports an enabled `siteAdapters` entry, prefer its listed adapter actions; otherwise use generic control IDs and preflight."
         let adapterLine = adapterIDs.isEmpty
             ? "Enabled browser site adapters: none"
@@ -152,7 +155,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
-        - Inspect compact navigation/action diagnostics: `astra-browser trace`; when debugging a failed browser action, prefix that action with `ASTRA_BROWSER_DEBUG_CAPTURE=1` to retain a privacy-redacted screenshot thumbnail, compact tree, and console/navigation/network events in the trace.
+        - Inspect compact navigation/action diagnostics: `astra-browser trace`; when debugging browser control, enable Settings > Appearance > Privacy & Logging > Browser Debug Capture or prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=1`. Failed actions then retain a screenshot thumbnail, compact tree, and console/navigation/network events in the trace and per-task browser-flight JSONL log.
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
@@ -176,8 +179,8 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Wait for editor save state: `astra-browser wait-saved --timeout 8`
         - For Google Docs/Sheets/Slides text replacement: `astra-browser google-find-replace --find '05/08/2027' --with '05/07/2026'`
         - For Google Docs insertion: `astra-browser google-docs-insert --verify 'A Gentle Morning' --text 'A Gentle Morning\n...'`
-        - For full Google Docs reads: `astra-browser google-docs-read-document`
-        - For full Google Docs replacement: `astra-browser google-docs-replace-document --verify 'A Gentle Morning' --text 'full replacement content'`; if it returns `google_docs_safe_edit_unavailable`, stop instead of using raw keyboard deletion.
+        - For full Google Docs reads: `astra-browser google-docs-read-document`; it uses the browser like a person: focus the editor, select all, copy, read the clipboard, then restore the clipboard. Full-document copy requires Controlled mode, or Settings > Appearance > Privacy & Logging > Auto-promote Google Workspace helpers. If it returns `google_docs_controlled_browser_required` or `google_docs_browser_copy_unavailable`, stop instead of probing the editor.
+        - For full Google Docs replacement: `astra-browser google-docs-replace-document --verify 'A Gentle Morning' --text 'full replacement content'`; it backs up by browser copy, selects all, pastes the replacement, waits for Saved, verifies, and rolls back if verification fails. Full-document replacement requires Controlled mode, or Auto-promote. If it returns `google_docs_controlled_browser_required`, `google_docs_safe_edit_unavailable`, or verification fails, stop instead of using raw keyboard deletion.
         - For Google Docs verification: `astra-browser google-docs-find --query 'A Gentle Morning'`
         \(driveCommandLine)
         \(githubCommandLine)
@@ -200,7 +203,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - When `analyze` reports `ambiguity`, compare labels, roles, bounds, file type, and folder/opened metadata before selecting a controlID.
         - When a selector or label is known, prefer `fill`, `set-value`, or `type` instead of click + Cmd+A + text. If a response includes loopWarning, stop repeating the same click/snapshot path and switch strategy.
         - Cached analysis is a hint, not authority. If an action returns `stale_analysis`, `control_changed`, `target_obscured`, or `dangerous_confirmation_required`, stop and re-analyze or ask for confirmation as directed.
-        - For Google Docs, Sheets, or Slides editing, prefer Controlled mode when available. For Google Docs writing, use `google-docs-insert` for insertion and `google-docs-replace-document` for full-document replacement. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Never use `keypress --key a --mod command` followed by Backspace/Delete in Google editors; the bridge blocks that sequence to prevent data loss.
+        - For Google Docs, Sheets, or Slides editing, use the site-specific helpers; they respect the selected browser engine unless Settings > Appearance > Privacy & Logging > Auto-promote Google Workspace helpers is enabled. For Google Docs writing, use `google-docs-insert` for insertion and `google-docs-replace-document` for full-document replacement. The full-document helper is the allowed browser copy/select-all/paste workflow and requires Controlled mode for reliable Docs iframe clipboard access; do not improvise your own raw select-all/delete sequence. For date/text swaps, try `google-find-replace` first, then `wait-saved`, then `verify-text`; use manual compact control queries only if the helper reports missing fields. Never use `keypress --key a --mod command` followed by Backspace/Delete in Google editors; the bridge blocks that sequence to prevent data loss.
         """
     }
 

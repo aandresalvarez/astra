@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Browser Control Safety")
 struct BrowserControlSafetyTests {
+    @Test("Drive open default timeout covers slow Google Drive search results")
+    @MainActor
+    func driveOpenDefaultTimeoutCoversSlowGoogleDriveSearchResults() {
+        #expect(ShelfBrowserSession.googleDriveOpenDefaultTimeoutSeconds >= 20)
+        #expect(ShelfBrowserSession.googleDriveOpenMaximumTimeoutSeconds >= ShelfBrowserSession.googleDriveOpenDefaultTimeoutSeconds)
+    }
+
     @Test("Google Docs select-all delete sequence is blocked")
     func googleDocsSelectAllDeleteSequenceIsBlocked() {
         var state = BrowserKeypressSafetyState()
@@ -46,6 +53,184 @@ struct BrowserControlSafetyTests {
         #expect(decision.allowed)
     }
 
+    @Test("Google Docs full-document clipboard requires controlled when auto-promote is disabled")
+    @MainActor
+    func googleDocsFullDocumentClipboardRequiresControlledWhenAutoPromoteDisabled() {
+        #expect(ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+            engine: .embedded,
+            autoPromoteGoogleWorkspace: false
+        ))
+        #expect(!ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+            engine: .embedded,
+            autoPromoteGoogleWorkspace: true
+        ))
+        #expect(!ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+            engine: .controlled,
+            autoPromoteGoogleWorkspace: false
+        ))
+    }
+
+    @Test("Drive open verifier rejects wrong Google editor title")
+    @MainActor
+    func driveOpenVerifierRejectsWrongGoogleEditorTitle() {
+        let opened = ShelfBrowserSession.isOpenedDriveTarget(
+            urlString: "https://docs.google.com/presentation/d/abc/edit",
+            title: "Death Data Integration - Google Slides",
+            name: "Alvaro1 t",
+            startURL: "https://drive.google.com/drive/search?q=Alvaro1%20t"
+        )
+
+        #expect(opened == false)
+    }
+
+    @Test("Drive open verifier accepts matching Google editor title")
+    @MainActor
+    func driveOpenVerifierAcceptsMatchingGoogleEditorTitle() {
+        let opened = ShelfBrowserSession.isOpenedDriveTarget(
+            urlString: "https://docs.google.com/document/d/abc/edit",
+            title: "Alvaro1 t - Google Docs",
+            name: "Alvaro1 t",
+            startURL: "https://drive.google.com/drive/search?q=Alvaro1%20t"
+        )
+
+        #expect(opened == true)
+    }
+
+    @Test("Drive open candidates ignore query-only controls")
+    @MainActor
+    func driveOpenCandidatesIgnoreQueryOnlyControls() {
+        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+            controls: [
+                [
+                    "label": "Advanced search",
+                    "name": "Advanced search",
+                    "value": "Alvaro1 t",
+                    "role": "row",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(3)",
+                    "bounds": ["centerX": 444, "centerY": 615]
+                ],
+                [
+                    "label": "Alvaro1 t Google Docs Located in My Drive More info (Option + Right)",
+                    "name": "Alvaro1 t Google Docs Located in My Drive More info (Option + Right)",
+                    "role": "row",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(4)",
+                    "bounds": ["centerX": 444, "centerY": 670]
+                ],
+                [
+                    "label": "Alvaro1 t Advanced search",
+                    "name": "Alvaro1 t Advanced search",
+                    "role": "option",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(5)",
+                    "bounds": ["centerX": 444, "centerY": 720]
+                ]
+            ],
+            name: "Alvaro1 t",
+            pageURL: "https://drive.google.com/drive/search?q=Alvaro1%20t"
+        )
+
+        #expect(candidates.count == 1)
+        #expect(candidates.first?["label"] as? String == "Alvaro1 t Google Docs Located in My Drive More info (Option + Right)")
+    }
+
+    @Test("Drive open candidates accept exact Drive file controls")
+    @MainActor
+    func driveOpenCandidatesAcceptExactDriveFileControls() {
+        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+            controls: [
+                [
+                    "label": "Alvaro1 t",
+                    "name": "Alvaro1 t",
+                    "role": "button",
+                    "tag": "div",
+                    "type": "button",
+                    "selector": "div[role='button'][aria-label='Alvaro1 t']",
+                    "bounds": ["centerX": 311, "centerY": 129]
+                ],
+                [
+                    "label": "Search in Drive",
+                    "name": "Search in Drive",
+                    "value": "Alvaro1 t",
+                    "role": "textbox",
+                    "tag": "input",
+                    "selector": "input[aria-label='Search in Drive']",
+                    "bounds": ["centerX": 421, "centerY": 83]
+                ]
+            ],
+            name: "Alvaro1 t",
+            pageURL: "https://drive.google.com/drive/search?q=Alvaro1%20t"
+        )
+
+        #expect(candidates.count == 1)
+        #expect(candidates.first?["selector"] as? String == "div[role='button'][aria-label='Alvaro1 t']")
+    }
+
+    @Test("Drive open candidates accept search rows with modified time metadata")
+    @MainActor
+    func driveOpenCandidatesAcceptSearchRowsWithModifiedTimeMetadata() {
+        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+            controls: [
+                [
+                    "label": "Alvaro1 t 12:48 PM More actions (Alt+A)",
+                    "name": "Alvaro1 t 12:48 PM More actions (Alt+A)",
+                    "role": "row",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(1)",
+                    "bounds": ["centerX": 601, "centerY": 298]
+                ],
+                [
+                    "label": "Alvaro1 test 12:48 PM More actions (Alt+A)",
+                    "name": "Alvaro1 test 12:48 PM More actions (Alt+A)",
+                    "role": "row",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(2)",
+                    "bounds": ["centerX": 601, "centerY": 346]
+                ]
+            ],
+            name: "Alvaro1 t",
+            pageURL: "https://drive.google.com/drive/search?q=Alvaro1%20t"
+        )
+
+        #expect(candidates.count == 1)
+        #expect(candidates.first?["label"] as? String == "Alvaro1 t 12:48 PM More actions (Alt+A)")
+    }
+
+    @Test("Drive open candidates accept rows with owner and location metadata")
+    @MainActor
+    func driveOpenCandidatesAcceptRowsWithOwnerAndLocationMetadata() {
+        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+            controls: [
+                [
+                    "label": "Alvaro1 t 12:48 PM Me My Drive Google Docs More actions",
+                    "name": "Alvaro1 t 12:48 PM Me My Drive Google Docs More actions",
+                    "role": "row",
+                    "tag": "tr",
+                    "selector": "tbody > tr:nth-of-type(1)",
+                    "bounds": ["centerX": 965, "centerY": 247]
+                ]
+            ],
+            name: "Alvaro1 t",
+            pageURL: "https://drive.google.com/drive/search"
+        )
+
+        #expect(candidates.count == 1)
+        #expect(candidates.first?["label"] as? String == "Alvaro1 t 12:48 PM Me My Drive Google Docs More actions")
+    }
+
+    @Test("Drive search URL encodes the requested file name")
+    @MainActor
+    func driveSearchURLEncodesRequestedFileName() throws {
+        let url = ShelfBrowserSession.googleDriveSearchURL(for: "Alvaro1 t")
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        #expect(components.scheme == "https")
+        #expect(components.host == "drive.google.com")
+        #expect(components.path == "/drive/search")
+        #expect(components.queryItems?.first(where: { $0.name == "q" })?.value == "Alvaro1 t")
+    }
+
     @Test("Run guard hard-stops after excessive bridge calls")
     func runGuardHardStopsAfterExcessiveBridgeCalls() {
         var guardrail = BrowserRunGuard(warningThreshold: 2, hardStopThreshold: 3)
@@ -63,5 +248,100 @@ struct BrowserControlSafetyTests {
         #expect(decision.shouldStop)
         #expect(guardrail.totalBrowserCalls == 4)
     }
-}
 
+    @Test("Run guard hard-stops repeated Drive open helper failures")
+    func runGuardHardStopsRepeatedDriveOpenFailures() {
+        var guardrail = BrowserRunGuard(warningThreshold: 30, hardStopThreshold: 60)
+        let url = "https://drive.google.com/drive/search"
+
+        _ = guardrail.record(
+            path: "POST /googleDriveOpen",
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        var decision = guardrail.recordOutcome(
+            path: "POST /googleDriveOpen",
+            response: ["ok": false, "error": "drive_file_not_opened"],
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        #expect(!decision.shouldStop)
+
+        _ = guardrail.record(
+            path: "POST /googleDriveOpen",
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        decision = guardrail.recordOutcome(
+            path: "POST /googleDriveOpen",
+            response: ["ok": false, "error": "drive_file_not_opened"],
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+
+        #expect(decision.shouldStop)
+        #expect(decision.warning?.contains("Google Drive open helper failed") == true)
+        #expect(decision.diagnostics["lastError"] as? String == "drive_file_not_opened")
+        #expect(decision.diagnostics["lastErrorRepeatCount"] as? Int == 2)
+    }
+
+    @Test("Run guard hard-stops no-progress Drive probing after helper failure")
+    func runGuardHardStopsNoProgressDriveProbingAfterHelperFailure() {
+        var guardrail = BrowserRunGuard(warningThreshold: 30, hardStopThreshold: 60)
+        let url = "https://drive.google.com/drive/search"
+
+        _ = guardrail.record(
+            path: "POST /googleDriveOpen",
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        _ = guardrail.recordOutcome(
+            path: "POST /googleDriveOpen",
+            response: ["ok": false, "error": "drive_file_not_opened"],
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive",
+            urlChanged: true
+        )
+
+        _ = guardrail.record(
+            path: "POST /doubleClick",
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        var decision = guardrail.recordOutcome(
+            path: "POST /doubleClick",
+            response: ["ok": false, "error": "unsupported_action"],
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive",
+            urlChanged: false
+        )
+        #expect(!decision.shouldStop)
+
+        _ = guardrail.record(
+            path: "POST /open",
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive"
+        )
+        decision = guardrail.recordOutcome(
+            path: "POST /open",
+            response: ["ok": false, "error": "unsupported_action"],
+            currentURL: url,
+            currentTitle: "Search results - Google Drive",
+            pageType: "googleDrive",
+            urlChanged: false
+        )
+
+        #expect(decision.shouldStop)
+        #expect(decision.warning?.contains("generic Drive actions are not changing page state") == true)
+        #expect(decision.diagnostics["drivePostFailureGenericNoProgressMutations"] as? Int == 2)
+    }
+}

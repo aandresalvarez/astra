@@ -50,9 +50,13 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
 
 @MainActor
 final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    nonisolated static let googleDriveOpenDefaultTimeoutSeconds: Double = 24
+    nonisolated static let googleDriveOpenMaximumTimeoutSeconds: Double = 45
+
     @Published var engine: ShelfBrowserEngine = .embedded {
         didSet {
             guard oldValue != engine else { return }
+            guard !suppressEngineTransitionHandler else { return }
             browserAnalysisCache.invalidate()
             let controlledHandoffAddress = oldValue == .embedded && engine == .controlled
                 ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
@@ -114,6 +118,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var keypressSafetyState = BrowserKeypressSafetyState()
     private var browserRunGuard = BrowserRunGuard()
     private var isWebKitDebugInstrumentationScriptRegistered = false
+    private var suppressEngineTransitionHandler = false
 
     var isUsingControlledBrowser: Bool {
         engine == .controlled
@@ -121,6 +126,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     var isGoogleDriveAdapterEnabled: Bool {
         GoogleDriveBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+    }
+
+    static func googleDocsFullDocumentClipboardRequiresControlled(
+        engine: ShelfBrowserEngine,
+        autoPromoteGoogleWorkspace: Bool
+    ) -> Bool {
+        engine != .controlled && !autoPromoteGoogleWorkspace
     }
 
     var isGoogleDrivePage: Bool {
@@ -364,6 +376,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func openControlledBrowser(initialAddress: String?) async {
+        browserAnalysisCache.invalidate()
         if let initialAddress {
             currentURL = initialAddress
             if let url = URL(string: initialAddress) {
@@ -374,11 +387,116 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         estimatedProgress = 0.1
         canGoBack = false
         canGoForward = false
-        engine = .controlled
+        if engine != .controlled {
+            suppressEngineTransitionHandler = true
+            engine = .controlled
+            suppressEngineTransitionHandler = false
+        }
         await controlledBrowser.launch(initialAddress: initialAddress)
         syncDisplayedStateForEngine()
         publishBridgeState()
         refreshAgentControlPermissionIssue(source: "controlled_browser_launch")
+    }
+
+    private func ensureControlledBrowserForGoogleWorkspaceAction(action: String, started: Date) async -> [String: Any]? {
+        guard !isUsingControlledBrowser || !controlledBrowser.isRunning else { return nil }
+
+        if !isUsingControlledBrowser {
+            let autoPromote = UserDefaults.standard.bool(forKey: AppStorageKeys.browserAutoPromoteGoogleWorkspace)
+            guard autoPromote else {
+                logBrowserAction(
+                    phase: "skipped",
+                    action: "controlledBrowserPromotion",
+                    selector: nil,
+                    label: nil,
+                    role: nil,
+                    text: nil,
+                    placeholder: nil,
+                    testID: nil,
+                    fields: ["source_action": action, "reason": "setting_disabled"],
+                    started: started
+                )
+                return nil
+            }
+        }
+
+        let initialAddress = Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+        guard let initialAddress else {
+            return [
+                "ok": false,
+                "error": "controlled_browser_unavailable",
+                "action": action,
+                "url": currentURL,
+                "title": pageTitle,
+                "elapsedSeconds": Date().timeIntervalSince(started),
+                "hint": "Google Drive and Google Docs browser helpers require a displayable page to hand off to controlled Chromium."
+            ]
+        }
+
+        logBrowserAction(
+            phase: "requested",
+            action: "controlledBrowserPromotion",
+            selector: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil,
+            fields: ["source_action": action]
+        )
+
+        await openControlledBrowser(initialAddress: initialAddress)
+
+        let ready = await waitForControlledBrowserReady(timeoutSeconds: 10)
+        if ready {
+            logBrowserAction(
+                phase: "completed",
+                action: "controlledBrowserPromotion",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: ["source_action": action, "promoted": "true"],
+                started: started
+            )
+            return nil
+        }
+
+        return [
+            "ok": false,
+            "error": "controlled_browser_unavailable",
+            "action": action,
+            "url": currentURL,
+            "title": pageTitle,
+            "controlledBrowserState": controlledBrowser.runState.rawValue,
+            "controlledBrowserStatus": controlledBrowser.statusMessage,
+            "controlledBrowserLastError": controlledBrowser.lastErrorMessage ?? "",
+            "elapsedSeconds": Date().timeIntervalSince(started),
+            "hint": "ASTRA could not launch or reach controlled Chromium. Stop browser probing and fix controlled browser setup or permissions before retrying Google Drive/Docs automation."
+        ]
+    }
+
+    private func waitForControlledBrowserReady(timeoutSeconds: Double) async -> Bool {
+        let started = Date()
+        let timeout = max(0.5, min(timeoutSeconds, 20))
+        while Date().timeIntervalSince(started) <= timeout {
+            syncDisplayedStateForEngine()
+            if engine == .controlled, controlledBrowser.isRunning {
+                publishBridgeState()
+                return true
+            }
+            if controlledBrowser.runState == .failed {
+                syncDisplayedStateForEngine()
+                publishBridgeState()
+                return false
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        syncDisplayedStateForEngine()
+        publishBridgeState()
+        return engine == .controlled && controlledBrowser.isRunning
     }
 
     private func openEmbeddedBrowser(address: String) {
@@ -722,8 +840,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
         let started = Date()
         let before = browserFlightPageSnapshot()
-        let response = await handleBridgeRequestCore(request)
-        let result = Self.responseObject(from: response)
+        var response = await handleBridgeRequestCore(request)
+        var result = Self.responseObject(from: response)
+        if let guarded = browserRunGuardPostResponse(for: request, result: result, before: before) {
+            response = .json(guarded, statusCode: 429)
+            result = guarded
+        }
         let debugCapture = await browserFailureDebugCapture(
             policy: debugCapturePolicy,
             request: request,
@@ -905,18 +1027,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/googleDocsReadDocument",
                         "body": [:],
-                        "description": "Read the full current Google Docs document through a safe document API path. If no authenticated document API path is available, returns google_docs_safe_edit_unavailable and the agent must not fall back to raw select-all/delete."
+                        "description": "Read the full current Google Docs document through the browser using focus, select-all, copy, and clipboard restore. If browser copy is unavailable, may fall back to an authenticated Docs API read path."
                     ],
                     [
                         "method": "POST",
                         "path": "/googleDocsReplaceDocument",
                         "body": ["text": "Full replacement content", "verifyText": "short unique phrase"],
-                        "description": "Replace the full current Google Docs document through a safe document API path. If unavailable, returns google_docs_safe_edit_unavailable and blocks destructive keyboard fallback."
+                        "description": "Replace the full current Google Docs document through the browser using backup copy, select-all, paste, wait-saved, verify, and rollback on verification failure. It never uses raw select-all/delete."
                     ],
                     [
                         "method": "POST",
                         "path": "/googleDriveOpen",
-                        "body": ["name": "Untitled document", "timeoutSeconds": 12],
+                        "body": ["name": "Untitled document", "timeoutSeconds": Self.googleDriveOpenDefaultTimeoutSeconds],
                         "enabled": canUseGoogleDriveOpen,
                         "adapterID": BrowserSiteAdapterID.googleDrive,
                         "description": "Open a Google Drive file by visible name using Drive search, submit, and a compact load verification. Available on Drive pages and through the Google Drive Browser capability."
@@ -1345,7 +1467,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
                 return .json(try await googleDriveOpen(
                     name: command.normalizedName,
-                    timeoutSeconds: command.timeoutSeconds ?? 12,
+                    timeoutSeconds: command.timeoutSeconds ?? Self.googleDriveOpenDefaultTimeoutSeconds,
                     intervalMilliseconds: command.intervalMilliseconds ?? 500
                 ))
             case ("POST", "/act"):
@@ -1404,6 +1526,34 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "ok": false,
             "error": "browser_action_budget_exceeded",
             "message": "Browser control exceeded the per-task bridge call budget. Stop repeating browser actions and switch to a deterministic helper or ask the user for direction.",
+            "runGuard": decision.diagnostics
+        ]
+    }
+
+    private func browserRunGuardPostResponse(
+        for request: BrowserBridgeRequest,
+        result: [String: Any]?,
+        before: BrowserFlightPageSnapshot
+    ) -> [String: Any]? {
+        guard isRunGuardedBridgeRequest(request),
+              let result else { return nil }
+        let path = "\(request.method) \(request.path)"
+        let after = browserFlightPageSnapshot(result: result)
+        let decision = browserRunGuard.recordOutcome(
+            path: path,
+            response: result,
+            currentURL: after.url,
+            currentTitle: after.title,
+            pageType: after.pageType,
+            urlChanged: before.url != after.url
+        )
+        guard decision.shouldStop else { return nil }
+        return [
+            "ok": false,
+            "error": "browser_action_budget_exceeded",
+            "message": decision.warning ?? "Browser control repeated a failing action. Stop repeating browser actions and ask the user for direction.",
+            "triggerError": result["error"] as? String ?? "",
+            "triggerCommand": path,
             "runGuard": decision.diagnostics
         ]
     }
@@ -1595,6 +1745,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             lastBrowserTraceID: browserTraceID,
             debugCapture: debugCapture
         )
+        AppLogger.appendBrowserFlightEntry(entry, taskID: boundTaskID)
         AppLogger.audit(
             .shelfBrowserAction,
             category: "Browser",
@@ -3399,6 +3550,25 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return result
         }
 
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleDriveOpen",
+            started: started
+        ) {
+            logBrowserAction(
+                phase: "completed",
+                action: "googleDriveOpen",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                resultJSON: try Self.jsonString(promotionError),
+                started: started
+            )
+            return promotionError
+        }
+
         do {
             if Self.isOpenedDriveTarget(urlString: currentURL, title: pageTitle, name: trimmedName, startURL: nil) {
                 let result: [String: Any] = [
@@ -3426,41 +3596,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
 
             let startURL = currentURL
-            let fillResult = try await fillGoogleDriveSearch(with: trimmedName)
-            guard Self.boolValue(fillResult["ok"]) else {
-                let result: [String: Any] = [
-                    "ok": false,
-                    "opened": false,
-                    "error": "drive_search_field_not_found",
-                    "name": trimmedName,
-                    "url": currentURL,
-                    "title": pageTitle,
-                    "elapsedSeconds": Date().timeIntervalSince(started)
-                ]
-                logBrowserAction(
-                    phase: "completed",
-                    action: "googleDriveOpen",
-                    selector: nil,
-                    label: nil,
-                    role: nil,
-                    text: nil,
-                    placeholder: nil,
-                    testID: nil,
-                    resultJSON: try Self.jsonString(result),
-                    started: started
-                )
-                return result
-            }
-
-            _ = try await keypress(key: "Enter", modifiers: [])
+            let searchURL = Self.googleDriveSearchURL(for: trimmedName)
+            let searchNavigation = await navigateForBridge(to: searchURL, source: "googleDriveOpenSearch")
+            let searchStarted = Date()
             var result = try await waitForGoogleDriveOpen(
                 name: trimmedName,
                 startURL: startURL,
                 started: started,
+                waitStarted: searchStarted,
                 timeoutSeconds: timeoutSeconds,
                 intervalMilliseconds: intervalMilliseconds
             )
-            result["searchMethod"] = fillResult["method"] as? String ?? "unknown"
+            result["searchMethod"] = "direct_url"
+            result["searchNavigation"] = [
+                "ok": Self.boolValue(searchNavigation["targetReached"]),
+                "url": searchNavigation["url"] as? String ?? "",
+                "title": searchNavigation["title"] as? String ?? ""
+            ]
             logBrowserAction(
                 phase: "completed",
                 action: "googleDriveOpen",
@@ -3472,7 +3624,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 testID: nil,
                 fields: [
                     "opened": String(Self.boolValue(result["opened"])),
-                    "search_method": result["searchMethod"] as? String ?? "unknown"
+                    "search_method": result["searchMethod"] as? String ?? "unknown",
+                    "candidate_count": String(Self.intValue(result["candidateCount"]) ?? 0),
+                    "last_open_method": (result["lastOpenAttempt"] as? [String: Any])?["method"] as? String ?? "",
+                    "last_open_error": (result["lastOpenAttempt"] as? [String: Any])?["error"] as? String ?? ""
                 ],
                 resultJSON: try Self.jsonString(result),
                 started: started
@@ -3535,29 +3690,41 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return lastResult
     }
 
+    static func googleDriveSearchURL(for name: String) -> URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "drive.google.com"
+        components.path = "/drive/search"
+        components.queryItems = [
+            URLQueryItem(name: "q", value: name)
+        ]
+        return components.url ?? URL(string: "https://drive.google.com/drive/search")!
+    }
+
     private func waitForGoogleDriveOpen(
         name: String,
         startURL: String,
         started: Date,
+        waitStarted: Date,
         timeoutSeconds: Double,
         intervalMilliseconds: Int
     ) async throws -> [String: Any] {
-        let timeout = max(0.5, min(timeoutSeconds, 30))
+        let timeout = max(0.5, min(timeoutSeconds, Self.googleDriveOpenMaximumTimeoutSeconds))
         let interval = UInt64(max(100, min(intervalMilliseconds, 2_000))) * 1_000_000
         var lastURL = currentURL
         var lastTitle = pageTitle
-        var lastMatchCount = 0
+        var lastCandidateCount = 0
+        var lastOpenAttempt: [String: Any]?
+        var attemptedCandidateKeys = Set<String>()
         var retriedOpenKey = false
+        var retriedDriveOpenShortcut = false
 
-        while Date().timeIntervalSince(started) <= timeout {
+        while Date().timeIntervalSince(waitStarted) <= timeout {
             try await Task.sleep(nanoseconds: interval)
 
-            let json = try await snapshot(mode: .text, query: name, limit: 1_500)
-            let object = try Self.jsonObject(from: json)
+            let object = try await rawSnapshotObject()
             lastURL = object["url"] as? String ?? currentURL
             lastTitle = object["title"] as? String ?? pageTitle
-            let matches = object["matches"] as? [[String: Any]] ?? []
-            lastMatchCount = matches.count
 
             if Self.isOpenedDriveTarget(urlString: lastURL, title: lastTitle, name: name, startURL: startURL) {
                 return [
@@ -3566,14 +3733,88 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "name": name,
                     "url": lastURL,
                     "title": lastTitle,
-                    "matchedName": lastMatchCount > 0 || Self.containsNormalized(lastTitle, name),
+                    "matchedName": Self.googleDriveOpenedTitleMatches(lastTitle, name),
                     "elapsedSeconds": Date().timeIntervalSince(started)
                 ]
             }
+            if Self.isGoogleWorkspaceEditorURL(lastURL),
+               !Self.isPendingGoogleWorkspaceTitle(lastTitle),
+               !Self.googleDriveOpenedTitleMatches(lastTitle, name) {
+                return [
+                    "ok": false,
+                    "opened": false,
+                    "error": "drive_file_name_mismatch",
+                    "safeEditUnavailable": true,
+                    "name": name,
+                    "url": lastURL,
+                    "title": lastTitle,
+                    "matchedName": false,
+                    "candidateCount": lastCandidateCount,
+                    "lastOpenAttempt": lastOpenAttempt ?? [:],
+                    "elapsedSeconds": Date().timeIntervalSince(started),
+                    "hint": "Google Drive opened a different Google editor than the requested file. Stop before reading or editing the wrong file."
+                ]
+            }
 
-            if !retriedOpenKey, Date().timeIntervalSince(started) >= 2.0 {
+            let controls = object["controls"] as? [[String: Any]] ?? []
+            let candidates = Self.googleDriveOpenCandidates(
+                controls: controls,
+                name: name,
+                pageURL: lastURL
+            )
+            lastCandidateCount = candidates.count
+            if let candidate = candidates.first {
+                let candidateKey = Self.googleDriveOpenCandidateKey(candidate)
+                if !attemptedCandidateKeys.contains(candidateKey) {
+                    attemptedCandidateKeys.insert(candidateKey)
+                    lastOpenAttempt = try await openGoogleDriveCandidate(candidate)
+                    let wait = await waitForNavigationSettle(targetURL: nil, timeoutSeconds: 3)
+                    lastURL = wait["url"] as? String ?? currentURL
+                    lastTitle = wait["title"] as? String ?? pageTitle
+
+                    if Self.isOpenedDriveTarget(urlString: lastURL, title: lastTitle, name: name, startURL: startURL) {
+                        return [
+                            "ok": true,
+                            "opened": true,
+                            "name": name,
+                            "url": lastURL,
+                            "title": lastTitle,
+                            "matchedName": true,
+                            "candidateCount": lastCandidateCount,
+                            "openMethod": lastOpenAttempt?["method"] as? String ?? "drive_result",
+                            "elapsedSeconds": Date().timeIntervalSince(started)
+                        ]
+                    }
+                    if Self.isGoogleWorkspaceEditorURL(lastURL),
+                       !Self.isPendingGoogleWorkspaceTitle(lastTitle),
+                       !Self.googleDriveOpenedTitleMatches(lastTitle, name) {
+                        return [
+                            "ok": false,
+                            "opened": false,
+                            "error": "drive_file_name_mismatch",
+                            "safeEditUnavailable": true,
+                            "name": name,
+                            "url": lastURL,
+                            "title": lastTitle,
+                            "matchedName": false,
+                            "candidateCount": lastCandidateCount,
+                            "openMethod": lastOpenAttempt?["method"] as? String ?? "drive_result",
+                            "lastOpenAttempt": lastOpenAttempt ?? [:],
+                            "elapsedSeconds": Date().timeIntervalSince(started),
+                            "hint": "Google Drive opened a different Google editor than the requested file. Stop before reading or editing the wrong file."
+                        ]
+                    }
+                }
+            }
+
+            let waitElapsed = Date().timeIntervalSince(waitStarted)
+            if !retriedOpenKey, !attemptedCandidateKeys.isEmpty, waitElapsed >= 2.0 {
                 _ = try? await keypress(key: "Enter", modifiers: [])
                 retriedOpenKey = true
+            }
+            if !retriedDriveOpenShortcut, !attemptedCandidateKeys.isEmpty, waitElapsed >= 4.0 {
+                _ = try? await keypress(key: "o", modifiers: [])
+                retriedDriveOpenShortcut = true
             }
         }
 
@@ -3584,8 +3825,214 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "name": name,
             "url": lastURL,
             "title": lastTitle,
-            "matchedName": lastMatchCount > 0 || Self.containsNormalized(lastTitle, name),
+            "matchedName": Self.googleDriveOpenedTitleMatches(lastTitle, name),
+            "candidateCount": lastCandidateCount,
+            "lastOpenAttempt": lastOpenAttempt ?? [:],
             "elapsedSeconds": Date().timeIntervalSince(started)
+        ]
+    }
+
+    private func openGoogleDriveCandidate(_ control: [String: Any]) async throws -> [String: Any] {
+        let selector = Self.normalized(control["selector"] as? String)
+        let bounds = control["bounds"] as? [String: Any]
+        let x = Self.doubleValue(bounds?["centerX"])
+        let y = Self.doubleValue(bounds?["centerY"])
+        let canUseSelector = selector != nil
+        let canUsePoint = x != nil && y != nil && (x ?? -1) >= 0 && (y ?? -1) >= 0
+
+        let primaryJSON = try await doubleClick(
+            selector: canUseSelector ? selector : nil,
+            x: canUseSelector ? nil : x,
+            y: canUseSelector ? nil : y,
+            allowDangerous: false
+        )
+        var primary = try Self.jsonObject(from: primaryJSON)
+        primary["method"] = canUseSelector ? "candidate_double_click_selector" : "candidate_double_click_point"
+        primary["candidate"] = Self.compactGoogleDriveCandidate(control)
+        if Self.boolValue(primary["ok"]) {
+            return primary
+        }
+
+        if canUseSelector && canUsePoint {
+            let pointJSON = try await doubleClick(
+                selector: nil,
+                x: x,
+                y: y,
+                allowDangerous: false
+            )
+            var point = try Self.jsonObject(from: pointJSON)
+            point["method"] = "candidate_double_click_point"
+            point["candidate"] = Self.compactGoogleDriveCandidate(control)
+            if Self.boolValue(point["ok"]) {
+                return point
+            }
+        }
+
+        let fallbackJSON = try await click(
+            selector: canUseSelector ? selector : nil,
+            x: canUseSelector ? nil : x,
+            y: canUseSelector ? nil : y,
+            allowDangerous: false
+        )
+        var fallback = try Self.jsonObject(from: fallbackJSON)
+        fallback["method"] = canUseSelector ? "candidate_click_enter_selector" : "candidate_click_enter_point"
+        fallback["candidate"] = Self.compactGoogleDriveCandidate(control)
+        if Self.boolValue(fallback["ok"]) {
+            _ = try? await keypress(key: "Enter", modifiers: [])
+        }
+        if canUseSelector && canUsePoint && !Self.boolValue(fallback["ok"]) {
+            let pointFallbackJSON = try await click(
+                selector: nil,
+                x: x,
+                y: y,
+                allowDangerous: false
+            )
+            var pointFallback = try Self.jsonObject(from: pointFallbackJSON)
+            pointFallback["method"] = "candidate_click_enter_point"
+            pointFallback["candidate"] = Self.compactGoogleDriveCandidate(control)
+            if Self.boolValue(pointFallback["ok"]) {
+                _ = try? await keypress(key: "Enter", modifiers: [])
+            }
+            return pointFallback
+        }
+        return fallback
+    }
+
+    static func googleDriveOpenCandidates(
+        controls: [[String: Any]],
+        name: String,
+        pageURL: String
+    ) -> [[String: Any]] {
+        let scored: [(score: Int, index: Int, control: [String: Any])] = controls.enumerated().compactMap { index, control in
+            let label = control["label"] as? String ?? ""
+            let controlName = control["name"] as? String ?? ""
+            let value = control["value"] as? String ?? ""
+            let selector = control["selector"] as? String ?? ""
+            let role = control["role"] as? String ?? ""
+            let tag = control["tag"] as? String ?? ""
+            let type = control["type"] as? String ?? ""
+            let href = control["href"] as? String ?? ""
+            let placeholder = control["placeholder"] as? String ?? ""
+            let lowerRole = role.lowercased()
+            let lowerTag = tag.lowercased()
+            let lowerType = type.lowercased()
+            let visibleTextLength = max(label.count, max(controlName.count, value.count))
+            let combined = [label, controlName, value, selector, role, tag, type, href, placeholder]
+                .joined(separator: " ")
+
+            guard !GoogleDriveBrowserAdapter.isSearchOrFilterControl(
+                selector: selector,
+                label: label,
+                name: controlName,
+                value: value,
+                role: role,
+                tag: tag,
+                type: type,
+                placeholder: placeholder
+            ) else {
+                return nil
+            }
+            var nameSources = [label, controlName]
+            if lowerTag != "input",
+               !lowerRole.contains("textbox"),
+               lowerRole != "search",
+               label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               controlName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                nameSources.append(value)
+            }
+            let hintedName = GoogleDriveBrowserAdapter.nameHint(from: label.isEmpty ? controlName : label)
+            let hasNameMatch = nameSources.contains(where: { googleDriveFileNameMatches($0, requestedName: name) })
+                || (!hintedName.isEmpty && googleDriveFileNameMatches(hintedName, requestedName: name))
+            guard hasNameMatch else { return nil }
+
+            let fileControl = GoogleDriveBrowserAdapter.isFileControl(
+                pageURL: pageURL,
+                selector: selector,
+                label: label,
+                name: controlName,
+                role: role,
+                tag: tag,
+                href: href
+            )
+            let likelyResult = fileControl
+                || lowerRole.contains("gridcell")
+                || lowerRole.contains("row")
+                || lowerRole.contains("listitem")
+                || lowerRole.contains("option")
+                || href.contains("docs.google.com")
+                || lowerTag == "drive-collection"
+                || (hasNameMatch && lowerRole.contains("button"))
+                || (hasNameMatch && lowerTag == "div" && lowerType == "button")
+                || (hasNameMatch && (lowerTag == "tr" || lowerTag == "td"))
+            guard likelyResult else { return nil }
+
+            var score = 0
+            if !hintedName.isEmpty && googleDriveFileNameMatches(hintedName, requestedName: name) { score += 50 }
+            if googleDriveFileNameMatches(label, requestedName: name)
+                || googleDriveFileNameMatches(controlName, requestedName: name) {
+                score += 30
+            }
+            if combined.localizedCaseInsensitiveContains("google docs")
+                || combined.localizedCaseInsensitiveContains("google sheets")
+                || combined.localizedCaseInsensitiveContains("google slides")
+                || href.contains("docs.google.com") {
+                score += 25
+            }
+            if lowerRole.contains("row") || lowerRole.contains("gridcell") || lowerRole.contains("listitem") {
+                score += 35
+            }
+            if lowerTag == "drive-collection" || (lowerRole.contains("button") && lowerType == "button") {
+                score += 30
+            }
+            if visibleTextLength >= name.count + 20 {
+                score += 20
+            }
+            if visibleTextLength <= name.count + 2, !href.contains("docs.google.com") {
+                score += lowerTag == "drive-collection" || lowerRole.contains("button") ? 15 : -25
+            }
+            if lowerTag == "input" || containsNormalized(combined, "Search in Drive") {
+                score -= 50
+            }
+            if fileControl { score += 20 }
+            if boolValue(control["actionable"]) { score += 10 }
+            if let bounds = control["bounds"] as? [String: Any],
+               let y = doubleValue(bounds["centerY"]),
+               y >= 0 {
+                score += 8
+            }
+
+            return (score, index, control)
+        }
+
+        return scored
+            .sorted {
+                if $0.score == $1.score { return $0.index < $1.index }
+                return $0.score > $1.score
+            }
+            .map(\.control)
+    }
+
+    private static func googleDriveOpenCandidateKey(_ control: [String: Any]) -> String {
+        if let selector = normalized(control["selector"] as? String) {
+            return "selector:\(selector)"
+        }
+        let bounds = control["bounds"] as? [String: Any]
+        let x = Int(doubleValue(bounds?["centerX"]) ?? -1)
+        let y = Int(doubleValue(bounds?["centerY"]) ?? -1)
+        let label = control["label"] as? String ?? control["name"] as? String ?? ""
+        return "point:\(x),\(y):\(label)"
+    }
+
+    private static func compactGoogleDriveCandidate(_ control: [String: Any]) -> [String: Any] {
+        let bounds = control["bounds"] as? [String: Any] ?? [:]
+        return [
+            "labelLength": (control["label"] as? String ?? "").count,
+            "nameLength": (control["name"] as? String ?? "").count,
+            "role": control["role"] as? String ?? "",
+            "tag": control["tag"] as? String ?? "",
+            "hasSelector": normalized(control["selector"] as? String) != nil,
+            "centerX": Int(doubleValue(bounds["centerX"]) ?? -1),
+            "centerY": Int(doubleValue(bounds["centerY"]) ?? -1)
         ]
     }
 
@@ -3692,6 +4139,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "hint": "Use replace-text for normal editable controls, or open a Google Docs, Sheets, or Slides editor page first."
             ]
         }
+        let started = Date()
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleFindReplace",
+            started: started
+        ) {
+            return promotionError
+        }
 
         _ = try await keypress(key: "h", modifiers: ["command", "shift"])
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -3753,6 +4207,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         let started = Date()
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleDocsFind",
+            started: started
+        ) {
+            return promotionError
+        }
         logBrowserAction(
             phase: "requested",
             action: "googleDocsFind",
@@ -3857,6 +4317,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         let started = Date()
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleDocsInsert",
+            started: started
+        ) {
+            return promotionError
+        }
         logBrowserAction(
             phase: "requested",
             action: "googleDocsInsert",
@@ -3951,14 +4417,30 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ]
         }
 
-        return [
-            "ok": false,
-            "error": "google_docs_safe_edit_unavailable",
-            "safeEditUnavailable": true,
-            "url": currentURL,
-            "title": pageTitle,
-            "hint": "ASTRA does not have an authenticated Google Docs API full-document reader for this session. Do not fall back to raw Cmd+A/Delete or manual full-document keyboard replacement; stop and ask the user to enable a safe Docs API path."
-        ]
+        let started = Date()
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleDocsReadDocument",
+            started: started
+        ) {
+            return promotionError
+        }
+        if let browserRequirement = googleDocsControlledBrowserRequiredResult(
+            action: "googleDocsReadDocument",
+            method: "browser_select_all_copy",
+            started: started
+        ) {
+            return browserRequirement
+        }
+
+        let browserResult = try await googleDocsReadDocumentViaBrowser()
+        if Self.boolValue(browserResult["ok"]) {
+            return browserResult
+        }
+
+        var result = browserResult
+        result["apiFallbackSkipped"] = true
+        result["apiFallbackSkippedReason"] = "browser_use_mode"
+        return result
     }
 
     private func googleDocsReplaceDocument(text: String, verifyText: String?) async throws -> [String: Any] {
@@ -3974,16 +4456,353 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ]
         }
 
+        let started = Date()
+        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
+            action: "googleDocsReplaceDocument",
+            started: started
+        ) {
+            return promotionError
+        }
+        if let browserRequirement = googleDocsControlledBrowserRequiredResult(
+            action: "googleDocsReplaceDocument",
+            method: "browser_select_all_paste",
+            started: started
+        ) {
+            return browserRequirement
+        }
+
+        return try await googleDocsReplaceDocumentViaBrowser(
+            text: normalizedText,
+            verifyText: verifyText
+        )
+    }
+
+    private func googleDocsControlledBrowserRequiredResult(
+        action: String,
+        method: String,
+        started: Date
+    ) -> [String: Any]? {
+        let autoPromote = UserDefaults.standard.bool(forKey: AppStorageKeys.browserAutoPromoteGoogleWorkspace)
+        guard Self.googleDocsFullDocumentClipboardRequiresControlled(
+            engine: engine,
+            autoPromoteGoogleWorkspace: autoPromote
+        ) else {
+            return nil
+        }
+
+        logBrowserAction(
+            phase: "failed",
+            action: action,
+            selector: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil,
+            fields: [
+                "error": "google_docs_controlled_browser_required",
+                "reason": "embedded_webkit_clipboard_unavailable",
+                "required_engine": ShelfBrowserEngine.controlled.rawValue,
+                "selected_engine": engine.rawValue,
+                "auto_promote_google_workspace": String(autoPromote)
+            ],
+            started: started
+        )
+
         return [
             "ok": false,
-            "error": "google_docs_safe_edit_unavailable",
+            "error": "google_docs_controlled_browser_required",
+            "reason": "embedded_webkit_clipboard_unavailable",
             "safeEditUnavailable": true,
-            "textLength": normalizedText.count,
-            "verifyText": verifyText ?? "",
+            "method": method,
             "url": currentURL,
             "title": pageTitle,
-            "hint": "Full-document Google Docs replacement requires an authenticated Docs API path. ASTRA blocked browser-keyboard replacement to avoid accidental document erasure."
+            "requiredEngine": ShelfBrowserEngine.controlled.rawValue,
+            "selectedEngine": engine.rawValue,
+            "autoPromoteGoogleWorkspace": autoPromote,
+            "copyAttempted": false,
+            "elapsedSeconds": Date().timeIntervalSince(started),
+            "hint": "Full-document Google Docs browser read/replace requires Controlled mode, or Settings > Appearance > Privacy & Logging > Auto-promote Google Workspace helpers. Embedded WebKit does not expose a reliable fresh clipboard copy from the Docs editor iframe, so ASTRA stopped before selecting or replacing document content."
         ]
+    }
+
+    private func googleDocsReadDocumentViaBrowser() async throws -> [String: Any] {
+        let started = Date()
+        let pasteboardSnapshot = Self.capturePasteboardSnapshot()
+        defer { Self.restorePasteboardSnapshot(pasteboardSnapshot) }
+
+        let closeJSON = try? await keypress(key: "Escape", modifiers: [])
+        let focusJSON = try await click(
+            selector: nil,
+            x: 0.47,
+            y: 0.45,
+            allowDangerous: false
+        )
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let selectJSON = try await keypress(key: "a", modifiers: ["command"])
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let copyStartChangeCount = NSPasteboard.general.changeCount
+        let copyJSON = try await keypress(key: "c", modifiers: ["command"])
+        let copiedText = await waitForPasteboardString(
+            afterChangeCount: copyStartChangeCount,
+            timeoutSeconds: 2.5,
+            requireChange: true
+        )
+        _ = try? await keypress(key: "Escape", modifiers: [])
+
+        let focus = try Self.jsonObject(from: focusJSON)
+        let select = try Self.jsonObject(from: selectJSON)
+        let copy = try Self.jsonObject(from: copyJSON)
+        let close = closeJSON.flatMap { try? Self.jsonObject(from: $0) } ?? [:]
+        let text = copiedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            return [
+                "ok": false,
+                "error": "google_docs_browser_copy_unavailable",
+                "safeEditUnavailable": true,
+                "method": "browser_select_all_copy",
+                "url": currentURL,
+                "title": pageTitle,
+                "focus": focus,
+                "selectAll": select,
+                "copy": copy,
+                "close": close,
+                "copyChangeObserved": false,
+                "elapsedSeconds": Date().timeIntervalSince(started),
+                "hint": "ASTRA could not copy a fresh non-empty document backup through the browser. Stop instead of editing without a verified backup."
+            ]
+        }
+
+        return [
+            "ok": true,
+            "method": "browser_select_all_copy",
+            "text": text,
+            "textLength": text.count,
+            "url": currentURL,
+            "title": pageTitle,
+            "focus": focus,
+            "selectAll": select,
+            "copy": copy,
+            "close": close,
+            "copyChangeObserved": true,
+            "elapsedSeconds": Date().timeIntervalSince(started)
+        ]
+    }
+
+    private func googleDocsReplaceDocumentViaBrowser(text: String, verifyText: String?) async throws -> [String: Any] {
+        let started = Date()
+        let backup = try await googleDocsReadDocumentViaBrowser()
+        guard Self.boolValue(backup["ok"]),
+              let originalText = backup["text"] as? String,
+              !originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return [
+                "ok": false,
+                "error": "google_docs_safe_edit_unavailable",
+                "safeEditUnavailable": true,
+                "method": "browser_select_all_paste",
+                "url": currentURL,
+                "title": pageTitle,
+                "backup": backup,
+                "hint": "Full-document browser replacement requires a browser-copied backup first. ASTRA stopped instead of editing without rollback data."
+            ]
+        }
+
+        let pasteboardSnapshot = Self.capturePasteboardSnapshot()
+        defer { Self.restorePasteboardSnapshot(pasteboardSnapshot) }
+
+        let paste = try await googleDocsPasteFullDocumentText(text)
+        let saved = try await waitSaved(timeoutSeconds: 12, intervalMilliseconds: 500)
+        let verificationQuery = Self.googleDocsVerificationQuery(explicit: verifyText, text: text)
+        let verification: [String: Any]
+        if let verificationQuery {
+            verification = try await googleDocsFind(query: verificationQuery, closeFindBar: true)
+        } else {
+            verification = ["ok": true, "skipped": true]
+        }
+
+        let pasteOK = Self.boolValue(paste["ok"])
+        let savedOK = Self.boolValue(saved["ok"])
+        let verified = Self.boolValue(verification["ok"])
+        if pasteOK, verified, savedOK {
+            return [
+                "ok": true,
+                "method": "browser_select_all_paste",
+                "textLength": text.count,
+                "verifyText": verificationQuery ?? "",
+                "url": currentURL,
+                "title": pageTitle,
+                "backupTextLength": originalText.count,
+                "backupMethod": backup["method"] as? String ?? "",
+                "paste": paste,
+                "saved": saved,
+                "verification": verification,
+                "elapsedSeconds": Date().timeIntervalSince(started)
+            ]
+        }
+
+        if !verified {
+            let rollback = try? await googleDocsPasteFullDocumentText(originalText)
+            let rollbackSaved = try? await waitSaved(timeoutSeconds: 12, intervalMilliseconds: 500)
+            return [
+                "ok": false,
+                "error": "google_docs_safe_edit_verification_failed",
+                "method": "browser_select_all_paste",
+                "textLength": text.count,
+                "verifyText": verificationQuery ?? "",
+                "url": currentURL,
+                "title": pageTitle,
+                "backupTextLength": originalText.count,
+                "paste": paste,
+                "saved": saved,
+                "verification": verification,
+                "rollback": rollback ?? [:],
+                "rollbackSaved": rollbackSaved ?? [:],
+                "elapsedSeconds": Date().timeIntervalSince(started),
+                "hint": "ASTRA pasted the replacement but could not verify it, so it attempted to restore the browser-copied backup. Stop for user review."
+            ]
+        }
+
+        return [
+            "ok": false,
+            "error": savedOK ? "google_docs_browser_paste_failed" : "saved_indicator_not_found",
+            "method": "browser_select_all_paste",
+            "textLength": text.count,
+            "verifyText": verificationQuery ?? "",
+            "url": currentURL,
+            "title": pageTitle,
+            "backupTextLength": originalText.count,
+            "paste": paste,
+            "saved": saved,
+            "verification": verification,
+            "elapsedSeconds": Date().timeIntervalSince(started),
+            "hint": "ASTRA did not report success because the paste or save check did not complete cleanly. It did not use raw select-all/delete."
+        ]
+    }
+
+    private func googleDocsPasteFullDocumentText(_ text: String) async throws -> [String: Any] {
+        let started = Date()
+        let closeJSON = try? await keypress(key: "Escape", modifiers: [])
+        let focusJSON = try await click(
+            selector: nil,
+            x: 0.47,
+            y: 0.45,
+            allowDangerous: false
+        )
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let selectJSON = try await keypress(key: "a", modifiers: ["command"])
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let inputJSON: String
+        let method: String
+        if isUsingControlledBrowser {
+            guard Self.writePasteboardString(text) else {
+                return [
+                    "ok": false,
+                    "error": "pasteboard_write_failed",
+                    "method": "browser_select_all_paste",
+                    "textLength": text.count
+                ]
+            }
+            inputJSON = try await keypress(key: "v", modifiers: ["command"])
+            method = "browser_select_all_paste"
+            try await Task.sleep(nanoseconds: 500_000_000)
+        } else {
+            inputJSON = try await insertText(text)
+            method = "browser_select_all_insert_text"
+        }
+
+        let focus = try Self.jsonObject(from: focusJSON)
+        let select = try Self.jsonObject(from: selectJSON)
+        let input = try Self.jsonObject(from: inputJSON)
+        let close = closeJSON.flatMap { try? Self.jsonObject(from: $0) } ?? [:]
+        return [
+            "ok": Self.boolValue(focus["ok"]) && Self.boolValue(select["ok"]) && Self.boolValue(input["ok"]),
+            "method": method,
+            "textLength": text.count,
+            "close": close,
+            "focus": focus,
+            "selectAll": select,
+            "input": input,
+            "elapsedSeconds": Date().timeIntervalSince(started)
+        ]
+    }
+
+    private func waitForPasteboardString(
+        afterChangeCount: Int,
+        timeoutSeconds: Double,
+        requireChange: Bool = false
+    ) async -> String? {
+        let started = Date()
+        let timeout = max(0.1, min(timeoutSeconds, 10))
+        var latest: String?
+        while Date().timeIntervalSince(started) <= timeout {
+            let pasteboard = NSPasteboard.general
+            if let value = pasteboard.string(forType: .string),
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if pasteboard.changeCount != afterChangeCount {
+                    return value
+                }
+                if !requireChange {
+                    latest = value
+                }
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return latest
+    }
+
+    private static func googleDocsVerificationQuery(explicit: String?, text: String) -> String? {
+        if let explicit = explicit?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        let flat = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !flat.isEmpty else { return nil }
+        return String(flat.prefix(80))
+    }
+
+    private struct PasteboardSnapshot {
+        let items: [[NSPasteboard.PasteboardType: Data]]
+    }
+
+    private static func capturePasteboardSnapshot() -> PasteboardSnapshot {
+        let pasteboard = NSPasteboard.general
+        let items = pasteboard.pasteboardItems?.map { item -> [NSPasteboard.PasteboardType: Data] in
+            var values: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    values[type] = data
+                }
+            }
+            return values
+        } ?? []
+        return PasteboardSnapshot(items: items)
+    }
+
+    private static func restorePasteboardSnapshot(_ snapshot: PasteboardSnapshot) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let items = snapshot.items.compactMap { values -> NSPasteboardItem? in
+            guard !values.isEmpty else { return nil }
+            let item = NSPasteboardItem()
+            for (type, data) in values {
+                item.setData(data, forType: type)
+            }
+            return item
+        }
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
+        }
+    }
+
+    private static func writePasteboardString(_ text: String) -> Bool {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
     }
 
     private func act(_ command: ActCommand) async throws -> [String: Any] {
@@ -4489,7 +5308,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 let result = try await googleDriveOpen(
                     name: name,
-                    timeoutSeconds: action.timeoutSeconds ?? 12,
+                    timeoutSeconds: action.timeoutSeconds ?? Self.googleDriveOpenDefaultTimeoutSeconds,
                     intervalMilliseconds: action.intervalMilliseconds ?? 500
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -4713,21 +5532,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return matches
     }
 
-    private static func isOpenedDriveTarget(urlString: String, title: String, name: String, startURL: String?) -> Bool {
+    static func isOpenedDriveTarget(urlString: String, title: String, name: String, startURL: String?) -> Bool {
         guard let url = URL(string: urlString),
               let host = url.host?.lowercased() else {
             return false
         }
         if host == "docs.google.com" {
-            guard url.path.hasPrefix("/document/")
-                || url.path.hasPrefix("/spreadsheets/")
-                || url.path.hasPrefix("/presentation/") else {
-                return false
-            }
-            if let startURL, !startURL.isEmpty, urlString != startURL {
-                return true
-            }
-            return containsNormalized(title, name)
+            guard isGoogleWorkspaceEditorURL(urlString) else { return false }
+            return googleDriveOpenedTitleMatches(title, name)
         }
         guard host != "drive.google.com" else {
             return false
@@ -4735,7 +5547,106 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if let startURL, !startURL.isEmpty, urlString == startURL {
             return false
         }
-        return url.scheme == "https" || url.scheme == "http"
+        guard url.scheme == "https" || url.scheme == "http" else { return false }
+        return googleDriveOpenedTitleMatches(title, name)
+    }
+
+    static func isGoogleWorkspaceEditorURL(_ urlString: String) -> Bool {
+        guard let url = URL(string: urlString),
+              url.host?.lowercased() == "docs.google.com" else {
+            return false
+        }
+        return url.path.hasPrefix("/document/")
+            || url.path.hasPrefix("/spreadsheets/")
+            || url.path.hasPrefix("/presentation/")
+    }
+
+    static func googleDriveOpenedTitleMatches(_ title: String, _ requestedName: String) -> Bool {
+        googleDriveFileNameMatches(title, requestedName: requestedName)
+    }
+
+    static func googleDriveFileNameMatches(_ text: String, requestedName: String) -> Bool {
+        let requested = googleDriveComparableName(requestedName)
+        guard !requested.isEmpty else { return false }
+        let direct = googleDriveComparableName(text)
+        if direct == requested { return true }
+        let hinted = googleDriveComparableName(GoogleDriveBrowserAdapter.nameHint(from: text))
+        if hinted == requested { return true }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let knownSuffixes = [
+            " google docs",
+            " google sheets",
+            " google slides",
+            " google drawings",
+            " - google docs",
+            " - google sheets",
+            " - google slides",
+            " - google drawings"
+        ]
+        return knownSuffixes.contains { suffix in
+            googleDriveComparableName(normalized.replacingOccurrences(of: suffix, with: "")) == requested
+        } || googleDriveMetadataPrefixedNameMatches(direct, requestedName: requested)
+            || googleDriveMetadataPrefixedNameMatches(hinted, requestedName: requested)
+    }
+
+    private static func googleDriveMetadataPrefixedNameMatches(_ comparableText: String, requestedName: String) -> Bool {
+        let prefix = "\(requestedName) "
+        guard comparableText.hasPrefix(prefix) else { return false }
+        let suffixStart = comparableText.index(comparableText.startIndex, offsetBy: prefix.count)
+        let suffix = comparableText[suffixStart...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty else { return false }
+
+        let metadataPrefixes = [
+            #"^\d{1,2}:\d{2}\s*(am|pm)\b"#,
+            #"^\d{1,2}/\d{1,2}/\d{2,4}\b"#,
+            #"^\d{4}-\d{1,2}-\d{1,2}\b"#,
+            #"^(today|yesterday)\b"#,
+            #"^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b"#,
+            #"^(more actions|modified|owner|shared|google docs|google sheets|google slides|google drawings)\b"#
+        ]
+        return metadataPrefixes.contains {
+            suffix.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+    }
+
+    private static func googleDriveComparableName(_ text: String) -> String {
+        var value = text
+            .replacingOccurrences(
+                of: #"(?i)\s*[-–—]\s*Google\s+(Docs|Sheets|Slides|Drawings)\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"(?i)\s+Google\s+(Docs|Sheets|Slides|Drawings)\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"(?i)\s+(Located in|More info|More actions).*$"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"[\s\-–—:|]+$"#,
+                with: "",
+                options: .regularExpression
+            )
+        value = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return value
+    }
+
+    private static func isPendingGoogleWorkspaceTitle(_ title: String) -> Bool {
+        let comparable = googleDriveComparableName(title)
+        return comparable.isEmpty
+            || comparable == "google docs"
+            || comparable == "google sheets"
+            || comparable == "google slides"
+            || comparable == "loading"
+            || comparable == "untitled"
     }
 
     private static func containsNormalized(_ text: String, _ query: String) -> Bool {

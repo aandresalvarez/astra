@@ -22,12 +22,7 @@ struct LogViewerView: View {
     @State private var diagnosticsMessage: String? = nil
     @State private var diagnosticsReportURL: URL? = nil
     @AppStorage(AppStorageKeys.diagnosticsScope) private var diagnosticsScopeRawValue = LogDiagnosticsScope.sinceLastReport.rawValue
-
-    private let categories = [
-        "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
-        "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-        "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics", "General"
-    ]
+    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = false
 
     private var hasActiveFilters: Bool {
         selectedLevel != nil ||
@@ -210,7 +205,7 @@ struct LogViewerView: View {
 
                 Picker("Category", selection: $selectedCategory) {
                     Text("All Categories").tag(Optional<String>.none)
-                    ForEach(categories, id: \.self) { cat in
+                    ForEach(AppLogCategory.all, id: \.self) { cat in
                         Text(cat).tag(Optional(cat))
                     }
                 }
@@ -323,6 +318,14 @@ struct LogViewerView: View {
                     icon: "lock.shield",
                     tint: Stanford.paloAltoGreen,
                     message: "Sensitive Mode is on. Logs show sanitized audit metadata only; task history is governed separately."
+                )
+            }
+
+            if browserDebugCapture {
+                inlineNotice(
+                    icon: "camera.metering.matrix",
+                    tint: Stanford.poppy,
+                    message: "Browser Debug Capture is on. Failed browser actions may write screenshot thumbnails and compact page evidence to browser-flight JSONL logs."
                 )
             }
 

@@ -44,6 +44,8 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
+        let browserShimDirectory = Self.browserToolShimDirectory(for: task, taskEnv: taskEnv)
+        let taskID = task.id
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
         let tokenBudget = Self.effectiveTokenBudget(for: task)
@@ -179,6 +181,7 @@ final class AgentRuntimeProcessRunner {
                     _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
+                Self.cleanupBrowserToolShim(at: browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
@@ -186,6 +189,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
+                    runtimeStopReason: monitor.runtimeStopReason,
+                    runtimeStopMessage: monitor.runtimeStopMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
@@ -198,6 +203,7 @@ final class AgentRuntimeProcessRunner {
             do {
                 try process.run()
             } catch {
+                Self.cleanupBrowserToolShim(at: browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(exitCode: -1, error: error.localizedDescription))
                 return
             }
@@ -222,6 +228,8 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskEnv = Self.scopedEnvironmentVariables(for: task)
+        let browserShimDirectory = Self.browserToolShimDirectory(for: task, taskEnv: taskEnv)
+        let taskID = task.id
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
         let tokenBudget = Self.effectiveTokenBudget(for: task)
@@ -405,6 +413,7 @@ final class AgentRuntimeProcessRunner {
                     _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
+                Self.cleanupBrowserToolShim(at: browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
@@ -413,6 +422,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
+                    runtimeStopReason: monitor.runtimeStopReason,
+                    runtimeStopMessage: monitor.runtimeStopMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
@@ -425,6 +436,7 @@ final class AgentRuntimeProcessRunner {
             do {
                 try process.run()
             } catch {
+                Self.cleanupBrowserToolShim(at: browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(exitCode: -1, error: error.localizedDescription, providerVersion: providerVersion))
                 return
             }
@@ -537,6 +549,16 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
+    private static func browserToolShimDirectory(for task: AgentTask, taskEnv: [String: String]) -> String? {
+        guard taskEnv["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return nil
+        }
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !taskFolder.isEmpty else { return nil }
+        return (taskFolder as NSString).appendingPathComponent(".runtime-bin")
+    }
+
+    @MainActor
     static func prepareBrowserToolShimIfNeeded(
         task: AgentTask,
         taskEnv: [String: String],
@@ -548,6 +570,10 @@ final class AgentRuntimeProcessRunner {
               endpoint.rangeOfCharacter(from: .newlines) == nil else {
             return nil
         }
+        let browserToken = taskEnv["ASTRA_BROWSER_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if browserToken?.rangeOfCharacter(from: .newlines) != nil {
+            return nil
+        }
 
         guard fileManager.isExecutableFile(atPath: realToolPath),
               realToolPath.rangeOfCharacter(from: .newlines) == nil,
@@ -557,14 +583,18 @@ final class AgentRuntimeProcessRunner {
 
         let shimDirectory = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(".runtime-bin")
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
+        let tokenExport = browserToken?.isEmpty == false
+            ? "\nexport ASTRA_BROWSER_TOKEN=\(shellSingleQuoted(browserToken!))"
+            : ""
         let script = """
         #!/bin/sh
-        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)
         exec \(shellSingleQuoted(realToolPath)) "$@"
         """
 
         do {
             try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimDirectory)
             let existing = try? String(contentsOfFile: shimPath, encoding: .utf8)
             if existing != script {
                 try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
@@ -573,7 +603,8 @@ final class AgentRuntimeProcessRunner {
             AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: task.id, fields: [
                 "action": "browser_tool_shim",
                 "result": "ready",
-                "has_endpoint": "true"
+                "has_endpoint": "true",
+                "has_token": String(browserToken?.isEmpty == false)
             ], level: .debug)
             return shimDirectory
         } catch {
@@ -588,6 +619,24 @@ final class AgentRuntimeProcessRunner {
 
     private static func shellSingleQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func cleanupBrowserToolShim(at directory: String?, taskID: UUID) {
+        guard let directory, !directory.isEmpty else { return }
+        do {
+            try FileManager.default.removeItem(atPath: directory)
+            AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: taskID, fields: [
+                "action": "browser_tool_shim",
+                "result": "cleaned"
+            ], level: .debug)
+        } catch {
+            guard FileManager.default.fileExists(atPath: directory) else { return }
+            AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: taskID, fields: [
+                "action": "browser_tool_shim",
+                "result": "cleanup_failed",
+                "error": error.localizedDescription
+            ], level: .warning)
+        }
     }
 
     /// Resolves the Claude provider env vars from `@AppStorage` so the spawned

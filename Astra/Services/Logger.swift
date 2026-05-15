@@ -176,6 +176,15 @@ enum AuditTrace {
     }
 }
 
+enum AppLogCategory {
+    static let all = [
+        "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
+        "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
+        "Keychain", "Updater", "Performance", "Capabilities", "Browser",
+        "Diagnostics", "Plan", "General"
+    ]
+}
+
 // MARK: - Log Sanitizer
 
 enum LogSanitizer {
@@ -312,14 +321,8 @@ enum AppLogger {
 
     // os.Logger instances by category
     private static let loggers: [String: os.Logger] = {
-        let categories = [
-            "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
-            "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
-            "Keychain", "Updater", "Performance", "Capabilities", "Diagnostics",
-            "Plan", "General"
-        ]
         var dict: [String: os.Logger] = [:]
-        for cat in categories {
+        for cat in AppLogCategory.all {
             dict[cat] = os.Logger(subsystem: AppChannel.current.loggingSubsystem, category: cat)
         }
         return dict
@@ -445,6 +448,24 @@ enum AppLogger {
 
     static func taskLogFile(taskID: UUID) -> URL {
         logDir.appendingPathComponent("task-\(String(taskID.uuidString.prefix(8))).log")
+    }
+
+    static func browserFlightLogFile(taskID: UUID?) -> URL {
+        let suffix = taskID.map { String($0.uuidString.prefix(8)) } ?? "unbound"
+        return logDir.appendingPathComponent("browser-flight-\(suffix).jsonl")
+    }
+
+    static func appendBrowserFlightEntry(_ entry: [String: Any], taskID: UUID?) {
+        fileQueue.async {
+            let url = browserFlightLogFile(taskID: taskID)
+            rotateFileIfNeeded(url)
+            guard JSONSerialization.isValidJSONObject(entry),
+                  let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
+                  let line = String(data: data, encoding: .utf8)
+            else { return }
+            appendToFile(line + "\n", at: url)
+            cleanupOldLogs()
+        }
     }
 
     static func readTaskLog(taskID: UUID) -> String {
@@ -622,7 +643,7 @@ enum AppLogger {
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
         ) else { return }
         let cutoff = now.addingTimeInterval(-retentionDays * 24 * 60 * 60)
-        for file in files where file.pathExtension == "log" {
+        for file in files where ["log", "jsonl"].contains(file.pathExtension) {
             guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
                   values.isRegularFile == true,
                   let modified = values.contentModificationDate,

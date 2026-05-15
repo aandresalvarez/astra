@@ -16,6 +16,8 @@ struct SettingsView: View {
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workerPoolSize") private var workerPoolSize = 3
     @AppStorage(AppLogger.sensitiveModeKey) private var sensitiveMode = true
+    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = false
+    @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
@@ -344,6 +346,16 @@ struct SettingsView: View {
             Section("Privacy & Logging") {
                 Toggle("Sensitive Mode", isOn: $sensitiveMode)
                 Text("When enabled, operational logs omit prompts, model output, full paths, commands, secret identifiers, and credential values. Task history remains available as product data for review.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Browser Debug Capture", isOn: $browserDebugCapture)
+                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail, which may include visible page content. Leave off unless actively debugging browser control.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Auto-promote Google Workspace helpers", isOn: $browserAutoPromoteGoogleWorkspace)
+                Text("When enabled, Google Drive and Docs helpers may switch an Embedded browser task to Controlled mode before acting. Leave off when testing Embedded browser behavior.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
