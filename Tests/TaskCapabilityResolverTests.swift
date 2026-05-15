@@ -157,6 +157,182 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
+    func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Package Drift", primaryPath: "/tmp/package-drift")
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "none"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        context.insert(jiraConnector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.name) == ["Jira Agent"])
+        #expect(resolver.allConnectors.map(\.id) == [jiraConnector.id])
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("[Jira Agent]:"))
+        #expect(prompt.contains("https://stanfordmed.atlassian.net"))
+    }
+
+    @Test("Runtime integrity reports selected package skill missing companion connector")
+    func runtimeIntegrityReportsSelectedPackageSkillMissingConnector() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Legacy Jira Skill", primaryPath: "/tmp/legacy-jira-skill")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.workspace = workspace
+        context.insert(jiraSkill)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false
+        )
+
+        #expect(issues.map(\.source) == [.selectedPackageSkill])
+        #expect(issues.map(\.resourceKind) == [.connector])
+        #expect(issues.first?.resourceName == "Jira")
+    }
+
+    @Test("Runtime integrity names disabled shared connector candidates")
+    func runtimeIntegrityNamesDisabledSharedConnectorCandidate() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Disabled Shared Jira", primaryPath: "/tmp/disabled-shared-jira")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.workspace = workspace
+        context.insert(jiraSkill)
+
+        let sharedJira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "none"
+        )
+        sharedJira.isGlobal = true
+        context.insert(sharedJira)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false
+        )
+
+        let issue = try #require(issues.first)
+        #expect(issue.resourceKind == .connector)
+        #expect(issue.message.contains("Jira-new"))
+        #expect(issue.message.contains("disabled in this workspace"))
+    }
+
+    @Test("Runtime integrity passes when enabled package resources resolve through package ID")
+    func runtimeIntegrityPassesForResolvedEnabledPackageResources() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Resolved Package", primaryPath: "/tmp/resolved-package")
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Configured Jira",
+            serviceType: "jira",
+            connectorDescription: "Configured Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "none"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        context.insert(jiraConnector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false
+        )
+
+        #expect(issues.isEmpty)
+    }
+
     @Test("Browser task prompt prunes unrelated selected capabilities")
     func browserTaskPromptPrunesUnrelatedSelectedCapabilities() throws {
         let container = try makeTaskCapabilityResolverContainer()

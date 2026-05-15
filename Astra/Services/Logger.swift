@@ -133,6 +133,7 @@ enum AuditEvent: String, CaseIterable {
     case capabilityDisabled = "capability.disabled"
     case capabilityChatContext = "capability.chat_context"
     case capabilityResolved = "capability.resolved"
+    case capabilityRuntimeIntegrity = "capability.runtime_integrity"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
     case workspaceRecovered = "workspace.recovered"

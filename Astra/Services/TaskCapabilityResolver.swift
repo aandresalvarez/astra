@@ -53,7 +53,7 @@ struct TaskCapabilityResolver {
     }
 
     private func allBehaviorSkills(connectors: [Connector]) -> [Skill] {
-        var combined = task.skills
+        var combined = task.skills + enabledPackageSkills()
         for connector in connectors {
             guard let skill = connector.skill else { continue }
             combined.append(skill)
@@ -66,14 +66,16 @@ struct TaskCapabilityResolver {
     var allConnectors: [Connector] {
         let enabledGlobalIDs = Set(task.workspace?.enabledGlobalConnectorIDs ?? [])
         let workspaceID = task.workspace?.id
-        let fromSkills = task.skills.flatMap(\.connectors).filter { connector in
+        let packageSkills = enabledPackageSkills()
+        let fromSkills = (task.skills + packageSkills).flatMap(\.connectors).filter { connector in
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
+                    || enabledPackageConnectorSpecs().contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
             }
             return connector.workspace?.id == workspaceID
         }
         let standalone = task.workspace?.connectors.filter { $0.skill == nil } ?? []
-        var all = fromSkills + standalone
+        var all = fromSkills + standalone + enabledPackageConnectors()
 
         if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty, let ctx = task.modelContext {
             let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
@@ -94,9 +96,10 @@ struct TaskCapabilityResolver {
     }
 
     var allLocalTools: [LocalTool] {
-        let fromSkills = task.skills.flatMap(\.localTools)
+        let packageSkills = enabledPackageSkills()
+        let fromSkills = (task.skills + packageSkills).flatMap(\.localTools)
         let standalone = task.workspace?.localTools.filter { $0.skill == nil } ?? []
-        var all = fromSkills + standalone
+        var all = fromSkills + standalone + enabledPackageLocalTools()
 
         if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty, let ctx = task.modelContext {
             let enabledIDs = Set(ws.enabledGlobalToolIDs)
@@ -116,8 +119,95 @@ struct TaskCapabilityResolver {
     var enabledBrowserAdapters: [String] {
         Self.enabledBrowserAdapters(
             for: task.workspace,
-            packages: CapabilityLibrary().installedPackages()
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions()
         )
+    }
+
+    private func enabledPackageSkills() -> [Skill] {
+        let packages = enabledCapabilityPackages()
+        guard !packages.isEmpty else { return [] }
+        let pluginSkills = packages.flatMap(\.skills)
+        guard !pluginSkills.isEmpty else { return [] }
+
+        let candidates = workspaceSkills() + globalSkills()
+        return uniqueSkills(candidates.filter { skill in
+            pluginSkills.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
+        })
+    }
+
+    private func enabledPackageConnectors() -> [Connector] {
+        let specs = enabledPackageConnectorSpecs()
+        guard !specs.isEmpty else { return [] }
+        let candidates = workspaceConnectors() + globalConnectors()
+        return uniqueConnectors(candidates.filter { connector in
+            specs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
+        })
+    }
+
+    private func enabledPackageLocalTools() -> [LocalTool] {
+        let specs = enabledPackageLocalToolSpecs()
+        guard !specs.isEmpty else { return [] }
+        let candidates = workspaceLocalTools() + globalLocalTools()
+        return uniqueTools(candidates.filter { tool in
+            specs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
+        })
+    }
+
+    private func enabledPackageConnectorSpecs() -> [PluginConnector] {
+        enabledCapabilityPackages().flatMap(\.connectors)
+    }
+
+    private func enabledPackageLocalToolSpecs() -> [PluginLocalTool] {
+        enabledCapabilityPackages().flatMap(\.localTools)
+    }
+
+    private func enabledCapabilityPackages() -> [PluginPackage] {
+        CapabilityRuntimeResourceMatcher.enabledPackages(for: task.workspace)
+    }
+
+    private func workspaceSkills() -> [Skill] {
+        task.workspace?.skills.filter { !$0.isGlobal } ?? []
+    }
+
+    private func workspaceConnectors() -> [Connector] {
+        task.workspace?.connectors.filter { !$0.isGlobal } ?? []
+    }
+
+    private func workspaceLocalTools() -> [LocalTool] {
+        task.workspace?.localTools.filter { !$0.isGlobal } ?? []
+    }
+
+    private func globalSkills() -> [Skill] {
+        guard let ctx = task.modelContext else { return [] }
+        let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func globalConnectors() -> [Connector] {
+        guard let ctx = task.modelContext else { return [] }
+        let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func globalLocalTools() -> [LocalTool] {
+        guard let ctx = task.modelContext else { return [] }
+        let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
+        var seen = Set<UUID>()
+        return skills.filter { seen.insert($0.id).inserted }
+    }
+
+    private func uniqueConnectors(_ connectors: [Connector]) -> [Connector] {
+        var seen = Set<UUID>()
+        return connectors.filter { seen.insert($0.id).inserted }
+    }
+
+    private func uniqueTools(_ tools: [LocalTool]) -> [LocalTool] {
+        var seen = Set<UUID>()
+        return tools.filter { seen.insert($0.id).inserted }
     }
 
     static func enabledBrowserAdapters(
