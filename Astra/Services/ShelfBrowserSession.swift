@@ -107,6 +107,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
     private var lastBrowserTrace: [String: Any]?
+    private var browserFlightRecorder = BrowserFlightRecorder()
     private var lastPageFingerprint: String?
     private var lastLoggedURL = ""
     private var keypressSafetyState = BrowserKeypressSafetyState()
@@ -255,6 +256,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         boundTaskID = taskID
         keypressSafetyState = BrowserKeypressSafetyState()
         browserRunGuard.reset()
+        browserFlightRecorder.reset()
+        lastBrowserTrace = nil
         publishBridgeState()
     }
 
@@ -707,6 +710,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func handleBridgeRequest(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
+        guard isFlightRecordedBridgeRequest(request) else {
+            return await handleBridgeRequestCore(request)
+        }
+
+        let started = Date()
+        let before = browserFlightPageSnapshot()
+        let response = await handleBridgeRequestCore(request)
+        recordBrowserFlightStep(
+            request: request,
+            response: response,
+            before: before,
+            started: started
+        )
+        return response
+    }
+
+    private func handleBridgeRequestCore(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
         if request.method == "GET", request.path == "/health" {
             var health: [String: Any] = [
                 "ok": true,
@@ -728,6 +748,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ],
                 "capabilities": bridgeCapabilities
             ]
+            health["browserFlightRecorder"] = browserFlightRecorder.snapshot()
             if let lastBrowserTrace {
                 health["lastBrowserTrace"] = lastBrowserTrace
             }
@@ -771,7 +792,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     [
                         "method": "GET",
                         "path": "/trace",
-                        "description": "Return the most recent compact browser action trace for supervision."
+                        "description": "Return the most recent compact browser action trace and the retained per-task browser flight timeline for supervision."
                     ],
                     [
                         "method": "GET",
@@ -989,6 +1010,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             case ("GET", "/trace"):
                 var response: [String: Any] = ["ok": true]
                 response["trace"] = lastBrowserTrace ?? NSNull()
+                response["flight"] = browserFlightRecorder.snapshot()
                 return .json(response)
             case ("GET", "/benchmark"):
                 return .json(browserBenchmarkSuite())
@@ -1362,6 +1384,65 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
+    private func isFlightRecordedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
+        switch (request.method, request.path) {
+        case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func browserFlightPageSnapshot(result: [String: Any]? = nil) -> BrowserFlightPageSnapshot {
+        let url = result?["url"] as? String ?? currentURL
+        return BrowserFlightPageSnapshot(
+            url: url,
+            title: result?["title"] as? String ?? pageTitle,
+            pageType: currentPageTypeLabel(urlString: url)
+        )
+    }
+
+    private func recordBrowserFlightStep(
+        request: BrowserBridgeRequest,
+        response: BrowserBridgeResponse,
+        before: BrowserFlightPageSnapshot,
+        started: Date
+    ) {
+        let result = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
+        let after = browserFlightPageSnapshot(result: result)
+        let runGuard = result?["runGuard"] as? [String: Any]
+        let trace = result?["browserTrace"] as? [String: Any]
+        let browserTraceID = trace?["id"] as? String ?? lastBrowserTrace?["id"] as? String
+        let entry = browserFlightRecorder.record(
+            request: request,
+            statusCode: response.statusCode,
+            before: before,
+            after: after,
+            duration: Date().timeIntervalSince(started),
+            result: result,
+            runGuard: runGuard,
+            lastBrowserTraceID: browserTraceID
+        )
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: [
+                "phase": "completed",
+                "action": "browser_flight_step",
+                "flight_id": entry["id"] as? String ?? "",
+                "sequence": String(entry["sequence"] as? Int ?? 0),
+                "command": entry["command"] as? String ?? "",
+                "status_code": String(response.statusCode),
+                "ok": String(Self.boolValue(entry["ok"])),
+                "url_changed": String(Self.boolValue(entry["urlChanged"])),
+                "host_changed": String(Self.boolValue(entry["hostChanged"])),
+                "error": entry["error"] as? String ?? ""
+            ],
+            level: response.statusCode >= 400 ? .warning : .debug
+        )
+    }
+
     private func isRunGuardedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
         switch (request.method, request.path) {
         case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
@@ -1371,8 +1452,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func currentPageTypeLabel() -> String {
-        guard let url = URL(string: currentURL),
+    private func currentPageTypeLabel(urlString: String? = nil) -> String {
+        guard let url = URL(string: urlString ?? currentURL),
               let host = url.host?.lowercased() else {
             return "unknown"
         }

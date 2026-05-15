@@ -152,6 +152,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
+        - Inspect compact navigation/action diagnostics: `astra-browser trace`
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
