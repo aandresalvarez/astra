@@ -622,6 +622,15 @@ enum BrowserAutomationScripts {
             }
             return { ok: false, error: "target_obscured", point, coveredBy: top ? (top.tagName || "").toLowerCase() : "" };
           };
+          const boundsForTarget = (el) => {
+            const rect = el.getBoundingClientRect();
+            return {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            };
+          };
           const publicTarget = (target) => {
             const el = target.el;
             if (!el) {
@@ -646,6 +655,7 @@ enum BrowserAutomationScripts {
               locator: locatorSummary(),
               x: target.point?.x,
               y: target.point?.y,
+              bounds: boundsForTarget(el),
               normalized: Boolean(target.point?.normalized),
               coveredBy: target.coveredBy || "",
               url: location.href

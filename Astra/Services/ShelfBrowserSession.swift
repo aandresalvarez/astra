@@ -815,7 +815,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/navigate",
                         "body": ["url": "https://example.com"],
-                        "description": "Navigate the browser to a URL or search phrase."
+                        "description": "Navigate the browser to a URL or search phrase, then wait briefly for URL/title/loading state to settle."
                     ],
                     [
                         "method": "POST",
@@ -913,7 +913,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/click",
                         "body": ["selector": "button.primary", "label": "Save", "role": "button", "x": 0.5, "y": 0.5, "allowDangerous": false],
-                        "description": "Click a selector, locator, viewport point, or analyzed controlID after visibility, enabled, viewport, and obstruction checks. Submit/send/delete/payment-style controls require explicit allowDangerous true after user confirmation. controlID responses include outcome fields; ok means the command executed, while goalSatisfied means the expected page outcome was observed."
+                        "description": "Click a selector, locator, viewport point, or analyzed controlID after visibility, enabled, stable-bounds, viewport, and obstruction checks. Submit/send/delete/payment-style controls require explicit allowDangerous true after user confirmation. Responses include actionability and postActionWait diagnostics; controlID responses also include outcome fields."
                     ],
                     [
                         "method": "POST",
@@ -931,7 +931,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "method": "POST",
                         "path": "/fill",
                         "body": ["label": "Email", "text": "user@example.com"],
-                        "description": "Fill an editable control by selector, label, role, placeholder, or test id with actionability checks."
+                        "description": "Fill an editable control by selector, label, role, placeholder, or test id with actionability checks and a post-action settle wait."
                     ],
                     [
                         "method": "POST",
@@ -1025,8 +1025,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 guard let url = ShelfBrowserAddress.normalizedURL(from: command.url) else {
                     return .json(["ok": false, "error": "invalid_url"], statusCode: 400)
                 }
-                load(url, source: "bridge")
-                return .json(["ok": true, "url": url.absoluteString])
+                let wait = await navigateForBridge(to: url, source: "bridge")
+                return .json([
+                    "ok": true,
+                    "url": wait["url"] as? String ?? url.absoluteString,
+                    "title": wait["title"] as? String ?? "",
+                    "navigationWait": wait
+                ])
             case ("POST", "/click"):
                 let command = try request.decodeJSON(ClickCommand.self)
                 if command.hasAnalysisControl {
@@ -1465,6 +1470,56 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return "googleWorkspace"
         }
         return host
+    }
+
+    private func navigateForBridge(to url: URL, source: String) async -> [String: Any] {
+        browserAnalysisCache.invalidate()
+        logNavigation(phase: "requested", source: source, url: url)
+        if isUsingControlledBrowser {
+            await navigateControlledBrowser(to: url.absoluteString)
+        } else if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            webView.load(URLRequest(url: url))
+        }
+        return await waitForNavigationSettle(targetURL: url.absoluteString, timeoutSeconds: 6)
+    }
+
+    private func waitForNavigationSettle(targetURL: String?, timeoutSeconds: TimeInterval) async -> [String: Any] {
+        let started = Date()
+        let timeout = max(0.2, min(timeoutSeconds, 15))
+        var lastSignature = ""
+        var stableSamples = 0
+        var samples = 0
+
+        while Date().timeIntervalSince(started) <= timeout {
+            syncDisplayedStateForEngine()
+            let signature = "\(currentURL)\u{1f}\(pageTitle)\u{1f}\(isLoading)"
+            stableSamples = signature == lastSignature ? stableSamples + 1 : 0
+            lastSignature = signature
+            samples += 1
+
+            let targetReached = targetURL.map { target in
+                currentURL == target || BrowserFlightPageSnapshot.redactedURLString(currentURL) == BrowserFlightPageSnapshot.redactedURLString(target)
+            } ?? true
+            if targetReached && !isLoading && stableSamples >= 1 {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        publishBridgeState()
+        return [
+            "ok": true,
+            "url": currentURL,
+            "title": pageTitle,
+            "pageType": currentPageTypeLabel(),
+            "targetURL": targetURL ?? "",
+            "targetReached": targetURL.map { BrowserFlightPageSnapshot.redactedURLString(currentURL) == BrowserFlightPageSnapshot.redactedURLString($0) || currentURL == $0 } ?? true,
+            "loading": isLoading,
+            "stableSamples": stableSamples,
+            "samples": samples,
+            "elapsedSeconds": Date().timeIntervalSince(started)
+        ]
     }
 
     private func rawSnapshotJSON() async throws -> String {
@@ -2143,19 +2198,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
 
         do {
-            if !isUsingControlledBrowser {
-                _ = try await waitForEmbeddedActionableTarget(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
-            }
+            let actionability = try await waitForActionableTarget(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
+            let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
             if isUsingControlledBrowser {
@@ -2186,7 +2240,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            let annotated = try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
                 selector: selector,
                 x: x,
                 y: y,
@@ -2195,7 +2249,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 text: text,
                 placeholder: placeholder,
                 testID: testID
-            ))
+            )))
+            object["actionability"] = actionability
+            if Self.boolValue(object["ok"]) {
+                object["postActionWait"] = await waitForPostActionSettle(before: beforeSettle, action: action)
+            }
+            let annotated = try Self.jsonString(object)
             logBrowserAction(
                 phase: "completed",
                 action: action,
@@ -2255,19 +2314,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
 
         do {
-            if !isUsingControlledBrowser {
-                _ = try await waitForEmbeddedActionableTarget(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
-            }
+            let actionability = try await waitForActionableTarget(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
+            let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
             if isUsingControlledBrowser {
@@ -2298,7 +2356,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            let annotated = try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
                 selector: selector,
                 x: x,
                 y: y,
@@ -2307,7 +2365,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 text: text,
                 placeholder: placeholder,
                 testID: testID
-            ))
+            )))
+            object["actionability"] = actionability
+            if Self.boolValue(object["ok"]) {
+                object["postActionWait"] = await waitForPostActionSettle(before: beforeSettle, action: action)
+            }
+            let annotated = try Self.jsonString(object)
             logBrowserAction(
                 phase: "completed",
                 action: action,
@@ -2415,19 +2478,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
 
         do {
-            if !isUsingControlledBrowser {
-                _ = try await waitForEmbeddedActionableTarget(
-                    selector: selector,
-                    x: nil,
-                    y: nil,
-                    allowDangerous: true,
-                    label: label,
-                    role: role,
-                    text: nil,
-                    placeholder: placeholder,
-                    testID: testID
-                )
-            }
+            let actionability = try await waitForActionableTarget(
+                selector: selector,
+                x: nil,
+                y: nil,
+                allowDangerous: true,
+                label: label,
+                role: role,
+                text: nil,
+                placeholder: placeholder,
+                testID: testID
+            )
+            let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
             if isUsingControlledBrowser {
@@ -2454,7 +2516,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            let annotated = try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
                 selector: selector,
                 x: nil,
                 y: nil,
@@ -2463,7 +2525,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 text: nil,
                 placeholder: placeholder,
                 testID: testID
-            ))
+            )))
+            object["actionability"] = actionability
+            if Self.boolValue(object["ok"]) {
+                object["postActionWait"] = await waitForPostActionSettle(before: beforeSettle, action: action)
+            }
+            let annotated = try Self.jsonString(object)
             logBrowserAction(
                 phase: "completed",
                 action: action,
@@ -2494,7 +2561,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func waitForEmbeddedActionableTarget(
+    private func waitForActionableTarget(
         selector: String?,
         x: Double?,
         y: Double?,
@@ -2504,13 +2571,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         text: String?,
         placeholder: String?,
         testID: String?
-    ) async throws {
+    ) async throws -> [String: Any] {
         let started = Date()
         let timeout: TimeInterval = 3
-        var lastError = ""
+        var lastObject: [String: Any] = [:]
+        var lastBoundsSignature = ""
+        var stableBoundsSamples = 0
+        var attempts = 0
 
         while Date().timeIntervalSince(started) < timeout {
-            let json = try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
+            let object = try await targetInfoObject(
                 selector: selector,
                 x: x,
                 y: y,
@@ -2520,18 +2590,41 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 text: text,
                 placeholder: placeholder,
                 testID: testID
-            ))
-            let object = try Self.jsonObject(from: json)
+            )
+            attempts += 1
+            lastObject = object
             if Self.boolValue(object["ok"]) {
-                return
+                let boundsSignature = Self.boundsSignature(object["bounds"])
+                if !boundsSignature.isEmpty && boundsSignature == lastBoundsSignature {
+                    stableBoundsSamples += 1
+                } else {
+                    stableBoundsSamples = 0
+                }
+                lastBoundsSignature = boundsSignature
+                if boundsSignature.isEmpty || stableBoundsSamples >= 1 {
+                    return actionabilityWaitSummary(
+                        object: object,
+                        attempts: attempts,
+                        stableBoundsSamples: stableBoundsSamples,
+                        timedOut: false,
+                        started: started
+                    )
+                }
             }
-            lastError = object["error"] as? String ?? ""
+            let lastError = object["error"] as? String ?? ""
             if !Self.isRetryableActionabilityError(lastError) {
-                return
+                return actionabilityWaitSummary(
+                    object: object,
+                    attempts: attempts,
+                    stableBoundsSamples: stableBoundsSamples,
+                    timedOut: false,
+                    started: started
+                )
             }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
 
+        let lastError = lastObject["error"] as? String ?? ""
         if !lastError.isEmpty {
             logBrowserAction(
                 phase: "auto_wait_timeout",
@@ -2545,6 +2638,96 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 fields: ["last_error": lastError]
             )
         }
+        return actionabilityWaitSummary(
+            object: lastObject,
+            attempts: attempts,
+            stableBoundsSamples: stableBoundsSamples,
+            timedOut: true,
+            started: started
+        )
+    }
+
+    private func targetInfoObject(
+        selector: String?,
+        x: Double?,
+        y: Double?,
+        allowDangerous: Bool,
+        label: String?,
+        role: String?,
+        text: String?,
+        placeholder: String?,
+        testID: String?
+    ) async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.targetInfo(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            ))
+        }
+        return try Self.jsonObject(from: json)
+    }
+
+    private func actionabilityWaitSummary(
+        object: [String: Any],
+        attempts: Int,
+        stableBoundsSamples: Int,
+        timedOut: Bool,
+        started: Date
+    ) -> [String: Any] {
+        let ok = Self.boolValue(object["ok"])
+        let boundsSignature = Self.boundsSignature(object["bounds"])
+        var summary: [String: Any] = [
+            "ok": ok,
+            "error": object["error"] as? String ?? "",
+            "attempts": attempts,
+            "elapsedMs": Int(Date().timeIntervalSince(started) * 1_000),
+            "timedOut": timedOut,
+            "visible": Self.boolValue(object["visible"]),
+            "disabled": Self.boolValue(object["disabled"]),
+            "actionable": Self.boolValue(object["actionable"]),
+            "stableBounds": ok && (stableBoundsSamples >= 1 || boundsSignature.isEmpty),
+            "stableBoundsSamples": stableBoundsSamples,
+            "coveredBy": object["coveredBy"] as? String ?? "",
+            "selector": object["selector"] as? String ?? "",
+            "requestedSelector": object["requestedSelector"] as? String ?? "",
+            "role": object["role"] as? String ?? "",
+            "tag": object["tag"] as? String ?? ""
+        ]
+        if let bounds = object["bounds"] as? [String: Any] {
+            summary["bounds"] = bounds
+        }
+        return summary
+    }
+
+    private static func boundsSignature(_ value: Any?) -> String {
+        guard let bounds = value as? [String: Any] else { return "" }
+        let x = intValue(bounds["x"]) ?? 0
+        let y = intValue(bounds["y"]) ?? 0
+        let width = intValue(bounds["width"]) ?? 0
+        let height = intValue(bounds["height"]) ?? 0
+        return "\(x),\(y),\(width),\(height)"
     }
 
     private static func isRetryableActionabilityError(_ error: String) -> Bool {
@@ -2555,6 +2738,54 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "target_obscured",
             "target_outside_viewport"
         ].contains(error)
+    }
+
+    private func waitForPostActionSettle(before: [String: Any]?, action: String) async -> [String: Any] {
+        let started = Date()
+        let timeout: TimeInterval = 1.4
+        let beforeURL = before?["url"] as? String ?? currentURL
+        let beforeTitle = before?["title"] as? String ?? pageTitle
+        let beforeFingerprint = before.map(Self.pageFingerprint(from:)) ?? ""
+        var lastFingerprint = ""
+        var stableSamples = 0
+        var samples = 0
+        var lastSnapshot: [String: Any]?
+
+        while Date().timeIntervalSince(started) <= timeout {
+            try? await Task.sleep(nanoseconds: 175_000_000)
+            guard let snapshot = try? await rawSnapshotObject() else { continue }
+            lastSnapshot = snapshot
+            samples += 1
+            let fingerprint = Self.pageFingerprint(from: snapshot)
+            stableSamples = fingerprint == lastFingerprint ? stableSamples + 1 : 0
+            lastFingerprint = fingerprint
+
+            let urlChanged = (snapshot["url"] as? String ?? "") != beforeURL
+            let titleChanged = (snapshot["title"] as? String ?? "") != beforeTitle
+            let pageChanged = !beforeFingerprint.isEmpty && fingerprint != beforeFingerprint
+            if (urlChanged || titleChanged || pageChanged) && stableSamples >= 1 {
+                break
+            }
+            if !beforeFingerprint.isEmpty && stableSamples >= 2 {
+                break
+            }
+        }
+
+        let afterURL = lastSnapshot?["url"] as? String ?? currentURL
+        let afterTitle = lastSnapshot?["title"] as? String ?? pageTitle
+        let afterFingerprint = lastSnapshot.map(Self.pageFingerprint(from:)) ?? ""
+        return [
+            "action": action,
+            "elapsedMs": Int(Date().timeIntervalSince(started) * 1_000),
+            "samples": samples,
+            "stableSamples": stableSamples,
+            "urlChanged": afterURL != beforeURL,
+            "titleChanged": afterTitle != beforeTitle,
+            "pageFingerprintChanged": !beforeFingerprint.isEmpty && !afterFingerprint.isEmpty && beforeFingerprint != afterFingerprint,
+            "url": BrowserFlightPageSnapshot.redactedURLString(afterURL),
+            "title": String(afterTitle.prefix(160)),
+            "pageType": currentPageTypeLabel(urlString: afterURL)
+        ]
     }
 
     private func browserActionTarget(
@@ -3749,8 +3980,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     results.append(["ok": false, "action": action.action, "error": "invalid_url"])
                     continue
                 }
-                load(url, source: "bridge_batch")
-                results.append(["ok": true, "action": action.action, "url": url.absoluteString])
+                let wait = await navigateForBridge(to: url, source: "bridge_batch")
+                results.append([
+                    "ok": true,
+                    "action": action.action,
+                    "url": wait["url"] as? String ?? url.absoluteString,
+                    "title": wait["title"] as? String ?? "",
+                    "navigationWait": wait
+                ])
             case "click":
                 if action.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
