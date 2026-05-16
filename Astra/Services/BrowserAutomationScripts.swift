@@ -1,6 +1,8 @@
 import Foundation
 
 enum BrowserAutomationScripts {
+    static let pageReadMessageHandlerName = "astraPageRead"
+
     static let debugInstrumentationScript = """
     (() => {
       if (window.__astraDebugInstalled) return true;
@@ -159,6 +161,172 @@ enum BrowserAutomationScripts {
       });
     })()
     """
+    }
+
+    static func pageReadFrameScript(limit: Int) -> String {
+        """
+        (() => {
+          \(pageReadCollectorScript)
+          return JSON.stringify(window.__astraCollectPageReadFrame({
+            source: "controlled_chromium",
+            limit: \(max(1_000, limit))
+          }));
+        })()
+        """
+    }
+
+    static func embeddedPageReadReporterScript(messageHandlerName: String = pageReadMessageHandlerName) -> String {
+        """
+        (() => {
+          if (window.__astraPageReadReporterInstalled) return true;
+          window.__astraPageReadReporterInstalled = true;
+          \(pageReadCollectorScript)
+          const postNativePageRead = (payload) => {
+            try {
+              window.webkit.messageHandlers.\(messageHandlerName).postMessage(payload);
+            } catch (_) {}
+          };
+          const broadcastPageReadRequest = (request) => {
+            const frames = Array.from(document.querySelectorAll("iframe, frame"));
+            for (let index = 0; index < frames.length; index += 1) {
+              try {
+                frames[index].contentWindow?.postMessage(Object.assign({}, request, {
+                  parentFrameID: request.frameID || "main",
+                  frameID: (request.frameID || "main") + "." + index
+                }), "*");
+              } catch (_) {}
+            }
+          };
+          window.__astraPageReadHandleRequest = (request) => {
+            const limit = Math.max(1000, Math.min(Number(request.limit || 50000), 250000));
+            const report = window.__astraCollectPageReadFrame({
+              source: "embedded_webkit",
+              frameID: request.frameID || "main",
+              parentFrameID: request.parentFrameID || "",
+              limit
+            });
+            report.requestID = request.requestID || "";
+            postNativePageRead(report);
+            broadcastPageReadRequest(request);
+          };
+          window.addEventListener("message", (event) => {
+            const request = event.data || {};
+            if (request.__astraPageRead !== true || !request.requestID) return;
+            window.__astraPageReadHandleRequest(request);
+          });
+          return true;
+        })()
+        """
+    }
+
+    static func embeddedPageReadDispatchScript(requestID: String, limit: Int) -> String {
+        """
+        (() => {
+          const request = {
+            __astraPageRead: true,
+            requestID: \(jsStringLiteral(requestID)),
+            frameID: "main",
+            parentFrameID: "",
+            limit: \(max(1_000, limit))
+          };
+          if (typeof window.__astraPageReadHandleRequest === "function") {
+            window.__astraPageReadHandleRequest(request);
+          } else {
+            window.postMessage(request, "*");
+          }
+          return JSON.stringify({ ok: true, requestID: request.requestID, url: location.href, title: document.title });
+        })()
+        """
+    }
+
+    private static var pageReadCollectorScript: String {
+        """
+          if (typeof window.__astraCollectPageReadFrame !== "function") {
+            window.__astraCollectPageReadFrame = (options) => {
+              const limit = Math.max(1000, Math.min(Number(options?.limit || 50000), 250000));
+              const compact = (value, max = 500) => String(value ?? "").replace(/\\s+/g, " ").trim().slice(0, max);
+              const visible = (el) => {
+                try {
+                  if (!el) return false;
+                  const style = window.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.display !== "none"
+                    && style.visibility !== "hidden"
+                    && style.opacity !== "0"
+                    && (rect.width > 0 || rect.height > 0);
+                } catch (_) {
+                  return true;
+                }
+              };
+              const readableText = () => {
+                if (!document.body) return { text: "", textLength: 0, truncated: false };
+                const pieces = [];
+                let returnedLength = 0;
+                let textLength = 0;
+                let truncated = false;
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                while (true) {
+                  const node = walker.nextNode();
+                  if (!node) break;
+                  const text = String(node.nodeValue || "").replace(/\\s+/g, " ").trim();
+                  if (!text) continue;
+                  const parent = node.parentElement;
+                  if (!parent || !visible(parent)) continue;
+                  textLength += text.length + 1;
+                  if (returnedLength >= limit) {
+                    truncated = true;
+                    continue;
+                  }
+                  const remaining = limit - returnedLength;
+                  const next = text.length > remaining ? text.slice(0, remaining) : text;
+                  pieces.push(next);
+                  returnedLength += next.length + 1;
+                  if (text.length > remaining) truncated = true;
+                }
+                return { text: pieces.join("\\n").slice(0, limit), textLength, truncated };
+              };
+              const childFrames = () => {
+                return Array.from(document.querySelectorAll("iframe, frame")).map((frame, index) => {
+                  const sandbox = frame.getAttribute("sandbox");
+                  const sandboxTokens = String(sandbox || "").split(/\\s+/).filter(Boolean);
+                  return {
+                    index,
+                    url: frame.src || frame.getAttribute("src") || "",
+                    title: frame.getAttribute("title") || frame.getAttribute("name") || "",
+                    sandboxed: sandbox !== null,
+                    scriptsAllowed: sandbox === null || sandboxTokens.includes("allow-scripts")
+                  };
+                });
+              };
+              const kind = (() => {
+                const type = String(document.contentType || "").toLowerCase();
+                if (type.includes("pdf")) return "pdf";
+                if (document.querySelector("canvas")) return "canvas";
+                return "html";
+              })();
+              const text = readableText();
+              const warnings = [];
+              if (kind === "canvas") warnings.push("Page contains canvas content that may not be represented in DOM text.");
+              if (kind === "pdf") warnings.push("PDF viewer content may require a PDF-specific reader.");
+              return {
+                ok: true,
+                frameID: options?.frameID || "main",
+                parentFrameID: options?.parentFrameID || "",
+                url: location.href,
+                title: document.title,
+                contentKind: kind,
+                text: text.text,
+                textLength: text.textLength,
+                returnedTextLength: text.text.length,
+                truncated: text.truncated,
+                accessible: text.text.length > 0,
+                source: options?.source || "browser",
+                childFrames: childFrames(),
+                warnings
+              };
+            };
+          }
+        """
     }
 
     static let snapshotScript = """
@@ -898,5 +1066,15 @@ enum BrowserAutomationScripts {
             return "[]"
         }
         return literal
+    }
+
+    private static func jsStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value]),
+              let array = String(data: data, encoding: .utf8),
+              array.hasPrefix("["),
+              array.hasSuffix("]") else {
+            return #""""#
+        }
+        return String(array.dropFirst().dropLast())
     }
 }

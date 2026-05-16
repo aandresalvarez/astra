@@ -226,6 +226,46 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
+    func readPage(
+        format: String = "text",
+        limit: Int = BrowserPageReadService.defaultLimit,
+        chunkSize: Int = BrowserPageReadService.defaultChunkSize
+    ) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let page = try await currentPage()
+        let normalizedLimit = BrowserPageReadService.normalizedLimit(limit)
+        let normalizedChunkSize = BrowserPageReadService.normalizedChunkSize(chunkSize)
+        let normalizedFormat = BrowserPageReadService.normalizedFormat(format)
+
+        do {
+            let response = try await readPageWithScopedCDP(
+                page: page,
+                format: normalizedFormat,
+                limit: normalizedLimit,
+                chunkSize: normalizedChunkSize
+            )
+            try await refreshPageMetadata()
+            return try Self.jsonString(response)
+        } catch {
+            let snapshotJSON = try await snapshot()
+            let snapshotObject = try Self.jsonObject(from: snapshotJSON)
+            let response = BrowserPageReadService.responseFromSnapshot(
+                snapshotObject,
+                engine: ShelfBrowserEngine.controlled.rawValue,
+                backend: ShelfBrowserEngine.controlled.bridgeBackendLabel,
+                format: normalizedFormat,
+                limit: normalizedLimit,
+                chunkSize: normalizedChunkSize,
+                warnings: [
+                    "Controlled frame-aware read failed and fell back to the compact snapshot path.",
+                    error.localizedDescription
+                ]
+            )
+            try await refreshPageMetadata()
+            return try Self.jsonString(response)
+        }
+    }
+
     func accessibilitySnapshot(limit: Int = 300) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let response = try await sendCDPCommand(
@@ -637,6 +677,237 @@ final class ControlledBrowserController: ObservableObject {
         }
     }
 
+    private func readPageWithScopedCDP(
+        page: DevToolsPage,
+        format: String,
+        limit: Int,
+        chunkSize: Int
+    ) async throws -> [String: Any] {
+        guard let debugPort else {
+            throw ControlledBrowserError.missingDebugPort
+        }
+
+        let browserSocket = try await browserWebSocketDebuggerURL(debugPort: debugPort)
+        let webSocketURL = URL(string: browserSocket) ?? URL(string: page.webSocketDebuggerURL)
+        guard let webSocketURL else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+
+        let client = OperationCDPClient(webSocketURL: webSocketURL)
+        try await client.connect()
+        defer { client.close() }
+
+        var warnings: [String] = []
+        var diagnostics: [String: Any] = [:]
+        var frames: [[String: Any]] = []
+        var pageSessionID: String?
+
+        if let targetID = page.id, browserSocket != page.webSocketDebuggerURL {
+            do {
+                let attached = try await client.send(
+                    method: "Target.attachToTarget",
+                    params: ["targetId": targetID, "flatten": true]
+                )
+                pageSessionID = (attached["result"] as? [String: Any])?["sessionId"] as? String
+                _ = try? await client.send(
+                    method: "Target.setAutoAttach",
+                    params: [
+                        "autoAttach": true,
+                        "waitForDebuggerOnStart": false,
+                        "flatten": true
+                    ]
+                )
+            } catch {
+                warnings.append("Could not attach to the page target through the browser CDP endpoint: \(error.localizedDescription)")
+            }
+        }
+
+        let primarySessionID = pageSessionID
+        frames.append(contentsOf: try await readPageFrames(
+            client: client,
+            sessionID: primarySessionID,
+            source: "controlled_chromium",
+            limit: limit
+        ))
+
+        do {
+            let targetResponse = try await client.send(method: "Target.getTargets")
+            let targetInfos = ((targetResponse["result"] as? [String: Any])?["targetInfos"] as? [[String: Any]] ?? [])
+                .filter { ($0["type"] as? String) == "iframe" }
+            diagnostics["oopifTargetCount"] = targetInfos.count
+
+            for targetInfo in targetInfos.prefix(20) {
+                guard let targetID = targetInfo["targetId"] as? String else { continue }
+                do {
+                    let attached = try await client.send(
+                        method: "Target.attachToTarget",
+                        params: ["targetId": targetID, "flatten": true]
+                    )
+                    guard let sessionID = (attached["result"] as? [String: Any])?["sessionId"] as? String else { continue }
+                    let frame = try await evaluatePageReadFrame(
+                        client: client,
+                        sessionID: sessionID,
+                        contextID: nil,
+                        frameID: targetID,
+                        parentFrameID: "",
+                        source: "controlled_chromium_oopif",
+                        limit: limit
+                    )
+                    frames.append(frame)
+                } catch {
+                    frames.append([
+                        "frameID": targetID,
+                        "url": targetInfo["url"] as? String ?? "",
+                        "title": targetInfo["title"] as? String ?? "",
+                        "accessible": false,
+                        "source": "controlled_chromium_oopif",
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+        } catch {
+            warnings.append("Could not enumerate out-of-process iframe targets: \(error.localizedDescription)")
+        }
+
+        do {
+            let axResponse = try await client.send(
+                method: "Accessibility.getFullAXTree",
+                params: ["interestingOnly": true],
+                sessionID: primarySessionID
+            )
+            let nodes = ((axResponse["result"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+            diagnostics["accessibilityNodeCount"] = nodes.count
+        } catch {
+            warnings.append("Accessibility tree read failed: \(error.localizedDescription)")
+        }
+
+        do {
+            let domResponse = try await client.send(
+                method: "DOMSnapshot.captureSnapshot",
+                params: [
+                    "computedStyles": [],
+                    "includeDOMRects": true,
+                    "includePaintOrder": false
+                ],
+                sessionID: primarySessionID
+            )
+            let documents = ((domResponse["result"] as? [String: Any])?["documents"] as? [[String: Any]]) ?? []
+            diagnostics["domSnapshotDocumentCount"] = documents.count
+        } catch {
+            warnings.append("DOM snapshot read failed: \(error.localizedDescription)")
+        }
+
+        let resolvedURL = self.currentURL.isEmpty ? page.url : self.currentURL
+        let resolvedTitle = self.pageTitle.isEmpty ? page.title : self.pageTitle
+        return BrowserPageReadService.response(
+            url: resolvedURL,
+            title: resolvedTitle,
+            engine: ShelfBrowserEngine.controlled.rawValue,
+            backend: ShelfBrowserEngine.controlled.bridgeBackendLabel,
+            format: format,
+            limit: limit,
+            chunkSize: chunkSize,
+            frames: frames,
+            warnings: warnings,
+            diagnostics: diagnostics
+        )
+    }
+
+    private func readPageFrames(
+        client: OperationCDPClient,
+        sessionID: String?,
+        source: String,
+        limit: Int
+    ) async throws -> [[String: Any]] {
+        let frameTreeResponse = try await client.send(
+            method: "Page.getFrameTree",
+            params: [:],
+            sessionID: sessionID
+        )
+        guard let result = frameTreeResponse["result"] as? [String: Any],
+              let frameTree = result["frameTree"] as? [String: Any] else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+
+        let frameInfos = Self.flattenFrameTree(frameTree)
+        var frames: [[String: Any]] = []
+        for frameInfo in frameInfos.prefix(80) {
+            let frameID = Self.stringValue(frameInfo["id"])
+            guard !frameID.isEmpty else { continue }
+            do {
+                let world = try await client.send(
+                    method: "Page.createIsolatedWorld",
+                    params: [
+                        "frameId": frameID,
+                        "worldName": "ASTRAReadPage",
+                        "grantUniveralAccess": false
+                    ],
+                    sessionID: sessionID
+                )
+                let contextID = Self.intValue((world["result"] as? [String: Any])?["executionContextId"])
+                let frame = try await evaluatePageReadFrame(
+                    client: client,
+                    sessionID: sessionID,
+                    contextID: contextID,
+                    frameID: frameID,
+                    parentFrameID: Self.stringValue(frameInfo["parentId"]),
+                    source: source,
+                    limit: limit
+                )
+                frames.append(frame)
+            } catch {
+                frames.append([
+                    "frameID": frameID,
+                    "parentFrameID": Self.stringValue(frameInfo["parentId"]),
+                    "url": Self.stringValue(frameInfo["url"]),
+                    "title": Self.stringValue(frameInfo["name"]),
+                    "accessible": false,
+                    "source": source,
+                    "error": error.localizedDescription
+                ])
+            }
+        }
+        return frames
+    }
+
+    private func evaluatePageReadFrame(
+        client: OperationCDPClient,
+        sessionID: String?,
+        contextID: Int?,
+        frameID: String,
+        parentFrameID: String,
+        source: String,
+        limit: Int
+    ) async throws -> [String: Any] {
+        var params: [String: Any] = [
+            "expression": BrowserAutomationScripts.pageReadFrameScript(limit: limit),
+            "awaitPromise": true,
+            "returnByValue": true,
+            "timeout": 8_000
+        ]
+        if let contextID {
+            params["contextId"] = contextID
+        }
+        let response = try await client.send(
+            method: "Runtime.evaluate",
+            params: params,
+            sessionID: sessionID
+        )
+        guard let result = response["result"] as? [String: Any],
+              result["exceptionDetails"] == nil,
+              let remoteObject = result["result"] as? [String: Any],
+              let value = remoteObject["value"] as? String else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        var object = try Self.jsonObject(from: value)
+        object["frameID"] = frameID
+        if !parentFrameID.isEmpty {
+            object["parentFrameID"] = parentFrameID
+        }
+        object["source"] = source
+        return object
+    }
+
     private func refreshPageMetadata() async throws {
         let page = try await currentPage()
         currentURL = page.url
@@ -789,6 +1060,15 @@ final class ControlledBrowserController: ObservableObject {
         request.httpMethod = "PUT"
         request.timeoutInterval = 4
         _ = try await URLSession.shared.data(for: request)
+    }
+
+    private func browserWebSocketDebuggerURL(debugPort: UInt16) async throws -> String {
+        let url = URL(string: "http://127.0.0.1:\(debugPort)/json/version")!
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 4
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let version = try JSONDecoder().decode(DevToolsVersion.self, from: data)
+        return version.webSocketDebuggerURL
     }
 
     private func attachToExistingControlledBrowser() async -> Bool {
@@ -1046,6 +1326,18 @@ final class ControlledBrowserController: ObservableObject {
         return nil
     }
 
+    private nonisolated static func flattenFrameTree(_ frameTree: [String: Any]) -> [[String: Any]] {
+        var frames: [[String: Any]] = []
+        if let frame = frameTree["frame"] as? [String: Any] {
+            frames.append(frame)
+        }
+        let children = frameTree["childFrames"] as? [[String: Any]] ?? []
+        for child in children {
+            frames.append(contentsOf: flattenFrameTree(child))
+        }
+        return frames
+    }
+
     private nonisolated static func cdpModifierMask(for modifiers: [String]) -> Int {
         let normalized = Set(modifiers.map { $0.lowercased() })
         var mask = 0
@@ -1135,6 +1427,91 @@ final class ControlledBrowserController: ObservableObject {
         }
     }
 
+    private final class OperationCDPClient: @unchecked Sendable {
+        private let configuration: URLSessionConfiguration
+        private let session: URLSession
+        private let task: URLSessionWebSocketTask
+        private var nextID = 1
+        private(set) var events: [[String: Any]] = []
+
+        init(webSocketURL: URL) {
+            configuration = .ephemeral
+            configuration.timeoutIntervalForRequest = 8
+            configuration.timeoutIntervalForResource = 20
+            session = URLSession(configuration: configuration)
+            task = session.webSocketTask(with: webSocketURL)
+        }
+
+        func connect() async throws {
+            task.resume()
+        }
+
+        func close() {
+            task.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+
+        func send(
+            method: String,
+            params: [String: Any] = [:],
+            sessionID: String? = nil
+        ) async throws -> [String: Any] {
+            let id = nextID
+            nextID += 1
+            var payload: [String: Any] = [
+                "id": id,
+                "method": method,
+                "params": params
+            ]
+            if let sessionID, !sessionID.isEmpty {
+                payload["sessionId"] = sessionID
+            }
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw ControlledBrowserError.invalidDevToolsResponse
+            }
+
+            try await ControlledBrowserController.sendWebSocketMessage(
+                .string(json),
+                on: task,
+                timeout: 4,
+                operationName: "sending a browser command"
+            )
+
+            let deadline = Date().addingTimeInterval(10)
+            while true {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else {
+                    throw ControlledBrowserError.timedOut("waiting for a browser command response")
+                }
+                let message = try await ControlledBrowserController.receiveWebSocketMessage(
+                    from: task,
+                    timeout: remaining,
+                    operationName: "waiting for a browser command response"
+                )
+                let messageData: Data
+                switch message {
+                case .data(let data):
+                    messageData = data
+                case .string(let text):
+                    messageData = Data(text.utf8)
+                @unknown default:
+                    continue
+                }
+                guard let object = try JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
+                    continue
+                }
+                if ControlledBrowserController.responseID(from: object) == id {
+                    if let error = object["error"] as? [String: Any] {
+                        throw ControlledBrowserError.commandFailed(String(describing: error))
+                    }
+                    return object
+                }
+                events.append(object)
+            }
+        }
+    }
+
     private struct DevToolsPage: Decodable {
         let id: String?
         let type: String
@@ -1147,6 +1524,14 @@ final class ControlledBrowserController: ObservableObject {
             case type
             case title
             case url
+            case webSocketDebuggerURL = "webSocketDebuggerUrl"
+        }
+    }
+
+    private struct DevToolsVersion: Decodable {
+        let webSocketDebuggerURL: String
+
+        enum CodingKeys: String, CodingKey {
             case webSocketDebuggerURL = "webSocketDebuggerUrl"
         }
     }

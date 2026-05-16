@@ -96,6 +96,19 @@ struct AstraBrowserTool {
                 items.append(URLQueryItem(name: "query", value: query))
             }
             return try await request(endpoint: endpoint, method: "GET", path: "/snapshot", queryItems: items)
+        case "read-page", "readpage", "page-read", "pageread":
+            let endpoint = try browserEndpoint()
+            let format = args.value(after: "--format") ?? "text"
+            let limit = args.value(after: "--limit")
+            let chunkSize = args.value(after: "--chunk-size") ?? args.value(after: "--chunk")
+            var items = [URLQueryItem(name: "format", value: format)]
+            if let limit, !limit.isEmpty {
+                items.append(URLQueryItem(name: "limit", value: limit))
+            }
+            if let chunkSize, !chunkSize.isEmpty {
+                items.append(URLQueryItem(name: "chunkSize", value: chunkSize))
+            }
+            return try await request(endpoint: endpoint, method: "GET", path: "/readPage", queryItems: items)
         case "navigate":
             let endpoint = try browserEndpoint()
             guard let url = BrowserToolCommandParser.navigateTarget(from: &args) else {
@@ -528,6 +541,7 @@ struct AstraBrowserTool {
                 "astra-browser trace",
                 "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
+                "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size n]",
                 "astra-browser page [--query text] [--limit n]",
                 "astra-browser snapshot --mode summary|text|controls|full [--query text] [--limit n]",
                 "astra-browser locator --role button --name Save",

@@ -1209,7 +1209,7 @@ struct ShelfBrowserPanelView: View {
             return session.controlledBrowser.lastErrorMessage ?? session.controlledBrowser.statusMessage
         }
         if session.controlledBrowser.isRunning && session.isAgentBridgeEnabled {
-            return "The current task can read and act on the selected Chrome page."
+            return controlledReadStatusMessage
         }
         if session.controlledBrowser.isRunning {
             return "Turn on Agent control when you want the task to read or operate this page."
@@ -1258,17 +1258,38 @@ struct ShelfBrowserPanelView: View {
         if session.bridgeEndpoint == nil {
             return "ASTRA is preparing local browser access for this task."
         }
-        return "This task can read and act on the current Chrome page."
+        return "This task can inspect and operate the current Chrome page."
     }
 
     private var controlledCurrentPageMessage: String {
         if hasDisplayablePage && session.isAgentBridgeEnabled {
-            return "ASTRA can read this page. Use Show Chrome to bring the window forward."
+            return controlledReadStatusMessage
         }
         if hasDisplayablePage {
             return "The page is open in Chrome. Agent control is currently off."
         }
         return "Open a page in Chrome or enter a URL above."
+    }
+
+    private var controlledReadStatusMessage: String {
+        guard hasDisplayablePage else {
+            return "Open a page in Chrome or enter a URL above."
+        }
+        guard session.isAgentBridgeEnabled else {
+            return "Turn on Agent control when you want the task to inspect or operate this page."
+        }
+        guard session.lastPageReadURL == session.currentURL,
+              let coverage = session.lastPageReadCoverage else {
+            return "The current task can operate this page. Content readability will be verified when the task reads it."
+        }
+        switch coverage {
+        case "full":
+            return "ASTRA verified a full readable page snapshot for this task."
+        case "partial":
+            return "ASTRA can read part of this page. Check read-page warnings; site-specific helpers may be required."
+        default:
+            return "ASTRA could not verify readable page content yet. The task can still use browser controls."
+        }
     }
 
     private var controlledTechnicalSummary: String {

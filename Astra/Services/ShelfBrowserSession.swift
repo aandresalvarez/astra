@@ -91,6 +91,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published private(set) var canGoForward = false
     @Published private(set) var bridgeEndpoint: String?
     @Published private(set) var boundTaskID: UUID?
+    @Published private(set) var lastPageReadCoverage: String?
+    @Published private(set) var lastPageReadURL: String?
+    @Published private(set) var lastPageReadWarnings: [String] = []
     @Published var isAgentBridgeEnabled = true {
         didSet {
             publishBridgeState()
@@ -114,6 +117,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var lastBrowserDebugCapture: [String: Any]?
     private var browserFlightRecorder = BrowserFlightRecorder()
     private var lastPageFingerprint: String?
+    private var embeddedPageReadRequests: [String: EmbeddedPageReadRequest] = [:]
+    private var pageReadMessageHandler: WeakPageReadMessageHandler?
     private var lastLoggedURL = ""
     private var keypressSafetyState = BrowserKeypressSafetyState()
     private var browserRunGuard = BrowserRunGuard()
@@ -185,6 +190,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "preflight",
             "trace",
             "benchmark",
+            "read.page",
             "snapshot",
             "locator",
             "navigate",
@@ -235,11 +241,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let pageReadHandler = WeakPageReadMessageHandler()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+        configuration.userContentController.add(pageReadHandler, name: BrowserAutomationScripts.pageReadMessageHandlerName)
 
         webView = WKWebView(frame: .zero, configuration: configuration)
+        pageReadMessageHandler = pageReadHandler
         webView.allowsBackForwardNavigationGestures = true
 
         super.init()
+        pageReadHandler.session = self
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -320,6 +335,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func load(_ url: URL, source: String = "app") {
         browserAnalysisCache.invalidate()
+        invalidateLastPageReadState()
         logNavigation(phase: "requested", source: source, url: url)
         if isUsingControlledBrowser {
             Task { await navigateControlledBrowser(to: url.absoluteString) }
@@ -677,6 +693,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let nextURL = webView.url?.absoluteString ?? ""
                     if nextURL != self.currentURL {
                         self.browserAnalysisCache.invalidate()
+                        self.invalidateLastPageReadState()
                     }
                     self.currentURL = nextURL
                     self.logObservedURLChange(nextURL)
@@ -875,6 +892,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "controlledBrowserStatus": controlledBrowser.statusMessage,
                 "controlledBrowserProfilePath": controlledBrowser.profilePath,
                 "bridgeEnabled": isAgentBridgeEnabled,
+                "lastPageRead": [
+                    "coverage": lastPageReadCoverage ?? "",
+                    "url": lastPageReadURL ?? "",
+                    "warnings": lastPageReadWarnings
+                ],
                 "browserAnalysisV2Mode": BrowserAnalysisV2RolloutMode.configured().rawValue,
                 "enabledBrowserAdapters": Array(enabledBrowserAdapters).sorted(),
                 "activeSiteAdapters": activeBrowserSiteAdapters,
@@ -950,6 +972,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         "path": "/snapshot",
                         "query": ["mode": "summary|text|controls|full", "query": "optional text", "limit": "optional number"],
                         "description": "Read current page URL, title, viewport, focused element, visible text, and actionable controls. Use compact modes to reduce provider context."
+                    ],
+                    [
+                        "method": "GET",
+                        "path": "/readPage",
+                        "query": ["format": "text|markdown|json", "limit": "optional number", "chunkSize": "optional number"],
+                        "description": "Read page content with explicit coverage, truncation, frame, and warning metadata. Prefer this for content questions; use analyze for action planning."
                     ],
                     [
                         "method": "POST",
@@ -1161,6 +1189,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let limit = request.queryValue("limit").flatMap(Int.init)
                 let json = try await snapshot(mode: mode, query: query, limit: limit)
                 return .rawJSON(json)
+            case ("GET", "/readPage"):
+                return .json(try await readPage(
+                    format: request.queryValue("format"),
+                    limit: request.queryValue("limit").flatMap(Int.init),
+                    chunkSize: request.queryValue("chunkSize").flatMap(Int.init)
+                        ?? request.queryValue("chunk-size").flatMap(Int.init)
+                ))
             case ("POST", "/navigate"):
                 let command = try request.decodeJSON(NavigateCommand.self)
                 guard let url = ShelfBrowserAddress.normalizedURL(from: command.url) else {
@@ -1891,6 +1926,208 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             throw error
         }
+    }
+
+    private func readPage(format: String?, limit: Int?, chunkSize: Int?) async throws -> [String: Any] {
+        let started = Date()
+        let normalizedFormat = BrowserPageReadService.normalizedFormat(format)
+        let normalizedLimit = BrowserPageReadService.normalizedLimit(limit)
+        let normalizedChunkSize = BrowserPageReadService.normalizedChunkSize(chunkSize)
+        do {
+            let response: [String: Any]
+            if isUsingControlledBrowser {
+                let json = try await controlledBrowser.readPage(
+                    format: normalizedFormat,
+                    limit: normalizedLimit,
+                    chunkSize: normalizedChunkSize
+                )
+                syncDisplayedStateForEngine()
+                publishBridgeState()
+                response = try Self.jsonObject(from: json)
+            } else {
+                response = try await readEmbeddedPage(
+                    format: normalizedFormat,
+                    limit: normalizedLimit,
+                    chunkSize: normalizedChunkSize
+                )
+            }
+            updateLastPageReadState(from: response)
+            logBrowserAction(
+                phase: "completed",
+                action: "readPage",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: [
+                    "format": normalizedFormat,
+                    "coverage": response["coverage"] as? String ?? "unknown",
+                    "frame_count": String(Self.intValue(response["frameCount"]) ?? 0),
+                    "truncated": String(Self.boolValue(response["truncated"]))
+                ],
+                resultJSON: try Self.jsonString(response),
+                started: started
+            )
+            return response
+        } catch {
+            logBrowserAction(
+                phase: "failed",
+                action: "readPage",
+                selector: nil,
+                label: nil,
+                role: nil,
+                text: nil,
+                placeholder: nil,
+                testID: nil,
+                fields: ["format": normalizedFormat],
+                started: started,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    private func readEmbeddedPage(format: String, limit: Int, chunkSize: Int) async throws -> [String: Any] {
+        let requestID = UUID().uuidString
+        let frames = await embeddedPageReadFrames(requestID: requestID, limit: limit)
+        let expandedFrames = embeddedFramesWithMissingChildren(frames)
+        if expandedFrames.isEmpty {
+            let snapshot = try await rawSnapshotObject()
+            return BrowserPageReadService.responseFromSnapshot(
+                snapshot,
+                engine: ShelfBrowserEngine.embedded.rawValue,
+                backend: ShelfBrowserEngine.embedded.bridgeBackendLabel,
+                format: format,
+                limit: limit,
+                chunkSize: chunkSize,
+                warnings: [
+                    "Embedded frame reporter returned no frame reports; fell back to compact snapshot text."
+                ]
+            )
+        }
+
+        return BrowserPageReadService.response(
+            url: currentURL,
+            title: pageTitle,
+            engine: ShelfBrowserEngine.embedded.rawValue,
+            backend: ShelfBrowserEngine.embedded.bridgeBackendLabel,
+            format: format,
+            limit: limit,
+            chunkSize: chunkSize,
+            frames: expandedFrames,
+            warnings: embeddedPageReadWarnings(for: expandedFrames)
+        )
+    }
+
+    private func embeddedPageReadFrames(requestID: String, limit: Int) async -> [[String: Any]] {
+        await withCheckedContinuation { continuation in
+            let timeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                self?.finishEmbeddedPageReadRequest(requestID)
+            }
+            embeddedPageReadRequests[requestID] = EmbeddedPageReadRequest(
+                frames: [],
+                continuation: continuation,
+                timeoutTask: timeoutTask
+            )
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try await self.evaluateJavaScriptString(
+                        BrowserAutomationScripts.embeddedPageReadDispatchScript(
+                            requestID: requestID,
+                            limit: limit
+                        )
+                    )
+                } catch {
+                    self.appendEmbeddedPageReadFrame([
+                        "requestID": requestID,
+                        "frameID": "main",
+                        "url": self.currentURL,
+                        "title": self.pageTitle,
+                        "accessible": false,
+                        "source": "embedded_webkit",
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+        }
+    }
+
+    private func appendEmbeddedPageReadFrame(_ frame: [String: Any]) {
+        guard let requestID = frame["requestID"] as? String,
+              var request = embeddedPageReadRequests[requestID] else {
+            return
+        }
+        var normalized = frame
+        normalized.removeValue(forKey: "requestID")
+        request.frames.append(normalized)
+        embeddedPageReadRequests[requestID] = request
+    }
+
+    private func finishEmbeddedPageReadRequest(_ requestID: String) {
+        guard let request = embeddedPageReadRequests.removeValue(forKey: requestID) else { return }
+        request.timeoutTask?.cancel()
+        request.continuation.resume(returning: request.frames)
+    }
+
+    fileprivate func handleEmbeddedPageReadMessage(_ body: Any) {
+        if let frame = body as? [String: Any] {
+            appendEmbeddedPageReadFrame(frame)
+        } else if let dictionary = body as? NSDictionary,
+                  let frame = dictionary as? [String: Any] {
+            appendEmbeddedPageReadFrame(frame)
+        }
+    }
+
+    private func embeddedFramesWithMissingChildren(_ frames: [[String: Any]]) -> [[String: Any]] {
+        var result = frames
+        let reportedIDs = Set(frames.compactMap { $0["frameID"] as? String })
+        for frame in frames {
+            let parentID = frame["frameID"] as? String ?? "main"
+            let children = frame["childFrames"] as? [[String: Any]] ?? []
+            for child in children {
+                let index = Self.intValue(child["index"]) ?? 0
+                let childID = "\(parentID).\(index)"
+                guard !reportedIDs.contains(childID) else { continue }
+                let scriptsAllowed = child["scriptsAllowed"].map(Self.boolValue) ?? true
+                result.append([
+                    "frameID": childID,
+                    "parentFrameID": parentID,
+                    "url": child["url"] as? String ?? "",
+                    "title": child["title"] as? String ?? "",
+                    "accessible": false,
+                    "source": "embedded_webkit",
+                    "error": scriptsAllowed ? "frame_report_unavailable" : "frame_scripts_blocked"
+                ])
+            }
+        }
+        return result
+    }
+
+    private func embeddedPageReadWarnings(for frames: [[String: Any]]) -> [String] {
+        var warnings: [String] = []
+        if frames.contains(where: { !Self.boolValue($0["accessible"]) }) {
+            warnings.append("One or more embedded frames did not return readable content.")
+        }
+        if isGoogleWorkspaceEditor {
+            warnings.append("Google Workspace editors may render document content outside normal DOM text; use the Google Docs helpers for full-document reads or edits.")
+        }
+        return warnings
+    }
+
+    private func updateLastPageReadState(from response: [String: Any]) {
+        lastPageReadCoverage = response["coverage"] as? String
+        lastPageReadURL = response["url"] as? String
+        lastPageReadWarnings = response["warnings"] as? [String] ?? []
+    }
+
+    private func invalidateLastPageReadState() {
+        lastPageReadCoverage = nil
+        lastPageReadURL = nil
+        lastPageReadWarnings = []
     }
 
     private func analyze(
@@ -5774,6 +6011,22 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         case summary
         case text
         case controls
+    }
+
+    private struct EmbeddedPageReadRequest {
+        var frames: [[String: Any]]
+        let continuation: CheckedContinuation<[[String: Any]], Never>
+        let timeoutTask: Task<Void, Never>?
+    }
+
+    private final class WeakPageReadMessageHandler: NSObject, WKScriptMessageHandler {
+        nonisolated(unsafe) weak var session: ShelfBrowserSession?
+
+        nonisolated func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            Task { @MainActor [weak session] in
+                session?.handleEmbeddedPageReadMessage(message.body)
+            }
+        }
     }
 
     private struct NavigateCommand: Decodable {
