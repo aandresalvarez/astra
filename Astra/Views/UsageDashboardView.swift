@@ -105,7 +105,7 @@ struct UsageDashboardView: View {
                 ], spacing: 12) {
                     StatCard(title: "Total Tasks", value: "\(summary.tasks.count)", icon: "list.bullet", color: Stanford.lagunita)
                     StatCard(title: "Completed", value: "\(summary.completedCount)", icon: "checkmark.circle", color: Stanford.paloAltoGreen)
-                    StatCard(title: "Failed", value: "\(summary.failedCount)", icon: "xmark.circle", color: Stanford.cardinalRed)
+                    StatCard(title: "Failed", value: "\(summary.failedCount)", icon: "xmark.circle", color: Stanford.failed)
                     StatCard(title: "Total Runs", value: "\(summary.totalRuns)", icon: "arrow.triangle.2.circlepath", color: Stanford.driftwood)
                 }
 
@@ -149,7 +149,7 @@ struct UsageDashboardView: View {
 
                             ProgressView(value: min(task.budgetProgress, 1.0))
                                 .frame(width: 60)
-                                .tint(task.budgetProgress > 0.9 ? Stanford.cardinalRed : Stanford.lagunita)
+                                .tint(task.budgetProgress > 0.9 ? Stanford.failed : Stanford.lagunita)
                         }
                         .padding(.vertical, 4)
                         Divider()

@@ -10,10 +10,16 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
+    // Tracks whether the user has seen the Embedded vs Controlled explanation
+    // on the empty browser screen. Persists across sessions so the hint only
+    // teaches once per install, not every time the shelf is empty.
+    @AppStorage("browserEngineHintDismissed") private var engineHintDismissed = false
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            Divider()
+                .opacity(0.65)
             browserBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -30,30 +36,29 @@ struct ShelfBrowserPanelView: View {
             if !isAddressFocused {
                 addressText = newValue
             }
+            // First successful navigation retires the engine-modes hint —
+            // by now the user is past the empty-state and the Emb/Ctrl
+            // labels in the toolbar have context.
+            if !newValue.isEmpty {
+                engineHintDismissed = true
+            }
         }
         .animation(.easeInOut(duration: 0.18), value: session.engine)
         .animation(.easeInOut(duration: 0.16), value: session.isLoading)
         .animation(.easeInOut(duration: 0.16), value: session.controlledBrowser.runState)
     }
 
-    // Status badge surfaces controlled-mode lifecycle. (Embedded loading is covered
-    // by the thin progress bar at the top of the browser body.)
-    private var shouldShowHeaderStatusBadge: Bool {
-        session.isUsingControlledBrowser
-    }
-
     private var overflowMenu: some View {
         Menu {
-            Picker("Engine", selection: $session.engine) {
-                ForEach(ShelfBrowserEngine.allCases) { engine in
-                    Label(
-                        engine.label,
-                        systemImage: engine == .embedded ? "safari" : "globe.badge.chevron.backward"
-                    )
-                    .tag(engine)
-                }
+            Button {
+                session.openExternal()
+            } label: {
+                Label(
+                    session.isUsingControlledBrowser ? "Show controlled browser window" : "Open in default browser",
+                    systemImage: "arrow.up.forward.square"
+                )
             }
-            .pickerStyle(.inline)
+            .disabled(!hasDisplayablePage && !session.isUsingControlledBrowser)
 
             Divider()
 
@@ -110,6 +115,7 @@ struct ShelfBrowserPanelView: View {
     private var toolbar: some View {
         HStack(spacing: 6) {
             navigationButtonGroup
+            engineSwitcher
             addressField
                 .frame(minWidth: 60)
                 .layoutPriority(1)
@@ -119,15 +125,44 @@ struct ShelfBrowserPanelView: View {
                 goButton(isCompact: false)
                 goButton(isCompact: true)
             }
-            externalBrowserButton
-            if shouldShowHeaderStatusBadge {
-                browserStatusBadge
-            }
             overflowMenu
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var engineSwitcher: some View {
+        ViewThatFits(in: .horizontal) {
+            engineSegmentedControl(compact: false)
+            engineSegmentedControl(compact: true)
+        }
+        .help("Choose whether this shelf uses embedded WebKit or a controlled Chromium profile")
+    }
+
+    private func engineSegmentedControl(compact: Bool) -> some View {
+        HStack(spacing: compact ? 4 : 7) {
+            if !compact {
+                Text("Engine")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("Browser engine", selection: $session.engine) {
+                ForEach(ShelfBrowserEngine.allCases) { engine in
+                    Label(
+                        compact ? compactEngineLabel(for: engine) : engine.label,
+                        systemImage: engineIcon(for: engine)
+                    )
+                    .tag(engine)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .tint(Stanford.lagunita)
+            .frame(width: compact ? 86 : 178)
+        }
+        .fixedSize()
     }
 
     private var navigationButtonGroup: some View {
@@ -169,6 +204,8 @@ struct ShelfBrowserPanelView: View {
                 .frame(width: 14)
                 .animation(.easeOut(duration: 0.18), value: addressFieldIcon)
 
+            engineModeBadge
+
             TextField("Search or enter website", text: $addressText)
                 .textFieldStyle(.plain)
                 .font(Stanford.ui(12, weight: .medium))
@@ -206,6 +243,48 @@ struct ShelfBrowserPanelView: View {
         .animation(.easeOut(duration: 0.16), value: isAddressFocused)
         .animation(.easeOut(duration: 0.14), value: isAddressHovered)
         .animation(.easeOut(duration: 0.14), value: addressText.isEmpty)
+    }
+
+    private var engineModeBadge: some View {
+        Label(session.engine.label, systemImage: engineIcon(for: session.engine))
+            .labelStyle(.titleAndIcon)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(engineModeTint)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(engineModeTint.opacity(0.10))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(engineModeTint.opacity(0.16), lineWidth: 1)
+            )
+            .help("\(session.engine.label) mode: \(engineModeHelp)")
+            .accessibilityLabel("Browser engine: \(session.engine.label)")
+    }
+
+    private var engineModeTint: Color {
+        session.isUsingControlledBrowser ? Stanford.lagunita : .secondary
+    }
+
+    private var engineModeHelp: String {
+        session.isUsingControlledBrowser
+            ? "The address opens in the controlled Chromium profile."
+            : "The address opens in the embedded WebKit browser."
+    }
+
+    private func engineIcon(for engine: ShelfBrowserEngine) -> String {
+        switch engine {
+        case .embedded: "safari"
+        case .controlled: "globe.badge.chevron.backward"
+        }
+    }
+
+    private func compactEngineLabel(for engine: ShelfBrowserEngine) -> String {
+        switch engine {
+        case .embedded: "Emb"
+        case .controlled: "Ctrl"
+        }
     }
 
     private var addressFieldIcon: String {
@@ -313,68 +392,105 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var emptyBrowserStartView: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "globe")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .padding(.bottom, 2)
+        // No card chrome, no shadow — the empty state speaks for itself.
+        // Content is centered as a single column with generous spacing.
+        VStack(spacing: 28) {
+            VStack(spacing: 14) {
+                Image(systemName: "globe")
+                    .font(.system(size: 44, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Stanford.lagunita)
 
-            VStack(spacing: 4) {
-                Text("Open a Website")
-                    .font(Stanford.heading(18))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                Text("Type a URL above or jump to a quick link.")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                VStack(spacing: 6) {
+                    Text("Open a Website")
+                        .font(Stanford.heading(20))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    Text("Type a URL above or jump to a quick link.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                }
             }
 
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
                     quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
 
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
                     quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
             }
+
+            if !engineHintDismissed {
+                engineComparisonHint
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
-        .padding(20)
-        .frame(maxWidth: 300)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusLarge,
-            fallbackFill: Stanford.cardBackground,
-            fallbackStrokeOpacity: Stanford.strokeRest
-        )
-        .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 24)
+        .frame(maxWidth: 420)
+        .animation(.easeInOut(duration: 0.2), value: engineHintDismissed)
     }
 
-    private var browserStatusBadge: some View {
-        HStack(spacing: 6) {
-            if session.isLoading {
-                ProgressView()
-                    .controlSize(.mini)
-            } else {
-                Circle()
-                    .fill(browserStatusTint)
-                    .frame(width: 7, height: 7)
+    /// Inline first-run explanation of the two browser engines. Dismissible,
+    /// and auto-hides after the user actually loads a page (since by then
+    /// they've started using the shelf and the labels are no longer cryptic).
+    private var engineComparisonHint: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Text("ENGINE MODES")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    engineHintDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Hide this hint")
             }
 
-            Text(browserStatusText)
-                .font(Stanford.caption(10).weight(.semibold))
-                .foregroundStyle(browserStatusTint)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 10) {
+                engineHintRow(
+                    title: "Embedded",
+                    body: "Fast WebKit view inside this panel."
+                )
+                engineHintRow(
+                    title: "Controlled",
+                    body: "Full Chromium profile the agent can drive."
+                )
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(browserStatusTint.opacity(0.10))
-        .clipShape(Capsule())
-        .help(browserStatusHelp)
+        .padding(14)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func engineHintRow(title: String, body: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 78, alignment: .leading)
+            Text(body)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 
     private var engineTransition: AnyTransition {
@@ -445,6 +561,7 @@ struct ShelfBrowserPanelView: View {
                 controlledTechnicalDetails
             }
             .padding(18)
+            .frame(maxWidth: 860, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -515,11 +632,11 @@ struct ShelfBrowserPanelView: View {
                     .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text("Agent control")
-                            .font(Stanford.caption(13).weight(.semibold))
-                        statusBadge(session.isAgentBridgeEnabled ? "On" : "Off", tint: controlledTaskFlowTint)
-                    }
+                    // Dropped the "On"/"Off" status badge — the toggle on the
+                    // right already communicates state. Two indicators for the
+                    // same thing was noise.
+                    Text("Agent control")
+                        .font(Stanford.caption(13).weight(.semibold))
                     Text(agentControlCardMessage)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
@@ -532,6 +649,8 @@ struct ShelfBrowserPanelView: View {
                 Toggle("", isOn: agentControlPanelBinding)
                     .labelsHidden()
                     .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .tint(controlledTaskFlowTint)
                     .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
             }
 
@@ -545,8 +664,11 @@ struct ShelfBrowserPanelView: View {
         .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
+            // Neutral subtle border so this card doesn't compete with the
+            // hero card above (which legitimately gets a tinted border to
+            // signal the overall connection state).
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(controlledTaskFlowTint.opacity(Stanford.strokeActive), lineWidth: 1)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -705,7 +827,7 @@ struct ShelfBrowserPanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: true))
+        .buttonStyle(StanfordButtonStyle(isPrimary: controlledPrimaryButtonIsPrimary))
         .disabled(session.controlledBrowser.isLaunching)
     }
 
@@ -722,14 +844,26 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledStopButton: some View {
+        // Outlined instead of solid red — pulling the "danger" attention down
+        // a notch so it sits as a peer of Show Chrome / Check status, not as
+        // the visual centerpiece of the action row.
         Button {
             session.stopControlledBrowser()
         } label: {
             Label("Stop control", systemImage: "stop.fill")
-                .lineLimit(1)
+                .font(Stanford.body(15).weight(.medium))
+                .foregroundStyle(Stanford.failed)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(Stanford.failed.opacity(0.5), lineWidth: 1)
+                )
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: false))
+        .buttonStyle(.plain)
         .disabled(!session.controlledBrowser.isRunning)
+        .opacity(session.controlledBrowser.isRunning ? 1 : 0.5)
+        .help("Stop the controlled Chromium profile and disconnect task control")
     }
 
     private var controlledLaunchProgress: some View {
@@ -884,16 +1018,25 @@ struct ShelfBrowserPanelView: View {
                 }
             }
 
-            Text(session.pageTitle.isEmpty ? "No page loaded yet" : session.pageTitle)
-                .font(Stanford.caption(13).weight(.semibold))
-                .lineLimit(2)
+            // Only show the page-title row when we actually have a page; the
+            // previous "No page loaded yet" string echoed the header above and
+            // read as redundant.
+            if hasDisplayablePage {
+                if !session.pageTitle.isEmpty {
+                    Text(session.pageTitle)
+                        .font(Stanford.caption(13).weight(.semibold))
+                        .lineLimit(2)
+                }
 
-            Text(session.currentURL.isEmpty ? "Launch the controlled browser or enter a URL above." : session.currentURL)
-                .font(session.currentURL.isEmpty ? Stanford.caption(12) : Stanford.mono(11))
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+                if !session.currentURL.isEmpty {
+                    Text(session.currentURL)
+                        .font(Stanford.mono(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1155,6 +1298,10 @@ struct ShelfBrowserPanelView: View {
         if session.controlledBrowser.isLaunching { return "arrow.triangle.2.circlepath" }
         if session.controlledBrowser.isRunning { return "macwindow" }
         return "play.fill"
+    }
+
+    private var controlledPrimaryButtonIsPrimary: Bool {
+        !session.controlledBrowser.isRunning
     }
 
     private var controlledBrowserTint: Color {

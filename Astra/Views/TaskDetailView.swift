@@ -88,7 +88,7 @@ struct TaskDetailView: View {
                             .foregroundStyle(Stanford.coolGrey)
                     }
                     ProgressView(value: task.budgetProgress)
-                        .tint(task.budgetProgress > 0.9 ? Stanford.cardinalRed : task.budgetProgress > 0.7 ? Stanford.poppy : Stanford.lagunita)
+                        .tint(task.budgetProgress > 0.9 ? Stanford.failed : task.budgetProgress > 0.7 ? Stanford.poppy : Stanford.lagunita)
                 }
             }
             .padding()
@@ -281,9 +281,9 @@ struct TimelineTabView: View {
         case "astra.protocol.invalid": return Stanford.poppy
         case "task.completed": return Stanford.paloAltoGreen
         case "task.stats": return Stanford.sky
-        case "budget.exceeded": return Stanford.cardinalRed
+        case "budget.exceeded": return Stanford.failed
         case "budget.warning": return Stanford.poppy
-        case "error": return Stanford.cardinalRed
+        case "error": return Stanford.failed
         case "user.message": return Stanford.bay
         default: return Stanford.coolGrey
         }

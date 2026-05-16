@@ -65,7 +65,10 @@ enum WorkspaceSidebarFilter {
         hasMatchingTasks: (Workspace) -> Bool
     ) -> [Workspace] {
         let sorted = workspaces.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            if $0.isStarred != $1.isStarred {
+                return $0.isStarred && !$1.isStarred
+            }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
         let filteredByStar = showStarredOnly ? sorted.filter(\.isStarred) : sorted
         guard !searchText.isEmpty else { return filteredByStar }
@@ -74,6 +77,13 @@ enum WorkspaceSidebarFilter {
             workspaceMatchesSearch(workspace) || hasMatchingTasks(workspace)
         }
     }
+}
+
+private struct SidebarTaskAttemptGroup: Identifiable {
+    let task: AgentTask
+    let attemptCount: Int
+
+    var id: UUID { task.id }
 }
 
 struct TaskSidebarView: View {
@@ -758,8 +768,23 @@ struct TaskSidebarView: View {
                 }
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
-                ForEach(visibleWorkspaces) { workspace in
-                    workspaceListRow(for: workspace, using: taskIndex)
+                let favoriteWorkspaces = visibleWorkspaces.filter(\.isStarred)
+                let regularWorkspaces = visibleWorkspaces.filter { !$0.isStarred }
+
+                if !favoriteWorkspaces.isEmpty {
+                    workspaceGroupLabel("Favorites")
+                    ForEach(favoriteWorkspaces) { workspace in
+                        workspaceListRow(for: workspace, using: taskIndex)
+                    }
+                }
+
+                if !regularWorkspaces.isEmpty {
+                    if !searchText.isEmpty && (!favoriteWorkspaces.isEmpty || visibleWorkspaces.count > 10) {
+                        workspaceGroupLabel("Other matches")
+                    }
+                    ForEach(regularWorkspaces) { workspace in
+                        workspaceListRow(for: workspace, using: taskIndex)
+                    }
                 }
             }
         } header: {
@@ -842,6 +867,15 @@ struct TaskSidebarView: View {
         }
     }
 
+    private func workspaceGroupLabel(_ title: String) -> some View {
+        Text(title)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.top, 7)
+            .padding(.bottom, 3)
+    }
+
     /// One List row per workspace that bundles the folder header and
     /// (when expanded) its task children. Putting the children inside a
     /// single List row — instead of as sibling rows — lets SwiftUI's
@@ -852,18 +886,18 @@ struct TaskSidebarView: View {
     /// the tasks lives inside the row's view tree, where transitions
     /// behave like they do everywhere else.
     ///
-    /// The leading inset (12pt) on the tasks VStack restores the visual
-    /// indent the old `.listRowInsets(leading: 14)` provided — the
-    /// outer row already pays 2pt of leading inset, so 12pt extra
-    /// reaches the same 14pt total.
+    /// Child task rows keep their text indented, but the row surface itself
+    /// spans the same width as the parent workspace row. This keeps hover and
+    /// selection chrome from shrinking to the nested content width.
     @ViewBuilder
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
+        let workspaceTaskGroups = groupedTaskAttempts(workspaceTasks)
         let hasTasks = !workspaceTasks.isEmpty
         let hasAny = hasAnyTask(in: workspace, using: taskIndex)
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
-        let visibleTasks = isShowingAll ? workspaceTasks : Array(workspaceTasks.prefix(6))
+        let visibleTaskGroups = isShowingAll ? workspaceTaskGroups : Array(workspaceTaskGroups.prefix(6))
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
@@ -872,33 +906,39 @@ struct TaskSidebarView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if !hasTasks && !hasAny {
                         emptyWorkspaceRow(for: workspace)
+                            .padding(.leading, 12)
                     } else if hasTasks {
-                        ForEach(visibleTasks) { task in
-                            compactTaskRow(for: task)
+                        ForEach(visibleTaskGroups) { group in
+                            compactTaskRow(for: group.task, attemptCount: group.attemptCount)
                         }
-                        if workspaceTasks.count > visibleTasks.count {
+                        if workspaceTaskGroups.count > visibleTaskGroups.count {
                             Button {
                                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                                     _ = expandedWorkspaceTaskLists.insert(workspace.id)
                                 }
                             } label: {
-                                Text("Show \(workspaceTasks.count - visibleTasks.count) more")
-                                    .font(Stanford.caption(12))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
+                                HStack(spacing: 5) {
+                                    Text("Show \(workspaceTaskGroups.count - visibleTaskGroups.count) more")
+                                        .font(Stanford.caption(12).weight(.medium))
+                                    Image(systemName: "chevron.down")
+                                        .font(Stanford.ui(9, weight: .semibold))
+                                }
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .background(Color.primary.opacity(0.045))
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             // Show More sat at leading 24 in old listRowInsets
                             // (vs tasks at 14). Keep that 10pt extra indent so
                             // the link reads as a tertiary affordance under
                             // the task list, not as another task.
-                            .padding(.leading, 10)
+                            .padding(.leading, 22)
                         }
                     }
                 }
-                .padding(.leading, 12)
                 .padding(.top, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // Pure opacity in both directions. Earlier `.move(edge:
@@ -1028,6 +1068,12 @@ struct TaskSidebarView: View {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(workspaceRowStroke(isSelected: isSelected, isHovered: isHovered), lineWidth: 1)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
+        )
         .contextMenu {
             Button {
                 startNewTask(in: workspace)
@@ -1074,7 +1120,13 @@ struct TaskSidebarView: View {
     /// without crowding the selected row's teal.
     private func workspaceRowFill(isSelected: Bool, isHovered: Bool) -> Color {
         if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.07) }
+        if isHovered { return Color.primary.opacity(0.09) }
+        return .clear
+    }
+
+    private func workspaceRowStroke(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected { return Color.primary.opacity(0.14) }
+        if isHovered { return Color.primary.opacity(0.12) }
         return .clear
     }
 
@@ -1101,6 +1153,34 @@ struct TaskSidebarView: View {
         onNewTask()
     }
 
+    private func groupedTaskAttempts(_ tasks: [AgentTask]) -> [SidebarTaskAttemptGroup] {
+        var buckets: [String: [AgentTask]] = [:]
+        var orderedKeys: [String] = []
+
+        for task in tasks {
+            let key = retryGroupingKey(for: task)
+            if buckets[key] == nil {
+                orderedKeys.append(key)
+            }
+            buckets[key, default: []].append(task)
+        }
+
+        return orderedKeys.compactMap { key in
+            guard let attempts = buckets[key], !attempts.isEmpty else { return nil }
+            let latestAttempt = attempts.max { $0.updatedAt < $1.updatedAt } ?? attempts[0]
+            return SidebarTaskAttemptGroup(task: latestAttempt, attemptCount: attempts.count)
+        }
+    }
+
+    private func retryGroupingKey(for task: AgentTask) -> String {
+        task.title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s*\\(?attempt\\s+\\d+\\)?\\s*$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s*\\(?retry\\s+\\d+\\)?\\s*$", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func emptyWorkspaceRow(for workspace: Workspace) -> some View {
         Button {
             selectedWorkspace = workspace
@@ -1110,17 +1190,23 @@ struct TaskSidebarView: View {
                 Image(systemName: "plus")
                     .font(Stanford.ui(10, weight: .medium))
                 Text("Add task")
-                    .font(Stanford.caption(12))
+                    .font(Stanford.caption(12).weight(.medium))
             }
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Stanford.lagunita.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    private func compactTaskRow(for task: AgentTask) -> some View {
+    private func compactTaskRow(for task: AgentTask, attemptCount: Int = 1) -> some View {
         let isHovered = hoveredTaskID == task.id
 
         return ZStack(alignment: .trailing) {
@@ -1130,7 +1216,9 @@ struct TaskSidebarView: View {
                 SidebarThreadRow(
                     task: task,
                     isSelected: selectedTask?.id == task.id,
-                    isHovered: isHovered
+                    isHovered: isHovered,
+                    contentLeadingPadding: 12,
+                    attemptCount: attemptCount
                 )
             }
             .buttonStyle(.plain)
@@ -1606,6 +1694,8 @@ private struct SidebarThreadRow: View {
     /// hover hadn't fired yet), which is what produced the overlap. One
     /// source of truth fixes the race.
     let isHovered: Bool
+    var contentLeadingPadding: CGFloat = 0
+    var attemptCount: Int = 1
     var subtitle: String?
     /// Hidden when the row is rendered inside the Pinned section — the
     /// section already implies "pinned" and the unpin overlay button
@@ -1657,7 +1747,7 @@ private struct SidebarThreadRow: View {
     }
 
     private var displayTitle: String {
-        Formatters.shortenIdentifierTokens(task.title)
+        Formatters.sidebarTaskTitle(task.title)
     }
 
     var body: some View {
@@ -1665,19 +1755,33 @@ private struct SidebarThreadRow: View {
             statusIcon
                 .frame(width: 14, height: 14)
                 .opacity(showIcon ? (isActionableStatus && !isSelected && !isHovered ? 0.6 : 1) : 0)
+                .padding(.leading, contentLeadingPadding)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayTitle)
-                    .font(Stanford.ui(14, weight: titleWeight))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(task.title)
+                HStack(spacing: 5) {
+                    Text(displayTitle)
+                        .font(Stanford.ui(14, weight: titleWeight))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(task.title)
+
+                    if attemptCount > 1 {
+                        Text("\(attemptCount) attempts")
+                            .font(Stanford.caption(10).weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.primary.opacity(0.055))
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .fixedSize()
+                    }
+                }
 
                 if let secondaryText {
                     Text(secondaryText)
                         .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(secondaryTextColor)
                         .lineLimit(1)
                 }
             }
@@ -1721,11 +1825,16 @@ private struct SidebarThreadRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
-        .help(task.title)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
                 .fill(rowFill)
+                .animation(.easeOut(duration: 0.12), value: isSelected)
+                .animation(.easeOut(duration: 0.10), value: isHovered)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
+                .stroke(rowStroke, lineWidth: 1)
                 .animation(.easeOut(duration: 0.12), value: isSelected)
                 .animation(.easeOut(duration: 0.10), value: isHovered)
         )
@@ -1735,12 +1844,32 @@ private struct SidebarThreadRow: View {
 
     private var rowFill: Color {
         if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.07) }
+        if isHovered { return Color.primary.opacity(0.09) }
+        return .clear
+    }
+
+    private var rowStroke: Color {
+        if isSelected { return Color.primary.opacity(0.14) }
+        if isHovered { return Color.primary.opacity(0.12) }
         return .clear
     }
 
     private var secondaryText: String? {
         subtitle ?? statusLabel
+    }
+
+    private var secondaryTextColor: Color {
+        guard subtitle == nil else { return .secondary }
+        switch task.status {
+        case .running:
+            return Stanford.lagunita.opacity(0.82)
+        case .pendingUser, .budgetExceeded:
+            return Stanford.poppy.opacity(0.84)
+        case .failed:
+            return Stanford.failed.opacity(0.84)
+        case .cancelled, .queued, .draft, .completed:
+            return .secondary
+        }
     }
 
     @ViewBuilder
@@ -1759,10 +1888,14 @@ private struct SidebarThreadRow: View {
             Image(systemName: "person.crop.circle")
                 .font(Stanford.ui(12))
                 .foregroundStyle(Stanford.pendingUser)
-        case .failed, .budgetExceeded:
+        case .failed:
             Image(systemName: "exclamationmark.triangle")
                 .font(Stanford.ui(12))
                 .foregroundStyle(Stanford.failed)
+        case .budgetExceeded:
+            Image(systemName: "exclamationmark.triangle")
+                .font(Stanford.ui(12))
+                .foregroundStyle(Stanford.poppy)
         case .cancelled:
             Image(systemName: "minus.circle")
                 .font(Stanford.ui(12))

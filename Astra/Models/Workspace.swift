@@ -47,7 +47,7 @@ final class Workspace: Identifiable {
         instructions: String = ""
     ) {
         self.id = UUID()
-        self.name = name
+        self.name = Self.displayName(name: name, primaryPath: primaryPath)
         self.primaryPath = primaryPath
         self.additionalPaths = additionalPaths
         self.icon = icon
@@ -82,6 +82,21 @@ final class Workspace: Identifiable {
 
     var displayPath: String {
         URL(fileURLWithPath: primaryPath).lastPathComponent
+    }
+
+    static func displayName(name: String, primaryPath: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let placeholderNames: Set<String> = ["", "untitled", "untitled workspace", "new workspace", "asdf", "asdfadsf"]
+        if !placeholderNames.contains(lower) {
+            return trimmed
+        }
+
+        let folderName = URL(fileURLWithPath: primaryPath).lastPathComponent
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return folderName.isEmpty ? "Workspace" : folderName.capitalized
     }
 
     var totalCost: Double {

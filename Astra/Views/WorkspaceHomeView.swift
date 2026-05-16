@@ -124,17 +124,9 @@ struct WorkspaceHomeView: View {
                 )
                     .padding(.bottom, 24)
 
-                // Memories
-                if !workspace.memories.isEmpty {
-                    memoriesCard
-                        .padding(.bottom, 24)
-                }
-
-                // The Plugins summary block that used to live here was
-                // removed — the right rail's Configure tab already shows
-                // active skills/connectors in better detail, and the
-                // duplicate block was taking ~150pt of prime real estate
-                // below the Kanban board for the same information.
+                // Workspace-scoped context such as Memories lives in the
+                // right rail's Workspace Setup section, so the main canvas
+                // stays focused on task flow.
 
                 // Routines (only when they exist)
                 if !workspace.schedules.isEmpty {
@@ -296,8 +288,9 @@ struct WorkspaceHomeView: View {
                         Text(workspace.instructions.replacingOccurrences(of: "\n", with: " "))
                             .font(Stanford.ui(13))
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                             .truncationMode(.tail)
+                            .help(workspace.instructions)
 
                         Spacer(minLength: 8)
 
@@ -353,9 +346,9 @@ struct WorkspaceHomeView: View {
     private var memoriesCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "brain")
+                Image(systemName: "text.badge.checkmark")
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.plum)
+                    .foregroundStyle(Stanford.lagunita)
                 Text("Memories")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
@@ -368,7 +361,7 @@ struct WorkspaceHomeView: View {
                 HStack(alignment: .top, spacing: 6) {
                     Text("•")
                         .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.plum.opacity(0.5))
+                        .foregroundStyle(Stanford.lagunita.opacity(0.55))
                     Text(memory)
                         .font(Stanford.ui(14))
                         .foregroundStyle(Stanford.black)

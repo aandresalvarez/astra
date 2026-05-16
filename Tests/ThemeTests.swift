@@ -96,15 +96,15 @@ struct ThemeTests {
         #expect(approximatelyEqual(light, expected))
     }
 
-    @Test("Semantic status aliases point at brand tokens")
+    @Test("Semantic status aliases point at semantic tokens")
     func semanticStatusAliasesAreBranded() {
-        // statusHealthy / statusWarn / statusError / statusInfo must
-        // resolve to the same pixels as their underlying brand colors —
-        // they're not separate hues, just named roles.
+        // Status aliases should resolve to their explicit semantic tokens.
+        // Error intentionally diverges from Cardinal Red so brand and failure
+        // states do not collide.
         let pairs: [(String, Color, Color)] = [
             ("statusHealthy", Stanford.statusHealthy, Stanford.paloAltoGreen),
             ("statusWarn",    Stanford.statusWarn,    Stanford.poppy),
-            ("statusError",   Stanford.statusError,   Stanford.cardinalRed),
+            ("statusError",   Stanford.statusError,   Stanford.errorRed),
             ("statusInfo",    Stanford.statusInfo,    Stanford.sky)
         ]
         for (name, alias, base) in pairs {

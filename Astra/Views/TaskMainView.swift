@@ -251,7 +251,7 @@ struct TaskMainView: View {
     }
 
     private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        width < 760 ? 12 : 18
+        width < 760 ? 20 : 32
     }
 
     private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
@@ -282,6 +282,7 @@ struct TaskMainView: View {
             .padding(.horizontal, 18)
             .padding(.top, 6)
             .padding(.bottom, 4)
+            .frame(height: 44, alignment: .center)
             .allowsHitTesting(true)
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -415,6 +416,7 @@ struct TaskMainView: View {
             actionButtons
         }
         .controlSize(.small)
+        .frame(height: 34, alignment: .center)
     }
 
     private var filesButton: some View {
@@ -426,15 +428,15 @@ struct TaskMainView: View {
                     .font(Stanford.ui(12, weight: .medium))
                 if headerFileCount > 0 {
                     Text("Files \(headerFileCount)")
-                        .font(Stanford.caption(12).weight(.medium))
+                        .font(Stanford.caption(11).weight(.medium))
                 }
             }
-            .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : Stanford.coolGrey)
+            .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : .secondary)
             .padding(.horizontal, headerFileCount > 0 ? 9 : 7)
-            .frame(height: 28)
+            .frame(height: 26)
             .background(
                 Capsule()
-                    .fill((selectedTab == .files || isShowingFilesPopover) ? Stanford.lagunita.opacity(0.10) : .clear)
+                    .fill((selectedTab == .files || isShowingFilesPopover) ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.035))
             )
             .contentShape(Capsule())
         }
@@ -676,14 +678,14 @@ struct TaskMainView: View {
             case .failed, .budgetExceeded:
                 if task.sessionId != nil, let onResume = onResumeTask {
                     Button("Resume") { onResume(task) }
-                        .buttonStyle(StanfordButtonStyle())
+                        .buttonStyle(StanfordButtonStyle(color: Stanford.lagunita))
                         .controlSize(.small)
                         .help("Continue where the agent left off")
                         .accessibilityLabel("Resume task")
                 }
                 if let onRetry = onRetryTask {
                     Button("Retry") { onRetry(task) }
-                        .buttonStyle(StanfordButtonStyle(isPrimary: task.sessionId == nil))
+                        .buttonStyle(StanfordButtonStyle(isPrimary: task.sessionId == nil, color: Stanford.lagunita))
                         .controlSize(.small)
                         .help("Start over from scratch")
                         .accessibilityLabel("Retry task")
@@ -708,7 +710,7 @@ struct TaskMainView: View {
                         .font(Stanford.body(15).weight(.medium))
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
-                        .background(task.isDone ? Stanford.cardBackground : Stanford.paloAltoGreen)
+                        .background(task.isDone ? Stanford.cardBackground : Stanford.lagunita)
                         .foregroundStyle(task.isDone ? Stanford.black : .white)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .overlay(
@@ -1133,7 +1135,7 @@ struct TaskMainView: View {
 
     private var pendingApprovalStatusDetail: String {
         hasOpenRuntimePermissionApprovalRequest
-            ? "Review the permission request to continue."
+            ? pendingApprovalSurfaceSummary
             : "Use the review controls above the composer to continue."
     }
 
@@ -1154,7 +1156,7 @@ struct TaskMainView: View {
             parts.append(runtimeHealth.message)
         }
         if shouldShowPendingApprovalStatus {
-            parts.append(hasOpenRuntimePermissionApprovalRequest ? "Permission needed" : "Waiting for approval")
+            parts.append(hasOpenRuntimePermissionApprovalRequest ? pendingApprovalSurfaceSummary : "Waiting for approval")
         }
         if isCreatingScheduleForCurrentTask {
             parts.append("Creating routine")
@@ -1405,13 +1407,14 @@ struct TaskMainView: View {
         HStack(alignment: .top, spacing: 10) {
             Spacer(minLength: 120)
             VStack(alignment: .trailing, spacing: 4) {
-                Text(text)
+                Text(MarkdownTextView.markdownAttributed(text))
                     .font(Stanford.chatBody())
                     .lineSpacing(Stanford.chatBodyLineSpacing)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(Stanford.sky.opacity(0.055))
                     .foregroundStyle(Stanford.readingText)
+                    .tint(Stanford.link)
                     .clipShape(UnevenRoundedRectangle(
                         topLeadingRadius: 16,
                         bottomLeadingRadius: 16,
@@ -1440,70 +1443,64 @@ struct TaskMainView: View {
     }
 
     private func scheduleResultBubble(text: String, timestamp: Date) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(Stanford.body(14))
-                .foregroundStyle(Stanford.poppy)
-                .frame(width: 24, height: 24)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(MarkdownTextView.markdownAttributed(text))
-                    .font(Stanford.chatBody(15))
-                    .foregroundStyle(Stanford.readingText)
-                    .lineSpacing(Stanford.chatCompactLineSpacing)
-                    .textSelection(.enabled)
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.poppy.opacity(0.3), lineWidth: 1)
-            )
-
-            Spacer(minLength: 40)
-        }
+        timelineEventRow(
+            text: text,
+            timestamp: timestamp,
+            icon: "arrow.triangle.2.circlepath",
+            tint: Stanford.poppy
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Routine result: \(text)")
     }
 
     private func systemInfoBubble(text: String, timestamp: Date) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "brain")
-                .font(Stanford.body(14))
-                .foregroundStyle(Stanford.plum)
-                .frame(width: 24, height: 24)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(text)
-                    .font(Stanford.chatBody(15))
-                    .foregroundStyle(Stanford.readingText)
-                    .lineSpacing(Stanford.chatCompactLineSpacing)
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.plum.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.plum.opacity(0.3), lineWidth: 1)
-            )
-
-            Spacer(minLength: 40)
-        }
+        timelineEventRow(
+            text: text,
+            timestamp: timestamp,
+            icon: "info.circle",
+            tint: Stanford.coolGrey
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("System notice: \(text)")
+    }
+
+    private func timelineEventRow(
+        text: String,
+        timestamp: Date,
+        icon: String,
+        tint: Color
+    ) -> some View {
+        HStack(alignment: .center, spacing: 9) {
+            Rectangle()
+                .fill(Stanford.sandstone.opacity(0.36))
+                .frame(height: 1)
+                .frame(maxWidth: 60)
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(11, weight: .medium))
+                    .foregroundStyle(tint)
+                Text(MarkdownTextView.markdownAttributed(text))
+                    .font(Stanford.chatMeta(12))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .tint(Stanford.link)
+                Text(timestamp, style: .relative)
+                    .font(Stanford.chatMeta(11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+
+            Rectangle()
+                .fill(Stanford.sandstone.opacity(0.36))
+                .frame(height: 1)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 14)
     }
 
     private func recapBubble(text: String, timestamp: Date) -> some View {
@@ -1514,7 +1511,11 @@ struct TaskMainView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownTextView(text: text, maxContentWidth: Stanford.chatParagraphMaxWidth)
+                MarkdownTextView(
+                    text: text,
+                    maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    onSuggestedNextStep: pursueSuggestedNextStep
+                )
 
                 Text(timestamp, style: .relative)
                     .font(Stanford.chatMeta())
@@ -1544,7 +1545,11 @@ struct TaskMainView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownTextView(text: text, maxContentWidth: Stanford.chatParagraphMaxWidth)
+                MarkdownTextView(
+                    text: text,
+                    maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    onSuggestedNextStep: pursueSuggestedNextStep
+                )
                 Text(timestamp, style: .relative)
                     .font(Stanford.chatMeta())
                     .foregroundStyle(Stanford.coolGrey)
@@ -1591,7 +1596,11 @@ struct TaskMainView: View {
                         .lineSpacing(Stanford.chatBodyLineSpacing)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    MarkdownTextView(text: run.output, maxContentWidth: Stanford.chatParagraphMaxWidth)
+                    MarkdownTextView(
+                        text: run.output,
+                        maxContentWidth: Stanford.chatParagraphMaxWidth,
+                        onSuggestedNextStep: pursueSuggestedNextStep
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -1778,6 +1787,12 @@ struct TaskMainView: View {
                 notice.type == "budget.warning" ||
                 notice.type == "permission.approval.requested"
         }) || run.status == .cancelled {
+            if runStoppedByPolicy(run, notices: notices) {
+                return "Run blocked"
+            }
+            if runStoppedBySystem(run, notices: notices) {
+                return "Run stopped"
+            }
             return "Run status"
         }
         return "Run details"
@@ -1889,10 +1904,12 @@ struct TaskMainView: View {
         if warningCount > 0 {
             parts.append("\(warningCount) \(warningCount == 1 ? "warning" : "warnings")")
         }
-        if notices.contains(where: { $0.type == "permission.approval.requested" }) {
-            parts.append("approval needed")
+        if let approvalNotice = notices.first(where: { $0.type == "permission.approval.requested" }) {
+            parts.append(permissionApprovalSurfaceSummary(for: approvalNotice.payload))
         } else if runStoppedByPolicy(run, notices: notices) {
             parts.append("stopped by policy")
+        } else if runStoppedBySystem(run, notices: notices) {
+            parts.append("stopped by system")
         } else if issueCount > 0 {
             parts.append("\(issueCount) \(issueCount == 1 ? "issue" : "issues")")
         }
@@ -1919,6 +1936,9 @@ struct TaskMainView: View {
         if runStoppedByPolicy(run, notices: notices) {
             return "shield.slash"
         }
+        if runStoppedBySystem(run, notices: notices) {
+            return "octagon"
+        }
         if notices.contains(where: { $0.type == "error" || $0.type == "budget.exceeded" }) {
             return "exclamationmark.circle"
         }
@@ -1932,8 +1952,11 @@ struct TaskMainView: View {
         if run.status == .running {
             return Stanford.lagunita
         }
+        if runStoppedByPolicy(run, notices: notices) || runStoppedBySystem(run, notices: notices) {
+            return Stanford.poppy
+        }
         if notices.contains(where: { $0.type == "error" || $0.type == "budget.exceeded" }) {
-            return Stanford.cardinalRed
+            return Stanford.failed
         }
         if notices.contains(where: { $0.type == "budget.warning" || $0.type == "permission.approval.requested" }) {
             return Stanford.poppy
@@ -1955,6 +1978,26 @@ struct TaskMainView: View {
         let stopReason = run.stopReason.lowercased()
         return stopReason.contains("policy") ||
             notices.contains(where: runNoticeLooksPolicyBlocked)
+    }
+
+    private func runStoppedBySystem(_ run: TaskRunSnapshot, notices: [TaskRunNotice]) -> Bool {
+        guard run.status == .failed else { return false }
+        let stopReason = run.stopReason.lowercased()
+        if stopReason.contains("stopped") ||
+            stopReason.contains("blocked") ||
+            stopReason.contains("controlled") ||
+            stopReason.contains("browser") {
+            return true
+        }
+
+        return notices.contains { notice in
+            let payload = notice.payload.lowercased()
+            return payload.contains("astra stopped") ||
+                payload.contains("controlled mode") ||
+                payload.contains("controlled browser") ||
+                payload.contains("safe edit path") ||
+                payload.contains("did not fall back")
+        }
     }
 
     private func runNoticeLooksPolicyBlocked(_ notice: TaskRunNotice) -> Bool {
@@ -2126,7 +2169,7 @@ struct TaskMainView: View {
         switch severity {
         case .info: Stanford.coolGrey
         case .warning: Stanford.poppy
-        case .error: Stanford.cardinalRed
+        case .error: Stanford.failed
         }
     }
 
@@ -2140,7 +2183,7 @@ struct TaskMainView: View {
 
     private func policyColor(_ level: AgentPolicyLevel) -> Color {
         switch level {
-        case .locked: Stanford.cardinalRed
+        case .locked: Stanford.failed
         case .review: Stanford.paloAltoGreen
         case .build: Stanford.lagunita
         case .network: Stanford.sky
@@ -2368,15 +2411,15 @@ struct TaskMainView: View {
         case "budget.warning":
             ("Budget warning", "exclamationmark.triangle", Stanford.poppy)
         case "budget.exceeded":
-            ("Budget exceeded", "xmark.octagon", Stanford.cardinalRed)
+            ("Budget exceeded", "xmark.octagon", Stanford.failed)
         case "permission.approval.requested":
             ("Approval needed", "hand.raised", Stanford.poppy)
         case "astra.permission_summary":
             ("Permission summary", "checklist.shield", Stanford.coolGrey)
         case "error":
             runNoticeLooksPolicyBlocked(notice)
-                ? ("Policy blocked this run", "shield.slash", Stanford.cardinalRed)
-                : ("Run stopped", "xmark.octagon", Stanford.cardinalRed)
+                ? ("Policy blocked this run", "shield.slash", Stanford.failed)
+                : ("Run stopped", "xmark.octagon", Stanford.failed)
         default:
             ("Notice", "info.circle", Stanford.coolGrey)
         }
@@ -2458,6 +2501,61 @@ struct TaskMainView: View {
             parts.append("Provider detail: \(providerSummary)")
         }
         return parts.isEmpty ? compactNoticeText(trimmed, limit: 420) : parts.joined(separator: "\n\n")
+    }
+
+    private var pendingApprovalSurfaceSummary: String {
+        if let payload = latestRuntimePermissionRequestPayload {
+            return permissionApprovalSurfaceSummary(for: payload)
+        }
+        return "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
+    }
+
+    private func permissionApprovalSurfaceSummary(for payload: String) -> String {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "Permission needed"
+        }
+
+        var summary = "Permission needed"
+        if let tool = permissionApprovalToolName(in: trimmed), !tool.isEmpty {
+            summary = "Approve \(tool)"
+        }
+
+        if let detail = permissionApprovalField(
+            named: "Detail:",
+            in: trimmed,
+            stoppingBefore: ["Runtime grant:", "Provider detail:"]
+        ), !detail.isEmpty {
+            summary += " · \(detail)"
+        }
+
+        return compactNoticeText(summary, limit: 96)
+    }
+
+    private func permissionApprovalToolName(in text: String) -> String? {
+        guard let range = text.range(of: "Permission requested for tool:", options: [.caseInsensitive]) else {
+            return nil
+        }
+        let remainder = text[range.upperBound...]
+        let end = remainder.firstIndex(of: ".") ?? remainder.endIndex
+        return remainder[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func permissionApprovalField(
+        named marker: String,
+        in text: String,
+        stoppingBefore stopMarkers: [String]
+    ) -> String? {
+        guard let range = text.range(of: marker, options: [.caseInsensitive]) else {
+            return nil
+        }
+        var value = String(text[range.upperBound...])
+        for stopMarker in stopMarkers {
+            if let stopRange = value.range(of: stopMarker, options: [.caseInsensitive]) {
+                value = String(value[..<stopRange.lowerBound])
+            }
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func providerApprovalSummary(for detail: String) -> String {
@@ -2778,7 +2876,7 @@ struct TaskMainView: View {
     private func runStatusColor(_ run: TaskRunSnapshot) -> Color {
         switch run.status {
         case .completed: return Stanford.paloAltoGreen
-        case .failed, .budgetExceeded, .timeout: return Stanford.cardinalRed
+        case .failed, .budgetExceeded, .timeout: return Stanford.failed
         case .cancelled: return Stanford.coolGrey
         case .running: return Stanford.lagunita
         }
@@ -2803,6 +2901,33 @@ struct TaskMainView: View {
 
     private var latestRun: TaskRunSnapshot? {
         currentThreadSnapshot.latestRun
+    }
+
+    private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
+        guard task.status == .failed,
+              let run = latestRun else { return nil }
+        let activity = currentThreadSnapshot.activity(for: run)
+        let notices = runNoticesToDisplay(activity.notices, for: run)
+
+        if runStoppedByPolicy(run, notices: notices) {
+            return ComposerTaskStatusPresentation(
+                label: "Blocked",
+                icon: "shield.slash",
+                color: Stanford.poppy,
+                help: "ASTRA stopped this run because the requested action is outside the current policy."
+            )
+        }
+
+        if runStoppedBySystem(run, notices: notices) {
+            return ComposerTaskStatusPresentation(
+                label: "Stopped",
+                icon: "octagon",
+                color: Stanford.poppy,
+                help: "ASTRA stopped this run before the agent could safely continue. Fix the setup or retry with a narrower request."
+            )
+        }
+
+        return nil
     }
 
     private var isFinished: Bool {
@@ -2833,7 +2958,7 @@ struct TaskMainView: View {
                 } else if task.status == .failed {
                     Label(failureReason, systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
-                        .foregroundStyle(Stanford.cardinalRed)
+                        .foregroundStyle(Stanford.failed)
                     if task.sessionId != nil {
                         Text("**Resume** to continue or **Retry** to start over.")
                             .font(Stanford.caption(12))
@@ -2842,7 +2967,7 @@ struct TaskMainView: View {
                 } else if task.status == .budgetExceeded {
                     Label("Budget exhausted (\(Formatters.formatTokens(task.tokensUsed))/\(Formatters.formatTokens(task.tokenBudget))).", systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
-                        .foregroundStyle(Stanford.cardinalRed)
+                        .foregroundStyle(Stanford.failed)
                     if task.sessionId != nil {
                         Text("**Resume** with a higher budget or **Retry** fresh.")
                             .font(Stanford.caption(12))
@@ -2882,7 +3007,7 @@ struct TaskMainView: View {
         switch task.status {
         case .completed: return Stanford.paloAltoGreen
         case .pendingUser: return Stanford.poppy
-        case .failed, .budgetExceeded: return Stanford.cardinalRed
+        case .failed, .budgetExceeded: return Stanford.failed
         case .cancelled: return Stanford.coolGrey
         default: return Stanford.lagunita
         }
@@ -2968,7 +3093,7 @@ struct TaskMainView: View {
     private static func slashOptionMeta(_ id: String) -> (icon: String, color: Color, title: String, subtitle: String) {
         switch id {
         case "remember":
-            return ("brain", Stanford.plum, "Add Memory", "Save a fact to this workspace's memory")
+            return ("text.badge.checkmark", Stanford.lagunita, "Add Memory", "Save a fact to this workspace's memory")
         case "routine":
             return ("arrow.triangle.2.circlepath", Stanford.poppy, "Create Routine", "Automate this task on a recurring cadence")
         case "recap":
@@ -3037,11 +3162,7 @@ struct TaskMainView: View {
         if hasOpenRuntimePermissionApprovalRequest {
             let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
             guard let payload = latestRuntimePermissionRequestPayload else { return fallback }
-            let lines = payload
-                .split(separator: "\n")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("Provider detail:") }
-            return lines.first ?? fallback
+            return permissionApprovalSurfaceSummary(for: payload)
         }
         return "Review the latest output, then approve it or retry the task."
     }
@@ -3268,6 +3389,7 @@ struct TaskMainView: View {
                     workspace: task.workspace,
                     runtimeReadinessStates: runtimeReadinessStates,
                     taskStatus: task.status,
+                    taskStatusOverride: composerTaskStatusOverride,
                     isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },
@@ -3524,6 +3646,13 @@ struct TaskMainView: View {
     /// Autocomplete /routine in the composer with a trailing space for inline instructions.
     private func selectSlashSchedule() {
         messageText = "/routine "
+    }
+
+    private func pursueSuggestedNextStep(_ suggestion: String) {
+        let trimmed = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        messageText = trimmed
+        isComposerFocused = true
     }
 
     // MARK: - Agentic Routine Creation
@@ -4186,28 +4315,43 @@ struct TaskMainView: View {
 struct MarkdownTextView: View {
     let text: String
     let maxContentWidth: CGFloat?
+    let onSuggestedNextStep: ((String) -> Void)?
     @State private var blocks: [MarkdownBlock] = []
+    @State private var skippedSuggestionIDs: Set<UUID> = []
 
-    init(text: String, maxContentWidth: CGFloat? = Stanford.chatParagraphMaxWidth) {
+    init(
+        text: String,
+        maxContentWidth: CGFloat? = Stanford.chatParagraphMaxWidth,
+        onSuggestedNextStep: ((String) -> Void)? = nil
+    ) {
         self.text = text
         self.maxContentWidth = maxContentWidth
+        self.onSuggestedNextStep = onSuggestedNextStep
         _blocks = State(initialValue: Self.cachedParse(text))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                markdownBlockView(block)
+                markdownBlockView(
+                    block,
+                    suggestedNextStep: suggestedNextStepText(for: block, at: index)
+                )
+                    .frame(maxWidth: maxWidth(for: block), alignment: .leading)
                     .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
             }
         }
         .textSelection(.enabled)
-        .frame(maxWidth: maxContentWidth ?? .infinity, alignment: .leading)
-        .onChange(of: text) { _, newText in blocks = Self.cachedParse(newText) }
+        .tint(Stanford.link)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: text) { _, newText in
+            blocks = Self.cachedParse(newText)
+            skippedSuggestionIDs.removeAll(keepingCapacity: true)
+        }
     }
 
     @ViewBuilder
-    private func markdownBlockView(_ block: MarkdownBlock) -> some View {
+    private func markdownBlockView(_ block: MarkdownBlock, suggestedNextStep: String? = nil) -> some View {
         switch block.kind {
         case .codeBlock(let lang):
             codeBlockView(lang: lang, code: block.content)
@@ -4226,18 +4370,31 @@ struct MarkdownTextView: View {
                 .padding(.bottom, 2)
 
         case .listItem(let depth, let marker):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(marker)
-                    .font(Stanford.chatBody(depth == 0 ? 15 : 13))
-                    .foregroundStyle(Stanford.coolGrey.opacity(0.72))
-                    .frame(width: 24, alignment: .trailing)
-                    .padding(.leading, CGFloat(depth) * 18)
-                Text(Self.markdownAttributed(block.content))
-                    .font(Stanford.chatBody())
-                    .foregroundStyle(Stanford.readingText)
-                    .textSelection(.enabled)
-                    .lineSpacing(Stanford.chatCompactLineSpacing)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(marker)
+                        .font(Stanford.chatBody(depth == 0 ? 15 : 13))
+                        .foregroundStyle(Stanford.coolGrey.opacity(0.72))
+                        .frame(width: 24, alignment: .trailing)
+                        .padding(.leading, CGFloat(depth) * 18)
+                    Text(Self.markdownAttributed(block.content))
+                        .font(Stanford.chatBody())
+                        .foregroundStyle(Stanford.readingText)
+                        .textSelection(.enabled)
+                        .lineSpacing(Stanford.chatCompactLineSpacing)
+                }
+
+                if let suggestedNextStep,
+                   let onSuggestedNextStep,
+                   !skippedSuggestionIDs.contains(block.id) {
+                    SuggestedNextStepControls(
+                        onPursue: { onSuggestedNextStep(suggestedNextStep) },
+                        onSkip: { skippedSuggestionIDs.insert(block.id) }
+                    )
+                    .padding(.leading, 32 + CGFloat(depth) * 18)
+                }
             }
+            .padding(.vertical, 1)
 
         case .blockquote:
             HStack(spacing: 0) {
@@ -4299,7 +4456,7 @@ struct MarkdownTextView: View {
         case .heading:
             return previous.kind == .divider ? 8 : 14
         case .listItem:
-            if case .listItem = previous.kind { return 4 }
+            if case .listItem = previous.kind { return 6 }
             return 8
         case .codeBlock, .table, .blockquote, .notice:
             return 10
@@ -4317,6 +4474,41 @@ struct MarkdownTextView: View {
                 return 8
             }
         }
+    }
+
+    private func maxWidth(for block: MarkdownBlock) -> CGFloat? {
+        guard let maxContentWidth else { return nil }
+        switch block.kind {
+        case .table:
+            return maxContentWidth
+        default:
+            return maxContentWidth
+        }
+    }
+
+    private func suggestedNextStepText(for block: MarkdownBlock, at index: Int) -> String? {
+        guard onSuggestedNextStep != nil,
+              case .listItem(let depth, _) = block.kind,
+              depth == 0,
+              isInsideSuggestedNextStepsSection(index: index) else {
+            return nil
+        }
+        let plain = Self.plainMarkdownText(block.content)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return plain.isEmpty ? nil : plain
+    }
+
+    private func isInsideSuggestedNextStepsSection(index: Int) -> Bool {
+        guard index > 0 else { return false }
+        for priorIndex in stride(from: index - 1, through: 0, by: -1) {
+            let prior = blocks[priorIndex]
+            if case .heading = prior.kind {
+                let heading = prior.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return heading == "next steps" || heading == "suggested next steps"
+            }
+            if case .divider = prior.kind { return false }
+        }
+        return false
     }
 
     private final class MarkdownBlockCacheEntry {
@@ -4347,30 +4539,38 @@ struct MarkdownTextView: View {
 
     private func codeBlockView(lang: String, code: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !lang.isEmpty {
-                HStack {
+            HStack {
+                if !lang.isEmpty {
                     Text(lang)
-                        .font(Stanford.chatRaw())
+                        .font(Stanford.chatRaw(11).weight(.semibold))
                         .foregroundStyle(Stanford.coolGrey)
-                    Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(code, forType: .string)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "doc.on.doc")
-                                .font(Stanford.ui(11))
-                            Text("Copy")
-                                .font(Stanford.ui(11))
-                        }
-                        .foregroundStyle(Stanford.coolGrey)
-                    }
-                    .buttonStyle(.plain)
+                        .textCase(.uppercase)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.06))
+                        .clipShape(Capsule())
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 2)
+
+                Spacer()
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "doc.on.doc")
+                            .font(Stanford.ui(11))
+                        Text("Copy")
+                            .font(Stanford.ui(11))
+                    }
+                    .foregroundStyle(Stanford.coolGrey)
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
                     .font(Stanford.chatRaw())
@@ -4391,44 +4591,99 @@ struct MarkdownTextView: View {
     private func tableView(_ raw: String) -> some View {
         let table = Self.parseTable(raw)
         let columnWidths = Self.tableColumnWidths(table.rows, columnCount: table.columnCount)
+        let numericColumns = Self.numericTableColumns(table.rows, columnCount: table.columnCount)
+        let tableWidth = Self.tableRenderedWidth(columnWidths, columnCount: table.columnCount)
+        let showsOverflowCue = tableWidth > min(maxContentWidth ?? Stanford.chatParagraphMaxWidth, Stanford.chatParagraphMaxWidth)
 
-        return ScrollView(.horizontal, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIdx, cells in
-                    HStack(alignment: .top, spacing: 0) {
-                        ForEach(0..<table.columnCount, id: \.self) { colIdx in
-                            let cell = colIdx < cells.count ? cells[colIdx] : ""
-                            let alignment = table.alignment(for: colIdx)
+        return ZStack(alignment: .trailing) {
+            ScrollView(.horizontal, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIdx, cells in
+                        HStack(alignment: .top, spacing: 0) {
+                            ForEach(0..<table.columnCount, id: \.self) { colIdx in
+                                let cell = colIdx < cells.count ? cells[colIdx] : ""
+                                let alignment = numericColumns.contains(colIdx) ? MarkdownTableAlignment.trailing : table.alignment(for: colIdx)
 
-                            Text(Self.markdownAttributed(cell))
-                                .font(rowIdx == 0 ? Stanford.chatSection(13) : Stanford.chatBody(14))
-                                .foregroundStyle(Stanford.readingText)
-                                .textSelection(.enabled)
-                                .multilineTextAlignment(alignment.textAlignment)
-                                .lineLimit(nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
+                                tableCellView(cell, rowIndex: rowIdx, alignment: alignment)
+                                    .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
 
-                            if colIdx < table.columnCount - 1 {
-                                Divider()
-                                    .opacity(0.25)
+                                if colIdx < table.columnCount - 1 {
+                                    Divider()
+                                        .opacity(0.25)
+                                }
                             }
                         }
-                    }
-                    .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
+                        .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
 
-                    if rowIdx == 0 {
-                        Divider()
-                            .opacity(0.35)
+                        if rowIdx == 0 {
+                            Divider()
+                                .opacity(0.35)
+                        } else if table.rows.count >= 5 && rowIdx < table.rows.count - 1 {
+                            Divider()
+                                .opacity(0.16)
+                        }
                     }
                 }
+                .frame(width: tableWidth, alignment: .leading)
+                .padding(.bottom, 8)
+            }
+            .scrollIndicators(.visible)
+
+            if showsOverflowCue {
+                LinearGradient(
+                    colors: [
+                        Color(nsColor: .windowBackgroundColor).opacity(0),
+                        Color(nsColor: .windowBackgroundColor).opacity(0.84)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 26)
+                .allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 0.5))
+    }
+
+    @ViewBuilder
+    private func tableCellView(
+        _ cell: String,
+        rowIndex: Int,
+        alignment: MarkdownTableAlignment
+    ) -> some View {
+        if rowIndex > 0, let statusColor = Self.tableStatusStyle(for: cell) {
+            Text(cell)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(statusColor)
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(statusColor.opacity(0.10))
+                .clipShape(Capsule())
+                .frame(maxWidth: .infinity, alignment: alignment.frameAlignment)
+        } else if rowIndex > 0, Self.isNumericTableCell(cell) {
+            Text(cell)
+                .font(Stanford.chatRaw(13))
+                .foregroundStyle(Stanford.readingText)
+                .textSelection(.enabled)
+                .multilineTextAlignment(alignment.textAlignment)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: alignment.frameAlignment)
+        } else {
+            Text(Self.markdownAttributed(cell))
+                .font(rowIndex == 0 ? Stanford.chatSection(13) : Stanford.chatBody(14))
+                .foregroundStyle(Stanford.readingText)
+                .textSelection(.enabled)
+                .multilineTextAlignment(alignment.textAlignment)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: alignment.frameAlignment)
+        }
     }
 
     private enum MarkdownTableAlignment {
@@ -4504,6 +4759,68 @@ struct MarkdownTextView: View {
 
             return max(88, min(320, CGFloat(maxLength) * 7.5 + 32))
         }
+    }
+
+    private static func tableRenderedWidth(_ widths: [CGFloat], columnCount: Int) -> CGFloat {
+        let dividerWidth = max(0, columnCount - 1)
+        let horizontalPadding = CGFloat(columnCount) * 24
+        return widths.reduce(0, +) + horizontalPadding + CGFloat(dividerWidth)
+    }
+
+    private static func numericTableColumns(_ rows: [[String]], columnCount: Int) -> Set<Int> {
+        guard rows.count > 1 else { return [] }
+        var result = Set<Int>()
+        for column in 0..<columnCount {
+            let bodyCells = rows.dropFirst().compactMap { row -> String? in
+                guard column < row.count else { return nil }
+                let value = row[column].trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+            guard !bodyCells.isEmpty,
+                  bodyCells.allSatisfy(isNumericTableCell) else { continue }
+            result.insert(column)
+        }
+        return result
+    }
+
+    private static func isNumericTableCell(_ cell: String) -> Bool {
+        let value = cell.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.rangeOfCharacter(from: .decimalDigits) != nil else { return false }
+        let allowed = CharacterSet(charactersIn: "0123456789.,:%$€£¥+-() hHkKmMbBtT")
+        return value.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private static func tableStatusStyle(for cell: String) -> Color? {
+        let normalized = cell.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        if normalized.contains("in progress") || normalized.contains("open") {
+            return Stanford.poppy
+        }
+        if normalized.contains("waiting") || normalized.contains("blocked") {
+            return Stanford.sky
+        }
+        if normalized.contains("done") || normalized.contains("complete") || normalized.contains("resolved") {
+            return Stanford.completed
+        }
+        if normalized.contains("failed") || normalized.contains("error") || normalized.contains("budget") {
+            return Stanford.failed
+        }
+        if normalized.contains("cancelled") || normalized.contains("canceled") {
+            return Stanford.cancelled
+        }
+        if ["critical", "highest", "urgent"].contains(normalized) {
+            return Stanford.failed
+        }
+        if normalized == "high" {
+            return Stanford.poppy
+        }
+        if normalized == "medium" || normalized == "normal" {
+            return Stanford.lagunita
+        }
+        if normalized == "low" || normalized == "unassigned" {
+            return Stanford.coolGrey
+        }
+        return nil
     }
 
     // MARK: - Parsing
@@ -4969,6 +5286,10 @@ struct MarkdownTextView: View {
         MarkdownLinkifier.markdownAttributed(text, whitespaceMode: whitespaceMode)
     }
 
+    static func plainMarkdownText(_ text: String) -> String {
+        String(markdownAttributed(text).characters)
+    }
+
     static func monospacedTableText(_ raw: String) -> String {
         let table = parseTable(raw)
         guard table.columnCount > 0, !table.rows.isEmpty else { return raw }
@@ -5021,6 +5342,44 @@ struct MarkdownTextView: View {
         }
 
         return renderedRows.joined(separator: "\n")
+    }
+}
+
+private struct SuggestedNextStepControls: View {
+    let onPursue: () -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: onPursue) {
+                Label("Pursue", systemImage: "arrow.right.circle")
+                    .font(Stanford.caption(11).weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Stanford.lagunita.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+            )
+            .help("Move this suggestion into the composer")
+
+            Button(action: onSkip) {
+                Text("Skip")
+                    .font(Stanford.caption(11).weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.045))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .help("Hide this suggestion")
+        }
+        .textSelection(.disabled)
     }
 }
 

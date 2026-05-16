@@ -20,7 +20,7 @@ struct TaskRowView: View {
     }
 
     private var displayTitle: String {
-        Formatters.shortenIdentifierTokens(task.title)
+        Formatters.sidebarTaskTitle(task.title)
     }
 
     var body: some View {
@@ -32,7 +32,7 @@ struct TaskRowView: View {
                 .font(Stanford.ui(16, weight: titleWeight))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .truncationMode(.tail)
+                .truncationMode(.middle)
                 .help(task.title)
 
             if task.originScheduleID != nil {
@@ -64,7 +64,8 @@ struct TaskRowView: View {
         switch task.status {
         case .running: return Stanford.lagunita
         case .pendingUser: return Stanford.pendingUser
-        case .failed, .budgetExceeded: return Stanford.failed
+        case .failed: return Stanford.failed
+        case .budgetExceeded: return Stanford.poppy
         default: return .secondary
         }
     }
@@ -84,9 +85,13 @@ struct TaskRowView: View {
             Circle()
                 .fill(Stanford.pendingUser)
                 .frame(width: 7, height: 7)
-        case .failed, .budgetExceeded:
+        case .failed:
             Circle()
                 .fill(Stanford.failed)
+                .frame(width: 7, height: 7)
+        case .budgetExceeded:
+            Circle()
+                .fill(Stanford.poppy)
                 .frame(width: 7, height: 7)
         case .cancelled:
             Circle()

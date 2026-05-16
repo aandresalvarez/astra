@@ -317,7 +317,8 @@ final class TaskLifecycleCoordinator {
     // MARK: - Workspace Lifecycle
 
     func createWorkspace(name: String, rootPath: String) -> Workspace {
-        let folderName = name
+        let workspaceName = Workspace.displayName(name: name, primaryPath: rootPath)
+        let folderName = workspaceName
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
@@ -337,7 +338,7 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
         }
 
-        let ws = Workspace(name: name, primaryPath: folderPath)
+        let ws = Workspace(name: workspaceName, primaryPath: folderPath)
         modelContext.insert(ws)
         seedSkills(for: ws)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)

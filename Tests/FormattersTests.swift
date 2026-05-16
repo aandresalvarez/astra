@@ -49,4 +49,20 @@ struct FormattersTests {
 
         #expect(output == "Inspect project-al…es_archive")
     }
+
+    @Test("sidebarTaskTitle preserves word-boundary prefix and suffix")
+    func sidebarTaskTitleKeepsScannableEdges() {
+        let input = "Count patients in two destination cohorts with BigQuery"
+        let output = Formatters.sidebarTaskTitle(input)
+
+        #expect(output == "Count patients … with BigQuery")
+    }
+
+    @Test("sidebarTaskTitle keeps suffix for similarly-prefixed tasks")
+    func sidebarTaskTitleKeepsDisambiguatingSuffix() {
+        let input = "Query BigQuery MRN destination table row access for cohort export"
+        let output = Formatters.sidebarTaskTitle(input)
+
+        #expect(output == "Query BigQuery … cohort export")
+    }
 }

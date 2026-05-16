@@ -270,6 +270,20 @@ struct NewWorkspaceDraftTests {
         #expect(!draft.canCreate)
     }
 
+    @Test("Placeholder workspace names fall back to folder name")
+    func placeholderWorkspaceNameFallsBackToFolderName() {
+        let workspace = Workspace(name: "Untitled", primaryPath: "/tmp/omop-cohort-gen")
+
+        #expect(workspace.name == "Omop Cohort Gen")
+    }
+
+    @Test("Keyboard-smash workspace names fall back to folder name")
+    func keyboardSmashWorkspaceNameFallsBackToFolderName() {
+        let workspace = Workspace(name: "Asdfadsf", primaryPath: "/tmp/jira-support-tickets")
+
+        #expect(workspace.name == "Jira Support Tickets")
+    }
+
     @Test("Workspace draft trims name and optional instructions")
     func trimsNameAndInstructions() {
         let draft = NewWorkspaceDraft(
@@ -324,6 +338,19 @@ struct MarkdownTextViewTests {
         let expected = URL(string: "https://example.com/docs")!
 
         #expect(links.contains(expected))
+    }
+
+    @Test("Long bare URLs render as compact links")
+    func longBareURLsRenderAsCompactLinks() {
+        let rawURL = "https://docs.google.com/document/d/abcdefghijklmnopqrstuvwxyz0123456789/edit?usp=sharing"
+        let attributed = MarkdownTextView.markdownAttributed("Open \(rawURL)")
+        let rendered = String(attributed.characters)
+        let expected = URL(string: rawURL)!
+
+        #expect(rendered.contains("docs.google.com"))
+        #expect(rendered.contains("..."))
+        #expect(!rendered.contains(rawURL))
+        #expect(attributed.runs.compactMap(\.link).contains(expected))
     }
 
     @Test("Markdown linkifier returns stable attributed output from cache")
@@ -782,6 +809,43 @@ struct TaskThreadSnapshotTests {
             #expect(text == "Here is the plan")
         } else {
             Issue.record("Expected plan assistant message")
+        }
+    }
+
+    @Test("System lifecycle events appear as timeline notices")
+    func systemLifecycleEventsAppearAsTimelineNotices() {
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let approved = makeEvent(
+            task: task,
+            type: TaskPlanEventTypes.approved,
+            payload: "{}",
+            timestamp: Date(timeIntervalSince1970: 110)
+        )
+        let restarted = makeEvent(
+            task: task,
+            type: "task.started",
+            payload: "Moved back to draft for editing.",
+            timestamp: Date(timeIntervalSince1970: 120)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [restarted, approved],
+            runs: []
+        )
+
+        #expect(snapshot.conversationItems.count == 3)
+        if case .systemInfo(let text, _) = snapshot.conversationItems[1] {
+            #expect(text == "Plan approved.")
+        } else {
+            Issue.record("Expected plan approval as a system notice")
+        }
+        if case .systemInfo(let text, _) = snapshot.conversationItems[2] {
+            #expect(text == "Moved back to draft for editing.")
+        } else {
+            Issue.record("Expected retry/start event as a system notice")
         }
     }
 

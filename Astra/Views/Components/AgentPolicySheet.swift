@@ -682,7 +682,7 @@ struct AgentPolicySheet: View {
         switch severity {
         case .info: Stanford.sky
         case .warning: Stanford.poppy
-        case .blocked: Stanford.cardinalRed
+        case .blocked: Stanford.statusError
         }
     }
 
