@@ -511,6 +511,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("astra-browser google-docs-replace-document"))
         #expect(prompt.contains("google_docs_controlled_browser_required"))
         #expect(prompt.contains("requires Controlled mode"))
+        #expect(prompt.contains("astra-browser read-page --format markdown --limit 50000"))
         #expect(prompt.contains("Never use `keypress --key a --mod command` followed by Backspace/Delete"))
         #expect(!prompt.contains("astra-browser google-drive-open"))
         #expect(prompt.contains("Do not use osascript"))

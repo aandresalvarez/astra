@@ -164,7 +164,8 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Double-click an analyzed control when that is the listed action: `astra-browser double-click --analysis ana_... --control ctl_...`
         - After a controlID action, read `goalSatisfied`, `observedOutcome`, and `suggestedNextActions`; `ok` only means the browser command executed.
         - Fill analyzed fields by ID: `astra-browser fill --analysis ana_... --control ctl_... --text 'user@example.com'`
-        - Read current page content: `astra-browser page --limit 2000`
+        - Read current page content with coverage/frame warnings: `astra-browser read-page --format markdown --limit 50000`
+        - Quick compact text read: `astra-browser page --limit 2000`
         - Snapshot compact page state: `astra-browser snapshot --mode summary`
         - Locate controls by role/name/text: `astra-browser locator --role button --name "Save"`
         - Search controls or text: `astra-browser snapshot --mode controls --query "Find"` or `astra-browser snapshot --mode text --query "Saved"`
@@ -197,7 +198,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Use only this bridge for browser operation. Do not use osascript, System Events, AppleScript, macOS UI automation, or external browser automation as a fallback. If a needed browser action is missing, report the missing bridge capability.
         - Never ask the user for passwords, MFA codes, or OAuth secrets. Let the user enter those directly in the browser.
         - Do not send emails, submit tickets/forms, delete data, approve access, make purchases, or commit externally visible changes without explicit user confirmation in the chat.
-        - For questions about what is on the current page, start with `astra-browser page --limit 2000`; when you need to select, click, or fill a control, start with `astra-browser analyze` and use returned control IDs.
+        - For questions about what is on the current page, start with `astra-browser read-page --format markdown --limit 50000` and inspect `coverage`, `truncated`, `frames`, and `warnings`; when you need to select, click, or fill a control, start with `astra-browser analyze` and use returned control IDs.
         \(driveSafetyLine)
         - Prefer `analyze` before acting, then use `analysisID` + `controlID`. Use `locator` or `/snapshot` only when analysis is too broad or you need raw evidence.
         - When `analyze` reports `ambiguity`, compare labels, roles, bounds, file type, and folder/opened metadata before selecting a controlID.
