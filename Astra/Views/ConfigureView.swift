@@ -77,8 +77,10 @@ struct ConfigureView: View {
     }
 
     private var configureCapabilityPackages: [PluginPackage] {
-        CapabilityGalleryInventory.packages(
-            catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages
+        CapabilityGalleryInventory.managementPackages(
+            catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages,
+            capabilities: capabilities,
+            workspace: workspace
         )
     }
 

@@ -155,6 +155,7 @@ struct WorkspaceRightRailView: View {
             .background(.bar)
 
             Divider()
+                .opacity(0.65)
 
             ScrollView {
                 AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
@@ -169,7 +170,7 @@ struct WorkspaceRightRailView: View {
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
         .overlay(alignment: .leading) {
             Rectangle()
-                .fill(Stanford.lagunita.opacity(0.55))
+                .fill(Color.secondary.opacity(0.22))
                 .frame(width: 2)
                 .ignoresSafeArea(.all, edges: .top)
                 .allowsHitTesting(false)
@@ -304,7 +305,7 @@ struct WorkspaceRightRailView: View {
         let snapshot = capabilityRailSnapshot
 
         return VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
-            collapsibleSectionWithTrailing("Available to tasks in this workspace", isCollapsed: $isCapabilitiesCollapsed) {
+            collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
                 HStack(spacing: 10) {
                     if let onManageCapabilities {
                         Button {
@@ -324,7 +325,7 @@ struct WorkspaceRightRailView: View {
                 capabilityList(snapshot)
             }
 
-            collapsibleSection("Workspace context", isCollapsed: $isContextCollapsed) {
+            collapsibleSection("Workspace setup", isCollapsed: $isContextCollapsed) {
                 workspaceContextPanel
             }
 
@@ -401,8 +402,8 @@ struct WorkspaceRightRailView: View {
                 .foregroundStyle(Stanford.lagunita)
 
             Text("\(snapshot.enabledCount) active")
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.lagunita)
 
             if snapshot.needsSetupCount > 0 {
                 Text("(\(snapshot.needsSetupCount) needs setup)")
@@ -414,15 +415,32 @@ struct WorkspaceRightRailView: View {
                 .font(Stanford.caption(11))
                 .foregroundStyle(.tertiary)
 
-            Text("\(snapshot.availableToAddCount) available to add")
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(.secondary)
+            availableToAddSummary(snapshot)
 
             Spacer(minLength: 0)
         }
         .lineLimit(1)
         .minimumScaleFactor(0.82)
         .accessibilityLabel("\(snapshot.enabledCount) active capabilities, \(snapshot.needsSetupCount) need setup, \(snapshot.availableToAddCount) available to add")
+    }
+
+    @ViewBuilder
+    private func availableToAddSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
+        let label = "\(snapshot.availableToAddCount) available to add"
+        if let onManageCapabilities {
+            Button(action: onManageCapabilities) {
+                Text(label)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
+            .help("Open available capabilities")
+            .accessibilityLabel(label)
+        } else {
+            Text(label)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     private var capabilityArchitectureSummary: some View {
@@ -534,20 +552,21 @@ struct WorkspaceRightRailView: View {
             CapabilityRailRow(
                 icon: item.icon,
                 title: capabilityDisplayName(item.name),
-                subtitle: item.summary.isEmpty ? item.presentation.rowSubtitle : item.summary,
+                subtitle: capabilityListSubtitle(for: item),
                 color: item.color,
                 readiness: item.readiness,
-                statusLabel: needsAttention ? nil : capabilityBadgeTitle(for: item),
+                statusLabel: capabilityBadgeTitle(for: item),
                 statusColor: capabilityBadgeColor(for: item),
                 isEnabled: item.isEnabled,
+                showsWarningIcon: needsAttention,
                 onOpen: { openCapabilityConfiguration(item) }
             )
         }
         .padding(Stanford.railInlineCardPadding)
         .railCard(
             cornerRadius: Stanford.railCompactCardCornerRadius,
-            fill: needsAttention ? Stanford.poppy.opacity(0.045) : Color.primary.opacity(0.03),
-            strokeOpacity: needsAttention ? 0.1 : 0.04
+            fill: Color.primary.opacity(0.03),
+            strokeOpacity: needsAttention ? 0.08 : 0.04
         )
         .overlay(alignment: .leading) {
             if needsAttention {
@@ -556,6 +575,10 @@ struct WorkspaceRightRailView: View {
                     .frame(width: 3)
                     .padding(.vertical, 8)
             }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius)
+                .stroke(needsAttention ? Stanford.poppy.opacity(0.18) : Color.clear, lineWidth: 1)
         }
     }
 
@@ -637,6 +660,25 @@ struct WorkspaceRightRailView: View {
             return Stanford.poppy
         }
         return readinessColor(for: item.readiness, isEnabled: item.isEnabled)
+    }
+
+    private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
+        if isWorkspaceAuthoredCapability(item) {
+            return "Custom: \(item.presentation.rowSubtitle)"
+        }
+
+        let summary = item.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? item.presentation.rowSubtitle : summary
+    }
+
+    private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
+        switch item.source {
+        case .package(let package):
+            let kind = package.sourceMetadata?.kind
+            return kind == "workspace" || kind == "shared"
+        case .skill:
+            return true
+        }
     }
 
     private var capabilityRailSnapshot: CapabilityRailSnapshot {
@@ -1193,7 +1235,11 @@ struct WorkspaceRightRailView: View {
 
     private var workspaceContextPanel: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
-            contextSection
+            instructionsContextSection
+
+            Divider().opacity(0.3)
+
+            memoryContextSection
 
             Divider().opacity(0.3)
 
@@ -1210,7 +1256,57 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var contextSection: some View {
+    private var instructionsContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+            HStack(spacing: 6) {
+                Image(systemName: "text.quote")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Main Instructions")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                RailCountBadge(count: hasWorkspaceInstructions ? 1 : 0)
+                Spacer()
+                Button { onEditWorkspace() } label: {
+                    Text(hasWorkspaceInstructions ? "Edit" : "Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !hasWorkspaceInstructions {
+                Button { onEditWorkspace() } label: {
+                    Text("Add guidance for how tasks should run")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button { onEditWorkspace() } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(instructionsPreview)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.primary)
+                            .lineSpacing(2)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if instructionsPreviewNeedsMore {
+                            Text("Show more")
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(Stanford.lagunita)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var memoryContextSection: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "brain")
@@ -1234,7 +1330,7 @@ struct WorkspaceRightRailView: View {
             }
 
             if workspace.memories.isEmpty && !isMemoryComposerVisible {
-                Text("No workspace memories saved")
+                Text("Save details the agent should remember")
                     .font(Stanford.caption(11))
                     .foregroundStyle(.tertiary)
             } else {
@@ -1245,52 +1341,6 @@ struct WorkspaceRightRailView: View {
                 if isMemoryComposerVisible {
                     memoryComposer
                 }
-            }
-
-            Divider().opacity(0.3)
-
-            // Instructions
-            HStack(spacing: 6) {
-                Image(systemName: "text.quote")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Main Instructions")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                Spacer()
-                Button { onEditWorkspace() } label: {
-                    Text(workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Add" : "Edit")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button { onEditWorkspace() } label: {
-                    Text("Add instructions to guide agent behavior")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button { onEditWorkspace() } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(instructionsPreview)
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.primary)
-                            .lineSpacing(2)
-                            .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        Image(systemName: "pencil")
-                            .font(Stanford.ui(10, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 2)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -1351,7 +1401,7 @@ struct WorkspaceRightRailView: View {
                 Image(systemName: "network")
                     .font(Stanford.ui(12, weight: .medium))
                     .foregroundStyle(Stanford.paloAltoGreen)
-                Text("SSH Connections")
+                Text("Remote Access")
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.primary)
                 RailCountBadge(count: sshConnections.count)
@@ -1365,7 +1415,7 @@ struct WorkspaceRightRailView: View {
             }
 
             if sshConnections.isEmpty {
-                Text("No remote servers configured")
+                Text("Add remote servers the agent can access")
                     .font(Stanford.caption(11))
                     .foregroundStyle(.tertiary)
             } else {
@@ -1855,6 +1905,10 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private var hasWorkspaceInstructions: Bool {
+        !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var instructionsPreview: String {
         workspace.instructions
             .components(separatedBy: .newlines)
@@ -1867,6 +1921,12 @@ struct WorkspaceRightRailView: View {
                     .replacingOccurrences(of: "`", with: "")
             }
             .joined(separator: " ")
+    }
+
+    private var instructionsPreviewNeedsMore: Bool {
+        instructionsPreview.count > 180 || workspace.instructions.components(separatedBy: .newlines).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count > 3
     }
 
     private func abbreviatePath(_ path: String) -> String {
@@ -2551,6 +2611,7 @@ private struct CapabilityRailRow: View {
     let statusLabel: String?
     let statusColor: Color
     let isEnabled: Bool
+    let showsWarningIcon: Bool
     let onOpen: () -> Void
 
     var body: some View {
@@ -2563,6 +2624,13 @@ private struct CapabilityRailRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
+                        if showsWarningIcon {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(Stanford.ui(9, weight: .semibold))
+                                .foregroundStyle(Stanford.poppy)
+                                .help(readiness.messages.joined(separator: "\n"))
+                        }
+
                         Text(title.isEmpty ? "Untitled Capability" : title)
                             .font(Stanford.caption(12).weight(.semibold))
                             .foregroundStyle(.primary)

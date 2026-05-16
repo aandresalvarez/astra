@@ -23,6 +23,48 @@ struct CapabilityGalleryInventoryTests {
         #expect(packages.map(\.category) == ["Integrations"])
     }
 
+    @Test("management inventory includes active workspace capability packages")
+    @MainActor
+    func managementInventoryIncludesActiveWorkspaceCapabilities() {
+        let workspace = Workspace(name: "Gallery", primaryPath: "/tmp/gallery")
+        let skill = Skill(
+            name: "Drive Docs For Jira Tickets",
+            icon: "folder.badge.gearshape",
+            skillDescription: "Read project docs",
+            allowedTools: ["Read"]
+        )
+        skill.workspace = workspace
+        let approved = makeGalleryPackage(id: "jira-workflow", name: "Jira Workflow", category: "Integrations")
+
+        let packages = CapabilityGalleryInventory.managementPackages(
+            catalogPackages: [approved],
+            capabilities: WorkspaceCapabilities(workspace: workspace),
+            workspace: workspace
+        )
+
+        #expect(packages.map(\.id).contains("jira-workflow"))
+        #expect(packages.map(\.id).contains("skill.\(skill.id.uuidString.lowercased())"))
+        #expect(packages.first { $0.id.hasPrefix("skill.") }?.name == "Drive Docs For Jira Tickets")
+    }
+
+    @Test("management inventory does not duplicate workspace resources already represented by a package")
+    @MainActor
+    func managementInventoryDoesNotDuplicatePackagedWorkspaceResources() {
+        let workspace = Workspace(name: "Gallery", primaryPath: "/tmp/gallery")
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.workspace = workspace
+        var approved = makeGalleryPackage(id: "jira-workflow", name: "Jira Workflow", category: "Integrations")
+        approved.skills[0].name = "Jira Agent"
+
+        let packages = CapabilityGalleryInventory.managementPackages(
+            catalogPackages: [approved],
+            capabilities: WorkspaceCapabilities(workspace: workspace),
+            workspace: workspace
+        )
+
+        #expect(packages.map(\.id) == ["jira-workflow"])
+    }
+
     @Test("gallery keeps real packages even when they only expose lower level resources")
     func galleryKeepsRealResourceBackedPackages() {
         var browser = makeGalleryPackage(id: "drive-browser", name: "Drive Browser", category: "Browser")

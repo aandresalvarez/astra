@@ -154,7 +154,11 @@ struct PluginCatalogView: View {
     }
 
     private var capabilityInventoryPackages: [PluginPackage] {
-        CapabilityGalleryInventory.packages(catalogPackages: catalog.packages + PluginCatalog.builtInPackages)
+        CapabilityGalleryInventory.managementPackages(
+            catalogPackages: catalog.packages + PluginCatalog.builtInPackages,
+            capabilities: capabilities,
+            workspace: workspace
+        )
     }
 
     private var galleryColumns: [GridItem] {
