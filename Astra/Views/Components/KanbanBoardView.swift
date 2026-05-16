@@ -307,6 +307,18 @@ struct KanbanBoardView: View {
         }
     }
 
+    /// Total rendered width of the kanban column row (sum of column widths +
+    /// 12pt spacing between them). Used to constrain the toolbar above so its
+    /// trailing controls (trash, View menu) align with the rightmost column's
+    /// trailing edge rather than floating off near the window edge when the
+    /// board doesn't fill the available space.
+    private var kanbanContentWidth: CGFloat {
+        let spacing: CGFloat = 12
+        let totalColumns = visibleCategories.reduce(0) { $0 + density.columnWidth(for: $1) }
+        let totalSpacing = spacing * CGFloat(max(0, visibleCategories.count - 1))
+        return totalColumns + totalSpacing
+    }
+
     private var collapsedEmptyCategories: [KanbanCategory] {
         guard !isEmptyBoard else { return [] }
         return boardCategories.filter { category in
@@ -647,7 +659,11 @@ struct KanbanBoardView: View {
             // The empty-lanes strip used to sit on its own row below this
             // header; folding it in saves vertical space and makes the
             // controls read as one toolbar instead of two stacked.
+            // Capped to `kanbanContentWidth` so the trailing controls sit
+            // above the rightmost column instead of drifting toward the
+            // window edge when the board is narrower than the viewport.
             boardHeader
+                .frame(maxWidth: kanbanContentWidth, alignment: .leading)
 
             if isEmptyBoard && visibleCategories.isEmpty {
                 emptyKanbanMessage

@@ -10,6 +10,10 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
+    // Tracks whether the user has seen the Embedded vs Controlled explanation
+    // on the empty browser screen. Persists across sessions so the hint only
+    // teaches once per install, not every time the shelf is empty.
+    @AppStorage("browserEngineHintDismissed") private var engineHintDismissed = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +35,12 @@ struct ShelfBrowserPanelView: View {
         .onChange(of: session.currentURL) { _, newValue in
             if !isAddressFocused {
                 addressText = newValue
+            }
+            // First successful navigation retires the engine-modes hint —
+            // by now the user is past the empty-state and the Emb/Ctrl
+            // labels in the toolbar have context.
+            if !newValue.isEmpty {
+                engineHintDismissed = true
             }
         }
         .animation(.easeInOut(duration: 0.18), value: session.engine)
@@ -382,45 +392,105 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var emptyBrowserStartView: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "globe")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .padding(.bottom, 2)
+        // No card chrome, no shadow — the empty state speaks for itself.
+        // Content is centered as a single column with generous spacing.
+        VStack(spacing: 28) {
+            VStack(spacing: 14) {
+                Image(systemName: "globe")
+                    .font(.system(size: 44, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Stanford.lagunita)
 
-            VStack(spacing: 4) {
-                Text("Open a Website")
-                    .font(Stanford.heading(18))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                Text("Type a URL above or jump to a quick link.")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                VStack(spacing: 6) {
+                    Text("Open a Website")
+                        .font(Stanford.heading(20))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    Text("Type a URL above or jump to a quick link.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                }
             }
 
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
                     quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
 
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     quickLink("Outlook", url: "https://outlook.office.com/mail/", systemImage: "envelope.fill", tint: Stanford.sky)
                     quickLink("Google Drive", url: "https://drive.google.com/", systemImage: "folder.fill", tint: Stanford.paloAltoGreen)
                 }
             }
+
+            if !engineHintDismissed {
+                engineComparisonHint
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
-        .padding(20)
-        .frame(maxWidth: 300)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusLarge,
-            fallbackFill: Stanford.cardBackground,
-            fallbackStrokeOpacity: Stanford.strokeRest
-        )
-        .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 24)
+        .frame(maxWidth: 420)
+        .animation(.easeInOut(duration: 0.2), value: engineHintDismissed)
+    }
+
+    /// Inline first-run explanation of the two browser engines. Dismissible,
+    /// and auto-hides after the user actually loads a page (since by then
+    /// they've started using the shelf and the labels are no longer cryptic).
+    private var engineComparisonHint: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Text("ENGINE MODES")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 0)
+
+                Button {
+                    engineHintDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Hide this hint")
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                engineHintRow(
+                    title: "Embedded",
+                    body: "Fast WebKit view inside this panel."
+                )
+                engineHintRow(
+                    title: "Controlled",
+                    body: "Full Chromium profile the agent can drive."
+                )
+            }
+        }
+        .padding(14)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func engineHintRow(title: String, body: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 78, alignment: .leading)
+            Text(body)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 
     private var engineTransition: AnyTransition {
@@ -562,11 +632,11 @@ struct ShelfBrowserPanelView: View {
                     .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text("Agent control")
-                            .font(Stanford.caption(13).weight(.semibold))
-                        statusBadge(session.isAgentBridgeEnabled ? "On" : "Off", tint: controlledTaskFlowTint)
-                    }
+                    // Dropped the "On"/"Off" status badge — the toggle on the
+                    // right already communicates state. Two indicators for the
+                    // same thing was noise.
+                    Text("Agent control")
+                        .font(Stanford.caption(13).weight(.semibold))
                     Text(agentControlCardMessage)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
@@ -578,8 +648,9 @@ struct ShelfBrowserPanelView: View {
 
                 Toggle("", isOn: agentControlPanelBinding)
                     .labelsHidden()
-                    .toggleStyle(.checkbox)
+                    .toggleStyle(.switch)
                     .controlSize(.small)
+                    .tint(controlledTaskFlowTint)
                     .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
             }
 
@@ -593,8 +664,11 @@ struct ShelfBrowserPanelView: View {
         .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
+            // Neutral subtle border so this card doesn't compete with the
+            // hero card above (which legitimately gets a tinted border to
+            // signal the overall connection state).
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(controlledTaskFlowTint.opacity(Stanford.strokeActive), lineWidth: 1)
+                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
         )
     }
 
@@ -770,14 +844,25 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledStopButton: some View {
+        // Outlined instead of solid red — pulling the "danger" attention down
+        // a notch so it sits as a peer of Show Chrome / Check status, not as
+        // the visual centerpiece of the action row.
         Button {
             session.stopControlledBrowser()
         } label: {
             Label("Stop control", systemImage: "stop.fill")
-                .lineLimit(1)
+                .font(Stanford.body(15).weight(.medium))
+                .foregroundStyle(Stanford.failed)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(Stanford.failed.opacity(0.5), lineWidth: 1)
+                )
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.failed))
+        .buttonStyle(.plain)
         .disabled(!session.controlledBrowser.isRunning)
+        .opacity(session.controlledBrowser.isRunning ? 1 : 0.5)
         .help("Stop the controlled Chromium profile and disconnect task control")
     }
 
@@ -933,16 +1018,25 @@ struct ShelfBrowserPanelView: View {
                 }
             }
 
-            Text(session.pageTitle.isEmpty ? "No page loaded yet" : session.pageTitle)
-                .font(Stanford.caption(13).weight(.semibold))
-                .lineLimit(2)
+            // Only show the page-title row when we actually have a page; the
+            // previous "No page loaded yet" string echoed the header above and
+            // read as redundant.
+            if hasDisplayablePage {
+                if !session.pageTitle.isEmpty {
+                    Text(session.pageTitle)
+                        .font(Stanford.caption(13).weight(.semibold))
+                        .lineLimit(2)
+                }
 
-            Text(session.currentURL.isEmpty ? "Launch the controlled browser or enter a URL above." : session.currentURL)
-                .font(session.currentURL.isEmpty ? Stanford.caption(12) : Stanford.mono(11))
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+                if !session.currentURL.isEmpty {
+                    Text(session.currentURL)
+                        .font(Stanford.mono(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

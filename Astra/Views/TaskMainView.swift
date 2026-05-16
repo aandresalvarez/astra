@@ -251,7 +251,7 @@ struct TaskMainView: View {
     }
 
     private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        width < 760 ? 12 : 18
+        width < 760 ? 20 : 32
     }
 
     private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
