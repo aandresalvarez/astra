@@ -35,6 +35,33 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
     }
 }
 
+private let workspaceRightRailScrollCoordinateSpace = "workspaceRightRailScrollCoordinateSpace"
+
+private enum RightRailScrollShadowEdge {
+    case top
+    case bottom
+}
+
+private struct RightRailScrollMetrics: Equatable {
+    var contentMinY: CGFloat = 0
+    var contentHeight: CGFloat = 0
+    var viewportHeight: CGFloat = 0
+}
+
+private struct RightRailScrollMetricsPreferenceKey: PreferenceKey {
+    static var defaultValue = RightRailScrollMetrics()
+
+    static func reduce(value: inout RightRailScrollMetrics, nextValue: () -> RightRailScrollMetrics) {
+        value = nextValue()
+    }
+}
+
+private enum CapabilityRailGroupStyle: Equatable {
+    case attention
+    case ready
+    case draft
+}
+
 struct WorkspaceRightRailView: View {
     private static let maxRecentLogEntries = 64
 
@@ -66,7 +93,7 @@ struct WorkspaceRightRailView: View {
     @State private var selectedTab: WorkspaceRightRailTab = .configure
     @State private var isIdentityCollapsed = true
     @State private var isCapabilitiesCollapsed = false
-    @State private var isContextCollapsed = false
+    @State private var isContextCollapsed = true
     @State private var isAccessCollapsed = true
     @State private var isSchedulesSectionCollapsed = false
     @State private var isActivityCollapsed = true
@@ -82,6 +109,7 @@ struct WorkspaceRightRailView: View {
     @State private var editingMemoryIndex: Int?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
+    @State private var scrollMetrics = RightRailScrollMetrics()
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -157,12 +185,38 @@ struct WorkspaceRightRailView: View {
             Divider()
                 .opacity(0.65)
 
-            ScrollView {
-                AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
-                    configurePanel
-                        .padding(.horizontal, Stanford.railContentPadding)
-                        .padding(.top, 12)
-                        .padding(.bottom, Stanford.railContentPadding)
+            GeometryReader { viewport in
+                ScrollView {
+                    AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
+                        configurePanel
+                            .padding(.horizontal, Stanford.railContentPadding)
+                            .padding(.top, 12)
+                            .padding(.bottom, Stanford.railContentPadding)
+                    }
+                    .background {
+                        GeometryReader { contentProxy in
+                            Color.clear.preference(
+                                key: RightRailScrollMetricsPreferenceKey.self,
+                                value: RightRailScrollMetrics(
+                                    contentMinY: contentProxy.frame(in: .named(workspaceRightRailScrollCoordinateSpace)).minY,
+                                    contentHeight: contentProxy.size.height,
+                                    viewportHeight: viewport.size.height
+                                )
+                            )
+                        }
+                    }
+                }
+                .coordinateSpace(name: workspaceRightRailScrollCoordinateSpace)
+                .onPreferenceChange(RightRailScrollMetricsPreferenceKey.self) { metrics in
+                    scrollMetrics = metrics
+                }
+                .overlay(alignment: .top) {
+                    rightRailScrollShadow(edge: .top)
+                        .opacity(showsTopRailScrollShadow ? 1 : 0)
+                }
+                .overlay(alignment: .bottom) {
+                    rightRailScrollShadow(edge: .bottom)
+                        .opacity(showsBottomRailScrollShadow ? 1 : 0)
                 }
             }
         }
@@ -220,6 +274,31 @@ struct WorkspaceRightRailView: View {
             logEntries.removeFirst(logEntries.count - Self.maxRecentLogEntries)
         }
         pendingLogEntries.removeAll(keepingCapacity: true)
+    }
+
+    private var showsTopRailScrollShadow: Bool {
+        scrollMetrics.contentMinY < -2
+    }
+
+    private var showsBottomRailScrollShadow: Bool {
+        guard scrollMetrics.contentHeight > scrollMetrics.viewportHeight + 2 else { return false }
+        return scrollMetrics.contentHeight + scrollMetrics.contentMinY > scrollMetrics.viewportHeight + 2
+    }
+
+    private func rightRailScrollShadow(edge: RightRailScrollShadowEdge) -> some View {
+        LinearGradient(
+            colors: [
+                Color.black.opacity(0.11),
+                Color.black.opacity(0.04),
+                Color.clear
+            ],
+            startPoint: edge == .top ? .top : .bottom,
+            endPoint: edge == .top ? .bottom : .top
+        )
+        .frame(height: 18)
+        .allowsHitTesting(false)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: showsTopRailScrollShadow)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: showsBottomRailScrollShadow)
     }
 
     // MARK: - Workspace Identity Anchor
@@ -325,11 +404,19 @@ struct WorkspaceRightRailView: View {
                 capabilityList(snapshot)
             }
 
-            collapsibleSection("Workspace setup", isCollapsed: $isContextCollapsed) {
+            collapsibleSection(
+                "Workspace setup",
+                summary: workspaceSetupSummary,
+                isCollapsed: $isContextCollapsed
+            ) {
                 workspaceContextPanel
             }
 
-            collapsibleSection("Activity", isCollapsed: $isActivityCollapsed) {
+            collapsibleSection(
+                "Activity",
+                summary: activitySummary,
+                isCollapsed: $isActivityCollapsed
+            ) {
                 activitySection
             }
         }
@@ -365,17 +452,25 @@ struct WorkspaceRightRailView: View {
                 )
             } else {
                 if !snapshot.attentionItems.isEmpty {
-                    capabilityGroupHeader("Needs attention")
+                    capabilityGroupHeader(
+                        "Needs attention",
+                        count: snapshot.attentionItems.count,
+                        style: .attention
+                    )
 
                     ForEach(snapshot.attentionItems) { item in
-                        capabilityCard(item, needsAttention: true)
+                        capabilityCard(item)
                     }
                 }
 
                 if !snapshot.readyItems.isEmpty {
                     if !snapshot.attentionItems.isEmpty || !snapshot.draftItems.isEmpty {
-                        capabilityGroupHeader("Ready")
-                            .padding(.top, 2)
+                        capabilityGroupHeader(
+                            "Ready",
+                            count: snapshot.readyItems.count,
+                            style: .ready
+                        )
+                        .padding(.top, 10)
                     }
 
                     ForEach(snapshot.readyItems) { item in
@@ -384,8 +479,12 @@ struct WorkspaceRightRailView: View {
                 }
 
                 if !snapshot.draftItems.isEmpty {
-                    capabilityGroupHeader("Drafts")
-                        .padding(.top, 2)
+                    capabilityGroupHeader(
+                        "Drafts",
+                        count: snapshot.draftItems.count,
+                        style: .draft
+                    )
+                    .padding(.top, 10)
 
                     ForEach(snapshot.draftItems) { item in
                         capabilityCard(item)
@@ -405,12 +504,6 @@ struct WorkspaceRightRailView: View {
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(Stanford.lagunita)
 
-            if snapshot.needsSetupCount > 0 {
-                Text("(\(snapshot.needsSetupCount) needs setup)")
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.poppy)
-            }
-
             Text("·")
                 .font(Stanford.caption(11))
                 .foregroundStyle(.tertiary)
@@ -421,7 +514,7 @@ struct WorkspaceRightRailView: View {
         }
         .lineLimit(1)
         .minimumScaleFactor(0.82)
-        .accessibilityLabel("\(snapshot.enabledCount) active capabilities, \(snapshot.needsSetupCount) need setup, \(snapshot.availableToAddCount) available to add")
+        .accessibilityLabel("\(snapshot.enabledCount) active capabilities, \(snapshot.availableToAddCount) available to add")
     }
 
     @ViewBuilder
@@ -539,15 +632,55 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private func capabilityGroupHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(Stanford.ui(9, weight: .semibold))
-            .foregroundStyle(.tertiary)
-            .tracking(0.4)
-            .padding(.leading, 2)
+    private func capabilityGroupHeader(
+        _ title: String,
+        count: Int,
+        style: CapabilityRailGroupStyle
+    ) -> some View {
+        let tint = capabilityGroupTint(style)
+
+        return HStack(spacing: 6) {
+            if style == .attention {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(Stanford.ui(9, weight: .semibold))
+            }
+
+            Text(title.uppercased())
+                .font(Stanford.ui(9, weight: style == .attention ? .bold : .semibold))
+
+            Text("\(count)")
+                .font(Stanford.ui(9, weight: .semibold))
+                .monospacedDigit()
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(tint.opacity(style == .attention ? 0.16 : 0.08))
+                .clipShape(Capsule())
+
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, style == .attention ? 8 : 2)
+        .padding(.vertical, style == .attention ? 5 : 2)
+        .background {
+            if style == .attention {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(tint.opacity(0.10))
+            }
+        }
     }
 
-    private func capabilityCard(_ item: RailCapabilityItem, needsAttention: Bool = false) -> some View {
+    private func capabilityGroupTint(_ style: CapabilityRailGroupStyle) -> Color {
+        switch style {
+        case .attention:
+            return Stanford.poppy
+        case .ready:
+            return Stanford.lagunita.opacity(0.78)
+        case .draft:
+            return Stanford.driftwood
+        }
+    }
+
+    private func capabilityCard(_ item: RailCapabilityItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             CapabilityRailRow(
                 icon: item.icon,
@@ -558,7 +691,6 @@ struct WorkspaceRightRailView: View {
                 statusLabel: capabilityBadgeTitle(for: item),
                 statusColor: capabilityBadgeColor(for: item),
                 isEnabled: item.isEnabled,
-                showsWarningIcon: needsAttention,
                 onOpen: { openCapabilityConfiguration(item) }
             )
         }
@@ -566,20 +698,8 @@ struct WorkspaceRightRailView: View {
         .railCard(
             cornerRadius: Stanford.railCompactCardCornerRadius,
             fill: Color.primary.opacity(0.03),
-            strokeOpacity: needsAttention ? 0.08 : 0.04
+            strokeOpacity: 0.04
         )
-        .overlay(alignment: .leading) {
-            if needsAttention {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Stanford.poppy)
-                    .frame(width: 3)
-                    .padding(.vertical, 8)
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius)
-                .stroke(needsAttention ? Stanford.poppy.opacity(0.18) : Color.clear, lineWidth: 1)
-        }
     }
 
     private var enabledPackageCount: Int {
@@ -1309,9 +1429,9 @@ struct WorkspaceRightRailView: View {
     private var memoryContextSection: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
             HStack(spacing: 6) {
-                Image(systemName: "brain")
+                Image(systemName: "text.badge.checkmark")
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.plum)
+                    .foregroundStyle(Stanford.lagunita)
                 Text("Memory")
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.primary)
@@ -1393,6 +1513,27 @@ struct WorkspaceRightRailView: View {
     private var workspaceFolderCount: Int {
         (workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1)
             + workspace.additionalPaths.count
+    }
+
+    private var workspaceSetupSummary: String {
+        let configured = workspaceSetupConfiguredCount
+        let total = workspaceSetupTotalCount
+        if configured == 0 { return "Empty" }
+        return "\(configured) of \(total) configured"
+    }
+
+    private var workspaceSetupConfiguredCount: Int {
+        var count = 0
+        if hasWorkspaceInstructions { count += 1 }
+        if !workspace.memories.isEmpty { count += 1 }
+        if workspaceFolderCount > 0 { count += 1 }
+        if !sshConnections.isEmpty { count += 1 }
+        if !workspace.schedules.isEmpty { count += 1 }
+        return count
+    }
+
+    private var workspaceSetupTotalCount: Int {
+        4 + (workspace.schedules.isEmpty ? 0 : 1)
     }
 
     private var sshContextSection: some View {
@@ -1527,6 +1668,17 @@ struct WorkspaceRightRailView: View {
                 action: onShowLogs
             )
         }
+    }
+
+    private var activitySummary: String {
+        let taskCount = workspace.tasks.count
+        let taskLabel = taskCount == 1 ? "1 task" : "\(taskCount) tasks"
+        let tokenLabel = "\(Formatters.formatTokens(workspace.totalTokens)) tokens"
+        if failedTasks.isEmpty {
+            return "\(taskLabel) · \(tokenLabel)"
+        }
+        let issueLabel = failedTasks.count == 1 ? "1 needs review" : "\(failedTasks.count) need review"
+        return "\(taskLabel) · \(issueLabel)"
     }
 
     // MARK: - Access Section
@@ -1708,6 +1860,7 @@ struct WorkspaceRightRailView: View {
 
     private func collapsibleSection<Content: View>(
         _ title: String,
+        summary: String? = nil,
         isCollapsed: Binding<Bool>,
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -1725,7 +1878,25 @@ struct WorkspaceRightRailView: View {
                         .font(Stanford.ui(10, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .tracking(0.5)
+                    if let summary {
+                        Text(summary)
+                            .font(Stanford.caption(10).weight(.medium))
+                            .foregroundStyle(isCollapsed.wrappedValue ? .secondary : Stanford.lagunita)
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background((isCollapsed.wrappedValue ? Color.primary : Stanford.lagunita).opacity(0.06))
+                            .clipShape(Capsule())
+                    }
                     Spacer()
+                }
+                .padding(.horizontal, isCollapsed.wrappedValue ? 0 : 6)
+                .padding(.vertical, isCollapsed.wrappedValue ? 0 : 4)
+                .background {
+                    if !isCollapsed.wrappedValue {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.primary.opacity(0.035))
+                    }
                 }
                 .contentShape(Rectangle())
             }
@@ -1785,6 +1956,8 @@ struct WorkspaceRightRailView: View {
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
+        isContextCollapsed = true
+        isActivityCollapsed = true
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
@@ -2611,7 +2784,6 @@ private struct CapabilityRailRow: View {
     let statusLabel: String?
     let statusColor: Color
     let isEnabled: Bool
-    let showsWarningIcon: Bool
     let onOpen: () -> Void
 
     var body: some View {
@@ -2624,18 +2796,13 @@ private struct CapabilityRailRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        if showsWarningIcon {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(Stanford.ui(9, weight: .semibold))
-                                .foregroundStyle(Stanford.poppy)
-                                .help(readiness.messages.joined(separator: "\n"))
-                        }
-
                         Text(title.isEmpty ? "Untitled Capability" : title)
                             .font(Stanford.caption(12).weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .layoutPriority(1)
+
+                        Spacer(minLength: 6)
 
                         if let statusLabel {
                             CapabilityStatusBadge(title: statusLabel, color: statusColor)
@@ -2648,6 +2815,7 @@ private struct CapabilityRailRow: View {
                         .font(Stanford.caption(10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
                 Spacer(minLength: 0)
@@ -2657,6 +2825,7 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
+            .frame(height: 38, alignment: .leading)
         }
         .buttonStyle(.plain)
         .help("Open details")
@@ -2669,11 +2838,11 @@ private struct CapabilityStatusBadge: View {
 
     var body: some View {
         Text(title)
-            .font(Stanford.caption(9).weight(.semibold))
+            .font(Stanford.caption(10).weight(.medium))
             .foregroundStyle(color)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
-            .padding(.horizontal, 5)
+            .padding(.horizontal, 6)
             .padding(.vertical, 1)
             .background(color.opacity(0.1))
             .clipShape(Capsule())

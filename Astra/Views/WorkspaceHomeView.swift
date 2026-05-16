@@ -296,8 +296,9 @@ struct WorkspaceHomeView: View {
                         Text(workspace.instructions.replacingOccurrences(of: "\n", with: " "))
                             .font(Stanford.ui(13))
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                             .truncationMode(.tail)
+                            .help(workspace.instructions)
 
                         Spacer(minLength: 8)
 
@@ -353,9 +354,9 @@ struct WorkspaceHomeView: View {
     private var memoriesCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "brain")
+                Image(systemName: "text.badge.checkmark")
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.plum)
+                    .foregroundStyle(Stanford.lagunita)
                 Text("Memories")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
@@ -368,7 +369,7 @@ struct WorkspaceHomeView: View {
                 HStack(alignment: .top, spacing: 6) {
                     Text("•")
                         .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.plum.opacity(0.5))
+                        .foregroundStyle(Stanford.lagunita.opacity(0.55))
                     Text(memory)
                         .font(Stanford.ui(14))
                         .foregroundStyle(Stanford.black)

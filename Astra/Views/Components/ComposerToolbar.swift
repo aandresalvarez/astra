@@ -1,6 +1,13 @@
 import SwiftUI
 import ASTRACore
 
+struct ComposerTaskStatusPresentation {
+    let label: String
+    let icon: String
+    let color: Color
+    let help: String
+}
+
 /// Shared bottom toolbar for both new-task and follow-up composers.
 struct ComposerToolbar: View {
     // MARK: - Required
@@ -13,6 +20,7 @@ struct ComposerToolbar: View {
     var workspace: Workspace?
     var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var taskStatus: TaskStatus?
+    var taskStatusOverride: ComposerTaskStatusPresentation? = nil
     let isRunning: Bool
     let hasInput: Bool
     let onAttachFile: () -> Void
@@ -174,6 +182,8 @@ struct ComposerToolbar: View {
         .frame(width: 38, height: 38)
         .contentShape(Circle())
         .onHover { isPlusHovered = $0 }
+        .help("Add files, paste from clipboard, or adjust task options")
+        .accessibilityLabel("Composer actions")
     }
 
     // MARK: - Model / Budget Pill
@@ -184,8 +194,7 @@ struct ComposerToolbar: View {
 
     @ViewBuilder
     private var taskStatusPill: some View {
-        if let status = taskStatus,
-           let presentation = taskStatusPresentation(for: status) {
+        if let presentation = resolvedTaskStatusPresentation {
             HStack(spacing: 5) {
                 Image(systemName: presentation.icon)
                     .font(Stanford.ui(11))
@@ -198,10 +207,20 @@ struct ComposerToolbar: View {
             .padding(.vertical, 5)
             .background(presentation.color.opacity(0.10))
             .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(presentation.color.opacity(0.16), lineWidth: 1)
+            )
             .help(presentation.help)
             .accessibilityLabel("Task status")
             .accessibilityValue(presentation.label)
         }
+    }
+
+    private var resolvedTaskStatusPresentation: ComposerTaskStatusPresentation? {
+        if let taskStatusOverride { return taskStatusOverride }
+        guard let taskStatus else { return nil }
+        return taskStatusPresentation(for: taskStatus)
     }
 
     private func modelBudgetPill(compact: Bool) -> some View {
@@ -311,6 +330,10 @@ struct ComposerToolbar: View {
             .padding(.vertical, 6)
             .background((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.13 : 0.07))
             .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.18 : 0.10), lineWidth: 1)
+            )
         }
         .help(runtimeStatusHelp)
         .menuStyle(.borderlessButton)
@@ -397,8 +420,12 @@ struct ComposerToolbar: View {
             .foregroundStyle(policyColor(currentPolicyLevel))
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 6)
-            .background(policyColor(currentPolicyLevel).opacity(0.12))
+            .background(policyColor(currentPolicyLevel).opacity(0.10))
             .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(policyColor(currentPolicyLevel).opacity(0.16), lineWidth: 1)
+            )
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -798,42 +825,42 @@ struct ComposerToolbar: View {
         }
     }
 
-    private func taskStatusPresentation(for status: TaskStatus) -> (label: String, icon: String, color: Color, help: String)? {
+    private func taskStatusPresentation(for status: TaskStatus) -> ComposerTaskStatusPresentation? {
         switch status {
         case .pendingUser:
-            return (
-                "Needs input",
-                "person.crop.circle.badge.questionmark",
-                Stanford.poppy,
-                "The task is waiting for your review or approval."
+            return ComposerTaskStatusPresentation(
+                label: "Needs input",
+                icon: "person.crop.circle.badge.questionmark",
+                color: Stanford.poppy,
+                help: "The task is waiting for your review or approval."
             )
         case .failed:
-            return (
-                "Failed",
-                "exclamationmark.triangle.fill",
-                Stanford.cardinalRed,
-                "The task stopped with an error. Resume or retry when ready."
+            return ComposerTaskStatusPresentation(
+                label: "Failed",
+                icon: "exclamationmark.triangle.fill",
+                color: Stanford.cardinalRed,
+                help: "The task stopped with an error. Resume or retry when ready."
             )
         case .budgetExceeded:
-            return (
-                "Budget exceeded",
-                "exclamationmark.triangle.fill",
-                Stanford.cardinalRed,
-                "The task ran out of token budget. Raise the budget, resume, or retry."
+            return ComposerTaskStatusPresentation(
+                label: "Budget exceeded",
+                icon: "exclamationmark.triangle.fill",
+                color: Stanford.cardinalRed,
+                help: "The task ran out of token budget. Raise the budget, resume, or retry."
             )
         case .cancelled:
-            return (
-                "Cancelled",
-                "xmark.circle.fill",
-                Stanford.coolGrey,
-                "The task was stopped before completion."
+            return ComposerTaskStatusPresentation(
+                label: "Cancelled",
+                icon: "xmark.circle.fill",
+                color: Stanford.coolGrey,
+                help: "The task was stopped before completion."
             )
         case .completed:
-            return (
-                "Completed",
-                "checkmark.circle.fill",
-                Stanford.paloAltoGreen,
-                "The task completed."
+            return ComposerTaskStatusPresentation(
+                label: "Completed",
+                icon: "checkmark.circle.fill",
+                color: Stanford.paloAltoGreen,
+                help: "The task completed."
             )
         case .draft, .queued, .running:
             return nil

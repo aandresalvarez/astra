@@ -270,6 +270,13 @@ struct NewWorkspaceDraftTests {
         #expect(!draft.canCreate)
     }
 
+    @Test("Placeholder workspace names fall back to folder name")
+    func placeholderWorkspaceNameFallsBackToFolderName() {
+        let workspace = Workspace(name: "Untitled", primaryPath: "/tmp/omop-cohort-gen")
+
+        #expect(workspace.name == "Omop Cohort Gen")
+    }
+
     @Test("Workspace draft trims name and optional instructions")
     func trimsNameAndInstructions() {
         let draft = NewWorkspaceDraft(
@@ -324,6 +331,19 @@ struct MarkdownTextViewTests {
         let expected = URL(string: "https://example.com/docs")!
 
         #expect(links.contains(expected))
+    }
+
+    @Test("Long bare URLs render as compact links")
+    func longBareURLsRenderAsCompactLinks() {
+        let rawURL = "https://docs.google.com/document/d/abcdefghijklmnopqrstuvwxyz0123456789/edit?usp=sharing"
+        let attributed = MarkdownTextView.markdownAttributed("Open \(rawURL)")
+        let rendered = String(attributed.characters)
+        let expected = URL(string: rawURL)!
+
+        #expect(rendered.contains("docs.google.com"))
+        #expect(rendered.contains("..."))
+        #expect(!rendered.contains(rawURL))
+        #expect(attributed.runs.compactMap(\.link).contains(expected))
     }
 
     @Test("Markdown linkifier returns stable attributed output from cache")

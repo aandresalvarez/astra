@@ -153,9 +153,9 @@ enum KanbanBoardDensity: String, CaseIterable, Identifiable {
             }
         case .done:
             switch self {
-            case .compact: return 220
-            case .comfortable: return 270
-            case .spacious: return 310
+            case .compact: return 200
+            case .comfortable: return 238
+            case .spacious: return 280
             }
         default:
             return columnWidth
@@ -702,6 +702,7 @@ struct KanbanBoardView: View {
                         }
                     }
                     .padding(.horizontal, 2)
+                    .padding(.trailing, 8)
                     .padding(.bottom, 6)
                 }
                 .coordinateSpace(name: kanbanBoardCoordinateSpace)
@@ -793,6 +794,10 @@ struct KanbanBoardView: View {
                 }
             )
 
+            Divider()
+                .frame(height: 18)
+                .opacity(0.35)
+
             // Customize menu now hosts the column-visibility toggles
             // (Show All Columns / Hide Empty) alongside density and
             // card details. They were standalone text buttons in the
@@ -830,9 +835,10 @@ struct KanbanBoardView: View {
                     Toggle("Show Details", isOn: $showCardDetails)
                 }
             } label: {
-                Label("Customize Board", systemImage: "slider.horizontal.3")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 26, height: 26)
+                Label("View", systemImage: "slider.horizontal.3")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .frame(height: 26)
+                    .padding(.horizontal, 7)
             }
             .menuStyle(.button)
             .buttonStyle(.borderless)
@@ -973,7 +979,7 @@ struct KanbanColumnView: View {
 
     private var emptyPlaceholderHeight: CGFloat {
         if isPersistentDropColumn {
-            return density == .compact ? 118 : 140
+            return density == .compact ? 88 : 104
         }
         return density == .spacious ? 92 : 72
     }
@@ -1213,13 +1219,8 @@ struct KanbanColumnView: View {
 
     private var columnHeader: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(category.color)
-                    .frame(width: 7, height: 7)
-                Text(category.rawValue)
-                    .font(Stanford.body(15).weight(.semibold))
-                    .foregroundStyle(.primary)
+            HStack(spacing: 8) {
+                KanbanColumnHeaderChip(category: category, count: tasks.count)
                 Spacer()
                 if let onClearAll, !tasks.isEmpty {
                     Button {
@@ -1239,7 +1240,6 @@ struct KanbanColumnView: View {
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isColumnHovered)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isTrashHovered)
                 }
-                KanbanCountBadge(count: tasks.count, tint: category.color)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -1286,7 +1286,7 @@ struct KanbanColumnView: View {
     private var emptyColumnPlaceholder: some View {
         VStack(spacing: isPersistentDropColumn ? 10 : 8) {
             Image(systemName: emptyIcon)
-                .font(Stanford.ui(isPersistentDropColumn ? 22 : 18, weight: .medium))
+                .font(Stanford.ui(isPersistentDropColumn ? 15 : 18, weight: .medium))
                 .foregroundStyle(isActiveDropTarget ? category.color : .secondary.opacity(0.75))
             Text(emptyTitle)
                 .font(Stanford.caption(isPersistentDropColumn ? 13 : 12).weight(.medium))
@@ -1335,6 +1335,38 @@ private struct KanbanCountBadge: View {
             .background(tint.opacity(count == 0 ? 0.06 : 0.12))
             .clipShape(RoundedRectangle(cornerRadius: Stanford.sidebarBadgeCornerRadius, style: .continuous))
             .accessibilityLabel("\(count) \(count == 1 ? "task" : "tasks")")
+    }
+}
+
+private struct KanbanColumnHeaderChip: View {
+    let category: KanbanCategory
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(category.color)
+                .frame(width: 7, height: 7)
+
+            Text(category.rawValue)
+                .font(Stanford.caption(13).weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text("\(count)")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(count == 0 ? .secondary : category.color)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(category.color.opacity(0.08))
+        .clipShape(Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(category.color.opacity(0.16), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(category.rawValue), \(count) \(count == 1 ? "task" : "tasks")")
     }
 }
 
@@ -1488,84 +1520,52 @@ struct KanbanTaskCardView: View {
     var isDragPreview = false
     @State private var isHovered = false
 
-    private var statusDotColor: Color {
-        switch task.status {
-        case .draft: return Stanford.driftwood
-        case .queued: return Stanford.queued
-        case .running: return Stanford.running
-        case .pendingUser: return Stanford.pendingUser
-        case .completed: return Stanford.completed
-        case .failed, .budgetExceeded: return Stanford.failed
-        case .cancelled: return Stanford.cancelled
-        }
-    }
-
     private var threadMessageLabel: String {
         let count = task.threadMessageCount
         return count == 1 ? "1 message" : "\(count) messages"
     }
 
-    /// Short outcome chip shown in the Review and Done lanes. Describes what
-    /// the *agent* did (its exit state) — the column describes what *you* have
-    /// done about it (triaged vs archived). Keeping those two signals lexically
-    /// separate is why the success chip reads "Agent done" rather than
-    /// "Completed": a "Done" column and a "Completed" chip were too similar.
-    private struct OutcomeChip {
-        let icon: String
+    /// Outcome metadata for the Review / Done lanes. The visual signal is the
+    /// card's leading accent bar; this label remains available for VoiceOver.
+    private struct OutcomeState {
         let label: String
         let color: Color
-        /// Hover tooltip — expands the chip into a full sentence explaining
-        /// what the agent exit state means and what the user can do next.
-        let help: String
     }
 
-    private var outcomeChip: OutcomeChip? {
+    private var outcomeState: OutcomeState? {
         switch task.status {
         case .pendingUser:
-            return OutcomeChip(
-                icon: "hand.raised.circle.fill",
+            return OutcomeState(
                 label: "Needs answer",
-                color: Stanford.pendingUser,
-                help: "The agent paused waiting for your input. Open the card to reply so it can resume."
+                color: Stanford.pendingUser
             )
         case .completed:
-            return OutcomeChip(
-                icon: "checkmark.circle.fill",
+            return OutcomeState(
                 label: "Agent done",
-                color: Stanford.completed,
-                help: "The agent finished its run without errors. Review the output to confirm, then move to Done to archive."
+                color: Stanford.completed
             )
         case .failed:
-            return OutcomeChip(
-                icon: "exclamationmark.triangle.fill",
+            return OutcomeState(
                 label: "Failed",
-                color: Stanford.failed,
-                help: "The agent hit an error and stopped. Open the card to see the failure — retry, or move to Done to dismiss."
+                color: Stanford.failed
             )
         case .cancelled:
-            return OutcomeChip(
-                icon: "xmark.circle.fill",
+            return OutcomeState(
                 label: "Cancelled",
-                color: Stanford.cancelled,
-                help: "You stopped this task before it finished. Requeue to retry, or move to Done to archive."
+                color: Stanford.cancelled
             )
         case .budgetExceeded:
-            return OutcomeChip(
-                icon: "dollarsign.circle.fill",
+            return OutcomeState(
                 label: "Budget",
-                color: Stanford.failed,
-                help: "The agent ran out of token budget before finishing. Raise the budget and retry, or archive to Done."
+                color: Stanford.failed
             )
         case .draft, .queued, .running:
             return nil
         }
     }
 
-    /// Show the chip only where it adds information: the Review column
-    /// (five outcomes share the lane) and Done (previously-filed cards still
-    /// carry their terminal status).
-    private var showsOutcomeChip: Bool {
-        (category == .review || category == .done) && outcomeChip != nil
+    private var showsOutcomeAccent: Bool {
+        (category == .review || category == .done) && outcomeState != nil
     }
 
     /// Colour for the left accent bar on Review cards — the outcome colour
@@ -1573,8 +1573,8 @@ struct KanbanTaskCardView: View {
     /// small slab of colour lets you spot a red/amber card in the lane
     /// without parsing the chip text.
     private var accentBarColor: Color {
-        if category == .review, let chip = outcomeChip {
-            return chip.color
+        if category == .review, let state = outcomeState {
+            return state.color
         }
         return category.color
     }
@@ -1602,6 +1602,10 @@ struct KanbanTaskCardView: View {
             base = task.title
         }
         return Self.shortenIdentifierTokens(base)
+    }
+
+    private var reservesMetadataRow: Bool {
+        showDetails || titleBadge != nil || category == .review || category == .done
     }
 
     /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
@@ -1648,43 +1652,34 @@ struct KanbanTaskCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: showDetails ? 10 : 0) {
-            if showDetails || titleBadge != nil || showsOutcomeChip {
+        VStack(alignment: .leading, spacing: reservesMetadataRow || showDetails ? 8 : 0) {
+            if reservesMetadataRow {
                 HStack(spacing: 8) {
-                    // Delegates rendering to the shared StatusPill so chip
-                    // styling can't drift from the sidebar / other sites.
-                    // The local `outcomeChip` metadata still drives the
-                    // accent-bar colour and accessibility summary below.
-                    if showsOutcomeChip, let chip = outcomeChip {
-                        StatusPill(
-                            icon: chip.icon,
-                            label: chip.label,
-                            color: chip.color,
-                            help: chip.help
-                        )
-                    }
-
                     if let titleBadge {
                         Text(titleBadge)
-                            .font(Stanford.caption(11).weight(.semibold))
-                            .foregroundStyle(category.color)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(category.color.opacity(0.13))
-                            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .font(Stanford.chatRaw(10).weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help("Ticket \(titleBadge)")
+                    } else {
+                        Color.clear
+                            .frame(height: 12)
                     }
 
-                    if showDetails {
+                    Spacer(minLength: 8)
+
+                    if showDetails || category == .review || category == .done {
                         // Compact relative date (3d / Apr 17 / Apr 17, 2025).
                         // Full timestamp surfaces in the tooltip — avoids
                         // every card spelling out the same long absolute
                         // date when most cards are a day or two apart.
                         Text(Formatters.relativeShort(task.updatedAt))
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .font(Stanford.caption(10).weight(.regular))
+                            .foregroundStyle(.tertiary)
                             .help(Formatters.fullDate(task.updatedAt))
                     }
                 }
+                .frame(height: 13)
             }
 
             Text(displayTitle)
@@ -1753,8 +1748,8 @@ struct KanbanTaskCardView: View {
     /// status is not encoded only by colour / column position.
     private var accessibilityLabelText: String {
         var parts: [String] = ["\(category.rawValue) task"]
-        if let chip = outcomeChip, showsOutcomeChip {
-            parts.append(chip.label)
+        if let state = outcomeState, showsOutcomeAccent {
+            parts.append(state.label)
         }
         if let badge = titleBadge {
             parts.append("identifier \(badge)")

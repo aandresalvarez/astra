@@ -350,6 +350,7 @@ struct StanfordButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var isPrimary: Bool = true
+    var color: Color = Stanford.cardinalRed
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
@@ -373,7 +374,7 @@ struct StanfordButtonStyle: ButtonStyle {
         if !isEnabled {
             return Stanford.fog.opacity(0.85)
         }
-        return isPrimary ? Stanford.cardinalRed : Stanford.cardBackground
+        return isPrimary ? color : Stanford.cardBackground
     }
 
     private var foregroundColor: Color {
@@ -387,7 +388,7 @@ struct StanfordButtonStyle: ButtonStyle {
         if !isEnabled {
             return Color.secondary.opacity(0.12)
         }
-        return isPrimary ? Stanford.cardinalRed.opacity(0.0) : Color.secondary.opacity(0.25)
+        return isPrimary ? color.opacity(0.0) : Color.secondary.opacity(0.25)
     }
 }
 
