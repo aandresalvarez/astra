@@ -779,8 +779,8 @@ struct TaskSidebarView: View {
                 }
 
                 if !regularWorkspaces.isEmpty {
-                    if !favoriteWorkspaces.isEmpty || visibleWorkspaces.count > 10 {
-                        workspaceGroupLabel(searchText.isEmpty ? "All workspaces" : "Other matches")
+                    if !searchText.isEmpty && (!favoriteWorkspaces.isEmpty || visibleWorkspaces.count > 10) {
+                        workspaceGroupLabel("Other matches")
                     }
                     ForEach(regularWorkspaces) { workspace in
                         workspaceListRow(for: workspace, using: taskIndex)
