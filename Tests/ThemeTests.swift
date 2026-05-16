@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import SwiftUI
 import AppKit
 @testable import ASTRA
@@ -34,6 +35,25 @@ struct ThemeTests {
         abs(a.r - b.r) < tolerance
             && abs(a.g - b.g) < tolerance
             && abs(a.b - b.b) < tolerance
+    }
+
+    private func relativeLuminance(hex: UInt) -> Double {
+        func channel(_ shift: UInt) -> Double {
+            let srgb = Double((hex >> shift) & 0xFF) / 255.0
+            return srgb <= 0.03928
+                ? srgb / 12.92
+                : pow((srgb + 0.055) / 1.055, 2.4)
+        }
+
+        return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    private func contrastRatio(_ foreground: UInt, _ background: UInt) -> Double {
+        let first = relativeLuminance(hex: foreground)
+        let second = relativeLuminance(hex: background)
+        let lighter = max(first, second)
+        let darker = min(first, second)
+        return (lighter + 0.05) / (darker + 0.05)
     }
 
     @Test("Brand colors resolve to different values in light vs dark")
@@ -102,6 +122,20 @@ struct ThemeTests {
                 )
             }
         }
+    }
+
+    @Test("Chat reading text meets paragraph contrast targets")
+    func chatReadingTextMeetsContrastTargets() {
+        #expect(contrastRatio(Stanford.readingTextLightHex, 0xFFFFFF) >= 4.5)
+        #expect(contrastRatio(Stanford.readingTextLightHex, Stanford.warmCanvasLightHex) >= 4.5)
+        #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
+    }
+
+    @Test("Bundled Stanford typography fonts are packaged")
+    func bundledTypographyFontsArePackaged() {
+        let filenames = Set(StanfordFontRegistrar.bundledFontURLs().map(\.lastPathComponent))
+
+        #expect(filenames == Set(StanfordFontRegistrar.bundledFontResourceNames))
     }
 }
 

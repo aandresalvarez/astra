@@ -219,6 +219,7 @@ public struct ASTRAApp: App {
         // Bring app to foreground when launched from terminal via `swift run`
         NSApplication.shared.setActivationPolicy(.regular)
         let resourceBundle = AstraResourceBundle.current
+        StanfordFontRegistrar.registerBundledFonts(bundle: resourceBundle)
         if let iconURL = resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
             ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {

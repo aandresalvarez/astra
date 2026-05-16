@@ -21,6 +21,13 @@ enum Stanford {
     )
     static let white = Color.white
     static let black = Color.primary
+    static let readingTextLightHex: UInt = 0x2E2D29
+    static let readingTextDarkHex: UInt = 0xE7E1D8
+    static let warmCanvasLightHex: UInt = 0xF8F6F2
+    static let readingText = Color(
+        light: readingTextLightHex,  // warm charcoal for long-form reading
+        dark:  readingTextDarkHex    // warm off-white tuned for dark surfaces
+    )
 
     // MARK: - Secondary Colors
     static let coolGrey = Color.secondary
@@ -120,18 +127,26 @@ enum Stanford {
     }
 
     // MARK: - Stanford Identity Typefaces
-    // Primary: Source Sans Pro (UI/body), Source Serif Pro (headings)
+    // Primary: Source Sans 3 (UI/body), Source Serif 4 (headings/excerpts)
     // Accent: Roboto Mono (code)
-    // Tracking: -10 (1/1000 em) for body text
+    // Tracking: use platform-default optical kerning; do not add letter spacing.
     // Leading: point size + 2–4pt
     // https://identity.stanford.edu/design-elements/typography/
 
-    private static let sansFamily = "Source Sans Pro"
-    private static let serifFamily = "Source Serif Pro"
-    private static let monoFamily = "Roboto Mono"
+    static let sansFamily = "Source Sans 3"
+    static let serifFamily = "Source Serif 4"
+    static let monoFamily = "Roboto Mono"
 
-    private static func brandFont(family: String, size: CGFloat, weight: Font.Weight) -> Font {
-        .custom(family, size: size).weight(weight)
+    private static func brandFont(
+        family: String,
+        size: CGFloat,
+        weight: Font.Weight,
+        fallbackDesign: Font.Design = .default
+    ) -> Font {
+        if NSFontManager.shared.availableFontFamilies.contains(family) {
+            return .custom(family, size: size).weight(weight)
+        }
+        return .system(size: size, weight: weight, design: fallbackDesign)
     }
 
     // MARK: - Typography Helpers
@@ -153,10 +168,10 @@ enum Stanford {
     ) -> Font {
         let finalSize = scaled(normalizedFontSize(size, minimum: minimum))
         if design == .monospaced {
-            return brandFont(family: monoFamily, size: finalSize, weight: weight)
+            return brandFont(family: monoFamily, size: finalSize, weight: weight, fallbackDesign: .monospaced)
         }
         if design == .serif {
-            return brandFont(family: serifFamily, size: finalSize, weight: weight)
+            return brandFont(family: serifFamily, size: finalSize, weight: weight, fallbackDesign: .serif)
         }
         if design == .rounded {
             return .system(size: finalSize, weight: weight, design: .rounded)
@@ -166,7 +181,7 @@ enum Stanford {
 
     static func heading(_ size: CGFloat = 22, weight: Font.Weight = .semibold) -> Font {
         let finalSize = scaled(normalizedFontSize(size))
-        return brandFont(family: serifFamily, size: finalSize, weight: weight)
+        return brandFont(family: serifFamily, size: finalSize, weight: weight, fallbackDesign: .serif)
     }
 
     static func body(_ size: CGFloat = 15) -> Font {
@@ -181,9 +196,34 @@ enum Stanford {
         ui(size, design: .monospaced, minimum: 10)
     }
 
-    /// Stanford Identity tracking: -10/1000 em converted to points.
+    static let chatBodyPointSize: CGFloat = 16
+    static let chatBodyLineSpacing: CGFloat = 4
+    static let chatCompactLineSpacing: CGFloat = 3
+    static let chatParagraphMaxWidth: CGFloat = 1280
+
+    static func chatBody(_ size: CGFloat = chatBodyPointSize) -> Font {
+        ui(size)
+    }
+
+    static func chatMeta(_ size: CGFloat = 11) -> Font {
+        caption(size)
+    }
+
+    static func chatSection(_ size: CGFloat = 12) -> Font {
+        caption(size)
+    }
+
+    static func chatRaw(_ size: CGFloat = 12) -> Font {
+        mono(size)
+    }
+
+    static func documentExcerpt(_ size: CGFloat = 15) -> Font {
+        ui(size, design: .serif)
+    }
+
+    /// Keep letter spacing neutral in app UI; platform optical kerning handles readability.
     static func bodyTracking(for fontSize: CGFloat) -> CGFloat {
-        (-10.0 / 1000.0) * fontSize
+        0
     }
 
     // MARK: - Radii Scale

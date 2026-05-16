@@ -777,13 +777,13 @@ struct ChatPanelView: View {
                 Spacer(minLength: 120)
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(msg.content)
-                        .font(Stanford.ui(15))
-                        .lineSpacing(5)
+                        .font(Stanford.chatBody())
+                        .lineSpacing(Stanford.chatBodyLineSpacing)
                         .textSelection(.enabled)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
-                        .background(Stanford.cardinalRed.opacity(0.08))
-                        .foregroundStyle(Stanford.black)
+                        .background(Stanford.sky.opacity(0.055))
+                        .foregroundStyle(Stanford.readingText)
                         .clipShape(UnevenRoundedRectangle(
                             topLeadingRadius: 16,
                             bottomLeadingRadius: 16,
@@ -797,11 +797,11 @@ struct ChatPanelView: View {
                                 bottomTrailingRadius: 4,
                                 topTrailingRadius: 16
                             )
-                            .stroke(Stanford.cardinalRed.opacity(0.15), lineWidth: 1)
+                            .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
                         )
 
                     Text(msg.timestamp, style: .time)
-                        .font(Stanford.caption(11))
+                        .font(Stanford.chatMeta())
                         .foregroundStyle(.tertiary)
                         .padding(.trailing, 4)
                 }
@@ -822,12 +822,9 @@ struct ChatPanelView: View {
         } else {
             // AI response — flows directly on background, no card
             VStack(alignment: .leading, spacing: 6) {
-                Text(markdownAttributed(msg.content))
-                    .font(Stanford.ui(15))
-                    .foregroundStyle(Stanford.black)
-                    .textSelection(.enabled)
-                    .lineSpacing(6)
+                MarkdownTextView(text: msg.content, maxContentWidth: Stanford.chatParagraphMaxWidth)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
 
                 // Action icons + timestamp
                 HStack(spacing: 14) {
@@ -855,7 +852,7 @@ struct ChatPanelView: View {
                     Spacer()
 
                     Text(msg.timestamp, style: .time)
-                        .font(Stanford.caption(11))
+                        .font(Stanford.chatMeta())
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -1008,7 +1005,7 @@ struct ChatPanelView: View {
 
                 TextField("Describe a task or ask a question...", text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(Stanford.ui(17))
+                    .font(Stanford.chatBody())
                     .lineLimit(2...10)
                     .focused($isComposerFocused)
                     .padding(.horizontal, 18)
@@ -2453,11 +2450,6 @@ struct ChatPanelView: View {
         }
     }
 
-    private func markdownAttributed(_ text: String) -> AttributedString {
-        MarkdownLinkifier.markdownAttributed(text)
-    }
-
-
 }
 
 // MARK: - Spec Card (editable review of extracted spec)
@@ -2830,14 +2822,19 @@ struct ChatBubbleView: View {
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                 Text(event.payload)
-                    .font(Stanford.body())
+                    .font(Stanford.chatBody())
+                    .lineSpacing(Stanford.chatBodyLineSpacing)
                     .padding(10)
-                    .background(isUser ? Stanford.cardinalRed : Stanford.fog)
-                    .foregroundStyle(isUser ? .white : Stanford.black)
+                    .background(isUser ? Stanford.sky.opacity(0.055) : Stanford.fog)
+                    .foregroundStyle(Stanford.readingText)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(isUser ? Stanford.sky.opacity(0.11) : Color.clear, lineWidth: 1)
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 Text(event.timestamp, style: .time)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.chatMeta())
                     .foregroundStyle(.tertiary)
             }
 
