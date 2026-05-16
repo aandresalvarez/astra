@@ -229,13 +229,13 @@ private struct ShelfBoundaryOverlay: View {
     let metrics: ShelfBoundaryMetrics
 
     var body: some View {
-        if metrics.isVisible && metrics.isResizing {
+        if metrics.isVisible {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(spacing: 0) {
                     Rectangle()
-                        .fill(Stanford.lagunita.opacity(0.95))
-                        .frame(width: 3)
+                        .fill(borderColor)
+                        .frame(width: borderWidth)
                     Spacer(minLength: 0)
                 }
                 .frame(width: metrics.width)
@@ -245,11 +245,45 @@ private struct ShelfBoundaryOverlay: View {
             .allowsHitTesting(false)
         }
     }
+
+    private var borderColor: Color {
+        metrics.isResizing ? Stanford.lagunita.opacity(0.95) : Color.primary.opacity(0.12)
+    }
+
+    private var borderWidth: CGFloat {
+        metrics.isResizing ? 3 : 1
+    }
 }
 
 private extension View {
     func shelfBoundaryOverlay() -> some View {
         modifier(ShelfBoundaryOverlayModifier())
+    }
+}
+
+// Width-driven panel transition: panel content is rendered at its full natural
+// width and revealed via a mask that grows from the leading edge to the
+// trailing edge. Reads as "unfold" rather than "slide-in" because nothing
+// translates — the content stays where it'll finally land.
+private struct WidthRevealModifier: ViewModifier, Animatable {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .mask {
+                GeometryReader { proxy in
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .frame(width: max(0, proxy.size.width * progress))
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
     }
 }
 
@@ -532,11 +566,11 @@ struct ContentView: View {
     }
 
     private var compactPanelMutualExclusionWidth: CGFloat {
-        1_280
+        PanelLayoutGeometry.compactPanelMutualExclusionWidth
     }
 
     private var isCompactPanelLayout: Bool {
-        responsiveLayoutWidth > 0 && responsiveLayoutWidth < compactPanelMutualExclusionWidth
+        PanelLayoutGeometry.isCompactPanelLayout(width: responsiveLayoutWidth)
     }
 
     private var hasRightSidePanelPresented: Bool {
@@ -594,11 +628,6 @@ struct ContentView: View {
         } else {
             splitLayout
         }
-    }
-
-    @ViewBuilder
-    private var rootLayoutWithPanelRail: some View {
-        rootLayout
     }
 
     private var splitLayout: some View {
@@ -690,7 +719,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        rootLayoutWithPanelRail
+        rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
         .astraWindowChrome()
@@ -767,7 +796,11 @@ struct ContentView: View {
                         )
                         .foregroundStyle(topRightActions.isRightRailVisible ? Stanford.lagunita : Color.primary)
                     }
-                    .help(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
+                    // Restores the Cmd-Opt-I shortcut that SwiftUI's built-in
+                    // `.inspector(isPresented:)` modifier used to provide; we
+                    // dropped that modifier when moving to a custom HStack column.
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .help(topRightActions.isRightRailVisible ? "Hide Control Panel (⌥⌘I)" : "Show Control Panel (⌥⌘I)")
                     .accessibilityIdentifier("ControlPanelToolbarButton")
                 }
             }
@@ -2351,129 +2384,6 @@ private struct ContentToolbar: ToolbarContent {
     }
 }
 
-private enum WorkspacePanelRailItem: String, Identifiable {
-    case plan
-    case text
-    case browser
-    case query
-
-    var id: String { rawValue }
-}
-
-private struct WorkspacePanelRail: View {
-    let actions: WorkspaceTopRightActions
-    let onToggleCanvas: () -> Void
-    let onToggleMarkdown: () -> Void
-    let onToggleBrowser: () -> Void
-    let onToggleQuery: () -> Void
-
-    @State private var hoveredItem: WorkspacePanelRailItem?
-
-    var body: some View {
-        VStack(spacing: 8) {
-            railButton(
-                item: .browser,
-                title: actions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
-                systemImage: "globe",
-                isActive: actions.isBrowserShelfVisible,
-                action: onToggleBrowser
-            )
-
-            if actions.canShowPlanShelf {
-                railButton(
-                    item: .plan,
-                    title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                    systemImage: "list.bullet.clipboard",
-                    isActive: actions.isPlanShelfVisible,
-                    action: onToggleCanvas
-                )
-            }
-
-            if actions.canShowTextShelf {
-                railButton(
-                    item: .text,
-                    title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
-                    systemImage: "doc.text",
-                    isActive: actions.isTextShelfVisible,
-                    action: onToggleMarkdown
-                )
-            }
-
-            if actions.canShowQueryShelf {
-                railButton(
-                    item: .query,
-                    title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                    systemImage: "cylinder.split.1x2",
-                    isActive: actions.isQueryShelfVisible,
-                    action: onToggleQuery
-                )
-            }
-        }
-        .padding(6)
-        .background(.bar, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 16, x: 0, y: 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("WorkspacePanelRail")
-    }
-
-    @ViewBuilder
-    private func railButton(
-        item: WorkspacePanelRailItem,
-        title: String,
-        systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: isActive ? .semibold : .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isActive ? Stanford.lagunita : Color.secondary)
-                .frame(width: 32, height: 32)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(buttonFill(isActive: isActive, isHovered: hoveredItem == item))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(buttonStroke(isActive: isActive, isHovered: hoveredItem == item), lineWidth: 1)
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-        .accessibilityIdentifier("WorkspacePanelRail-\(item.rawValue)")
-        .onHover { isHovered in
-            hoveredItem = isHovered ? item : nil
-        }
-    }
-
-    private func buttonFill(isActive: Bool, isHovered: Bool) -> Color {
-        if isActive {
-            return Stanford.lagunita.opacity(0.16)
-        }
-        if isHovered {
-            return Color.primary.opacity(0.08)
-        }
-        return Color.clear
-    }
-
-    private func buttonStroke(isActive: Bool, isHovered: Bool) -> Color {
-        if isActive {
-            return Stanford.lagunita.opacity(0.34)
-        }
-        if isHovered {
-            return Color.primary.opacity(0.12)
-        }
-        return Color.clear
-    }
-}
-
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
     let effectiveWorkspace: Workspace?
@@ -2531,32 +2441,62 @@ private struct ContentDetailAreaView: View {
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
 
+    private static let inspectorColumnWidth: CGFloat = PanelLayoutGeometry.inspectorColumnWidth
+    private static let inspectorMinColumnWidth: CGFloat = 320
+    private static let contentMinWidth: CGFloat = 480
+
     var body: some View {
-        contentWithOptionalCanvas
+        HStack(spacing: 0) {
+            contentWithOptionalCanvas
+                .frame(minWidth: Self.contentMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+
+            // Group with stable identity so the canvasTransition fires only on
+            // `isRightRailPresented` flips — never on workspace id swaps.
+            // The `.id(workspace.id)` stays on the inner view so workspace
+            // changes still rebuild the inspector, just without the width-reveal.
+            Group {
+                if isRightRailPresented, let workspace = effectiveWorkspace {
+                    WorkspaceRightRailView(
+                        workspace: workspace,
+                        onConfigure: onConfigure,
+                        onEditWorkspace: onEditWorkspace,
+                        onShowDashboard: onShowDashboard,
+                        onShowLogs: onShowLogs,
+                        onNewSchedule: onNewSchedule,
+                        onEditSchedule: onEditSchedule,
+                        onManageCapabilities: onManageCapabilities,
+                        onOpenConfigureTab: onOpenConfigureTab,
+                        onOpenCapabilityPackage: onOpenCapabilityPackage,
+                        onNewSSHConnection: onNewSSHConnection,
+                        onEditSSHConnection: onEditSSHConnection,
+                        sshReloadTrigger: sshReloadTrigger
+                    )
+                    .id(workspace.id)
+                    .frame(
+                        minWidth: Self.inspectorMinColumnWidth,
+                        idealWidth: Self.inspectorColumnWidth,
+                        maxWidth: Self.inspectorColumnWidth
+                    )
+                    .background(.bar, ignoresSafeAreaEdges: .top)
+                    .overlay(alignment: .leading) {
+                        // Skip the divider when a shelf is also visible — the
+                        // shelf's trailing edge already supplies the boundary
+                        // line, so drawing ours too produces a 2pt double-seam.
+                        if activeCanvasItem == nil {
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.12))
+                                .frame(width: 1)
+                                .ignoresSafeArea(.all, edges: .top)
+                        }
+                    }
+                    .shadow(color: .black.opacity(0.06), radius: 12, x: -3, y: 0)
+                }
+            }
+            .transition(canvasTransition)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(panelAnimation, value: activeCanvasItem)
         .animation(inspectorAnimation, value: isRightRailPresented)
-        .inspector(isPresented: $isRightRailPresented) {
-            if let workspace = effectiveWorkspace {
-                WorkspaceRightRailView(
-                    workspace: workspace,
-                    onConfigure: onConfigure,
-                    onEditWorkspace: onEditWorkspace,
-                    onShowDashboard: onShowDashboard,
-                    onShowLogs: onShowLogs,
-                    onNewSchedule: onNewSchedule,
-                    onEditSchedule: onEditSchedule,
-                    onManageCapabilities: onManageCapabilities,
-                    onOpenConfigureTab: onOpenConfigureTab,
-                    onOpenCapabilityPackage: onOpenCapabilityPackage,
-                    onNewSSHConnection: onNewSSHConnection,
-                    onEditSSHConnection: onEditSSHConnection,
-                    sshReloadTrigger: sshReloadTrigger
-                )
-                .id(workspace.id)
-                .inspectorColumnWidth(min: 340, ideal: 460, max: 460)
-            }
-        }
     }
 
     private var panelAnimation: Animation? {
@@ -2571,9 +2511,19 @@ private struct ContentDetailAreaView: View {
         if reduceMotion {
             return .opacity
         }
+        return .modifier(
+            active: WidthRevealModifier(progress: 0),
+            identity: WidthRevealModifier(progress: 1)
+        )
+    }
+
+    private var innerShelfContentTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
         return .asymmetric(
-            insertion: .move(edge: .trailing).combined(with: .opacity),
-            removal: .move(edge: .trailing).combined(with: .opacity)
+            insertion: .opacity.animation(.easeOut(duration: 0.24).delay(0.06)),
+            removal: .opacity.animation(.easeIn(duration: 0.16))
         )
     }
 
@@ -2597,7 +2547,18 @@ private struct ContentDetailAreaView: View {
                     .frame(width: detailWidth, height: proxy.size.height)
                     .clipped()
 
-                canvasContent(for: item)
+                // Chrome wrapper keeps a stable identity across shelf switches so its
+                // width-reveal transition only fires on nil↔set, never on item↔item.
+                // Inner content has its own per-item identity so swapping shelves
+                // cross-fades inside the same chrome instead of close+reopen.
+                // Outgoing fades out faster than incoming fades in, so the new
+                // shelf settles cleanly without a muddy 50%-opacity midpoint.
+                ZStack {
+                    canvasContent(for: item)
+                        .id(item)
+                        .transition(innerShelfContentTransition)
+                }
+                .compositingGroup()
                 .frame(width: panelWidth, height: proxy.size.height)
                 // .bar extends behind toolbar; Stanford.panelBackground would stop at the toolbar boundary.
                 .background(.bar, ignoresSafeAreaEdges: .top)
@@ -2647,10 +2608,17 @@ private struct ContentDetailAreaView: View {
     }
 
     private func clampedShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
-        let minimumDetailWidth: CGFloat = item == .browser ? 520 : 420
-        let maximumUsableWidth = max(item.minWidth, availableWidth - minimumDetailWidth)
-        let maximumWidth = min(item.maxWidth, maximumUsableWidth)
-        return min(max(width, item.minWidth), maximumWidth)
+        PanelLayoutGeometry.clampedShelfWidth(
+            width,
+            shelfMinWidth: item.minWidth,
+            shelfMaxWidth: item.maxWidth,
+            minimumDetailWidth: minimumDetailWidth(for: item),
+            availableWidth: availableWidth
+        )
+    }
+
+    private func minimumDetailWidth(for item: WorkspaceCanvasItem) -> CGFloat {
+        item == .browser ? 520 : 420
     }
 
     private func storeShelfWidth(_ width: CGFloat, for item: WorkspaceCanvasItem, availableWidth: CGFloat) {
