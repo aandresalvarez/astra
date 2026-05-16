@@ -541,7 +541,7 @@ struct AstraBrowserTool {
                 "astra-browser trace",
                 "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
-                "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size n]",
+                "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size chars]",
                 "astra-browser page [--query text] [--limit n]",
                 "astra-browser snapshot --mode summary|text|controls|full [--query text] [--limit n]",
                 "astra-browser locator --role button --name Save",

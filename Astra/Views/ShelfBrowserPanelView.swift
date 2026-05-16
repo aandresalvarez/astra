@@ -1278,7 +1278,7 @@ struct ShelfBrowserPanelView: View {
         guard session.isAgentBridgeEnabled else {
             return "Turn on Agent control when you want the task to inspect or operate this page."
         }
-        guard session.lastPageReadURL == session.currentURL,
+        guard readURLMatchesCurrentPage(session.lastPageReadURL, session.currentURL),
               let coverage = session.lastPageReadCoverage else {
             return "The current task can operate this page. Content readability will be verified when the task reads it."
         }
@@ -1290,6 +1290,20 @@ struct ShelfBrowserPanelView: View {
         default:
             return "ASTRA could not verify readable page content yet. The task can still use browser controls."
         }
+    }
+
+    private func readURLMatchesCurrentPage(_ readURL: String?, _ currentURL: String) -> Bool {
+        guard let readURL, !readURL.isEmpty else { return false }
+        if readURL == currentURL {
+            return true
+        }
+        return urlWithoutFragment(readURL) == urlWithoutFragment(currentURL)
+    }
+
+    private func urlWithoutFragment(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return value }
+        components.fragment = nil
+        return components.string ?? value
     }
 
     private var controlledTechnicalSummary: String {

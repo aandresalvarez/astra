@@ -210,6 +210,7 @@ enum BrowserAutomationScripts {
             broadcastPageReadRequest(request);
           };
           window.addEventListener("message", (event) => {
+            if (window.parent === window || event.source !== window.parent) return;
             const request = event.data || {};
             if (request.__astraPageRead !== true || !request.requestID) return;
             window.__astraPageReadHandleRequest(request);
@@ -229,12 +230,11 @@ enum BrowserAutomationScripts {
             parentFrameID: "",
             limit: \(max(1_000, limit))
           };
-          if (typeof window.__astraPageReadHandleRequest === "function") {
+          let dispatched = typeof window.__astraPageReadHandleRequest === "function";
+          if (dispatched) {
             window.__astraPageReadHandleRequest(request);
-          } else {
-            window.postMessage(request, "*");
           }
-          return JSON.stringify({ ok: true, requestID: request.requestID, url: location.href, title: document.title });
+          return JSON.stringify({ ok: true, dispatched, requestID: request.requestID, url: location.href, title: document.title });
         })()
         """
     }

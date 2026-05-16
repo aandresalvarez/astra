@@ -70,12 +70,14 @@ enum BrowserPageReadService {
             warnings.append("One or more frame reads were truncated.")
         }
 
-        let combined = combinedContent(
+        let combinedResult = combinedContent(
             frames: frames,
             pageTitle: title,
             pageURL: url,
             format: normalizedFormat
         )
+        warnings.append(contentsOf: combinedResult.warnings)
+        let combined = combinedResult.text
         let limitedContent: String
         let combinedTruncated: Bool
         if combined.count > contentLimit {
@@ -94,6 +96,9 @@ enum BrowserPageReadService {
         if !hasReadableFrame {
             coverage = "unknown"
         } else if hasPartialFrame || anyFrameTruncated || combinedTruncated || !warnings.isEmpty {
+            // Warnings intentionally downgrade coverage. Canvas-heavy surfaces such as
+            // Google Workspace editors can be readable through helpers while still being
+            // incomplete through generic DOM/AX page reads.
             coverage = "partial"
         } else {
             coverage = "full"
@@ -131,7 +136,8 @@ enum BrowserPageReadService {
         format: String?,
         limit: Int?,
         chunkSize: Int?,
-        warnings: [String] = []
+        warnings: [String] = [],
+        diagnostics: [String: Any] = ["source": "snapshot"]
     ) -> [String: Any] {
         let text = snapshot["text"] as? String ?? ""
         let frame: [String: Any] = [
@@ -153,7 +159,8 @@ enum BrowserPageReadService {
             limit: limit,
             chunkSize: chunkSize,
             frames: [frame],
-            warnings: warnings
+            warnings: warnings,
+            diagnostics: diagnostics
         )
     }
 
@@ -191,9 +198,22 @@ enum BrowserPageReadService {
         pageTitle: String,
         pageURL: String,
         format: String
-    ) -> String {
+    ) -> (text: String, warnings: [String]) {
         let readableFrames = frames.filter { boolValue($0["accessible"]) && !(($0["text"] as? String ?? "").isEmpty) }
-        guard !readableFrames.isEmpty else { return "" }
+        guard !readableFrames.isEmpty else { return ("", []) }
+
+        let textContent = readableFrames.enumerated().map { index, frame in
+            let title = frame["title"] as? String ?? ""
+            let url = frame["url"] as? String ?? ""
+            let text = frame["text"] as? String ?? ""
+            if format == "markdown" {
+                let heading = index == 0 ? "# \(title.isEmpty ? "Page" : title)" : "## Frame \(index + 1): \(title.isEmpty ? url : title)"
+                let source = url.isEmpty ? "" : "\n\nSource: \(url)"
+                return "\(heading)\(source)\n\n\(text)"
+            }
+            let heading = index == 0 ? "Page: \(title.isEmpty ? url : title)" : "Frame \(index + 1): \(title.isEmpty ? url : title)"
+            return "\(heading)\n\(url)\n\n\(text)"
+        }.joined(separator: "\n\n---\n\n")
 
         if format == "json" {
             let object: [String: Any] = [
@@ -209,22 +229,12 @@ enum BrowserPageReadService {
             ]
             if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
                let string = String(data: data, encoding: .utf8) {
-                return string
+                return (string, [])
             }
+            return (textContent, ["Requested JSON format unavailable; returned text instead."])
         }
 
-        return readableFrames.enumerated().map { index, frame in
-            let title = frame["title"] as? String ?? ""
-            let url = frame["url"] as? String ?? ""
-            let text = frame["text"] as? String ?? ""
-            if format == "markdown" {
-                let heading = index == 0 ? "# \(title.isEmpty ? "Page" : title)" : "## Frame \(index + 1): \(title.isEmpty ? url : title)"
-                let source = url.isEmpty ? "" : "\n\nSource: \(url)"
-                return "\(heading)\(source)\n\n\(text)"
-            }
-            let heading = index == 0 ? "Page: \(title.isEmpty ? url : title)" : "Frame \(index + 1): \(title.isEmpty ? url : title)"
-            return "\(heading)\n\(url)\n\n\(text)"
-        }.joined(separator: "\n\n---\n\n")
+        return (textContent, [])
     }
 
     private static func chunks(_ text: String, chunkSize: Int) -> [[String: Any]] {

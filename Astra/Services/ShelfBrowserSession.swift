@@ -242,6 +242,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let pageReadHandler = WeakPageReadMessageHandler()
+        // Keep the lightweight reporter installed in the preview WebView even when
+        // Controlled mode is active, so switching back to Embedded does not require
+        // rebuilding WebKit configuration or reloading the page.
         configuration.userContentController.addUserScript(WKUserScript(
             source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
             injectionTime: .atDocumentEnd,
@@ -976,7 +979,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     [
                         "method": "GET",
                         "path": "/readPage",
-                        "query": ["format": "text|markdown|json", "limit": "optional number", "chunkSize": "optional number"],
+                        "query": ["format": "text|markdown|json", "limit": "optional character count", "chunkSize": "optional character count"],
                         "description": "Read page content with explicit coverage, truncation, frame, and warning metadata. Prefer this for content questions; use analyze for action planning."
                     ],
                     [
@@ -1967,7 +1970,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "frame_count": String(Self.intValue(response["frameCount"]) ?? 0),
                     "truncated": String(Self.boolValue(response["truncated"]))
                 ],
-                resultJSON: try Self.jsonString(response),
+                resultJSON: #"{"ok":true}"#,
                 started: started
             )
             return response
@@ -1991,7 +1994,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func readEmbeddedPage(format: String, limit: Int, chunkSize: Int) async throws -> [String: Any] {
         let requestID = UUID().uuidString
-        let frames = await embeddedPageReadFrames(requestID: requestID, limit: limit)
+        let readResult = await embeddedPageReadFrames(requestID: requestID, limit: limit)
+        let frames = readResult.frames
         let expandedFrames = embeddedFramesWithMissingChildren(frames)
         if expandedFrames.isEmpty {
             let snapshot = try await rawSnapshotObject()
@@ -2004,7 +2008,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 chunkSize: chunkSize,
                 warnings: [
                     "Embedded frame reporter returned no frame reports; fell back to compact snapshot text."
-                ]
+                ] + readResult.warnings
             )
         }
 
@@ -2017,31 +2021,44 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             limit: limit,
             chunkSize: chunkSize,
             frames: expandedFrames,
-            warnings: embeddedPageReadWarnings(for: expandedFrames)
+            warnings: readResult.warnings + embeddedPageReadWarnings(for: expandedFrames)
         )
     }
 
-    private func embeddedPageReadFrames(requestID: String, limit: Int) async -> [[String: Any]] {
-        await withCheckedContinuation { continuation in
-            let timeoutTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 750_000_000)
+    private func embeddedPageReadFrames(requestID: String, limit: Int) async -> EmbeddedPageReadResult {
+        let pendingDispatchWarning = "Embedded page read dispatch did not complete before the read finished; reporter readiness is unknown."
+        let reporterNotReadyWarning = "Embedded page read reporter was not ready; no frame reports were dispatched."
+        return await withCheckedContinuation { continuation in
+            let hardTimeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 self?.finishEmbeddedPageReadRequest(requestID)
             }
             embeddedPageReadRequests[requestID] = EmbeddedPageReadRequest(
                 frames: [],
+                warnings: [pendingDispatchWarning],
                 continuation: continuation,
-                timeoutTask: timeoutTask
+                inactivityTask: nil,
+                hardTimeoutTask: hardTimeoutTask
             )
+            scheduleEmbeddedPageReadInactivityFinish(requestID, delayNanoseconds: 750_000_000)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    _ = try await self.evaluateJavaScriptString(
+                    let dispatchJSON = try await self.evaluateJavaScriptString(
                         BrowserAutomationScripts.embeddedPageReadDispatchScript(
                             requestID: requestID,
                             limit: limit
                         )
                     )
+                    let dispatch = try? Self.jsonObject(from: dispatchJSON)
+                    if !Self.boolValue(dispatch?["dispatched"]) {
+                        self.removeEmbeddedPageReadWarning(requestID, pendingDispatchWarning)
+                        self.appendEmbeddedPageReadWarning(requestID, reporterNotReadyWarning)
+                    } else {
+                        self.removeEmbeddedPageReadWarning(requestID, pendingDispatchWarning)
+                    }
                 } catch {
+                    self.removeEmbeddedPageReadWarning(requestID, pendingDispatchWarning)
                     self.appendEmbeddedPageReadFrame([
                         "requestID": requestID,
                         "frameID": "main",
@@ -2056,6 +2073,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
+    private func appendEmbeddedPageReadWarning(_ requestID: String, _ warning: String) {
+        guard var request = embeddedPageReadRequests[requestID] else { return }
+        request.warnings.append(warning)
+        embeddedPageReadRequests[requestID] = request
+    }
+
+    private func removeEmbeddedPageReadWarning(_ requestID: String, _ warning: String) {
+        guard var request = embeddedPageReadRequests[requestID] else { return }
+        request.warnings.removeAll { $0 == warning }
+        embeddedPageReadRequests[requestID] = request
+    }
+
     private func appendEmbeddedPageReadFrame(_ frame: [String: Any]) {
         guard let requestID = frame["requestID"] as? String,
               var request = embeddedPageReadRequests[requestID] else {
@@ -2065,12 +2094,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         normalized.removeValue(forKey: "requestID")
         request.frames.append(normalized)
         embeddedPageReadRequests[requestID] = request
+        scheduleEmbeddedPageReadInactivityFinish(requestID, delayNanoseconds: 250_000_000)
+    }
+
+    private func scheduleEmbeddedPageReadInactivityFinish(_ requestID: String, delayNanoseconds: UInt64) {
+        guard var request = embeddedPageReadRequests[requestID] else { return }
+        request.inactivityTask?.cancel()
+        request.inactivityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            self?.finishEmbeddedPageReadRequest(requestID)
+        }
+        embeddedPageReadRequests[requestID] = request
     }
 
     private func finishEmbeddedPageReadRequest(_ requestID: String) {
         guard let request = embeddedPageReadRequests.removeValue(forKey: requestID) else { return }
-        request.timeoutTask?.cancel()
-        request.continuation.resume(returning: request.frames)
+        request.inactivityTask?.cancel()
+        request.hardTimeoutTask?.cancel()
+        request.continuation.resume(returning: EmbeddedPageReadResult(
+            frames: request.frames,
+            warnings: request.warnings
+        ))
     }
 
     fileprivate func handleEmbeddedPageReadMessage(_ body: Any) {
@@ -6015,8 +6059,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private struct EmbeddedPageReadRequest {
         var frames: [[String: Any]]
-        let continuation: CheckedContinuation<[[String: Any]], Never>
-        let timeoutTask: Task<Void, Never>?
+        var warnings: [String]
+        let continuation: CheckedContinuation<EmbeddedPageReadResult, Never>
+        var inactivityTask: Task<Void, Never>?
+        let hardTimeoutTask: Task<Void, Never>?
+    }
+
+    private struct EmbeddedPageReadResult {
+        let frames: [[String: Any]]
+        let warnings: [String]
     }
 
     private final class WeakPageReadMessageHandler: NSObject, WKScriptMessageHandler {

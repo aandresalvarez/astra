@@ -700,6 +700,9 @@ final class ControlledBrowserController: ObservableObject {
         var warnings: [String] = []
         var diagnostics: [String: Any] = [:]
         var frames: [[String: Any]] = []
+        var observedEvents: [[String: Any]] = []
+        var attachedSessionIDs: [String] = []
+        var readOOPIFTargetIDs = Set<String>()
         var pageSessionID: String?
 
         if let targetID = page.id, browserSocket != page.webSocketDebuggerURL {
@@ -709,6 +712,11 @@ final class ControlledBrowserController: ObservableObject {
                     params: ["targetId": targetID, "flatten": true]
                 )
                 pageSessionID = (attached["result"] as? [String: Any])?["sessionId"] as? String
+                if let pageSessionID {
+                    attachedSessionIDs.append(pageSessionID)
+                }
+                _ = try? await client.send(method: "Page.enable", params: [:], sessionID: pageSessionID)
+                _ = try? await client.send(method: "Runtime.enable", params: [:], sessionID: pageSessionID)
                 _ = try? await client.send(
                     method: "Target.setAutoAttach",
                     params: [
@@ -717,6 +725,7 @@ final class ControlledBrowserController: ObservableObject {
                         "flatten": true
                     ]
                 )
+                observedEvents.append(contentsOf: client.drainEvents())
             } catch {
                 warnings.append("Could not attach to the page target through the browser CDP endpoint: \(error.localizedDescription)")
             }
@@ -727,47 +736,104 @@ final class ControlledBrowserController: ObservableObject {
             client: client,
             sessionID: primarySessionID,
             source: "controlled_chromium",
-            limit: limit
+            limit: limit,
+            observedEvents: &observedEvents,
+            warnings: &warnings
         ))
+        let pageFrameIDs = Set(frames.compactMap { Self.stringValue($0["frameID"]) }.filter { !$0.isEmpty })
+
+        let autoAttachedOOPIFs = Self.autoAttachedIframeTargets(
+            from: observedEvents,
+            pageTargetID: page.id,
+            pageFrameIDs: pageFrameIDs
+        )
+        diagnostics["autoAttachedOOPIFTargetCount"] = autoAttachedOOPIFs.count
+        let oopifTargetReadLimit = 20
+        if autoAttachedOOPIFs.count > oopifTargetReadLimit {
+            warnings.append("Controlled read inspected first \(oopifTargetReadLimit) of \(autoAttachedOOPIFs.count) auto-attached iframe targets; remaining targets were not read.")
+        }
+        for target in autoAttachedOOPIFs.prefix(oopifTargetReadLimit) {
+            guard !readOOPIFTargetIDs.contains(target.targetID) else { continue }
+            readOOPIFTargetIDs.insert(target.targetID)
+            attachedSessionIDs.append(target.sessionID)
+            do {
+                let iframeFrames = try await readPageFrames(
+                    client: client,
+                    sessionID: target.sessionID,
+                    source: "controlled_chromium_oopif",
+                    limit: limit,
+                    observedEvents: &observedEvents,
+                    warnings: &warnings
+                )
+                Self.mergePageReadFrames(iframeFrames, into: &frames)
+            } catch {
+                Self.mergePageReadFrames([
+                    [
+                        "frameID": target.targetID,
+                        "url": target.url,
+                        "title": target.title,
+                        "accessible": false,
+                        "source": "controlled_chromium_oopif",
+                        "error": error.localizedDescription
+                    ]
+                ], into: &frames)
+            }
+        }
 
         do {
             let targetResponse = try await client.send(method: "Target.getTargets")
-            let targetInfos = ((targetResponse["result"] as? [String: Any])?["targetInfos"] as? [[String: Any]] ?? [])
+            observedEvents.append(contentsOf: client.drainEvents())
+            let allIframeTargetInfos = ((targetResponse["result"] as? [String: Any])?["targetInfos"] as? [[String: Any]] ?? [])
                 .filter { ($0["type"] as? String) == "iframe" }
-            diagnostics["oopifTargetCount"] = targetInfos.count
+            let targetInfos = allIframeTargetInfos.filter {
+                Self.isIframeTargetInfoScopedToPage($0, pageTargetID: page.id, pageFrameIDs: pageFrameIDs)
+            }
+            diagnostics["oopifTargetCount"] = allIframeTargetInfos.count
+            diagnostics["scopedOOPIFTargetCount"] = targetInfos.count
 
-            for targetInfo in targetInfos.prefix(20) {
+            let fallbackTargetInfos = targetInfos.filter {
+                guard let targetID = $0["targetId"] as? String else { return false }
+                return !readOOPIFTargetIDs.contains(targetID)
+            }
+            if fallbackTargetInfos.count > oopifTargetReadLimit {
+                warnings.append("Controlled read inspected first \(oopifTargetReadLimit) of \(fallbackTargetInfos.count) fallback iframe targets; remaining targets were not read.")
+            }
+            for targetInfo in fallbackTargetInfos.prefix(oopifTargetReadLimit) {
                 guard let targetID = targetInfo["targetId"] as? String else { continue }
+                readOOPIFTargetIDs.insert(targetID)
                 do {
                     let attached = try await client.send(
                         method: "Target.attachToTarget",
                         params: ["targetId": targetID, "flatten": true]
                     )
                     guard let sessionID = (attached["result"] as? [String: Any])?["sessionId"] as? String else { continue }
-                    let frame = try await evaluatePageReadFrame(
+                    attachedSessionIDs.append(sessionID)
+                    let iframeFrames = try await readPageFrames(
                         client: client,
                         sessionID: sessionID,
-                        contextID: nil,
-                        frameID: targetID,
-                        parentFrameID: "",
                         source: "controlled_chromium_oopif",
-                        limit: limit
+                        limit: limit,
+                        observedEvents: &observedEvents,
+                        warnings: &warnings
                     )
-                    frames.append(frame)
+                    Self.mergePageReadFrames(iframeFrames, into: &frames)
                 } catch {
-                    frames.append([
+                    Self.mergePageReadFrames([[
                         "frameID": targetID,
                         "url": targetInfo["url"] as? String ?? "",
                         "title": targetInfo["title"] as? String ?? "",
                         "accessible": false,
                         "source": "controlled_chromium_oopif",
                         "error": error.localizedDescription
-                    ])
+                    ]], into: &frames)
                 }
             }
         } catch {
             warnings.append("Could not enumerate out-of-process iframe targets: \(error.localizedDescription)")
         }
+
+        let resolvedURL = self.currentURL.isEmpty ? page.url : self.currentURL
+        let resolvedTitle = self.pageTitle.isEmpty ? page.title : self.pageTitle
 
         do {
             let axResponse = try await client.send(
@@ -775,8 +841,20 @@ final class ControlledBrowserController: ObservableObject {
                 params: ["interestingOnly": true],
                 sessionID: primarySessionID
             )
+            observedEvents.append(contentsOf: client.drainEvents())
             let nodes = ((axResponse["result"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
             diagnostics["accessibilityNodeCount"] = nodes.count
+            let axText = Self.accessibilityText(from: nodes, limit: limit)
+            diagnostics["accessibilityTextLength"] = axText.textLength
+            diagnostics["accessibilityTextTruncated"] = axText.truncated
+            if Self.mergeAccessibilityText(
+                axText,
+                into: &frames,
+                pageURL: resolvedURL,
+                pageTitle: resolvedTitle
+            ) {
+                warnings.append("Accessibility tree text was merged because DOM frame text was empty, sparse, or likely canvas-rendered.")
+            }
         } catch {
             warnings.append("Accessibility tree read failed: \(error.localizedDescription)")
         }
@@ -791,14 +869,24 @@ final class ControlledBrowserController: ObservableObject {
                 ],
                 sessionID: primarySessionID
             )
+            observedEvents.append(contentsOf: client.drainEvents())
             let documents = ((domResponse["result"] as? [String: Any])?["documents"] as? [[String: Any]]) ?? []
             diagnostics["domSnapshotDocumentCount"] = documents.count
         } catch {
             warnings.append("DOM snapshot read failed: \(error.localizedDescription)")
         }
 
-        let resolvedURL = self.currentURL.isEmpty ? page.url : self.currentURL
-        let resolvedTitle = self.pageTitle.isEmpty ? page.title : self.pageTitle
+        diagnostics["cdpEventCount"] = observedEvents.count
+        diagnostics["runtimeExecutionContextEventCount"] = observedEvents.filter {
+            Self.stringValue($0["method"]) == "Runtime.executionContextCreated"
+        }.count
+        for sessionID in attachedSessionIDs.reversed() {
+            _ = try? await client.send(
+                method: "Target.detachFromTarget",
+                params: ["sessionId": sessionID]
+            )
+        }
+
         return BrowserPageReadService.response(
             url: resolvedURL,
             title: resolvedTitle,
@@ -807,7 +895,7 @@ final class ControlledBrowserController: ObservableObject {
             format: format,
             limit: limit,
             chunkSize: chunkSize,
-            frames: frames,
+            frames: Self.deduplicatedPageReadFrames(frames),
             warnings: warnings,
             diagnostics: diagnostics
         )
@@ -817,34 +905,41 @@ final class ControlledBrowserController: ObservableObject {
         client: OperationCDPClient,
         sessionID: String?,
         source: String,
-        limit: Int
+        limit: Int,
+        observedEvents: inout [[String: Any]],
+        warnings: inout [String]
     ) async throws -> [[String: Any]] {
+        _ = try? await client.send(method: "Page.enable", params: [:], sessionID: sessionID)
+        _ = try? await client.send(method: "Runtime.enable", params: [:], sessionID: sessionID)
+        observedEvents.append(contentsOf: client.drainEvents())
+
         let frameTreeResponse = try await client.send(
             method: "Page.getFrameTree",
             params: [:],
             sessionID: sessionID
         )
+        observedEvents.append(contentsOf: client.drainEvents())
         guard let result = frameTreeResponse["result"] as? [String: Any],
               let frameTree = result["frameTree"] as? [String: Any] else {
             throw ControlledBrowserError.invalidDevToolsResponse
         }
 
         let frameInfos = Self.flattenFrameTree(frameTree)
+        let frameReadLimit = 80
+        if frameInfos.count > frameReadLimit {
+            warnings.append("Controlled read inspected first \(frameReadLimit) of \(frameInfos.count) frames for \(source); remaining frames were not read.")
+        }
         var frames: [[String: Any]] = []
-        for frameInfo in frameInfos.prefix(80) {
+        for frameInfo in frameInfos.prefix(frameReadLimit) {
             let frameID = Self.stringValue(frameInfo["id"])
             guard !frameID.isEmpty else { continue }
             do {
-                let world = try await client.send(
-                    method: "Page.createIsolatedWorld",
-                    params: [
-                        "frameId": frameID,
-                        "worldName": "ASTRAReadPage",
-                        "grantUniveralAccess": false
-                    ],
-                    sessionID: sessionID
+                let contextID = try await pageReadExecutionContextID(
+                    client: client,
+                    sessionID: sessionID,
+                    frameID: frameID,
+                    observedEvents: &observedEvents
                 )
-                let contextID = Self.intValue((world["result"] as? [String: Any])?["executionContextId"])
                 let frame = try await evaluatePageReadFrame(
                     client: client,
                     sessionID: sessionID,
@@ -854,6 +949,7 @@ final class ControlledBrowserController: ObservableObject {
                     source: source,
                     limit: limit
                 )
+                observedEvents.append(contentsOf: client.drainEvents())
                 frames.append(frame)
             } catch {
                 frames.append([
@@ -868,6 +964,38 @@ final class ControlledBrowserController: ObservableObject {
             }
         }
         return frames
+    }
+
+    private func pageReadExecutionContextID(
+        client: OperationCDPClient,
+        sessionID: String?,
+        frameID: String,
+        observedEvents: inout [[String: Any]]
+    ) async throws -> Int? {
+        do {
+            let world = try await client.send(
+                method: "Page.createIsolatedWorld",
+                params: [
+                    "frameId": frameID,
+                    "worldName": "ASTRAReadPage",
+                    "grantUniveralAccess": false
+                ],
+                sessionID: sessionID
+            )
+            observedEvents.append(contentsOf: client.drainEvents())
+            return Self.intValue((world["result"] as? [String: Any])?["executionContextId"])
+        } catch {
+            observedEvents.append(contentsOf: client.drainEvents())
+            if let eventContextID = Self.executionContextID(
+                from: observedEvents,
+                sessionID: sessionID,
+                frameID: frameID,
+                worldName: nil
+            ) {
+                return eventContextID
+            }
+            throw error
+        }
     }
 
     private func evaluatePageReadFrame(
@@ -1427,6 +1555,244 @@ final class ControlledBrowserController: ObservableObject {
         }
     }
 
+    private nonisolated static func isIframeTargetInfoScopedToPage(
+        _ targetInfo: [String: Any],
+        pageTargetID: String?,
+        pageFrameIDs: Set<String>
+    ) -> Bool {
+        let pageTargetID = pageTargetID ?? ""
+        if !pageTargetID.isEmpty, stringValue(targetInfo["openerId"]) == pageTargetID {
+            return true
+        }
+        for key in ["openerFrameId", "parentFrameId"] {
+            let frameID = stringValue(targetInfo[key])
+            if !frameID.isEmpty, pageFrameIDs.contains(frameID) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private nonisolated static func autoAttachedIframeTargets(
+        from events: [[String: Any]],
+        pageTargetID: String?,
+        pageFrameIDs: Set<String>
+    ) -> [AutoAttachedTarget] {
+        events.compactMap { event in
+            guard stringValue(event["method"]) == "Target.attachedToTarget",
+                  let params = event["params"] as? [String: Any],
+                  let targetInfo = params["targetInfo"] as? [String: Any],
+                  stringValue(targetInfo["type"]) == "iframe",
+                  isIframeTargetInfoScopedToPage(targetInfo, pageTargetID: pageTargetID, pageFrameIDs: pageFrameIDs) else {
+                return nil
+            }
+            let sessionID = stringValue(params["sessionId"])
+            let targetID = stringValue(targetInfo["targetId"])
+            guard !sessionID.isEmpty, !targetID.isEmpty else { return nil }
+            return AutoAttachedTarget(
+                targetID: targetID,
+                sessionID: sessionID,
+                url: stringValue(targetInfo["url"]),
+                title: stringValue(targetInfo["title"])
+            )
+        }
+    }
+
+    private nonisolated static func executionContextID(
+        from events: [[String: Any]],
+        sessionID: String?,
+        frameID: String,
+        worldName: String?
+    ) -> Int? {
+        for event in events.reversed() {
+            guard stringValue(event["method"]) == "Runtime.executionContextCreated" else { continue }
+            let eventSessionID = stringValue(event["sessionId"])
+            if eventSessionID != (sessionID ?? "") {
+                continue
+            }
+            guard let params = event["params"] as? [String: Any],
+                  let context = params["context"] as? [String: Any],
+                  let auxData = context["auxData"] as? [String: Any],
+                  stringValue(auxData["frameId"]) == frameID else {
+                continue
+            }
+            if let worldName, !worldName.isEmpty, stringValue(context["name"]) != worldName {
+                continue
+            }
+            if worldName == nil {
+                let isDefault = boolValue(auxData["isDefault"])
+                if !isDefault, stringValue(context["name"]) == "ASTRAReadPage" {
+                    return intValue(context["id"])
+                }
+                if !isDefault {
+                    continue
+                }
+            }
+            return intValue(context["id"])
+        }
+        return nil
+    }
+
+    private nonisolated static func mergePageReadFrames(
+        _ incomingFrames: [[String: Any]],
+        into frames: inout [[String: Any]]
+    ) {
+        for incoming in incomingFrames {
+            let frameID = stringValue(incoming["frameID"])
+            guard !frameID.isEmpty else {
+                frames.append(incoming)
+                continue
+            }
+            if let existingIndex = frames.firstIndex(where: { stringValue($0["frameID"]) == frameID }) {
+                // Equal scores favor later reads because they usually come from a more specific
+                // target/session pass after auto-attach or fallback routing has resolved.
+                if pageReadFrameScore(incoming) >= pageReadFrameScore(frames[existingIndex]) {
+                    frames[existingIndex] = incoming
+                }
+            } else {
+                frames.append(incoming)
+            }
+        }
+    }
+
+    private nonisolated static func deduplicatedPageReadFrames(_ frames: [[String: Any]]) -> [[String: Any]] {
+        var result: [[String: Any]] = []
+        mergePageReadFrames(frames, into: &result)
+        return result
+    }
+
+    private nonisolated static func pageReadFrameScore(_ frame: [String: Any]) -> Int {
+        let textLength = stringValue(frame["text"]).count
+        let truncated = boolValue(frame["truncated"])
+        let textScore = truncated ? min(textLength, 1_000) : textLength
+        let accessibilityBonus = boolValue(frame["accessible"]) ? 10_000 : 0
+        let completenessBonus = truncated ? 0 : 2_000
+        let sourceBonus = stringValue(frame["source"]).contains("oopif") ? 100 : 0
+        return accessibilityBonus + completenessBonus + sourceBonus + textScore
+    }
+
+    private nonisolated static func accessibilityText(
+        from nodes: [[String: Any]],
+        limit: Int
+    ) -> AXTextExtraction {
+        let boundedLimit = max(1_000, min(limit, 250_000))
+        var pieces: [String] = []
+        var textLength = 0
+        var returnedLength = 0
+        var truncated = false
+
+        for node in nodes where !boolValue(node["ignored"]) {
+            var valuesSeenInNode = Set<String>()
+            let values = [
+                axValueText(node["name"]),
+                axValueText(node["value"]),
+                axValueText(node["description"])
+            ]
+            for rawValue in values {
+                let text = rawValue.replacingOccurrences(
+                    of: "\\s+",
+                    with: " ",
+                    options: .regularExpression
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty, valuesSeenInNode.insert(text).inserted else { continue }
+                textLength += text.count + 1
+                let separatorLength = pieces.isEmpty ? 0 : 1
+                if returnedLength + separatorLength >= boundedLimit {
+                    truncated = true
+                    continue
+                }
+                let remaining = boundedLimit - returnedLength - separatorLength
+                let next = text.count > remaining ? String(text.prefix(remaining)) : text
+                pieces.append(next)
+                returnedLength += separatorLength + next.count
+                if text.count > remaining {
+                    truncated = true
+                }
+            }
+        }
+
+        return AXTextExtraction(
+            text: pieces.joined(separator: "\n"),
+            textLength: textLength,
+            truncated: truncated
+        )
+    }
+
+    private nonisolated static func mergeAccessibilityText(
+        _ extraction: AXTextExtraction,
+        into frames: inout [[String: Any]],
+        pageURL: String,
+        pageTitle: String
+    ) -> Bool {
+        guard !extraction.text.isEmpty else { return false }
+        let preferredIndex = frames.firstIndex {
+            stringValue($0["parentFrameID"]).isEmpty && !stringValue($0["source"]).contains("oopif")
+        }
+
+        guard let index = preferredIndex else {
+            frames.append([
+                "frameID": "main",
+                "url": pageURL,
+                "title": pageTitle,
+                "text": extraction.text,
+                "textLength": extraction.textLength,
+                "returnedTextLength": extraction.text.count,
+                "truncated": extraction.truncated,
+                "accessible": true,
+                "source": "controlled_chromium_accessibility",
+                "warnings": ["Accessibility tree text was used because DOM text was unavailable."]
+            ])
+            return true
+        }
+
+        let existingText = stringValue(frames[index]["text"])
+        let existingTrimmedText = existingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let contentKind = stringValue(frames[index]["contentKind"])
+        let accessibilityTextIsRicher = extraction.text.count > Int(Double(max(existingTrimmedText.count, 1)) * 1.5)
+        let shouldMerge = existingTrimmedText.isEmpty
+            || (contentKind == "canvas" && extraction.text.count > existingText.count)
+            || accessibilityTextIsRicher
+        guard shouldMerge else { return false }
+
+        var frame = frames[index]
+        var frameWarnings = frame["warnings"] as? [String] ?? []
+        frameWarnings.append("Accessibility tree text was used because DOM text was empty, sparse, or canvas-rendered.")
+        frame["text"] = extraction.text
+        frame["textLength"] = extraction.textLength
+        frame["returnedTextLength"] = extraction.text.count
+        frame["truncated"] = extraction.truncated
+        frame["accessible"] = true
+        frame["source"] = stringValue(frame["source"]).isEmpty
+            ? "controlled_chromium_accessibility"
+            : "\(stringValue(frame["source"]))+accessibility"
+        frame["warnings"] = Array(Set(frameWarnings)).sorted()
+        frame.removeValue(forKey: "error")
+        frames[index] = frame
+        return true
+    }
+
+    private nonisolated static func axValueText(_ value: Any?) -> String {
+        guard let object = value as? [String: Any] else {
+            return stringValue(value)
+        }
+        return stringValue(object["value"])
+    }
+
+    private struct AutoAttachedTarget {
+        let targetID: String
+        let sessionID: String
+        let url: String
+        let title: String
+    }
+
+    private struct AXTextExtraction {
+        let text: String
+        let textLength: Int
+        let truncated: Bool
+    }
+
+    // Operation-scoped and serial-only. Callers must not invoke send concurrently;
+    // nextID and the event buffer intentionally avoid locking for this short-lived read path.
     private final class OperationCDPClient: @unchecked Sendable {
         private let configuration: URLSessionConfiguration
         private let session: URLSession
@@ -1449,6 +1815,12 @@ final class ControlledBrowserController: ObservableObject {
         func close() {
             task.cancel(with: .normalClosure, reason: nil)
             session.invalidateAndCancel()
+        }
+
+        func drainEvents() -> [[String: Any]] {
+            let drained = events
+            events.removeAll()
+            return drained
         }
 
         func send(
