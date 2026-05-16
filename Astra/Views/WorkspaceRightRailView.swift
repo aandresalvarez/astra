@@ -20,7 +20,7 @@ private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .configure: "Skills, connectors, context, and settings"
+        case .configure: "Packages, shared resources, context, and settings"
         case .usage: "Tokens, costs, and task activity"
         case .logs: "Runtime diagnostics and log access"
         }
@@ -47,6 +47,7 @@ struct WorkspaceRightRailView: View {
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
+    var onOpenCapabilityPackage: ((String) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
@@ -68,8 +69,9 @@ struct WorkspaceRightRailView: View {
     @State private var isContextCollapsed = false
     @State private var isAccessCollapsed = true
     @State private var isSchedulesSectionCollapsed = false
-    @State private var logEntries: [LogEntry] = Array(AppLogger.entries.suffix(maxRecentLogEntries))
-    @State private var logEntryCount = AppLogger.entries.count
+    @State private var isActivityCollapsed = true
+    @State private var logEntries: [LogEntry] = []
+    @State private var logEntryCount = AppLogger.entryCount
     @State private var pendingLogEntries: [LogEntry] = []
     @State private var sshConnections: [SSHConnection] = []
     @State private var isConnectorsExpanded = false
@@ -78,8 +80,7 @@ struct WorkspaceRightRailView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var editingMemoryIndex: Int?
-    @State private var approvedCapabilityPackages: [PluginPackage] = []
-    @State private var expandedCapabilityID: String?
+    @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
 
     private static let shortDateFormatter: DateFormatter = {
@@ -150,28 +151,26 @@ struct WorkspaceRightRailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                tabStrip
-            }
+            header
             .background(.bar)
 
             Divider()
+                .opacity(0.65)
 
             ScrollView {
                 AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
-                    selectedTabContent
+                    configurePanel
                         .padding(.horizontal, Stanford.railContentPadding)
                         .padding(.top, 12)
                         .padding(.bottom, Stanford.railContentPadding)
                 }
             }
         }
-        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
         .overlay(alignment: .leading) {
             Rectangle()
-                .fill(Stanford.lagunita.opacity(0.55))
+                .fill(Color.secondary.opacity(0.22))
                 .frame(width: 2)
                 .ignoresSafeArea(.all, edges: .top)
                 .allowsHitTesting(false)
@@ -179,8 +178,16 @@ struct WorkspaceRightRailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
             guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
             DispatchQueue.main.async {
+                if !isActivityCollapsed {
+                    logEntryCount = AppLogger.entryCount
+                }
                 guard selectedTab == .logs else { return }
                 pendingLogEntries.append(entry)
+            }
+        }
+        .onChange(of: isActivityCollapsed) { _, isCollapsed in
+            if !isCollapsed {
+                logEntryCount = AppLogger.entryCount
             }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
@@ -219,16 +226,16 @@ struct WorkspaceRightRailView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "folder.fill")
+            Image(systemName: "sidebar.right")
                 .font(Stanford.ui(16, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(workspace.name)
+                Text("Task Context")
                     .font(Stanford.heading(15))
                     .lineLimit(1)
-                Text("Updated \(Self.shortDateFormatter.string(from: workspace.updatedAt))")
+                Text("Workspace: \(workspace.name)")
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -295,47 +302,35 @@ struct WorkspaceRightRailView: View {
     // MARK: - Unified Configure Panel
 
     private var configurePanel: some View {
-        VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
+        let snapshot = capabilityRailSnapshot
+
+        return VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
             collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
                 HStack(spacing: 10) {
                     if let onManageCapabilities {
                         Button {
                             onManageCapabilities()
                         } label: {
-                            Text("Manage capabilities")
+                            Label("Manage", systemImage: "slider.horizontal.3")
                                 .font(Stanford.caption(11).weight(.medium))
                                 .foregroundStyle(Stanford.lagunita)
+                                .labelStyle(.titleAndIcon)
                         }
                         .buttonStyle(.plain)
+                        .help("Open the capability package library")
                     }
                 }
             } content: {
-                capabilityList
+                capabilityAvailabilitySummary(snapshot)
+                capabilityList(snapshot)
             }
 
-            // CONTEXT (expanded by default)
-            collapsibleSection("Context", isCollapsed: $isContextCollapsed) {
-                contextSection
+            collapsibleSection("Workspace setup", isCollapsed: $isContextCollapsed) {
+                workspaceContextPanel
             }
 
-            // ACCESS (collapsed by default)
-            collapsibleSection("Access", isCollapsed: $isAccessCollapsed) {
-                accessSection
-            }
-
-            // ROUTINES (expanded by default)
-            collapsibleSectionWithTrailing("Routines", isCollapsed: $isSchedulesSectionCollapsed) {
-                if !workspace.schedules.isEmpty {
-                    Button { onNewSchedule?() } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(Stanford.ui(14))
-                            .foregroundStyle(Stanford.lagunita)
-                    }
-                    .buttonStyle(.plain)
-                    .help("New Routine")
-                }
-            } content: {
-                schedulesContent
+            collapsibleSection("Activity", isCollapsed: $isActivityCollapsed) {
+                activitySection
             }
         }
         .tint(Stanford.lagunita)
@@ -361,119 +356,421 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var capabilityList: some View {
+    private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
         VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
-            if railCapabilityItems.isEmpty {
+            if snapshot.items.isEmpty {
                 EmptyRailState(
-                    title: "No capabilities enabled",
-                    description: "Open Manage Capabilities to enable approved capabilities for this workspace."
+                    title: "No active capabilities",
+                    description: "Manage the library to choose what the agent can use in this workspace."
                 )
             } else {
-                ForEach(railCapabilityItems) { item in
-                    capabilityCard(item)
+                if !snapshot.attentionItems.isEmpty {
+                    capabilityGroupHeader("Needs attention")
+
+                    ForEach(snapshot.attentionItems) { item in
+                        capabilityCard(item, needsAttention: true)
+                    }
+                }
+
+                if !snapshot.readyItems.isEmpty {
+                    if !snapshot.attentionItems.isEmpty || !snapshot.draftItems.isEmpty {
+                        capabilityGroupHeader("Ready")
+                            .padding(.top, 2)
+                    }
+
+                    ForEach(snapshot.readyItems) { item in
+                        capabilityCard(item)
+                    }
+                }
+
+                if !snapshot.draftItems.isEmpty {
+                    capabilityGroupHeader("Drafts")
+                        .padding(.top, 2)
+
+                    ForEach(snapshot.draftItems) { item in
+                        capabilityCard(item)
+                    }
                 }
             }
         }
     }
 
-    private func capabilityCard(_ item: RailCapabilityItem) -> some View {
-        let isExpanded = expandedCapabilityID == item.id
+    private func capabilityAvailabilitySummary(_ snapshot: CapabilityRailSnapshot) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.shield")
+                .font(Stanford.ui(11, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
 
-        return VStack(alignment: .leading, spacing: 0) {
+            Text("\(snapshot.enabledCount) active")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.lagunita)
+
+            if snapshot.needsSetupCount > 0 {
+                Text("(\(snapshot.needsSetupCount) needs setup)")
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.poppy)
+            }
+
+            Text("·")
+                .font(Stanford.caption(11))
+                .foregroundStyle(.tertiary)
+
+            availableToAddSummary(snapshot)
+
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.82)
+        .accessibilityLabel("\(snapshot.enabledCount) active capabilities, \(snapshot.needsSetupCount) need setup, \(snapshot.availableToAddCount) available to add")
+    }
+
+    @ViewBuilder
+    private func availableToAddSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
+        let label = "\(snapshot.availableToAddCount) available to add"
+        if let onManageCapabilities {
+            Button(action: onManageCapabilities) {
+                Text(label)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
+            .help("Open available capabilities")
+            .accessibilityLabel(label)
+        } else {
+            Text(label)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var capabilityArchitectureSummary: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            CapabilityHierarchySummary()
+
+            Divider().opacity(0.25)
+
+            HStack(alignment: .top, spacing: 0) {
+                CapabilityOverviewMetric(
+                    title: "Enabled here",
+                    value: "\(enabledPackageCount)",
+                    icon: "checkmark.circle.fill",
+                    color: Stanford.paloAltoGreen
+                )
+                Divider().opacity(0.25).padding(.horizontal, 8)
+                CapabilityOverviewMetric(
+                    title: "Needs setup",
+                    value: "\(needsSetupPackageCount)",
+                    icon: "exclamationmark.triangle.fill",
+                    color: Stanford.poppy
+                )
+                Divider().opacity(0.25).padding(.horizontal, 8)
+                CapabilityOverviewMetric(
+                    title: "Shared here",
+                    value: "\(enabledSharedResourceCount)",
+                    icon: "square.3.layers.3d",
+                    color: Stanford.sky
+                )
+            }
+
+            Text("Package actions are workspace scoped. Shared resources can be reused elsewhere; workspace resources can carry different instructions or credentials here.")
+                .font(Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Stanford.railInlineCardPadding)
+        .railCard(
+            cornerRadius: Stanford.railCompactCardCornerRadius,
+            fill: Color.primary.opacity(0.025),
+            strokeOpacity: 0.04
+        )
+    }
+
+    @ViewBuilder
+    private var sharedResourceScopeSummary: some View {
+        let enabledShared = enabledSharedResourceCount
+        let availableShared = availableSharedResourceCount
+        let workspaceOnly = workspaceOnlyResourceCount
+
+        if enabledShared + availableShared + workspaceOnly > 0 {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.3.layers.3d")
+                        .font(Stanford.ui(11, weight: .semibold))
+                        .foregroundStyle(Stanford.sky)
+                    Text("Reusable resources")
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    CapabilityResourceScopeRow(title: "Shared enabled here", value: enabledShared)
+                    CapabilityResourceScopeRow(title: "Shared available", value: availableShared)
+                    CapabilityResourceScopeRow(title: "Workspace-only", value: workspaceOnly)
+                }
+
+                HStack(spacing: 8) {
+                    Text("Shared skills, connectors, and tools keep one definition across workspaces.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
+                }
+
+                if onOpenConfigureTab != nil {
+                    Button {
+                        onOpenConfigureTab?(.skills, nil)
+                    } label: {
+                        Text("Configure resources")
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 1)
+                }
+            }
+            .padding(Stanford.railInlineCardPadding)
+            .railCard(
+                cornerRadius: Stanford.railCompactCardCornerRadius,
+                fill: Color.primary.opacity(0.025),
+                strokeOpacity: 0.04
+            )
+        }
+    }
+
+    private func capabilityGroupHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(Stanford.ui(9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .tracking(0.4)
+            .padding(.leading, 2)
+    }
+
+    private func capabilityCard(_ item: RailCapabilityItem, needsAttention: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             CapabilityRailRow(
                 icon: item.icon,
-                title: item.name,
-                subtitle: item.summary,
+                title: capabilityDisplayName(item.name),
+                subtitle: capabilityListSubtitle(for: item),
                 color: item.color,
                 readiness: item.readiness,
-                isExpanded: isExpanded,
-                isOn: capabilityEnabledBinding(item),
-                onTap: {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
-                        expandedCapabilityID = isExpanded ? nil : item.id
-                    }
-                }
+                statusLabel: capabilityBadgeTitle(for: item),
+                statusColor: capabilityBadgeColor(for: item),
+                isEnabled: item.isEnabled,
+                showsWarningIcon: needsAttention,
+                onOpen: { openCapabilityConfiguration(item) }
             )
-
-            if isExpanded {
-                capabilityDetails(item)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
         }
         .padding(Stanford.railInlineCardPadding)
         .railCard(
             cornerRadius: Stanford.railCompactCardCornerRadius,
             fill: Color.primary.opacity(0.03),
-            strokeOpacity: 0.04
+            strokeOpacity: needsAttention ? 0.08 : 0.04
+        )
+        .overlay(alignment: .leading) {
+            if needsAttention {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Stanford.poppy)
+                    .frame(width: 3)
+                    .padding(.vertical, 8)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius)
+                .stroke(needsAttention ? Stanford.poppy.opacity(0.18) : Color.clear, lineWidth: 1)
+        }
+    }
+
+    private var enabledPackageCount: Int {
+        railCapabilityItems.filter(\.isEnabled).count
+    }
+
+    private var needsSetupPackageCount: Int {
+        railCapabilityItems.filter { $0.readiness.level == .needsAttention }.count
+    }
+
+    private var availableToAddCapabilityCount: Int {
+        libraryCapabilityPackages.filter { package in
+            !CapabilityPackageState(
+                package: package,
+                workspace: workspace,
+                capabilities: capabilities
+            ).isEnabled
+        }.count
+    }
+
+    private var libraryCapabilityPackages: [PluginPackage] {
+        CapabilityGalleryInventory.packages(
+            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
         )
     }
 
-    private func capabilityDetails(_ item: RailCapabilityItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider().opacity(0.3)
-
-            if !item.skillNames.isEmpty {
-                capabilityDetailGroup("Behavior", values: item.skillNames)
-            }
-
-            if !item.connectorNames.isEmpty {
-                capabilityDetailGroup("Connectors", values: item.connectorNames)
-            }
-
-            if !item.toolNames.isEmpty {
-                capabilityDetailGroup("Tools", values: item.toolNames)
-            }
-
-            if !item.requirementNames.isEmpty {
-                capabilityDetailGroup("Requirements", values: item.requirementNames)
-            }
-
-            if item.readiness.level == .needsAttention {
-                capabilityDetailGroup("Needs attention", values: item.readiness.messages)
-            }
-
-            Button {
-                openCapabilityConfiguration(item)
-            } label: {
-                Text("Open configuration")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.lagunita)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
-        }
-        .padding(.top, 6)
-        .padding(.leading, 25)
+    private var attentionCapabilityItems: [RailCapabilityItem] {
+        railCapabilityItems.filter { $0.readiness.level == .needsAttention }
     }
 
-    private func capabilityDetailGroup(_ title: String, values: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title.uppercased())
-                .font(Stanford.ui(9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .tracking(0.4)
+    private var readyCapabilityItems: [RailCapabilityItem] {
+        railCapabilityItems.filter { $0.readiness.level != .needsAttention && !isDraftCapability($0) }
+    }
 
-            ForEach(values, id: \.self) { value in
-                Text(value)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+    private var draftCapabilityItems: [RailCapabilityItem] {
+        railCapabilityItems.filter(isDraftCapability)
+    }
+
+    private func isDraftCapability(_ item: RailCapabilityItem) -> Bool {
+        item.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("New Skill") == .orderedSame
+    }
+
+    private func capabilityDisplayName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
+            return "Untitled Capability"
         }
+        return trimmed
+            .replacingOccurrences(of: " (Restored)", with: "")
+            .replacingOccurrences(of: "(Restored)", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func capabilityBadgeTitle(for item: RailCapabilityItem) -> String? {
+        if let statusLabel = item.presentation.statusLabel {
+            return statusLabel
+        }
+
+        if item.name.localizedCaseInsensitiveContains("(Restored)") {
+            return "Restored"
+        }
+
+        if item.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
+            return "Draft"
+        }
+
+        return nil
+    }
+
+    private func capabilityBadgeColor(for item: RailCapabilityItem) -> Color {
+        if item.readiness.level == .needsAttention {
+            return Stanford.poppy
+        }
+        if item.name.localizedCaseInsensitiveContains("(Restored)") {
+            return .secondary
+        }
+        if item.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
+            return Stanford.poppy
+        }
+        return readinessColor(for: item.readiness, isEnabled: item.isEnabled)
+    }
+
+    private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
+        if isWorkspaceAuthoredCapability(item) {
+            return "Custom: \(item.presentation.rowSubtitle)"
+        }
+
+        let summary = item.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? item.presentation.rowSubtitle : summary
+    }
+
+    private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
+        switch item.source {
+        case .package(let package):
+            let kind = package.sourceMetadata?.kind
+            return kind == "workspace" || kind == "shared"
+        case .skill:
+            return true
+        }
+    }
+
+    private var capabilityRailSnapshot: CapabilityRailSnapshot {
+        PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_snapshot",
+            thresholdMilliseconds: 20,
+            fields: [
+                "workspace_id": workspace.id.uuidString,
+                "package_count": String(approvedCapabilityPackages.count)
+            ]
+        ) {
+            let currentCapabilities = capabilities
+            var cachedStates: [String: CapabilityPackageState] = [:]
+
+            func state(for package: PluginPackage) -> CapabilityPackageState {
+                if let cached = cachedStates[package.id] {
+                    return cached
+                }
+                let state = CapabilityPackageState(
+                    package: package,
+                    workspace: workspace,
+                    capabilities: currentCapabilities
+                )
+                cachedStates[package.id] = state
+                return state
+            }
+
+            let catalogPackages = CapabilityCatalogInventory.packages(
+                catalogPackages: approvedCapabilityPackages,
+                capabilities: currentCapabilities
+            )
+
+            let items = catalogPackages
+                .compactMap { package -> RailCapabilityItem? in
+                    let packageState = state(for: package)
+                    guard packageState.isEnabled else { return nil }
+                    return makePackageCapabilityItem(package, state: packageState)
+                }
+                .sorted(by: sortRailCapabilityItems)
+
+            let libraryPackages = CapabilityGalleryInventory.packages(
+                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+            )
+            let availableToAddCount = libraryPackages.reduce(into: 0) { count, package in
+                if !state(for: package).isEnabled {
+                    count += 1
+                }
+            }
+
+            return CapabilityRailSnapshot(
+                items: items,
+                availableToAddCount: availableToAddCount,
+                isDraft: isDraftCapability
+            )
+        }
+    }
+
+    private var enabledSharedResourceCount: Int {
+        enabledGlobalSkills.count + enabledGlobalConnectors.count + capabilities.enabledGlobalTools.count
+    }
+
+    private var availableSharedResourceCount: Int {
+        let disabledSharedSkills = capabilities.availableGlobalSkills.filter {
+            !workspace.enabledGlobalSkillIDs.contains($0.id.uuidString)
+        }.count
+        let disabledSharedConnectors = capabilities.availableGlobalConnectors.filter {
+            !workspace.enabledGlobalConnectorIDs.contains($0.id.uuidString)
+        }.count
+        let disabledSharedTools = capabilities.availableGlobalTools.filter {
+            !workspace.enabledGlobalToolIDs.contains($0.id.uuidString)
+        }.count
+        return disabledSharedSkills + disabledSharedConnectors + disabledSharedTools
+    }
+
+    private var workspaceOnlyResourceCount: Int {
+        capabilities.workspaceSkills.count + capabilities.workspaceConnectors.count + capabilities.workspaceTools.count
     }
 
     private var railCapabilityItems: [RailCapabilityItem] {
-        CapabilityCatalogInventory.configuredPackages(
-            catalogPackages: approvedCapabilityPackages,
-            capabilities: capabilities,
-            workspace: workspace
-        ).map(makePackageCapabilityItem).sorted {
-            let lhsPriority = railCapabilityPriority($0)
-            let rhsPriority = railCapabilityPriority($1)
-            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
-            if $0.isEnabled != $1.isEnabled { return $0.isEnabled && !$1.isEnabled }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
+        capabilityRailSnapshot.items
+    }
+
+    private func sortRailCapabilityItems(_ lhs: RailCapabilityItem, _ rhs: RailCapabilityItem) -> Bool {
+        let lhsNeedsSetup = lhs.readiness.level == .needsAttention
+        let rhsNeedsSetup = rhs.readiness.level == .needsAttention
+        if lhsNeedsSetup != rhsNeedsSetup { return lhsNeedsSetup && !rhsNeedsSetup }
+
+        let lhsPriority = railCapabilityPriority(lhs)
+        let rhsPriority = railCapabilityPriority(rhs)
+        if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+        if lhs.isEnabled != rhs.isEnabled { return lhs.isEnabled && !rhs.isEnabled }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
     private func railCapabilityPriority(_ item: RailCapabilityItem) -> Int {
@@ -496,11 +793,26 @@ struct WorkspaceRightRailView: View {
         return 100
     }
 
-    private func makePackageCapabilityItem(_ package: PluginPackage) -> RailCapabilityItem {
-        let state = CapabilityPackageState(
-            package: package,
-            workspace: workspace,
-            capabilities: capabilities
+    private func makePackageCapabilityItem(_ package: PluginPackage, state: CapabilityPackageState) -> RailCapabilityItem {
+        let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
+            + state.linkedConnectors.filter(\.isGlobal).count
+            + state.linkedTools.filter(\.isGlobal).count
+        let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
+            + state.linkedConnectors.filter { !$0.isGlobal }.count
+            + state.linkedTools.filter { !$0.isGlobal }.count
+        let declaredResourceCount = package.skills.count
+            + package.connectors.count
+            + package.localTools.count
+            + package.templates.count
+            + package.browserAdapters.count
+        let presentation = CapabilityRailPackagePresentation.make(
+            isEnabled: state.isEnabled,
+            readinessLevel: state.readiness.level,
+            workspaceName: workspace.name,
+            sharedResourceCount: sharedResourceCount,
+            workspaceResourceCount: workspaceResourceCount,
+            declaredResourceCount: declaredResourceCount,
+            contentSummary: package.contentSummary
         )
 
         return RailCapabilityItem(
@@ -511,10 +823,13 @@ struct WorkspaceRightRailView: View {
             color: Stanford.lagunita,
             isEnabled: state.isEnabled,
             readiness: state.readiness,
+            presentation: presentation,
             source: .package(package),
             skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
             connectorNames: (package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
             toolNames: (package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
+            browserAdapterNames: package.browserAdapters.map(browserAdapterDisplayName).uniqueSorted(),
+            templateNames: package.templates.map(\.name).uniqueSorted(),
             requirementNames: package.prerequisites.map(\.displayName).uniqueSorted()
         )
     }
@@ -523,6 +838,15 @@ struct WorkspaceRightRailView: View {
         let connectors = uniqueConnectors(skill.connectors)
         let tools = uniqueTools(skill.localTools)
         let isEnabled = skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : true
+        let presentation = CapabilityRailPackagePresentation.make(
+            isEnabled: isEnabled,
+            readinessLevel: readinessForSkill(isEnabled: isEnabled, connectors: connectors).level,
+            workspaceName: workspace.name,
+            sharedResourceCount: skillSharedResourceCount(skill: skill, connectors: connectors, tools: tools),
+            workspaceResourceCount: skillWorkspaceResourceCount(skill: skill, connectors: connectors, tools: tools),
+            declaredResourceCount: 1 + connectors.count + tools.count,
+            contentSummary: "\(skill.allowedTools.count) permission\(skill.allowedTools.count == 1 ? "" : "s")"
+        )
         return RailCapabilityItem(
             id: "skill:\(skill.id.uuidString)",
             name: skill.name.isEmpty ? "Untitled Capability" : skill.name,
@@ -531,10 +855,13 @@ struct WorkspaceRightRailView: View {
             color: Stanford.lagunita,
             isEnabled: isEnabled,
             readiness: readinessForSkill(isEnabled: isEnabled, connectors: connectors),
+            presentation: presentation,
             source: .skill(skill),
             skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
             connectorNames: connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }.uniqueSorted(),
             toolNames: tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }.uniqueSorted(),
+            browserAdapterNames: [],
+            templateNames: [],
             requirementNames: []
         )
     }
@@ -558,6 +885,18 @@ struct WorkspaceRightRailView: View {
         return messages.isEmpty
             ? .ready
             : CapabilityReadiness(level: .needsAttention, messages: messages)
+    }
+
+    private func skillSharedResourceCount(skill: Skill, connectors: [Connector], tools: [LocalTool]) -> Int {
+        (skill.isGlobal ? 1 : 0)
+            + connectors.filter(\.isGlobal).count
+            + tools.filter(\.isGlobal).count
+    }
+
+    private func skillWorkspaceResourceCount(skill: Skill, connectors: [Connector], tools: [LocalTool]) -> Int {
+        (skill.isGlobal ? 0 : 1)
+            + connectors.filter { !$0.isGlobal }.count
+            + tools.filter { !$0.isGlobal }.count
     }
 
     private func linkedConnectors(for package: PluginPackage, linkedSkills: [Skill]) -> [Connector] {
@@ -597,15 +936,6 @@ struct WorkspaceRightRailView: View {
         }
 
         return false
-    }
-
-    private func capabilityEnabledBinding(_ item: RailCapabilityItem) -> Binding<Bool> {
-        Binding(
-            get: { item.isEnabled },
-            set: { enabled in
-                setCapability(item, enabled: enabled)
-            }
-        )
     }
 
     private func setCapability(_ item: RailCapabilityItem, enabled: Bool) {
@@ -708,14 +1038,13 @@ struct WorkspaceRightRailView: View {
             "tools_count": String(state.toolIDStrings.count)
         ])
 
-        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
-        workspace.enabledGlobalSkillIDs.removeAll { state.skillIDStrings.contains($0) }
-        workspace.enabledGlobalConnectorIDs.removeAll { state.connectorIDStrings.contains($0) }
-        workspace.enabledGlobalToolIDs.removeAll { state.toolIDStrings.contains($0) }
-        for connector in state.linkedConnectors where !connector.isGlobal {
-            connector.cleanupKeychain()
-            modelContext.delete(connector)
-        }
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: modelContext,
+            availablePackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+        )
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
@@ -726,6 +1055,8 @@ struct WorkspaceRightRailView: View {
             "skills_count": String(state.skillIDStrings.count),
             "connectors_count": String(state.connectorIDStrings.count),
             "tools_count": String(state.toolIDStrings.count),
+            "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
+            "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
             "readiness_level": String(describing: state.readiness.level),
             "readiness_messages_count": String(state.readiness.messages.count)
         ])
@@ -733,17 +1064,50 @@ struct WorkspaceRightRailView: View {
 
     private func openCapabilityConfiguration(_ item: RailCapabilityItem) {
         switch item.source {
-        case .package:
-            onOpenConfigureTab?(.capabilities, nil)
+        case .package(let package):
+            if let onOpenCapabilityPackage {
+                onOpenCapabilityPackage(package.id)
+            } else {
+                onOpenConfigureTab?(.capabilities, nil)
+            }
         case .skill(let skill):
             onOpenConfigureTab?(.skills, skill.id)
         }
     }
 
     private func refreshApprovedCapabilities() {
-        let library = CapabilityLibrary()
-        try? library.seedApprovedPackages(PluginCatalog.builtInPackages)
-        approvedCapabilityPackages = library.installedPackages()
+        let packages = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_load",
+            thresholdMilliseconds: 20
+        ) {
+            CapabilityLibrary().installedPackages()
+        }
+        approvedCapabilityPackages = packages.isEmpty ? PluginCatalog.builtInPackages : packages
+    }
+
+    private func readinessColor(for readiness: CapabilityReadiness, isEnabled: Bool) -> Color {
+        guard isEnabled else { return Color.secondary.opacity(0.45) }
+        switch readiness.level {
+        case .ready:
+            return Stanford.paloAltoGreen
+        case .needsAttention:
+            return Stanford.poppy
+        case .inactive:
+            return Color.secondary.opacity(0.45)
+        }
+    }
+
+    private func browserAdapterDisplayName(_ adapter: String) -> String {
+        switch BrowserSiteAdapterID.normalized(adapter) {
+        case BrowserSiteAdapterID.googleDrive:
+            return "Google Drive browser"
+        case BrowserSiteAdapterID.github:
+            return "GitHub browser"
+        case .some(let normalized):
+            return normalized
+        case .none:
+            return adapter.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
     // MARK: - Connector Subsection
@@ -869,33 +1233,106 @@ struct WorkspaceRightRailView: View {
 
     // MARK: - Context Section
 
-    private var contextSection: some View {
+    private var workspaceContextPanel: some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
-            // Memories — header hidden when there are none (the inline
-            // "Add memory" affordance below already explains the empty state).
-            if !workspace.memories.isEmpty {
-                HStack {
-                    HStack(spacing: 4) {
-                        Image(systemName: "brain")
-                            .font(Stanford.ui(11))
-                            .foregroundStyle(Stanford.plum)
-                        Text("\(workspace.memories.count) memories")
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
+            instructionsContextSection
+
+            Divider().opacity(0.3)
+
+            memoryContextSection
+
+            Divider().opacity(0.3)
+
+            foldersContextSection
+
+            Divider().opacity(0.3)
+
+            sshContextSection
+
+            if !workspace.schedules.isEmpty {
+                Divider().opacity(0.3)
+                routinesContextSection
+            }
+        }
+    }
+
+    private var instructionsContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+            HStack(spacing: 6) {
+                Image(systemName: "text.quote")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Main Instructions")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                RailCountBadge(count: hasWorkspaceInstructions ? 1 : 0)
+                Spacer()
+                Button { onEditWorkspace() } label: {
+                    Text(hasWorkspaceInstructions ? "Edit" : "Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
                 }
+                .buttonStyle(.plain)
             }
 
-            if workspace.memories.isEmpty && !isMemoryComposerVisible {
+            if !hasWorkspaceInstructions {
+                Button { onEditWorkspace() } label: {
+                    Text("Add guidance for how tasks should run")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button { onEditWorkspace() } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(instructionsPreview)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.primary)
+                            .lineSpacing(2)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if instructionsPreviewNeedsMore {
+                            Text("Show more")
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(Stanford.lagunita)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var memoryContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+            HStack(spacing: 6) {
+                Image(systemName: "brain")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.plum)
+                Text("Memory")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                RailCountBadge(count: workspace.memories.count)
+                Spacer(minLength: 0)
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                         isMemoryComposerVisible = true
                     }
                 } label: {
-                    InlineActionRow(icon: "plus", title: "Add memory", tint: Stanford.plum)
+                    Text("Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
                 }
                 .buttonStyle(.plain)
+            }
+
+            if workspace.memories.isEmpty && !isMemoryComposerVisible {
+                Text("Save details the agent should remember")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
             } else {
                 ForEach(Array(workspace.memories.enumerated()), id: \.offset) { idx, memory in
                     memoryRow(memory: memory, index: idx)
@@ -903,60 +1340,192 @@ struct WorkspaceRightRailView: View {
 
                 if isMemoryComposerVisible {
                     memoryComposer
-                } else {
-                    Button {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
-                            isMemoryComposerVisible = true
-                        }
-                    } label: {
-                        Text("+ Add memory")
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.leading, 2)
                 }
             }
+        }
+    }
 
-            Divider().opacity(0.3)
-
-            // Instructions
+    private var foldersContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
             HStack(spacing: 6) {
-                Image(systemName: "text.quote")
+                Image(systemName: "folder")
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Workspace Instructions")
+                    .foregroundStyle(Stanford.sky)
+                Text("Folders")
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.primary)
-                Spacer()
+                RailCountBadge(count: workspaceFolderCount)
+                Spacer(minLength: 0)
+                Button { addExtraFolder() } label: {
+                    Text("Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
             }
 
-            if workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button { onEditWorkspace() } label: {
-                    Text("Add instructions to guide agent behavior")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button { onEditWorkspace() } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(instructionsPreview)
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.primary)
-                            .lineSpacing(2)
-                            .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        Image(systemName: "pencil")
-                            .font(Stanford.ui(10, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 2)
-                    }
-                    .contentShape(Rectangle())
+            contextAccessRow(
+                icon: "folder.fill",
+                title: "Primary",
+                subtitle: workspace.primaryPath.isEmpty ? "No folder selected" : compactPath(workspace.primaryPath),
+                color: Stanford.sky,
+                help: workspace.primaryPath
+            )
+
+            ForEach(Array(workspace.additionalPaths.prefix(2).enumerated()), id: \.offset) { _, path in
+                contextAccessRow(
+                    icon: "folder",
+                    title: URL(fileURLWithPath: path).lastPathComponent,
+                    subtitle: compactPath(path),
+                    color: Stanford.sky,
+                    help: path
+                )
+            }
+
+            if workspace.additionalPaths.count > 2 {
+                Text("+ \(workspace.additionalPaths.count - 2) more folders")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var workspaceFolderCount: Int {
+        (workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1)
+            + workspace.additionalPaths.count
+    }
+
+    private var sshContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+            HStack(spacing: 6) {
+                Image(systemName: "network")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.paloAltoGreen)
+                Text("Remote Access")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                RailCountBadge(count: sshConnections.count)
+                Spacer(minLength: 0)
+                Button { onNewSSHConnection?() } label: {
+                    Text("Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
                 }
                 .buttonStyle(.plain)
             }
+
+            if sshConnections.isEmpty {
+                Text("Add remote servers the agent can access")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(sshConnections.prefix(3)) { conn in
+                    Button { onEditSSHConnection?(conn) } label: {
+                        contextAccessRow(
+                            icon: "terminal",
+                            title: conn.name.isEmpty ? conn.host : conn.name,
+                            subtitle: "\(conn.user)@\(conn.host):\(conn.port)",
+                            color: conn.lastTestResult == false ? Stanford.failed : Stanford.paloAltoGreen,
+                            help: "\(conn.sshTarget):\(conn.remotePath)",
+                            showsChevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var routinesContextSection: some View {
+        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(Stanford.ui(12, weight: .medium))
+                    .foregroundStyle(Stanford.poppy)
+                Text("Routines")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                RailCountBadge(count: workspace.schedules.count)
+                Spacer(minLength: 0)
+                Button { onNewSchedule?() } label: {
+                    Text("Add")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+            }
+
+            ForEach(workspace.schedules.sorted { $0.name < $1.name }.prefix(3)) { schedule in
+                Button { onEditSchedule?(schedule) } label: {
+                    contextAccessRow(
+                        icon: schedule.isEnabled ? "clock.arrow.circlepath" : "pause.circle",
+                        title: schedule.name,
+                        subtitle: schedule.frequencySummary,
+                        color: schedule.isEnabled ? Stanford.poppy : .secondary,
+                        help: schedule.routineDescription.isEmpty ? schedule.goal : schedule.routineDescription,
+                        showsChevron: true
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func contextAccessRow(
+        icon: String,
+        title: String,
+        subtitle: String,
+        color: Color,
+        help: String? = nil,
+        showsChevron: Bool = false
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(subtitle.isEmpty ? "No details" : subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(.quaternary)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .help(help ?? subtitle)
+    }
+
+    private var activitySection: some View {
+        VStack(spacing: Stanford.railListSpacing) {
+            RailActionButton(
+                title: "Usage",
+                subtitle: "\(workspace.tasks.count) tasks · \(Formatters.formatTokens(workspace.totalTokens)) tokens",
+                icon: "chart.bar",
+                color: Stanford.poppy,
+                action: onShowDashboard
+            )
+
+            RailActionButton(
+                title: "Logs",
+                subtitle: "\(logEntryCount) runtime entries",
+                icon: "doc.text.magnifyingglass",
+                color: Stanford.sky,
+                action: onShowLogs
+            )
         }
     }
 
@@ -1216,9 +1785,9 @@ struct WorkspaceRightRailView: View {
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
-        isToolsExpanded = !workspaceTools.isEmpty
+        isToolsExpanded = false
         isTemplatesExpanded = false
-        isMemoryComposerVisible = workspace.memories.isEmpty
+        isMemoryComposerVisible = false
     }
 
     private func addExtraFolder() {
@@ -1336,6 +1905,10 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private var hasWorkspaceInstructions: Bool {
+        !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var instructionsPreview: String {
         workspace.instructions
             .components(separatedBy: .newlines)
@@ -1350,12 +1923,38 @@ struct WorkspaceRightRailView: View {
             .joined(separator: " ")
     }
 
+    private var instructionsPreviewNeedsMore: Bool {
+        instructionsPreview.count > 180 || workspace.instructions.components(separatedBy: .newlines).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count > 3
+    }
+
     private func abbreviatePath(_ path: String) -> String {
         let home = NSHomeDirectory()
         if path.hasPrefix(home) {
             return "~" + path.dropFirst(home.count)
         }
         return path
+    }
+
+    private func compactPath(_ path: String) -> String {
+        let abbreviated = abbreviatePath(path)
+        let parts = abbreviated
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        guard parts.count > 3 else { return abbreviated }
+
+        let leaf = parts[parts.count - 1]
+        let parent = parts[parts.count - 2]
+
+        if abbreviated.hasPrefix("~/") {
+            return "~/.../\(parent)/\(leaf)"
+        }
+        if abbreviated.hasPrefix("/") {
+            return "/.../\(parent)/\(leaf)"
+        }
+        return ".../\(parent)/\(leaf)"
     }
 
     // MARK: - Inspector Helpers
@@ -1688,6 +2287,80 @@ struct WorkspaceRightRailView: View {
     }
 }
 
+struct CapabilityRailPackagePresentation: Equatable {
+    let statusLabel: String?
+    let actionTitle: String
+    let rowSubtitle: String
+    let scopeValues: [String]
+
+    static func make(
+        isEnabled: Bool,
+        readinessLevel: CapabilityReadinessLevel,
+        workspaceName: String,
+        sharedResourceCount: Int,
+        workspaceResourceCount: Int,
+        declaredResourceCount: Int,
+        contentSummary: String
+    ) -> CapabilityRailPackagePresentation {
+        let statusLabel: String?
+        if !isEnabled {
+            statusLabel = "Available"
+        } else {
+            switch readinessLevel {
+            case .ready:
+                statusLabel = nil
+            case .needsAttention:
+                statusLabel = "Needs setup"
+            case .inactive:
+                statusLabel = "Disabled"
+            }
+        }
+
+        let actionTitle = "Details"
+        let workspaceLabel = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "this workspace"
+            : workspaceName
+        var scopeValues: [String] = [
+            isEnabled ? "Enabled for \(workspaceLabel)" : "Available in the library; not active here"
+        ]
+
+        if sharedResourceCount > 0 {
+            scopeValues.append(
+                "Uses \(countPhrase(sharedResourceCount, singular: "shared resource", plural: "shared resources")) reusable in other workspaces"
+            )
+        }
+        if workspaceResourceCount > 0 {
+            scopeValues.append(
+                "Uses \(countPhrase(workspaceResourceCount, singular: "workspace resource", plural: "workspace resources")) that can differ here"
+            )
+        }
+        if sharedResourceCount == 0, workspaceResourceCount == 0, declaredResourceCount > 0 {
+            scopeValues.append("Installing links the declared package resources to this workspace")
+        }
+
+        let trimmedSummary = contentSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rowSubtitle: String
+        if !trimmedSummary.isEmpty {
+            rowSubtitle = trimmedSummary
+        } else if declaredResourceCount > 0 {
+            rowSubtitle = countPhrase(declaredResourceCount, singular: "declared resource", plural: "declared resources")
+        } else {
+            rowSubtitle = "Capability available to tasks"
+        }
+
+        return CapabilityRailPackagePresentation(
+            statusLabel: statusLabel,
+            actionTitle: actionTitle,
+            rowSubtitle: rowSubtitle,
+            scopeValues: scopeValues
+        )
+    }
+
+    private static func countPhrase(_ count: Int, singular: String, plural: String) -> String {
+        "\(count) \(count == 1 ? singular : plural)"
+    }
+}
+
 private struct RailActionButton: View {
     let title: String
     let subtitle: String
@@ -1790,6 +2463,122 @@ private struct RailMetricCard: View {
     }
 }
 
+private struct CapabilityHierarchySummary: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            CapabilityHierarchyLine(
+                icon: "shippingbox",
+                title: "Package",
+                detail: "workspace switch"
+            )
+            CapabilityHierarchyLine(
+                icon: "text.quote",
+                title: "Skills",
+                detail: "instructions"
+            )
+            CapabilityHierarchyLine(
+                icon: "slider.horizontal.3",
+                title: "Connectors, tools, browser",
+                detail: "access and execution"
+            )
+        }
+    }
+}
+
+private struct CapabilityHierarchyLine: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(Stanford.ui(10, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 14)
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(detail)
+                .font(Stanford.caption(10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct CapabilityOverviewMetric: View {
+    let title: String
+    let value: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(color)
+                Text(value)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
+            }
+            Text(title)
+                .font(Stanford.caption(10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct CapabilityResourceScopeRow: View {
+    let title: String
+    let value: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("\(value)")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+        }
+    }
+}
+
+private struct CapabilityRailSnapshot {
+    let items: [RailCapabilityItem]
+    let attentionItems: [RailCapabilityItem]
+    let readyItems: [RailCapabilityItem]
+    let draftItems: [RailCapabilityItem]
+    let enabledCount: Int
+    let needsSetupCount: Int
+    let availableToAddCount: Int
+
+    init(
+        items: [RailCapabilityItem],
+        availableToAddCount: Int,
+        isDraft: (RailCapabilityItem) -> Bool
+    ) {
+        self.items = items
+        attentionItems = items.filter { $0.readiness.level == .needsAttention }
+        readyItems = items.filter { $0.readiness.level != .needsAttention && !isDraft($0) }
+        draftItems = items.filter(isDraft)
+        enabledCount = items.filter(\.isEnabled).count
+        needsSetupCount = attentionItems.count
+        self.availableToAddCount = availableToAddCount
+    }
+}
+
 private struct RailCapabilityItem: Identifiable {
     enum Source {
         case package(PluginPackage)
@@ -1803,10 +2592,13 @@ private struct RailCapabilityItem: Identifiable {
     let color: Color
     let isEnabled: Bool
     let readiness: CapabilityReadiness
+    let presentation: CapabilityRailPackagePresentation
     let source: Source
     let skillNames: [String]
     let connectorNames: [String]
     let toolNames: [String]
+    let browserAdapterNames: [String]
+    let templateNames: [String]
     let requirementNames: [String]
 }
 
@@ -1816,76 +2608,75 @@ private struct CapabilityRailRow: View {
     let subtitle: String
     let color: Color
     let readiness: CapabilityReadiness
-    let isExpanded: Bool
-    let isOn: Binding<Bool>
-    let onTap: () -> Void
-
-    private var readinessColor: Color {
-        switch readiness.level {
-        case .ready:
-            return Stanford.paloAltoGreen
-        case .needsAttention:
-            return Stanford.poppy
-        case .inactive:
-            return Color.secondary.opacity(0.35)
-        }
-    }
-
-    private var readinessLabel: String {
-        switch readiness.level {
-        case .ready:
-            return "Functional"
-        case .needsAttention:
-            return "Needs attention"
-        case .inactive:
-            return "Disabled"
-        }
-    }
+    let statusLabel: String?
+    let statusColor: Color
+    let isEnabled: Bool
+    let showsWarningIcon: Bool
+    let onOpen: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: onTap) {
-                HStack(spacing: 8) {
-                    Image(systemName: icon)
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(isOn.wrappedValue ? color : .secondary)
-                        .frame(width: 18)
+        Button(action: onOpen) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(isEnabled ? color : .secondary)
+                    .frame(width: 18)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(title.isEmpty ? "Untitled Capability" : title)
-                                .font(Stanford.caption(12).weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-
-                            Circle()
-                                .fill(readinessColor)
-                                .frame(width: 6, height: 6)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        if showsWarningIcon {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(Stanford.ui(9, weight: .semibold))
+                                .foregroundStyle(Stanford.poppy)
                                 .help(readiness.messages.joined(separator: "\n"))
-                                .accessibilityLabel(readinessLabel)
                         }
 
-                        Text(subtitle.isEmpty ? "No details" : subtitle)
-                            .font(Stanford.caption(10))
-                            .foregroundStyle(.secondary)
+                        Text(title.isEmpty ? "Untitled Capability" : title)
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
+                            .layoutPriority(1)
+
+                        if let statusLabel {
+                            CapabilityStatusBadge(title: statusLabel, color: statusColor)
+                                .help(readiness.messages.joined(separator: "\n"))
+                                .accessibilityLabel(statusLabel)
+                        }
                     }
 
-                    Spacer(minLength: 0)
-
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.quaternary)
+                    Text(subtitle.isEmpty ? "No details" : subtitle)
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
 
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(.quaternary)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help("Open details")
+    }
+}
+
+private struct CapabilityStatusBadge: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(title)
+            .font(Stanford.caption(9).weight(.semibold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.1))
+            .clipShape(Capsule())
     }
 }
 

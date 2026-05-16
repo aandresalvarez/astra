@@ -243,6 +243,7 @@ struct ContentView: View {
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
+    @State private var configureFocusCapabilityPackageID: String?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
@@ -559,6 +560,7 @@ struct ContentView: View {
                 onManageCapabilities: openCapabilitiesManager,
                 onEditWorkspace: showWorkspaceEditor,
                 onOpenConfigureTab: openConfigureTab,
+                onOpenCapabilityPackage: openCapabilityPackage,
                 onNewSSHConnection: showSSHConnectionEditor,
                 onEditSSHConnection: beginEditingSSHConnection,
                 onCreateWorkspace: createWorkspace,
@@ -643,7 +645,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingConfigure) {
             if let ws = effectiveWorkspace {
-                ConfigureView(workspace: ws, initialTab: configureInitialTab, focusItemID: configureFocusItemID)
+                ConfigureView(
+                    workspace: ws,
+                    initialTab: configureInitialTab,
+                    focusItemID: configureFocusItemID,
+                    focusCapabilityPackageID: configureFocusCapabilityPackageID
+                )
             }
         }
         .sheet(isPresented: $showingWorkspaceEditor) {
@@ -798,18 +805,28 @@ struct ContentView: View {
     private func openCapabilitiesManager() {
         configureInitialTab = .capabilities
         configureFocusItemID = nil
+        configureFocusCapabilityPackageID = nil
         showingConfigure = true
     }
 
     private func openSkillsManager() {
         configureInitialTab = .skills
         configureFocusItemID = nil
+        configureFocusCapabilityPackageID = nil
         showingConfigure = true
     }
 
     private func openConfigureTab(_ tab: ConfigureTab, itemID: UUID?) {
         configureInitialTab = tab
         configureFocusItemID = itemID
+        configureFocusCapabilityPackageID = nil
+        showingConfigure = true
+    }
+
+    private func openCapabilityPackage(_ packageID: String) {
+        configureInitialTab = .capabilities
+        configureFocusItemID = nil
+        configureFocusCapabilityPackageID = packageID
         showingConfigure = true
     }
 
@@ -2222,6 +2239,7 @@ private struct ContentDetailAreaView: View {
     let onManageCapabilities: () -> Void
     let onEditWorkspace: () -> Void
     let onOpenConfigureTab: (ConfigureTab, UUID?) -> Void
+    let onOpenCapabilityPackage: (String) -> Void
     let onNewSSHConnection: () -> Void
     let onEditSSHConnection: (SSHConnection) -> Void
     let onCreateWorkspace: () -> Void
@@ -2245,12 +2263,13 @@ private struct ContentDetailAreaView: View {
                     onEditSchedule: onEditSchedule,
                     onManageCapabilities: onManageCapabilities,
                     onOpenConfigureTab: onOpenConfigureTab,
+                    onOpenCapabilityPackage: onOpenCapabilityPackage,
                     onNewSSHConnection: onNewSSHConnection,
                     onEditSSHConnection: onEditSSHConnection,
                     sshReloadTrigger: sshReloadTrigger
                 )
                 .id(workspace.id)
-                .inspectorColumnWidth(min: 300, ideal: 340, max: 380)
+                .inspectorColumnWidth(min: 340, ideal: 460, max: 460)
             }
         }
     }

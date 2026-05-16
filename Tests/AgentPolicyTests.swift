@@ -14,6 +14,7 @@ private func policyRenderContext(
     runtime: AgentRuntimeID,
     features: ProviderPolicyFeatures,
     requestedAllowedTools: [String] = ["Read", "Grep"],
+    localToolCommands: [String] = [],
     environmentKeyNames: [String] = [],
     credentialLabels: [String] = []
 ) -> PolicyRenderContext {
@@ -23,7 +24,7 @@ private func policyRenderContext(
         workspacePath: "/tmp/astra-policy-tests",
         additionalPaths: [],
         requestedAllowedTools: requestedAllowedTools,
-        localToolCommands: [],
+        localToolCommands: localToolCommands,
         environmentKeyNames: environmentKeyNames,
         credentialLabels: credentialLabels,
         providerFeatures: features
@@ -57,6 +58,114 @@ struct AgentPolicyTests {
         #expect(renderedTools.contains("Read"))
         #expect(renderedTools.contains("Write"))
         #expect(!renderedTools.contains("Bash"))
+    }
+
+    @Test("Denied tools are matched case-insensitively")
+    func deniedToolsAreMatchedCaseInsensitively() {
+        let reviewPolicy = AgentPolicy(
+            level: .review,
+            allowedTools: ["Read", "Bash"],
+            deniedTools: ["bash"]
+        )
+        #expect(reviewPolicy.providerAllowedTools(requestedTools: ["Bash"]) == ["Read"])
+
+        let customPolicy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Bash(curl:*)"],
+            deniedTools: ["bash(curl:*)"]
+        )
+        #expect(customPolicy.providerAllowedTools(requestedTools: []) == ["Read"])
+    }
+
+    @Test("One-run approvals clear matching ask-first and denied tools")
+    func oneRunApprovalsClearMatchingAskFirstAndDeniedTools() {
+        let policy = AgentPolicy(
+            level: .review,
+            allowedTools: ["Read"],
+            askFirstTools: ["bash"],
+            deniedTools: ["write"]
+        )
+
+        let approved = policy.applyingOneRunAllowedTools(["Bash", "Write"])
+
+        #expect(approved.allowedTools.contains("Bash"))
+        #expect(approved.allowedTools.contains("Write"))
+        #expect(!approved.askFirstTools.contains("bash"))
+        #expect(!approved.deniedTools.contains("write"))
+    }
+
+    @Test("Custom policy does not inherit skill requested tools")
+    func customPolicyDoesNotInheritSkillRequestedTools() {
+        let policy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read"],
+            askFirstTools: ["Bash"],
+            deniedTools: []
+        )
+
+        let renderedTools = policy.providerAllowedTools(requestedTools: ["Bash", "Write", "WebFetch"])
+
+        #expect(renderedTools == ["Read"])
+
+        let adapter = ClaudePolicyAdapter()
+        let render = adapter.render(
+            policy: policy,
+            context: policyRenderContext(
+                runtime: .claudeCode,
+                features: adapter.supportedFeatures,
+                requestedAllowedTools: ["Bash", "Write", "WebFetch"],
+                localToolCommands: ["gh pr view"]
+            )
+        )
+
+        #expect(render.allowedTools == ["Read"])
+        #expect(!render.allowedTools.contains("Bash"))
+        #expect(!render.allowedTools.contains("Write"))
+        #expect(!render.allowedTools.contains("WebFetch"))
+        #expect(!render.allowedTools.contains("Bash(gh:*)"))
+        #expect(render.askFirstTools.contains("Bash"))
+    }
+
+    @Test("Custom policy grants local CLI tools only with explicit Bash")
+    func customPolicyGrantsLocalCLIToolsOnlyWithExplicitBash() {
+        let policy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Bash"],
+            askFirstTools: ["Write"],
+            deniedTools: []
+        )
+
+        let claude = ClaudePolicyAdapter()
+        let claudeRender = claude.render(
+            policy: policy,
+            context: policyRenderContext(
+                runtime: .claudeCode,
+                features: claude.supportedFeatures,
+                requestedAllowedTools: ["WebFetch"],
+                localToolCommands: ["gh pr view"]
+            )
+        )
+
+        #expect(claudeRender.allowedTools.contains("Bash"))
+        #expect(claudeRender.allowedTools.contains("Bash(gh:*)"))
+        #expect(!claudeRender.allowedTools.contains("WebFetch"))
+
+        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
+        --allow-tool
+        --output-format
+        """))
+        let copilotRender = copilot.render(
+            policy: policy,
+            context: policyRenderContext(
+                runtime: .copilotCLI,
+                features: copilot.supportedFeatures,
+                requestedAllowedTools: ["WebFetch"],
+                localToolCommands: ["gh pr view"]
+            )
+        )
+
+        #expect(copilotRender.allowedTools.contains("shell(gh:*)"))
+        #expect(!copilotRender.allowedTools.contains("fetch"))
     }
 
     @Test("Claude review render avoids broad provider permissions")
@@ -133,6 +242,64 @@ struct AgentPolicyTests {
 
         #expect(launchPolicy.allowedTools(default: ["Bash", "Write"]) == ["Glob", "Grep", "Read"])
         #expect(launchPolicy.permissionPolicy(default: .autonomous) == .restricted)
+    }
+
+    @Test("Review render does not allow local CLI tools without approval")
+    func reviewRenderDoesNotAllowLocalCLIToolsWithoutApproval() {
+        let claude = ClaudePolicyAdapter()
+        let claudeRender = claude.render(
+            policy: .preset(.review),
+            context: policyRenderContext(
+                runtime: .claudeCode,
+                features: claude.supportedFeatures,
+                localToolCommands: ["gh"]
+            )
+        )
+        #expect(!claudeRender.allowedTools.contains("Bash(gh:*)"))
+
+        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
+        --allow-tool
+        --output-format
+        """))
+        let copilotRender = copilot.render(
+            policy: .preset(.review),
+            context: policyRenderContext(
+                runtime: .copilotCLI,
+                features: copilot.supportedFeatures,
+                localToolCommands: ["gh"]
+            )
+        )
+        #expect(!copilotRender.allowedTools.contains("shell(gh:*)"))
+        #expect(!copilotRender.generatedConfigPreview.contains("shell(gh:*)"))
+    }
+
+    @Test("Build render grants enabled local CLI tools")
+    func buildRenderGrantsEnabledLocalCLITools() {
+        let claude = ClaudePolicyAdapter()
+        let claudeRender = claude.render(
+            policy: .preset(.build),
+            context: policyRenderContext(
+                runtime: .claudeCode,
+                features: claude.supportedFeatures,
+                localToolCommands: ["astra-browser page"]
+            )
+        )
+        #expect(claudeRender.allowedTools.contains("Bash(astra-browser:*)"))
+
+        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
+        --allow-tool
+        --output-format
+        """))
+        let copilotRender = copilot.render(
+            policy: .preset(.build),
+            context: policyRenderContext(
+                runtime: .copilotCLI,
+                features: copilot.supportedFeatures,
+                localToolCommands: ["gh"]
+            )
+        )
+        #expect(copilotRender.allowedTools.contains("shell(gh:*)"))
+        #expect(copilotRender.generatedConfigPreview.contains("shell(gh:*)"))
     }
 
     @Test("Unsupported credential redaction is a blocked diagnostic")
@@ -309,5 +476,45 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent != nil)
         #expect(manifestEvent?.payload.contains("PLAIN_ENV") == true)
         #expect(manifestEvent?.payload.contains("value-that-must-not-be-logged") == false)
+    }
+
+    @Test("Preflight manifest includes active browser bridge as local tool grant")
+    func preflightManifestIncludesActiveBrowserBridgeLocalToolGrant() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Browser Policy", primaryPath: "/tmp/browser-policy-workspace")
+        let task = AgentTask(title: "Browser", goal: "Use the browser", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        TaskPolicyStore.recordSelection(level: .build, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.policyLevel == .build)
+        #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser:*)"))
     }
 }

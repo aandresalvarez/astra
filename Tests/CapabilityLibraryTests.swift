@@ -51,6 +51,53 @@ struct CapabilityLibraryTests {
         #expect(library.installedPackage(id: package.id)?.sourceMetadata == .localLibrary())
     }
 
+    @Test("runtime package definitions refresh when installed package directory changes")
+    func runtimePackageDefinitionsRefreshWhenLibraryChanges() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-runtime-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let first = PluginPackage(
+            id: "stanford.first-runtime-cache",
+            name: "First Runtime Cache",
+            icon: "folder",
+            description: "First package",
+            author: "Stanford",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        let second = PluginPackage(
+            id: "stanford.second-runtime-cache",
+            name: "Second Runtime Cache",
+            icon: "folder",
+            description: "Second package",
+            author: "Stanford",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        try library.install(first)
+        let firstIDs = Set(CapabilityRuntimeResourceMatcher.packageDefinitions(library: library).map(\.id))
+        #expect(firstIDs.contains(first.id))
+        #expect(!firstIDs.contains(second.id))
+
+        try library.install(second)
+        let secondIDs = Set(CapabilityRuntimeResourceMatcher.packageDefinitions(library: library).map(\.id))
+        #expect(secondIDs.contains(first.id))
+        #expect(secondIDs.contains(second.id))
+    }
+
     @Test("package URLs stay inside library for malicious IDs")
     func packageURLStaysInsideLibraryForMaliciousIDs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

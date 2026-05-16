@@ -476,13 +476,13 @@ struct AgentPolicySheet: View {
     }
 
     private func customToolDisposition(for tool: String) -> CustomToolDisposition {
-        if customPolicyDraft.deniedTools.contains(tool) {
+        if customPolicyList(customPolicyDraft.deniedTools, containsTool: tool) {
             return .deny
         }
-        if customPolicyDraft.askFirstTools.contains(tool) {
+        if customPolicyList(customPolicyDraft.askFirstTools, containsTool: tool) {
             return .askFirst
         }
-        if customPolicyDraft.allowedTools.contains(tool) || requestedAllowedTools.contains(tool) {
+        if customPolicyList(customPolicyDraft.allowedTools, containsTool: tool) {
             return .allow
         }
         return .deny
@@ -490,9 +490,9 @@ struct AgentPolicySheet: View {
 
     private func setCustomTool(_ tool: String, disposition: CustomToolDisposition) {
         var policy = customPolicyDraft
-        policy.allowedTools.removeAll { $0 == tool }
-        policy.askFirstTools.removeAll { $0 == tool }
-        policy.deniedTools.removeAll { $0 == tool }
+        policy.allowedTools.removeAll { Self.normalizedPolicyToolKey($0) == Self.normalizedPolicyToolKey(tool) }
+        policy.askFirstTools.removeAll { Self.normalizedPolicyToolKey($0) == Self.normalizedPolicyToolKey(tool) }
+        policy.deniedTools.removeAll { Self.normalizedPolicyToolKey($0) == Self.normalizedPolicyToolKey(tool) }
 
         switch disposition {
         case .allow:
@@ -507,6 +507,11 @@ struct AgentPolicySheet: View {
         policy.askFirstTools = Self.uniquePolicyValues(policy.askFirstTools)
         policy.deniedTools = Self.uniquePolicyValues(policy.deniedTools)
         applyCustomPolicy(policy, syncPatternText: false)
+    }
+
+    private func customPolicyList(_ values: [String], containsTool tool: String) -> Bool {
+        let key = Self.normalizedPolicyToolKey(tool)
+        return values.contains { Self.normalizedPolicyToolKey($0) == key }
     }
 
     private func updateCustomPolicyList(
@@ -656,6 +661,10 @@ struct AgentPolicySheet: View {
 
     private static func uniquePolicyValues(_ values: [String]) -> [String] {
         Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+    }
+
+    private static func normalizedPolicyToolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func policyColor(_ level: AgentPolicyLevel) -> Color {

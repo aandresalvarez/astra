@@ -38,8 +38,8 @@ struct SkillResolver {
             tools.append("Bash")
         }
         let allowed = tools.isEmpty ? Skill.defaultAllowed : Array(Set(tools))
-        let disallowed = Set(resolvedDisallowedTools)
-        return allowed.filter { !disallowed.contains($0) }.sorted()
+        let disallowed = Set(resolvedDisallowedTools.map(Self.normalizedToolKey))
+        return allowed.filter { !disallowed.contains(Self.normalizedToolKey($0)) }.sorted()
     }
 
     var resolvedDisallowedTools: [String] {
@@ -48,11 +48,12 @@ struct SkillResolver {
 
     var toolPermissionConflicts: [ToolPermissionConflict] {
         var conflicts: [ToolPermissionConflict] = []
-        let disallowedByTool = Dictionary(
-            uniqueKeysWithValues: effectiveSnapshots.flatMap { snapshot in
-                snapshot.disallowedTools.map { ($0, snapshot.name) }
+        var disallowedByTool: [String: Set<String>] = [:]
+        for snapshot in effectiveSnapshots {
+            for tool in snapshot.disallowedTools {
+                disallowedByTool[Self.normalizedToolKey(tool), default: []].insert(snapshot.name)
             }
-        )
+        }
 
         for snapshot in effectiveSnapshots {
             var allowedTools = snapshot.allowedTools + snapshot.customTools
@@ -66,8 +67,10 @@ struct SkillResolver {
             }
 
             for tool in Set(allowedTools).sorted() {
-                guard let disallowedBy = disallowedByTool[tool], disallowedBy != snapshot.name else { continue }
-                conflicts.append(ToolPermissionConflict(tool: tool, allowedBy: snapshot.name, disallowedBy: disallowedBy))
+                guard let disallowingSkills = disallowedByTool[Self.normalizedToolKey(tool)] else { continue }
+                for disallowedBy in disallowingSkills.sorted() where disallowedBy != snapshot.name {
+                    conflicts.append(ToolPermissionConflict(tool: tool, allowedBy: snapshot.name, disallowedBy: disallowedBy))
+                }
             }
         }
 
@@ -136,5 +139,9 @@ struct SkillResolver {
         } else {
             return values + Array(repeating: "", count: keys.count - values.count)
         }
+    }
+
+    private static func normalizedToolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

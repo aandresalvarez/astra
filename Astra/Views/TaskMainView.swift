@@ -1569,10 +1569,12 @@ struct TaskMainView: View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
+        let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
         let runActivityPresentation = RunActivityPresentation(
             run: run,
             activity: activity,
-            notices: displayNotices
+            notices: displayNotices,
+            suppressedNoticeIDs: Set(actionableNotices.map(\.id))
         )
         let hasUserFacingOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !run.hasVPNWarning
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output

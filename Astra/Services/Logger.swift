@@ -375,6 +375,10 @@ enum AppLogger {
         bufferQueue.sync { _entries }
     }
 
+    static var entryCount: Int {
+        bufferQueue.sync { _entries.count }
+    }
+
     /// Callback for live UI updates
     static var onNewEntry: ((LogEntry) -> Void)?
 

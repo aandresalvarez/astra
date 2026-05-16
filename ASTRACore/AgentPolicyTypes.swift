@@ -248,26 +248,39 @@ public struct AgentPolicy: Codable, Equatable, Sendable {
     }
 
     public func providerAllowedTools(requestedTools: [String]) -> [String] {
+        let tools: [String]
         switch level {
         case .locked, .review:
-            return Self.unique(allowedTools)
+            tools = allowedTools
         case .build, .network:
-            return Self.unique(requestedTools + allowedTools).filter { !deniedTools.contains($0) }
-        case .autonomous, .custom:
-            let tools = requestedTools.isEmpty ? allowedTools : requestedTools + allowedTools
-            return Self.unique(tools).filter { !deniedTools.contains($0) }
+            tools = requestedTools + allowedTools
+        case .autonomous:
+            tools = requestedTools.isEmpty ? allowedTools : requestedTools + allowedTools
+        case .custom:
+            tools = allowedTools
         }
+        return Self.unique(tools).filter { !isDeniedTool($0) }
     }
 
     public func applyingOneRunAllowedTools(_ approvedTools: [String]) -> AgentPolicy {
         let approved = Self.unique(approvedTools)
         guard !approved.isEmpty else { return self }
+        let approvedKeys = Set(approved.map(Self.normalizedToolKey))
 
         var policy = self
         policy.allowedTools = Self.unique(policy.allowedTools + approved)
-        policy.askFirstTools = policy.askFirstTools.filter { !approved.contains($0) }
-        policy.deniedTools = policy.deniedTools.filter { !approved.contains($0) }
+        policy.askFirstTools = policy.askFirstTools.filter { !approvedKeys.contains(Self.normalizedToolKey($0)) }
+        policy.deniedTools = policy.deniedTools.filter { !approvedKeys.contains(Self.normalizedToolKey($0)) }
         return policy
+    }
+
+    private func isDeniedTool(_ tool: String) -> Bool {
+        let key = Self.normalizedToolKey(tool)
+        return deniedTools.contains { Self.normalizedToolKey($0) == key }
+    }
+
+    private static func normalizedToolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func unique(_ values: [String]) -> [String] {
