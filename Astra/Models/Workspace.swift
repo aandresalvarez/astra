@@ -87,7 +87,7 @@ final class Workspace: Identifiable {
     static func displayName(name: String, primaryPath: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
-        let placeholderNames: Set<String> = ["", "untitled", "untitled workspace", "new workspace"]
+        let placeholderNames: Set<String> = ["", "untitled", "untitled workspace", "new workspace", "asdf", "asdfadsf"]
         if !placeholderNames.contains(lower) {
             return trimmed
         }

@@ -19,6 +19,10 @@ enum Stanford {
         light: 0x8C1515,  // Stanford cardinal
         dark:  0xD93A3A   // readable on dark; still distinctly red
     )
+    static let errorRed = Color(
+        light: 0xC7351F,  // shifted away from brand cardinal for error states
+        dark:  0xFF7058
+    )
     static let white = Color.white
     static let black = Color.primary
     static let readingTextLightHex: UInt = 0x2E2D29
@@ -79,7 +83,7 @@ enum Stanford {
     static let running = lagunita
     static let pendingUser = poppy
     static let completed = paloAltoGreen
-    static let failed = cardinalRed
+    static let failed = errorRed
     static let cancelled = coolGrey
 
     // MARK: - Semantic Status Colors
@@ -89,18 +93,18 @@ enum Stanford {
     // carry brand hues and look like system surfaces.
     static let statusHealthy = paloAltoGreen
     static let statusWarn = poppy
-    static let statusError = cardinalRed
+    static let statusError = errorRed
     static let statusInfo = sky
 
     // MARK: - Semantic UI Colors
     static let diffAdded = paloAltoGreen
-    static let diffRemoved = cardinalRed
+    static let diffRemoved = errorRed
     static let tools = plum
     static let interactive = sky
     static let scrim = Color.black
     static let focusRing = lagunita
     static let link = lagunita
-    static let selectionFill = lagunita.opacity(0.12)
+    static let selectionFill = Color.primary.opacity(0.075)
 
     // MARK: - Global UI Scale
 
@@ -350,7 +354,7 @@ struct StanfordButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var isPrimary: Bool = true
-    var color: Color = Stanford.cardinalRed
+    var color: Color = Stanford.lagunita
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)

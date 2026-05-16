@@ -52,7 +52,7 @@ struct ComposerToolbar: View {
 
     var submitIcon: String = "arrow.up.circle.fill"
     var submitTitle: String?          // nil = icon-only send button
-    var submitColor: Color = Stanford.cardinalRed
+    var submitColor: Color = Stanford.lagunita
     var showSecurityGate: Bool = false
     var showPermissionControls: Bool = false
 
@@ -724,7 +724,7 @@ struct ComposerToolbar: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(Stanford.ui(28))
-                    .foregroundStyle(canSubmit ? Stanford.cardinalRed : Color.primary.opacity(0.25))
+                    .foregroundStyle(canSubmit ? Stanford.lagunita : Color.primary.opacity(0.25))
             }
             .buttonStyle(.plain)
             .disabled(!canSubmit)
@@ -838,14 +838,14 @@ struct ComposerToolbar: View {
             return ComposerTaskStatusPresentation(
                 label: "Failed",
                 icon: "exclamationmark.triangle.fill",
-                color: Stanford.cardinalRed,
+                color: Stanford.failed,
                 help: "The task stopped with an error. Resume or retry when ready."
             )
         case .budgetExceeded:
             return ComposerTaskStatusPresentation(
                 label: "Budget exceeded",
                 icon: "exclamationmark.triangle.fill",
-                color: Stanford.cardinalRed,
+                color: Stanford.failed,
                 help: "The task ran out of token budget. Raise the budget, resume, or retry."
             )
         case .cancelled:

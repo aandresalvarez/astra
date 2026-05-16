@@ -36,27 +36,8 @@ struct ShelfBrowserPanelView: View {
         .animation(.easeInOut(duration: 0.16), value: session.controlledBrowser.runState)
     }
 
-    // Status badge surfaces controlled-mode lifecycle. (Embedded loading is covered
-    // by the thin progress bar at the top of the browser body.)
-    private var shouldShowHeaderStatusBadge: Bool {
-        session.isUsingControlledBrowser
-    }
-
     private var overflowMenu: some View {
         Menu {
-            Picker("Engine", selection: $session.engine) {
-                ForEach(ShelfBrowserEngine.allCases) { engine in
-                    Label(
-                        engine.label,
-                        systemImage: engine == .embedded ? "safari" : "globe.badge.chevron.backward"
-                    )
-                    .tag(engine)
-                }
-            }
-            .pickerStyle(.inline)
-
-            Divider()
-
             Toggle(isOn: $isPinnedToTask) {
                 Label(
                     "Pin to task",
@@ -110,6 +91,7 @@ struct ShelfBrowserPanelView: View {
     private var toolbar: some View {
         HStack(spacing: 6) {
             navigationButtonGroup
+            engineSwitcher
             addressField
                 .frame(minWidth: 60)
                 .layoutPriority(1)
@@ -120,14 +102,44 @@ struct ShelfBrowserPanelView: View {
                 goButton(isCompact: true)
             }
             externalBrowserButton
-            if shouldShowHeaderStatusBadge {
-                browserStatusBadge
-            }
             overflowMenu
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var engineSwitcher: some View {
+        ViewThatFits(in: .horizontal) {
+            engineSegmentedControl(compact: false)
+            engineSegmentedControl(compact: true)
+        }
+        .help("Choose whether this shelf uses embedded WebKit or a controlled Chromium profile")
+    }
+
+    private func engineSegmentedControl(compact: Bool) -> some View {
+        HStack(spacing: compact ? 4 : 7) {
+            if !compact {
+                Text("Engine")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("Browser engine", selection: $session.engine) {
+                ForEach(ShelfBrowserEngine.allCases) { engine in
+                    Label(
+                        compact ? compactEngineLabel(for: engine) : engine.label,
+                        systemImage: engineIcon(for: engine)
+                    )
+                    .tag(engine)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .tint(Stanford.lagunita)
+            .frame(width: compact ? 86 : 178)
+        }
+        .fixedSize()
     }
 
     private var navigationButtonGroup: some View {
@@ -169,6 +181,8 @@ struct ShelfBrowserPanelView: View {
                 .frame(width: 14)
                 .animation(.easeOut(duration: 0.18), value: addressFieldIcon)
 
+            engineModeBadge
+
             TextField("Search or enter website", text: $addressText)
                 .textFieldStyle(.plain)
                 .font(Stanford.ui(12, weight: .medium))
@@ -206,6 +220,48 @@ struct ShelfBrowserPanelView: View {
         .animation(.easeOut(duration: 0.16), value: isAddressFocused)
         .animation(.easeOut(duration: 0.14), value: isAddressHovered)
         .animation(.easeOut(duration: 0.14), value: addressText.isEmpty)
+    }
+
+    private var engineModeBadge: some View {
+        Label(session.engine.label, systemImage: engineIcon(for: session.engine))
+            .labelStyle(.titleAndIcon)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(engineModeTint)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(engineModeTint.opacity(0.10))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(engineModeTint.opacity(0.16), lineWidth: 1)
+            )
+            .help("\(session.engine.label) mode: \(engineModeHelp)")
+            .accessibilityLabel("Browser engine: \(session.engine.label)")
+    }
+
+    private var engineModeTint: Color {
+        session.isUsingControlledBrowser ? Stanford.lagunita : .secondary
+    }
+
+    private var engineModeHelp: String {
+        session.isUsingControlledBrowser
+            ? "The address opens in the controlled Chromium profile."
+            : "The address opens in the embedded WebKit browser."
+    }
+
+    private func engineIcon(for engine: ShelfBrowserEngine) -> String {
+        switch engine {
+        case .embedded: "safari"
+        case .controlled: "globe.badge.chevron.backward"
+        }
+    }
+
+    private func compactEngineLabel(for engine: ShelfBrowserEngine) -> String {
+        switch engine {
+        case .embedded: "Emb"
+        case .controlled: "Ctrl"
+        }
     }
 
     private var addressFieldIcon: String {
@@ -354,29 +410,6 @@ struct ShelfBrowserPanelView: View {
         .padding(.horizontal, 16)
     }
 
-    private var browserStatusBadge: some View {
-        HStack(spacing: 6) {
-            if session.isLoading {
-                ProgressView()
-                    .controlSize(.mini)
-            } else {
-                Circle()
-                    .fill(browserStatusTint)
-                    .frame(width: 7, height: 7)
-            }
-
-            Text(browserStatusText)
-                .font(Stanford.caption(10).weight(.semibold))
-                .foregroundStyle(browserStatusTint)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(browserStatusTint.opacity(0.10))
-        .clipShape(Capsule())
-        .help(browserStatusHelp)
-    }
-
     private var engineTransition: AnyTransition {
         .asymmetric(
             insertion: .opacity.combined(with: .scale(scale: 0.992, anchor: .top)),
@@ -445,6 +478,7 @@ struct ShelfBrowserPanelView: View {
                 controlledTechnicalDetails
             }
             .padding(18)
+            .frame(maxWidth: 860, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -531,7 +565,8 @@ struct ShelfBrowserPanelView: View {
 
                 Toggle("", isOn: agentControlPanelBinding)
                     .labelsHidden()
-                    .toggleStyle(.switch)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
                     .help(session.isAgentBridgeEnabled ? "Turn off Agent control" : "Turn on Agent control")
             }
 
@@ -705,7 +740,7 @@ struct ShelfBrowserPanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: true))
+        .buttonStyle(StanfordButtonStyle(isPrimary: controlledPrimaryButtonIsPrimary))
         .disabled(session.controlledBrowser.isLaunching)
     }
 
@@ -728,8 +763,9 @@ struct ShelfBrowserPanelView: View {
             Label("Stop control", systemImage: "stop.fill")
                 .lineLimit(1)
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: false))
+        .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.failed))
         .disabled(!session.controlledBrowser.isRunning)
+        .help("Stop the controlled Chromium profile and disconnect task control")
     }
 
     private var controlledLaunchProgress: some View {
@@ -1155,6 +1191,10 @@ struct ShelfBrowserPanelView: View {
         if session.controlledBrowser.isLaunching { return "arrow.triangle.2.circlepath" }
         if session.controlledBrowser.isRunning { return "macwindow" }
         return "play.fill"
+    }
+
+    private var controlledPrimaryButtonIsPrimary: Bool {
+        !session.controlledBrowser.isRunning
     }
 
     private var controlledBrowserTint: Color {

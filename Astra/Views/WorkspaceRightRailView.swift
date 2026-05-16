@@ -645,7 +645,7 @@ struct WorkspaceRightRailView: View {
                     .font(Stanford.ui(9, weight: .semibold))
             }
 
-            Text(title.uppercased())
+            Text(title)
                 .font(Stanford.ui(9, weight: style == .attention ? .bold : .semibold))
 
             Text("\(count)")
@@ -783,12 +783,30 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
-        if isWorkspaceAuthoredCapability(item) {
-            return "Custom: \(item.presentation.rowSubtitle)"
+        let source = isWorkspaceAuthoredCapability(item) ? "Custom" : "Built-in"
+        let composition = capabilityCompositionSummary(for: item)
+        return "\(source): \(composition)"
+    }
+
+    private func capabilityCompositionSummary(for item: RailCapabilityItem) -> String {
+        var parts: [String] = []
+        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
+        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
+        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
+        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
+        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
+
+        if !parts.isEmpty {
+            return parts.joined(separator: ", ")
         }
 
-        let summary = item.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        return summary.isEmpty ? item.presentation.rowSubtitle : summary
+        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "No resources" : fallback
+    }
+
+    private func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
+        guard count > 0 else { return }
+        parts.append("\(count) \(count == 1 ? singular : plural)")
     }
 
     private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
@@ -1652,22 +1670,95 @@ struct WorkspaceRightRailView: View {
 
     private var activitySection: some View {
         VStack(spacing: Stanford.railListSpacing) {
-            RailActionButton(
+            RailActivityButton(
                 title: "Usage",
-                subtitle: "\(workspace.tasks.count) tasks · \(Formatters.formatTokens(workspace.totalTokens)) tokens",
+                subtitle: usageActivitySubtitle,
                 icon: "chart.bar",
-                color: Stanford.poppy,
+                color: usageActivityColor,
+                progress: workspaceBudgetProgress,
+                status: usageActivityStatus,
                 action: onShowDashboard
             )
 
-            RailActionButton(
+            RailActivityButton(
                 title: "Logs",
-                subtitle: "\(logEntryCount) runtime entries",
+                subtitle: logsActivitySubtitle,
                 icon: "doc.text.magnifyingglass",
-                color: Stanford.sky,
+                color: logsActivityColor,
+                progress: nil,
+                status: logsActivityStatus,
                 action: onShowLogs
             )
         }
+    }
+
+    private var usageActivitySubtitle: String {
+        "\(workspace.tasks.count) tasks · \(Formatters.formatTokens(workspace.totalTokens)) tokens"
+    }
+
+    private var workspaceBudgetTotal: Int {
+        workspace.tasks.reduce(0) { partial, task in
+            guard task.tokenBudget > 0 else { return partial }
+            return partial + task.tokenBudget
+        }
+    }
+
+    private var workspaceBudgetProgress: Double? {
+        guard workspaceBudgetTotal > 0 else { return nil }
+        return Double(workspace.totalTokens) / Double(workspaceBudgetTotal)
+    }
+
+    private var usageActivityStatus: String {
+        guard let progress = workspaceBudgetProgress else {
+            return "No budget limit"
+        }
+        if progress >= 1 { return "Over budget" }
+        if progress >= 0.85 { return "Near budget" }
+        return "\(Int(progress * 100))% of budget"
+    }
+
+    private var usageActivityColor: Color {
+        guard let progress = workspaceBudgetProgress else { return Stanford.lagunita }
+        if progress >= 1 { return Stanford.failed }
+        if progress >= 0.85 { return Stanford.poppy }
+        return Stanford.lagunita
+    }
+
+    private var recentLogEntriesForSummary: [LogEntry] {
+        AppLogger.entries
+    }
+
+    private var todayLogEntries: [LogEntry] {
+        let calendar = Calendar.current
+        return recentLogEntriesForSummary.filter { calendar.isDateInToday($0.timestamp) }
+    }
+
+    private var todayErrorCount: Int {
+        todayLogEntries.filter { $0.logLevel == .error }.count
+    }
+
+    private var todayWarningCount: Int {
+        todayLogEntries.filter { $0.logLevel == .warning }.count
+    }
+
+    private var logsActivitySubtitle: String {
+        "\(logEntryCount) runtime entries"
+    }
+
+    private var logsActivityStatus: String {
+        if todayErrorCount > 0 {
+            return "\(todayErrorCount) \(todayErrorCount == 1 ? "error" : "errors") today"
+        }
+        if todayWarningCount > 0 {
+            return "\(todayWarningCount) \(todayWarningCount == 1 ? "warning" : "warnings") today"
+        }
+        return "No errors today"
+    }
+
+    private var logsActivityColor: Color {
+        if todayErrorCount > 0 { return Stanford.failed }
+        if todayWarningCount > 0 { return Stanford.poppy }
+        return Stanford.sky
     }
 
     private var activitySummary: String {
@@ -1874,10 +1965,9 @@ struct WorkspaceRightRailView: View {
                     Image(systemName: isCollapsed.wrappedValue ? "chevron.right" : "chevron.down")
                         .font(Stanford.ui(10, weight: .semibold))
                         .foregroundStyle(.tertiary)
-                    Text(title.uppercased())
+                    Text(title)
                         .font(Stanford.ui(10, weight: .semibold))
                         .foregroundStyle(.tertiary)
-                        .tracking(0.5)
                     if let summary {
                         Text(summary)
                             .font(Stanford.caption(10).weight(.medium))
@@ -1925,10 +2015,9 @@ struct WorkspaceRightRailView: View {
                         Image(systemName: isCollapsed.wrappedValue ? "chevron.right" : "chevron.down")
                             .font(Stanford.ui(10, weight: .semibold))
                             .foregroundStyle(.tertiary)
-                        Text(title.uppercased())
+                        Text(title)
                             .font(Stanford.ui(10, weight: .semibold))
                             .foregroundStyle(.tertiary)
-                            .tracking(0.5)
                     }
                     .contentShape(Rectangle())
                 }
@@ -2137,10 +2226,9 @@ struct WorkspaceRightRailView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
-            Text(title.uppercased())
+            Text(title)
                 .font(Stanford.ui(10, weight: .semibold))
                 .foregroundStyle(.tertiary)
-                .tracking(0.5)
             content()
         }
     }
@@ -2152,10 +2240,9 @@ struct WorkspaceRightRailView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
             HStack {
-                Text(title.uppercased())
+                Text(title)
                     .font(Stanford.ui(10, weight: .semibold))
                     .foregroundStyle(.tertiary)
-                    .tracking(0.5)
                 Spacer()
                 trailing()
             }
@@ -2197,6 +2284,27 @@ struct WorkspaceRightRailView: View {
                     RailMetricCard(title: "Failed", value: "\(failedTasks.count)", color: Stanford.failed)
                     RailMetricCard(title: "Tokens", value: Formatters.formatTokens(workspace.totalTokens), color: Stanford.poppy)
                     RailMetricCard(title: "Cost", value: String(format: "$%.2f", workspace.totalCost), color: Stanford.sky)
+                }
+
+                if let progress = workspaceBudgetProgress {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("Budget")
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(Formatters.formatTokens(workspace.totalTokens)) / \(Formatters.formatTokens(workspaceBudgetTotal))")
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(usageActivityColor)
+                        }
+                        ProgressView(value: min(max(progress, 0), 1))
+                            .progressViewStyle(.linear)
+                            .tint(usageActivityColor)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(Color.primary.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
                 }
             }
 
@@ -2242,6 +2350,7 @@ struct WorkspaceRightRailView: View {
             inspectorSectionWithTrailing("Recent Entries") {
                 HStack(spacing: 8) {
                     RailCountBadge(count: logEntryCount)
+                    RailCountBadge(logsActivityStatus)
 
                     Button {
                         refreshRecentLogEntries()
@@ -2583,6 +2692,75 @@ private struct RailActionButton: View {
     }
 }
 
+private struct RailActivityButton: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let color: Color
+    let progress: Double?
+    let status: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .font(Stanford.ui(13, weight: .semibold))
+                        .foregroundStyle(color)
+                        .frame(width: Stanford.railIconFrame, height: Stanford.railIconFrame)
+                        .background(color.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(Stanford.body(13).weight(.medium))
+                            .foregroundStyle(.primary)
+                        Text(subtitle)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Text(status)
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(color.opacity(0.10))
+                        .clipShape(Capsule())
+
+                    Image(systemName: "chevron.right")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                }
+
+                if let progress {
+                    ProgressView(value: min(max(progress, 0), 1))
+                        .progressViewStyle(.linear)
+                        .tint(color)
+                        .frame(height: 3)
+                        .help(status)
+                }
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .liquidSurface(
+                cornerRadius: Stanford.railCompactCardCornerRadius,
+                interactive: true,
+                fallbackFill: Color.primary.opacity(0.03),
+                fallbackStrokeOpacity: 0
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct RailCountBadge: View {
     let text: String
 
@@ -2825,10 +3003,10 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
-            .frame(height: 38, alignment: .leading)
+            .frame(height: 40, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .help("Open details")
+        .help(subtitle.isEmpty ? "Open details" : subtitle)
     }
 }
 

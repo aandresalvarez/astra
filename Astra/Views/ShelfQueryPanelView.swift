@@ -1228,7 +1228,7 @@ private struct QueryBriefRiskBadge: View {
         switch risk {
         case .low: Stanford.statusHealthy
         case .medium: Stanford.poppy
-        case .high: Stanford.cardinalRed
+        case .high: Stanford.failed
         case .unknown: Stanford.coolGrey
         }
     }
@@ -1333,7 +1333,7 @@ private struct QueryBriefChecksView: View {
         switch status {
         case .passed: Stanford.statusHealthy
         case .warning: Stanford.poppy
-        case .blocked: Stanford.cardinalRed
+        case .blocked: Stanford.failed
         case .info: Stanford.lagunita
         }
     }
@@ -1402,7 +1402,7 @@ private struct QueryValidationTrailView: View {
         switch status {
         case .running: Stanford.lagunita
         case .passed: Stanford.statusHealthy
-        case .failed, .blocked: Stanford.cardinalRed
+        case .failed, .blocked: Stanford.failed
         case .repaired: Stanford.poppy
         }
     }
@@ -1578,7 +1578,7 @@ private struct QuerySafetyGateView: View {
         switch status {
         case .passed: Stanford.statusHealthy
         case .warning: Stanford.poppy
-        case .blocked: Stanford.cardinalRed
+        case .blocked: Stanford.failed
         }
     }
 }

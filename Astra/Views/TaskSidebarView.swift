@@ -768,8 +768,23 @@ struct TaskSidebarView: View {
                 }
                 .padding(.vertical, 10)
             } else if isWorkspacesExpanded {
-                ForEach(visibleWorkspaces) { workspace in
-                    workspaceListRow(for: workspace, using: taskIndex)
+                let favoriteWorkspaces = visibleWorkspaces.filter(\.isStarred)
+                let regularWorkspaces = visibleWorkspaces.filter { !$0.isStarred }
+
+                if !favoriteWorkspaces.isEmpty {
+                    workspaceGroupLabel("Favorites")
+                    ForEach(favoriteWorkspaces) { workspace in
+                        workspaceListRow(for: workspace, using: taskIndex)
+                    }
+                }
+
+                if !regularWorkspaces.isEmpty {
+                    if !favoriteWorkspaces.isEmpty || visibleWorkspaces.count > 10 {
+                        workspaceGroupLabel(searchText.isEmpty ? "All workspaces" : "Other matches")
+                    }
+                    ForEach(regularWorkspaces) { workspace in
+                        workspaceListRow(for: workspace, using: taskIndex)
+                    }
                 }
             }
         } header: {
@@ -852,6 +867,15 @@ struct TaskSidebarView: View {
         }
     }
 
+    private func workspaceGroupLabel(_ title: String) -> some View {
+        Text(title)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.top, 7)
+            .padding(.bottom, 3)
+    }
+
     /// One List row per workspace that bundles the folder header and
     /// (when expanded) its task children. Putting the children inside a
     /// single List row — instead of as sibling rows — lets SwiftUI's
@@ -862,10 +886,9 @@ struct TaskSidebarView: View {
     /// the tasks lives inside the row's view tree, where transitions
     /// behave like they do everywhere else.
     ///
-    /// The leading inset (12pt) on the tasks VStack restores the visual
-    /// indent the old `.listRowInsets(leading: 14)` provided — the
-    /// outer row already pays 2pt of leading inset, so 12pt extra
-    /// reaches the same 14pt total.
+    /// Child task rows keep their text indented, but the row surface itself
+    /// spans the same width as the parent workspace row. This keeps hover and
+    /// selection chrome from shrinking to the nested content width.
     @ViewBuilder
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
@@ -883,6 +906,7 @@ struct TaskSidebarView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if !hasTasks && !hasAny {
                         emptyWorkspaceRow(for: workspace)
+                            .padding(.leading, 12)
                     } else if hasTasks {
                         ForEach(visibleTaskGroups) { group in
                             compactTaskRow(for: group.task, attemptCount: group.attemptCount)
@@ -911,11 +935,10 @@ struct TaskSidebarView: View {
                             // (vs tasks at 14). Keep that 10pt extra indent so
                             // the link reads as a tertiary affordance under
                             // the task list, not as another task.
-                            .padding(.leading, 10)
+                            .padding(.leading, 22)
                         }
                     }
                 }
-                .padding(.leading, 12)
                 .padding(.top, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // Pure opacity in both directions. Earlier `.move(edge:
@@ -1102,7 +1125,7 @@ struct TaskSidebarView: View {
     }
 
     private func workspaceRowStroke(isSelected: Bool, isHovered: Bool) -> Color {
-        if isSelected { return Stanford.lagunita.opacity(0.18) }
+        if isSelected { return Color.primary.opacity(0.14) }
         if isHovered { return Color.primary.opacity(0.12) }
         return .clear
     }
@@ -1194,6 +1217,7 @@ struct TaskSidebarView: View {
                     task: task,
                     isSelected: selectedTask?.id == task.id,
                     isHovered: isHovered,
+                    contentLeadingPadding: 12,
                     attemptCount: attemptCount
                 )
             }
@@ -1670,6 +1694,7 @@ private struct SidebarThreadRow: View {
     /// hover hadn't fired yet), which is what produced the overlap. One
     /// source of truth fixes the race.
     let isHovered: Bool
+    var contentLeadingPadding: CGFloat = 0
     var attemptCount: Int = 1
     var subtitle: String?
     /// Hidden when the row is rendered inside the Pinned section — the
@@ -1722,7 +1747,7 @@ private struct SidebarThreadRow: View {
     }
 
     private var displayTitle: String {
-        Formatters.shortenIdentifierTokens(task.title)
+        Formatters.sidebarTaskTitle(task.title)
     }
 
     var body: some View {
@@ -1730,6 +1755,7 @@ private struct SidebarThreadRow: View {
             statusIcon
                 .frame(width: 14, height: 14)
                 .opacity(showIcon ? (isActionableStatus && !isSelected && !isHovered ? 0.6 : 1) : 0)
+                .padding(.leading, contentLeadingPadding)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
@@ -1737,7 +1763,8 @@ private struct SidebarThreadRow: View {
                         .font(Stanford.ui(14, weight: titleWeight))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                        .truncationMode(.tail)
+                        .truncationMode(.middle)
+                        .help(task.title)
 
                     if attemptCount > 1 {
                         Text("\(attemptCount) attempts")
@@ -1822,7 +1849,7 @@ private struct SidebarThreadRow: View {
     }
 
     private var rowStroke: Color {
-        if isSelected { return Stanford.lagunita.opacity(0.18) }
+        if isSelected { return Color.primary.opacity(0.14) }
         if isHovered { return Color.primary.opacity(0.12) }
         return .clear
     }
@@ -1839,7 +1866,7 @@ private struct SidebarThreadRow: View {
         case .pendingUser, .budgetExceeded:
             return Stanford.poppy.opacity(0.84)
         case .failed:
-            return Stanford.cardinalRed.opacity(0.84)
+            return Stanford.failed.opacity(0.84)
         case .cancelled, .queued, .draft, .completed:
             return .secondary
         }

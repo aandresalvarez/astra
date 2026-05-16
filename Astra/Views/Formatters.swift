@@ -69,6 +69,65 @@ enum Formatters {
             .joined(separator: " ")
     }
 
+    /// Compact task titles for narrow sidebar rows without clipping ordinary
+    /// prose mid-word. Keeps the leading action/context and the trailing
+    /// disambiguator so similarly-prefixed tasks remain scannable.
+    static func sidebarTaskTitle(_ text: String, maxCharacters: Int = 32) -> String {
+        let normalized = shortenIdentifierTokens(text)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard normalized.count > maxCharacters else { return normalized }
+
+        let words = normalized.split(separator: " ")
+        guard words.count > 1 else {
+            return middleEllipsizeToken(normalized, maxCharacters: maxCharacters)
+        }
+
+        let maxHeadWords = min(3, words.count - 1)
+        let maxTailWords = min(4, words.count - 1)
+        let separator = " … "
+        var best: (value: String, totalWords: Int, headScore: Int, tailWords: Int, headWords: Int)?
+
+        for headCount in 1...maxHeadWords {
+            for tailCount in 1...maxTailWords {
+                guard headCount + tailCount <= words.count else { continue }
+                let head = words.prefix(headCount).joined(separator: " ")
+                let tail = words.suffix(tailCount).joined(separator: " ")
+                let candidate = "\(head)\(separator)\(tail)"
+                guard candidate.count <= maxCharacters else { continue }
+
+                let totalWords = headCount + tailCount
+                let headScore = min(headCount, 2)
+                if best == nil ||
+                    headScore > best!.headScore ||
+                    (headScore == best!.headScore && totalWords > best!.totalWords) ||
+                    (headScore == best!.headScore && totalWords == best!.totalWords && tailCount > best!.tailWords) ||
+                    (headScore == best!.headScore && totalWords == best!.totalWords && tailCount == best!.tailWords && headCount > best!.headWords) {
+                    best = (candidate, totalWords, headScore, tailCount, headCount)
+                }
+            }
+        }
+
+        if let best {
+            return best.value
+        }
+
+        let headBudget = max(4, (maxCharacters - separator.count) / 2)
+        let tailBudget = max(4, maxCharacters - separator.count - headBudget)
+        let head = middleEllipsizeToken(String(words.first ?? ""), maxCharacters: headBudget)
+        let tail = middleEllipsizeToken(String(words.last ?? ""), maxCharacters: tailBudget)
+        return "\(head)\(separator)\(tail)"
+    }
+
+    private static func middleEllipsizeToken(_ token: String, maxCharacters: Int) -> String {
+        guard token.count > maxCharacters, maxCharacters > 1 else { return token }
+        let sideCount = max(1, (maxCharacters - 1) / 2)
+        let head = token.prefix(sideCount)
+        let tail = token.suffix(max(1, maxCharacters - 1 - sideCount))
+        return "\(head)…\(tail)"
+    }
+
     /// Return an SF Symbol name for a file path based on its extension.
     static func fileIcon(for path: String) -> String {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()

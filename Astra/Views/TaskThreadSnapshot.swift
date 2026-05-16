@@ -611,6 +611,7 @@ struct TaskThreadSnapshot: Sendable {
             $0.type == "agent.response" ||
             $0.type == TaskPlanConversationEventTypes.userMessage ||
             $0.type == TaskPlanConversationEventTypes.assistantMessage ||
+            systemTimelineEventTypes.contains($0.type) ||
             $0.type == "schedule.result" ||
             $0.type == "system.info" ||
             $0.type == "recap.result"
@@ -645,6 +646,8 @@ struct TaskThreadSnapshot: Sendable {
                 items.append(.planUserMessage(text: event.payload, timestamp: event.timestamp))
             case TaskPlanConversationEventTypes.assistantMessage:
                 items.append(.planAssistantMessage(text: event.payload, timestamp: event.timestamp))
+            case let type where systemTimelineEventTypes.contains(type):
+                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp))
             case "schedule.result":
                 items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
             case "system.info":
@@ -662,6 +665,37 @@ struct TaskThreadSnapshot: Sendable {
         }
 
         return items
+    }
+
+    private static let systemTimelineEventTypes: Set<String> = [
+        "task.started",
+        "task.approved",
+        TaskPlanEventTypes.approved,
+        TaskPlanEventTypes.cancelled,
+        TaskPlanEventTypes.executionStarted,
+        TaskPlanEventTypes.executionCompleted,
+        TaskPlanEventTypes.executionFailed
+    ]
+
+    private static func systemTimelineText(for event: TaskEventSnapshot) -> String {
+        switch event.type {
+        case "task.started":
+            return event.payload.isEmpty ? "Task moved back to draft for editing." : event.payload
+        case "task.approved":
+            return "Approval granted."
+        case TaskPlanEventTypes.approved:
+            return "Plan approved."
+        case TaskPlanEventTypes.cancelled:
+            return "Plan cancelled."
+        case TaskPlanEventTypes.executionStarted:
+            return "Plan execution started."
+        case TaskPlanEventTypes.executionCompleted:
+            return "Plan execution completed."
+        case TaskPlanEventTypes.executionFailed:
+            return "Plan execution stopped."
+        default:
+            return event.payload
+        }
     }
 
     private static func shouldShowAgentResponse(

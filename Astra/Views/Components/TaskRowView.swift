@@ -20,7 +20,7 @@ struct TaskRowView: View {
     }
 
     private var displayTitle: String {
-        Formatters.shortenIdentifierTokens(task.title)
+        Formatters.sidebarTaskTitle(task.title)
     }
 
     var body: some View {
@@ -32,7 +32,7 @@ struct TaskRowView: View {
                 .font(Stanford.ui(16, weight: titleWeight))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .truncationMode(.tail)
+                .truncationMode(.middle)
                 .help(task.title)
 
             if task.originScheduleID != nil {

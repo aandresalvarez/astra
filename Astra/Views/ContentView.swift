@@ -67,6 +67,67 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
     }
 }
 
+private struct CompactPanelLayoutObserver: View {
+    let width: CGFloat
+    let splitVisibility: NavigationSplitViewVisibility
+    let activeCanvasItem: WorkspaceCanvasItem?
+    let isRightRailVisible: Bool
+    let workspaceID: UUID?
+    let onWidthChanged: (CGFloat) -> Void
+    let onSplitVisibilityChanged: () -> Void
+    let onPanelStateChanged: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                onWidthChanged(width)
+            }
+            .onChange(of: width) {
+                onWidthChanged(width)
+            }
+            .onChange(of: splitVisibility) {
+                onSplitVisibilityChanged()
+            }
+            .onChange(of: activeCanvasItem) {
+                onPanelStateChanged()
+            }
+            .onChange(of: isRightRailVisible) {
+                onPanelStateChanged()
+            }
+            .onChange(of: workspaceID) {
+                onPanelStateChanged()
+            }
+    }
+}
+
+private struct CompactPanelLayoutCoordinator: ViewModifier {
+    let splitVisibility: NavigationSplitViewVisibility
+    let activeCanvasItem: WorkspaceCanvasItem?
+    let isRightRailVisible: Bool
+    let workspaceID: UUID?
+    let onWidthChanged: (CGFloat) -> Void
+    let onSplitVisibilityChanged: () -> Void
+    let onPanelStateChanged: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { proxy in
+                    CompactPanelLayoutObserver(
+                        width: proxy.size.width,
+                        splitVisibility: splitVisibility,
+                        activeCanvasItem: activeCanvasItem,
+                        isRightRailVisible: isRightRailVisible,
+                        workspaceID: workspaceID,
+                        onWidthChanged: onWidthChanged,
+                        onSplitVisibilityChanged: onSplitVisibilityChanged,
+                        onPanelStateChanged: onPanelStateChanged
+                    )
+                }
+            }
+    }
+}
+
 @MainActor
 private final class ShelfBrowserSessionStore: ObservableObject {
     private var sharedSession = ShelfBrowserSession()
@@ -285,6 +346,9 @@ struct ContentView: View {
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
+    @State private var splitVisibility: NavigationSplitViewVisibility = .all
+    @State private var responsiveLayoutWidth: CGFloat = 0
+    @State private var didAutoHideSidebarForCompactPanels = false
     @State private var panelTransitionGeneration = 0
     @State private var cachedHasCanvasContent = false
     @State private var generatedHTMLPreviewTask: Task<Void, Never>?
@@ -324,6 +388,10 @@ struct ContentView: View {
             selectedTask: selectedTask,
             selectedWorkspace: selectedWorkspace
         )
+    }
+
+    private var effectiveWorkspaceID: UUID? {
+        effectiveWorkspace?.id
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -463,6 +531,22 @@ struct ContentView: View {
         activeWorkspaceCanvasItem != nil
     }
 
+    private var compactPanelMutualExclusionWidth: CGFloat {
+        1_280
+    }
+
+    private var isCompactPanelLayout: Bool {
+        responsiveLayoutWidth > 0 && responsiveLayoutWidth < compactPanelMutualExclusionWidth
+    }
+
+    private var hasRightSidePanelPresented: Bool {
+        activeWorkspaceCanvasItem != nil || (effectiveWorkspace != nil && isWorkspaceRightRailVisible)
+    }
+
+    private var shouldUseDetailOnlyCompactLayout: Bool {
+        isCompactPanelLayout && hasRightSidePanelPresented
+    }
+
     private var panelTransitionAnimation: Animation? {
         reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
     }
@@ -491,84 +575,117 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
-        NavigationSplitView {
-            TaskSidebarContainerView(
-                selectedTask: selectedTaskBinding,
-                taskQueue: runtime.taskQueue,
-                workspaces: workspaces,
-                selectedWorkspace: $selectedWorkspace,
-                onNewTask: startComposingTask,
-                onRunQueue: runQueue,
-                onRunTask: runSingleTask,
-                onToggleDone: toggleDone,
-                onCancelTask: cancelTask,
-                onRetryTask: retryTask,
-                onDeleteTask: requestDeleteTask,
-                onNewWorkspace: createWorkspace,
-                onEditWorkspace: beginEditingWorkspace,
-                onImportWorkspace: importWorkspace,
-                onShowConfigure: openCapabilitiesManager,
-                onShowLogs: showLogs,
-                onShowDashboard: showDashboard,
-                onDeleteWorkspace: deleteWorkspace,
-                onRenameWorkspace: beginRenamingWorkspace,
-                onNewSchedule: showNewSchedule,
-                onEditSchedule: beginEditingSchedule,
-                isSearchActive: $isSearchActive
-            )
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    private var compactPanelLayoutCoordinator: CompactPanelLayoutCoordinator {
+        CompactPanelLayoutCoordinator(
+            splitVisibility: splitVisibility,
+            activeCanvasItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible,
+            workspaceID: effectiveWorkspaceID,
+            onWidthChanged: handleResponsiveLayoutWidthChanged,
+            onSplitVisibilityChanged: handleSplitVisibilityChanged,
+            onPanelStateChanged: handleRightSidePanelStateChanged
+        )
+    }
+
+    @ViewBuilder
+    private var rootLayout: some View {
+        if shouldUseDetailOnlyCompactLayout {
+            detailArea
+        } else {
+            splitLayout
+        }
+    }
+
+    private var splitLayout: some View {
+        NavigationSplitView(columnVisibility: $splitVisibility) {
+            sidebarArea
         } detail: {
-            ContentDetailAreaView(
-                selectedTask: selectedTask,
-                effectiveWorkspace: effectiveWorkspace,
-                isComposingTask: isComposingTask,
-                taskQueue: runtime.taskQueue,
-                browserSession: currentBrowserSession,
-                isBrowserPinnedToTask: browserPinnedToTaskBinding,
-                markdownSession: currentMarkdownSession,
-                isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
-                querySession: querySession,
-                queryUtilityRuntime: queryUtilityRuntime,
-                sshReloadTrigger: sshReloadTrigger,
-                isRightRailPresented: rightRailInspectorBinding,
-                activeCanvasItem: $activeWorkspaceCanvasItem,
-                isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
-                onQuickRun: handleQuickRunTask,
-                onTaskCreated: handleTaskCreated,
-                onAddSSHConnection: { showingSSHEditor = true },
-                onManageSkills: openSkillsManager,
-                onRunTask: runSingleTask,
-                onCancelTask: cancelTask,
-                onRetryTask: retryTask,
-                onResumeTask: resumeTask,
-                onApproveTask: approveTask,
-                onOpenPlan: openPlanCanvas,
-                onToggleDone: toggleDone,
-                onMoveToDraft: moveTaskToDraft,
-                onForkTask: setSelectedTask,
-                onCreateTask: startComposingTask,
-                onOpenTask: openExistingTask,
-                onDeleteTask: requestDeleteTask,
-                onSetDoneState: setDoneState,
-                onRunQueue: runQueue,
-                onConfigure: openCapabilitiesManager,
-                onShowDashboard: showDashboard,
-                onShowLogs: showLogs,
-                onNewSchedule: showNewSchedule,
-                onEditSchedule: beginEditingSchedule,
-                onManageCapabilities: openCapabilitiesManager,
-                onEditWorkspace: showWorkspaceEditor,
-                onOpenConfigureTab: openConfigureTab,
-                onOpenCapabilityPackage: openCapabilityPackage,
-                onNewSSHConnection: showSSHConnectionEditor,
-                onEditSSHConnection: beginEditingSSHConnection,
-                onCreateWorkspace: createWorkspace,
-                onImportWorkspace: importWorkspace,
-                onOpenGeneratedFile: openGeneratedFile
-            )
+            detailArea
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    private var sidebarArea: some View {
+        TaskSidebarContainerView(
+            selectedTask: selectedTaskBinding,
+            taskQueue: runtime.taskQueue,
+            workspaces: workspaces,
+            selectedWorkspace: $selectedWorkspace,
+            onNewTask: startComposingTask,
+            onRunQueue: runQueue,
+            onRunTask: runSingleTask,
+            onToggleDone: toggleDone,
+            onCancelTask: cancelTask,
+            onRetryTask: retryTask,
+            onDeleteTask: requestDeleteTask,
+            onNewWorkspace: createWorkspace,
+            onEditWorkspace: beginEditingWorkspace,
+            onImportWorkspace: importWorkspace,
+            onShowConfigure: openCapabilitiesManager,
+            onShowLogs: showLogs,
+            onShowDashboard: showDashboard,
+            onDeleteWorkspace: deleteWorkspace,
+            onRenameWorkspace: beginRenamingWorkspace,
+            onNewSchedule: showNewSchedule,
+            onEditSchedule: beginEditingSchedule,
+            isSearchActive: $isSearchActive
+        )
+        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    }
+
+    private var detailArea: some View {
+        ContentDetailAreaView(
+            selectedTask: selectedTask,
+            effectiveWorkspace: effectiveWorkspace,
+            isComposingTask: isComposingTask,
+            taskQueue: runtime.taskQueue,
+            browserSession: currentBrowserSession,
+            isBrowserPinnedToTask: browserPinnedToTaskBinding,
+            markdownSession: currentMarkdownSession,
+            isMarkdownPinnedToTask: markdownPinnedToTaskBinding,
+            querySession: querySession,
+            queryUtilityRuntime: queryUtilityRuntime,
+            sshReloadTrigger: sshReloadTrigger,
+            isRightRailPresented: rightRailInspectorBinding,
+            activeCanvasItem: $activeWorkspaceCanvasItem,
+            isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
+            onQuickRun: handleQuickRunTask,
+            onTaskCreated: handleTaskCreated,
+            onAddSSHConnection: { showingSSHEditor = true },
+            onManageSkills: openSkillsManager,
+            onRunTask: runSingleTask,
+            onCancelTask: cancelTask,
+            onRetryTask: retryTask,
+            onResumeTask: resumeTask,
+            onApproveTask: approveTask,
+            onOpenPlan: openPlanCanvas,
+            onToggleDone: toggleDone,
+            onMoveToDraft: moveTaskToDraft,
+            onForkTask: setSelectedTask,
+            onCreateTask: startComposingTask,
+            onOpenTask: openExistingTask,
+            onDeleteTask: requestDeleteTask,
+            onSetDoneState: setDoneState,
+            onRunQueue: runQueue,
+            onConfigure: openCapabilitiesManager,
+            onShowDashboard: showDashboard,
+            onShowLogs: showLogs,
+            onNewSchedule: showNewSchedule,
+            onEditSchedule: beginEditingSchedule,
+            onManageCapabilities: openCapabilitiesManager,
+            onEditWorkspace: showWorkspaceEditor,
+            onOpenConfigureTab: openConfigureTab,
+            onOpenCapabilityPackage: openCapabilityPackage,
+            onNewSSHConnection: showSSHConnectionEditor,
+            onEditSSHConnection: beginEditingSSHConnection,
+            onCreateWorkspace: createWorkspace,
+            onImportWorkspace: importWorkspace,
+            onOpenGeneratedFile: openGeneratedFile
+        )
+    }
+
+    var body: some View {
+        rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
         .astraWindowChrome()
@@ -578,6 +695,17 @@ struct ContentView: View {
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
+            if shouldUseDetailOnlyCompactLayout {
+                ToolbarItem(placement: .navigation) {
+                    Button(action: revealSidebarFromCompactLayout) {
+                        Label("Show Sidebar", systemImage: "sidebar.left")
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .help("Show sidebar and close the right panel")
+                    .accessibilityIdentifier("CompactShowSidebarButton")
+                }
+            }
+
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 actions: topRightActions,
@@ -590,6 +718,7 @@ struct ContentView: View {
             )
         }
         .shelfBoundaryOverlay()
+        .modifier(compactPanelLayoutCoordinator)
         .overlay {
             if isSearchActive {
                 SearchPanelOverlayContainer(
@@ -609,20 +738,7 @@ struct ContentView: View {
             )
         }
         .onChange(of: selectedTaskCanvasSignature) {
-            cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
-            if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-                activeWorkspaceCanvasItem = nil
-            }
-            if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-                activeWorkspaceCanvasItem = nil
-            }
-            if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .markdown {
-                activeWorkspaceCanvasItem = nil
-            }
-            refreshMarkdownShelfAvailabilityForSelectedTask()
-            refreshQueryShelfAvailabilityForSelectedTask()
-            previewGeneratedHTMLForSelectedTaskIfNeeded()
-            previewGeneratedMarkdownForSelectedTaskIfNeeded()
+            handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
             if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
@@ -887,6 +1003,100 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + panelHandoffDelay) {
             guard panelTransitionGeneration == generation else { return }
             animatePanelChange(changes)
+        }
+    }
+
+    private func handleResponsiveLayoutWidthChanged(_ width: CGFloat) {
+        responsiveLayoutWidth = width
+        reconcileCompactPanelLayout(for: width)
+    }
+
+    private func handleRightSidePanelStateChanged() {
+        reconcileCompactPanelLayout()
+    }
+
+    private func handleSelectedTaskCanvasSignatureChanged() {
+        cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
+        if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
+            activeWorkspaceCanvasItem = nil
+        }
+        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
+            activeWorkspaceCanvasItem = nil
+        }
+        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .markdown {
+            activeWorkspaceCanvasItem = nil
+        }
+        refreshMarkdownShelfAvailabilityForSelectedTask()
+        refreshQueryShelfAvailabilityForSelectedTask()
+        previewGeneratedHTMLForSelectedTaskIfNeeded()
+        previewGeneratedMarkdownForSelectedTaskIfNeeded()
+    }
+
+    private func reconcileCompactPanelLayout(for width: CGFloat? = nil) {
+        let currentWidth = width ?? responsiveLayoutWidth
+        guard currentWidth > 0 else { return }
+
+        guard currentWidth < compactPanelMutualExclusionWidth else {
+            if didAutoHideSidebarForCompactPanels {
+                didAutoHideSidebarForCompactPanels = false
+                if splitVisibility == .detailOnly {
+                    withAnimation(panelTransitionAnimation) {
+                        splitVisibility = .all
+                    }
+                }
+            }
+            return
+        }
+
+        guard hasRightSidePanelPresented else {
+            if didAutoHideSidebarForCompactPanels {
+                didAutoHideSidebarForCompactPanels = false
+                if splitVisibility == .detailOnly {
+                    withAnimation(panelTransitionAnimation) {
+                        splitVisibility = .all
+                    }
+                }
+            }
+            return
+        }
+        guard splitVisibility != .detailOnly else { return }
+
+        didAutoHideSidebarForCompactPanels = true
+        withAnimation(panelTransitionAnimation) {
+            splitVisibility = .detailOnly
+        }
+    }
+
+    private func handleSplitVisibilityChanged() {
+        guard isCompactPanelLayout else {
+            if splitVisibility != .detailOnly {
+                didAutoHideSidebarForCompactPanels = false
+            }
+            return
+        }
+
+        guard splitVisibility != .detailOnly else { return }
+        guard hasRightSidePanelPresented else { return }
+
+        didAutoHideSidebarForCompactPanels = false
+        hideRightSidePanelsForCompactSidebar()
+    }
+
+    private func hideRightSidePanelsForCompactSidebar() {
+        let _ = nextPanelTransitionGeneration()
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+            isWorkspaceRightRailVisible = false
+        }
+    }
+
+    private func revealSidebarFromCompactLayout() {
+        didAutoHideSidebarForCompactPanels = false
+        let _ = nextPanelTransitionGeneration()
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+            isWorkspaceRightRailVisible = false
+            splitVisibility = .all
         }
     }
 
@@ -2103,86 +2313,83 @@ private struct ContentToolbar: ToolbarContent {
         }
 
         if actions.hasWorkspace {
-            if actions.canShowPlanShelf {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleCanvas) {
-                        toolbarToggleLabel(
-                            title: actions.isPlanShelfVisible ? "Hide Plan" : "Show Plan",
-                            systemImage: "list.bullet.clipboard",
-                            isActive: actions.isPlanShelfVisible
-                        )
-                    }
-                    .help(actions.isPlanShelfVisible ? "Hide plan shelf" : "Show plan shelf")
-                    .accessibilityIdentifier("WorkspaceCanvasToggleButton")
-                }
-            }
-
-            if actions.canShowTextShelf {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleMarkdown) {
-                        toolbarToggleLabel(
-                            title: actions.isTextShelfVisible ? "Hide Text" : "Show Text",
-                            systemImage: "doc.text",
-                            isActive: actions.isTextShelfVisible
-                        )
-                    }
-                    .help(actions.isTextShelfVisible ? "Hide text shelf" : "Show text shelf")
-                    .accessibilityIdentifier("ShelfMarkdownToggleButton")
-                }
-            }
-
-            if actions.canShowBrowserShelf {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleBrowser) {
-                        toolbarToggleLabel(
-                            title: actions.isBrowserShelfVisible ? "Hide Browser" : "Show Browser",
-                            systemImage: actions.isBrowserShelfVisible ? "globe.badge.chevron.backward" : "globe",
-                            isActive: actions.isBrowserShelfVisible
-                        )
-                    }
-                    .help(actions.isBrowserShelfVisible ? "Hide browser shelf" : "Show browser shelf")
-                    .accessibilityIdentifier("ShelfBrowserToggleButton")
-                }
-            }
-
-            if actions.canShowQueryShelf {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleQuery) {
-                        toolbarToggleLabel(
-                            title: actions.isQueryShelfVisible ? "Hide Query" : "Show Query",
-                            systemImage: "cylinder.split.1x2",
-                            isActive: actions.isQueryShelfVisible
-                        )
-                    }
-                    .help(actions.isQueryShelfVisible ? "Hide query shelf" : "Show query shelf")
-                    .accessibilityIdentifier("ShelfQueryToggleButton")
-                }
-            }
-
             ToolbarItem(placement: .primaryAction) {
-                Button(action: onToggleRightRail) {
-                    toolbarToggleLabel(
+                Menu {
+                    panelMenuButton(
                         title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
                         systemImage: "sidebar.right",
-                        isActive: actions.isRightRailVisible
+                        isActive: actions.isRightRailVisible,
+                        isEnabled: true,
+                        action: onToggleRightRail
+                    )
+
+                    Divider()
+
+                    panelMenuButton(
+                        title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                        systemImage: "list.bullet.clipboard",
+                        isActive: actions.isPlanShelfVisible,
+                        isEnabled: actions.canShowPlanShelf,
+                        action: onToggleCanvas
+                    )
+                    panelMenuButton(
+                        title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
+                        systemImage: "doc.text",
+                        isActive: actions.isTextShelfVisible,
+                        isEnabled: actions.canShowTextShelf,
+                        action: onToggleMarkdown
+                    )
+                    panelMenuButton(
+                        title: actions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
+                        systemImage: "globe",
+                        isActive: actions.isBrowserShelfVisible,
+                        isEnabled: actions.canShowBrowserShelf,
+                        action: onToggleBrowser
+                    )
+                    panelMenuButton(
+                        title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                        systemImage: "cylinder.split.1x2",
+                        isActive: actions.isQueryShelfVisible,
+                        isEnabled: actions.canShowQueryShelf,
+                        action: onToggleQuery
+                    )
+                } label: {
+                    toolbarToggleLabel(
+                        title: "Panels",
+                        systemImage: "rectangle.split.3x1",
+                        isActive: actions.activeCanvasItem != nil || actions.isRightRailVisible
                     )
                 }
-                .help(actions.isRightRailVisible ? "Hide control panel" : "Show control panel")
+                .help("Show or hide workspace panels")
+                .accessibilityIdentifier("WorkspacePanelsMenu")
             }
         }
     }
 
+    @ViewBuilder
+    private func panelMenuButton(
+        title: String,
+        systemImage: String,
+        isActive: Bool,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: isActive ? "checkmark.circle.fill" : systemImage)
+        }
+        .disabled(!isEnabled)
+    }
+
     // The native macOS toolbar strips most custom styling, but it does respect
-    // foregroundStyle, fontWeight, and symbolEffect on the icon. We use all three
-    // together so the active panel toggle is unmistakable: cardinal-red tint,
-    // semibold weight, and a brief bounce when toggled.
+    // foregroundStyle, fontWeight, and symbolEffect on the icon. Active panel
+    // state uses lagunita so red remains reserved for errors/destructive states.
     private func toolbarToggleLabel(title: String, systemImage: String, isActive: Bool) -> some View {
         Label {
             Text(title)
         } icon: {
             Image(systemName: systemImage)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isActive ? Stanford.cardinalRed : Color.primary)
+                .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
                 .fontWeight(isActive ? .semibold : .regular)
                 .symbolEffect(.bounce, value: isActive)
         }

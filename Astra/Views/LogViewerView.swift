@@ -546,7 +546,7 @@ struct LogEntryRow: View {
         case .debug: return .secondary
         case .info: return .primary
         case .warning: return Stanford.poppy
-        case .error: return Stanford.cardinalRed
+        case .error: return Stanford.failed
         }
     }
 
@@ -593,7 +593,7 @@ struct LogEntryRow: View {
         .padding(.vertical, 5)
         .padding(.horizontal, 12)
         .contentShape(Rectangle())
-        .background(entry.logLevel == .error ? Stanford.cardinalRed.opacity(0.06) :
+        .background(entry.logLevel == .error ? Stanford.failed.opacity(0.06) :
                      entry.logLevel == .warning ? Stanford.poppy.opacity(0.04) : .clear)
     }
 }

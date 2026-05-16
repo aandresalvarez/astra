@@ -1625,28 +1625,28 @@ struct KanbanTaskCardView: View {
 
     @ViewBuilder
     private var cardSurface: some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
 
         if isDragPreview {
             shape
-                .fill(Color(nsColor: .windowBackgroundColor))
+                .fill(Color.primary.opacity(0.04))
                 .overlay {
                     shape.stroke(Color.primary.opacity(0.12), lineWidth: 1)
                 }
         } else {
             shape
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(isHovered ? 1.0 : 0.985))
+                .fill(Color.primary.opacity(isHovered ? 0.045 : 0.03))
                 .overlay {
                     shape.stroke(
-                        Color.primary.opacity(isHovered ? 0.11 : 0.08),
+                        Color.primary.opacity(isHovered ? 0.12 : 0.06),
                         lineWidth: 1
                     )
                 }
                 .shadow(
-                    color: Color.black.opacity(isHovered ? 0.07 : 0.03),
-                    radius: isHovered ? 18 : 10,
+                    color: Color.black.opacity(isHovered ? 0.04 : 0.015),
+                    radius: isHovered ? 10 : 4,
                     x: 0,
-                    y: isHovered ? 10 : 4
+                    y: isHovered ? 5 : 2
                 )
         }
     }

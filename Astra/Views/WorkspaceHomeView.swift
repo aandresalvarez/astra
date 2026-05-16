@@ -124,17 +124,9 @@ struct WorkspaceHomeView: View {
                 )
                     .padding(.bottom, 24)
 
-                // Memories
-                if !workspace.memories.isEmpty {
-                    memoriesCard
-                        .padding(.bottom, 24)
-                }
-
-                // The Plugins summary block that used to live here was
-                // removed — the right rail's Configure tab already shows
-                // active skills/connectors in better detail, and the
-                // duplicate block was taking ~150pt of prime real estate
-                // below the Kanban board for the same information.
+                // Workspace-scoped context such as Memories lives in the
+                // right rail's Workspace Setup section, so the main canvas
+                // stays focused on task flow.
 
                 // Routines (only when they exist)
                 if !workspace.schedules.isEmpty {

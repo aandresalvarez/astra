@@ -525,7 +525,7 @@ struct ChatPanelView: View {
                        title: "Use Template", description: "Create a multi-phase task from a template"),
             SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
                        title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
-            SlashOption(id: "remember", command: "/remember", icon: "brain", color: Stanford.plum,
+            SlashOption(id: "remember", command: "/remember", icon: "text.badge.checkmark", color: Stanford.lagunita,
                        title: "Add Memory", description: "Save a fact for the agent to remember in this workspace"),
             SlashOption(id: "recap", command: "/recap", icon: "doc.text", color: Stanford.paloAltoGreen,
                        title: "Recap Task", description: "Summarize this conversation so you can pause and resume later"),
@@ -572,7 +572,7 @@ struct ChatPanelView: View {
     }
 
     private var submitButtonColor: Color {
-        isPlanModeActive ? Stanford.cardinalRed : Stanford.lagunita
+        Stanford.lagunita
     }
 
     private var resolvedWorkspace: String {
@@ -705,7 +705,7 @@ struct ChatPanelView: View {
         VStack(spacing: 24) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(Stanford.ui(56))
-                .foregroundStyle(Stanford.cardinalRed)
+                .foregroundStyle(Stanford.lagunita)
 
             Text(newTaskPrompt)
                 .font(Stanford.heading(28))
@@ -719,14 +719,14 @@ struct ChatPanelView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "folder.fill")
                         .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.lagunita)
+                        .foregroundStyle(.secondary)
                     Text(ws.name)
                         .font(Stanford.body(14).weight(.medium))
                         .foregroundStyle(.primary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Stanford.lagunita.opacity(0.10))
+                .background(Color.primary.opacity(0.055))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
@@ -822,7 +822,11 @@ struct ChatPanelView: View {
         } else {
             // AI response — flows directly on background, no card
             VStack(alignment: .leading, spacing: 6) {
-                MarkdownTextView(text: msg.content, maxContentWidth: Stanford.chatParagraphMaxWidth)
+                MarkdownTextView(
+                    text: msg.content,
+                    maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    onSuggestedNextStep: pursueSuggestedNextStep
+                )
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
@@ -909,7 +913,7 @@ struct ChatPanelView: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
-                .background(Stanford.cardinalRed)
+                .background(Stanford.lagunita)
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -1645,6 +1649,13 @@ struct ChatPanelView: View {
         }
     }
 
+    private func pursueSuggestedNextStep(_ suggestion: String) {
+        let trimmed = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        messageText = trimmed
+        isComposerFocused = true
+    }
+
     // MARK: - Slash Command Wizard Finalization
 
     private func finalizeWizard(_ wizard: SlashWizard) {
@@ -1924,21 +1935,21 @@ struct ChatPanelView: View {
 
     private func sshStatusColor(_ conn: SSHConnection) -> Color {
         guard let result = conn.lastTestResult else { return Stanford.coolGrey }
-        return result ? Stanford.paloAltoGreen : Stanford.cardinalRed
+        return result ? Stanford.paloAltoGreen : Stanford.failed
     }
 
     private func sshPillForeground(_ conn: SSHConnection) -> Color {
         guard let result = conn.lastTestResult else {
             return Stanford.coolGrey.opacity(0.8)
         }
-        return result ? Stanford.paloAltoGreen.opacity(0.8) : Stanford.cardinalRed.opacity(0.8)
+        return result ? Stanford.paloAltoGreen.opacity(0.8) : Stanford.failed.opacity(0.8)
     }
 
     private func sshPillBackground(_ conn: SSHConnection) -> Color {
         guard let result = conn.lastTestResult else {
             return Stanford.fog
         }
-        return result ? Stanford.paloAltoGreen.opacity(0.08) : Stanford.cardinalRed.opacity(0.08)
+        return result ? Stanford.paloAltoGreen.opacity(0.08) : Stanford.failed.opacity(0.08)
     }
 
     // MARK: - Slash Context (provider-assisted resource creation)
