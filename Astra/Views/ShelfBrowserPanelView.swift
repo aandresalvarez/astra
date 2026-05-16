@@ -14,6 +14,8 @@ struct ShelfBrowserPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            Divider()
+                .opacity(0.65)
             browserBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -38,6 +40,18 @@ struct ShelfBrowserPanelView: View {
 
     private var overflowMenu: some View {
         Menu {
+            Button {
+                session.openExternal()
+            } label: {
+                Label(
+                    session.isUsingControlledBrowser ? "Show controlled browser window" : "Open in default browser",
+                    systemImage: "arrow.up.forward.square"
+                )
+            }
+            .disabled(!hasDisplayablePage && !session.isUsingControlledBrowser)
+
+            Divider()
+
             Toggle(isOn: $isPinnedToTask) {
                 Label(
                     "Pin to task",
@@ -101,7 +115,6 @@ struct ShelfBrowserPanelView: View {
                 goButton(isCompact: false)
                 goButton(isCompact: true)
             }
-            externalBrowserButton
             overflowMenu
         }
         .padding(.horizontal, 12)

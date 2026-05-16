@@ -229,13 +229,13 @@ private struct ShelfBoundaryOverlay: View {
     let metrics: ShelfBoundaryMetrics
 
     var body: some View {
-        if metrics.isVisible {
+        if metrics.isVisible && metrics.isResizing {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(spacing: 0) {
                     Rectangle()
-                        .fill(Stanford.lagunita.opacity(metrics.isResizing ? 0.95 : 0.55))
-                        .frame(width: metrics.isResizing ? 3 : 2)
+                        .fill(Stanford.lagunita.opacity(0.95))
+                        .frame(width: 3)
                     Spacer(minLength: 0)
                 }
                 .frame(width: metrics.width)
@@ -598,65 +598,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var rootLayoutWithPanelRail: some View {
-        if topRightActions.hasWorkspace {
-            HStack(spacing: 0) {
-                rootLayout
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                panelRailColumn
-            }
-        } else {
-            rootLayout
-        }
-    }
-
-    private var panelRailColumn: some View {
-        VStack(spacing: 10) {
-            controlPanelCornerButton
-
-            WorkspacePanelRail(
-                actions: topRightActions,
-                onToggleCanvas: toggleWorkspaceCanvas,
-                onToggleMarkdown: toggleMarkdownCanvas,
-                onToggleBrowser: toggleBrowserCanvas,
-                onToggleQuery: toggleQueryCanvas
-            )
-
-            Spacer(minLength: 0)
-        }
-        .padding(.top, 8)
-        .frame(width: 56)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.bar, ignoresSafeAreaEdges: .top)
-        .overlay(alignment: .leading) {
-            Divider()
-        }
-        .ignoresSafeArea(.container, edges: .top)
-    }
-
-    @ViewBuilder
-    private var controlPanelCornerButton: some View {
-        if topRightActions.hasWorkspace {
-            Button(action: toggleRightRail) {
-                Image(systemName: "sidebar.right")
-                    .font(.system(size: 15, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(topRightActions.isRightRailVisible ? Stanford.lagunita : Color.primary)
-                    .frame(width: 36, height: 36)
-                    .background {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(topRightActions.isRightRailVisible ? Stanford.lagunita.opacity(0.16) : Color.primary.opacity(0.06))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(topRightActions.isRightRailVisible ? Stanford.lagunita.opacity(0.34) : Color.primary.opacity(0.12), lineWidth: 1)
-                    }
-            }
-            .buttonStyle(.plain)
-            .help(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
-            .accessibilityLabel(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
-            .accessibilityIdentifier("ControlPanelCornerButton")
-        }
+        rootLayout
     }
 
     private var splitLayout: some View {
@@ -773,6 +715,62 @@ struct ContentView: View {
                 appUpdateController: appUpdateController,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
+
+            if topRightActions.hasWorkspace {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button(action: toggleBrowserCanvas) {
+                        Label(
+                            topRightActions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
+                            systemImage: "globe"
+                        )
+                        .foregroundStyle(topRightActions.isBrowserShelfVisible ? Stanford.lagunita : Color.primary)
+                    }
+                    .help(topRightActions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf")
+
+                    if topRightActions.canShowPlanShelf {
+                        Button(action: toggleWorkspaceCanvas) {
+                            Label(
+                                topRightActions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                                systemImage: "list.bullet.clipboard"
+                            )
+                            .foregroundStyle(topRightActions.isPlanShelfVisible ? Stanford.lagunita : Color.primary)
+                        }
+                        .help(topRightActions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf")
+                    }
+
+                    if topRightActions.canShowTextShelf {
+                        Button(action: toggleMarkdownCanvas) {
+                            Label(
+                                topRightActions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
+                                systemImage: "doc.text"
+                            )
+                            .foregroundStyle(topRightActions.isTextShelfVisible ? Stanford.lagunita : Color.primary)
+                        }
+                        .help(topRightActions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf")
+                    }
+
+                    if topRightActions.canShowQueryShelf {
+                        Button(action: toggleQueryCanvas) {
+                            Label(
+                                topRightActions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                                systemImage: "cylinder.split.1x2"
+                            )
+                            .foregroundStyle(topRightActions.isQueryShelfVisible ? Stanford.lagunita : Color.primary)
+                        }
+                        .help(topRightActions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf")
+                    }
+
+                    Button(action: toggleRightRail) {
+                        Label(
+                            topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                            systemImage: "sidebar.right"
+                        )
+                        .foregroundStyle(topRightActions.isRightRailVisible ? Stanford.lagunita : Color.primary)
+                    }
+                    .help(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
+                    .accessibilityIdentifier("ControlPanelToolbarButton")
+                }
+            }
         }
         .shelfBoundaryOverlay()
         .modifier(compactPanelLayoutCoordinator)
@@ -2537,7 +2535,7 @@ private struct ContentDetailAreaView: View {
         contentWithOptionalCanvas
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(panelAnimation, value: activeCanvasItem)
-        .animation(panelAnimation, value: isRightRailPresented)
+        .animation(inspectorAnimation, value: isRightRailPresented)
         .inspector(isPresented: $isRightRailPresented) {
             if let workspace = effectiveWorkspace {
                 WorkspaceRightRailView(
@@ -2562,7 +2560,11 @@ private struct ContentDetailAreaView: View {
     }
 
     private var panelAnimation: Animation? {
-        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
+        reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0.15)
+    }
+
+    private var inspectorAnimation: Animation? {
+        reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0.15).delay(0.08)
     }
 
     private var canvasTransition: AnyTransition {
