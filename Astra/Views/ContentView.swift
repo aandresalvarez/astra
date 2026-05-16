@@ -520,7 +520,7 @@ struct ContentView: View {
             hasTaskThread: hasOpenTaskThread,
             canShowPlanShelf: hasWorkspaceCanvasContent,
             canShowTextShelf: hasOpenTaskThread && (selectedTaskHasMarkdownShelfContent || activeWorkspaceCanvasItem == .markdown),
-            canShowBrowserShelf: hasOpenTaskThread || activeWorkspaceCanvasItem == .browser,
+            canShowBrowserShelf: effectiveWorkspace != nil,
             canShowQueryShelf: hasQueryShelfAffordance,
             activeCanvasItem: activeWorkspaceCanvasItem,
             isRightRailVisible: isWorkspaceRightRailVisible
@@ -593,6 +593,69 @@ struct ContentView: View {
             detailArea
         } else {
             splitLayout
+        }
+    }
+
+    @ViewBuilder
+    private var rootLayoutWithPanelRail: some View {
+        if topRightActions.hasWorkspace {
+            HStack(spacing: 0) {
+                rootLayout
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                panelRailColumn
+            }
+        } else {
+            rootLayout
+        }
+    }
+
+    private var panelRailColumn: some View {
+        VStack(spacing: 10) {
+            controlPanelCornerButton
+
+            WorkspacePanelRail(
+                actions: topRightActions,
+                onToggleCanvas: toggleWorkspaceCanvas,
+                onToggleMarkdown: toggleMarkdownCanvas,
+                onToggleBrowser: toggleBrowserCanvas,
+                onToggleQuery: toggleQueryCanvas
+            )
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 8)
+        .frame(width: 56)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(.bar, ignoresSafeAreaEdges: .top)
+        .overlay(alignment: .leading) {
+            Divider()
+        }
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+    @ViewBuilder
+    private var controlPanelCornerButton: some View {
+        if topRightActions.hasWorkspace {
+            Button(action: toggleRightRail) {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(topRightActions.isRightRailVisible ? Stanford.lagunita : Color.primary)
+                    .frame(width: 36, height: 36)
+                    .background {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(topRightActions.isRightRailVisible ? Stanford.lagunita.opacity(0.16) : Color.primary.opacity(0.06))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(topRightActions.isRightRailVisible ? Stanford.lagunita.opacity(0.34) : Color.primary.opacity(0.12), lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+            .help(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
+            .accessibilityLabel(topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel")
+            .accessibilityIdentifier("ControlPanelCornerButton")
         }
     }
 
@@ -685,7 +748,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        rootLayout
+        rootLayoutWithPanelRail
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
         .astraWindowChrome()
@@ -708,13 +771,7 @@ struct ContentView: View {
 
             ContentToolbar(
                 appUpdateController: appUpdateController,
-                actions: topRightActions,
-                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton,
-                onToggleCanvas: toggleWorkspaceCanvas,
-                onToggleMarkdown: toggleMarkdownCanvas,
-                onToggleBrowser: toggleBrowserCanvas,
-                onToggleQuery: toggleQueryCanvas,
-                onToggleRightRail: toggleRightRail
+                onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
         }
         .shelfBoundaryOverlay()
@@ -741,9 +798,6 @@ struct ContentView: View {
             handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
-            if !hasOpenTaskThread, activeWorkspaceCanvasItem == .browser {
-                activeWorkspaceCanvasItem = nil
-            }
             if !hasOpenTaskThread, activeWorkspaceCanvasItem == .markdown {
                 activeWorkspaceCanvasItem = nil
             }
@@ -1172,15 +1226,6 @@ struct ContentView: View {
     }
 
     private func toggleBrowserCanvas() {
-        guard selectedTask != nil || isComposingTask else {
-            if activeWorkspaceCanvasItem == .browser {
-                let _ = nextPanelTransitionGeneration()
-                animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
-                }
-            }
-            return
-        }
         currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             let _ = nextPanelTransitionGeneration()
@@ -2293,13 +2338,7 @@ private struct WorkspaceTopRightActions: Equatable {
 private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
-    let actions: WorkspaceTopRightActions
     let onCheckForUpdates: () -> Void
-    let onToggleCanvas: () -> Void
-    let onToggleMarkdown: () -> Void
-    let onToggleBrowser: () -> Void
-    let onToggleQuery: () -> Void
-    let onToggleRightRail: () -> Void
 
     var body: some ToolbarContent {
         if appUpdateController.shouldShowUpdateButton {
@@ -2311,88 +2350,129 @@ private struct ContentToolbar: ToolbarContent {
                 .accessibilityIdentifier("AppUpdateButton")
             }
         }
+    }
+}
 
-        if actions.hasWorkspace {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    panelMenuButton(
-                        title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                        systemImage: "sidebar.right",
-                        isActive: actions.isRightRailVisible,
-                        isEnabled: true,
-                        action: onToggleRightRail
-                    )
+private enum WorkspacePanelRailItem: String, Identifiable {
+    case plan
+    case text
+    case browser
+    case query
 
-                    Divider()
+    var id: String { rawValue }
+}
 
-                    panelMenuButton(
-                        title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                        systemImage: "list.bullet.clipboard",
-                        isActive: actions.isPlanShelfVisible,
-                        isEnabled: actions.canShowPlanShelf,
-                        action: onToggleCanvas
-                    )
-                    panelMenuButton(
-                        title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
-                        systemImage: "doc.text",
-                        isActive: actions.isTextShelfVisible,
-                        isEnabled: actions.canShowTextShelf,
-                        action: onToggleMarkdown
-                    )
-                    panelMenuButton(
-                        title: actions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
-                        systemImage: "globe",
-                        isActive: actions.isBrowserShelfVisible,
-                        isEnabled: actions.canShowBrowserShelf,
-                        action: onToggleBrowser
-                    )
-                    panelMenuButton(
-                        title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                        systemImage: "cylinder.split.1x2",
-                        isActive: actions.isQueryShelfVisible,
-                        isEnabled: actions.canShowQueryShelf,
-                        action: onToggleQuery
-                    )
-                } label: {
-                    toolbarToggleLabel(
-                        title: "Panels",
-                        systemImage: "rectangle.split.3x1",
-                        isActive: actions.activeCanvasItem != nil || actions.isRightRailVisible
-                    )
-                }
-                .help("Show or hide workspace panels")
-                .accessibilityIdentifier("WorkspacePanelsMenu")
+private struct WorkspacePanelRail: View {
+    let actions: WorkspaceTopRightActions
+    let onToggleCanvas: () -> Void
+    let onToggleMarkdown: () -> Void
+    let onToggleBrowser: () -> Void
+    let onToggleQuery: () -> Void
+
+    @State private var hoveredItem: WorkspacePanelRailItem?
+
+    var body: some View {
+        VStack(spacing: 8) {
+            railButton(
+                item: .browser,
+                title: actions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
+                systemImage: "globe",
+                isActive: actions.isBrowserShelfVisible,
+                action: onToggleBrowser
+            )
+
+            if actions.canShowPlanShelf {
+                railButton(
+                    item: .plan,
+                    title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                    systemImage: "list.bullet.clipboard",
+                    isActive: actions.isPlanShelfVisible,
+                    action: onToggleCanvas
+                )
+            }
+
+            if actions.canShowTextShelf {
+                railButton(
+                    item: .text,
+                    title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
+                    systemImage: "doc.text",
+                    isActive: actions.isTextShelfVisible,
+                    action: onToggleMarkdown
+                )
+            }
+
+            if actions.canShowQueryShelf {
+                railButton(
+                    item: .query,
+                    title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                    systemImage: "cylinder.split.1x2",
+                    isActive: actions.isQueryShelfVisible,
+                    action: onToggleQuery
+                )
             }
         }
+        .padding(6)
+        .background(.bar, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 16, x: 0, y: 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("WorkspacePanelRail")
     }
 
     @ViewBuilder
-    private func panelMenuButton(
+    private func railButton(
+        item: WorkspacePanelRailItem,
         title: String,
         systemImage: String,
         isActive: Bool,
-        isEnabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Label(title, systemImage: isActive ? "checkmark.circle.fill" : systemImage)
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: isActive ? .semibold : .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isActive ? Stanford.lagunita : Color.secondary)
+                .frame(width: 32, height: 32)
+                .background {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(buttonFill(isActive: isActive, isHovered: hoveredItem == item))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(buttonStroke(isActive: isActive, isHovered: hoveredItem == item), lineWidth: 1)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .disabled(!isEnabled)
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("WorkspacePanelRail-\(item.rawValue)")
+        .onHover { isHovered in
+            hoveredItem = isHovered ? item : nil
+        }
     }
 
-    // The native macOS toolbar strips most custom styling, but it does respect
-    // foregroundStyle, fontWeight, and symbolEffect on the icon. Active panel
-    // state uses lagunita so red remains reserved for errors/destructive states.
-    private func toolbarToggleLabel(title: String, systemImage: String, isActive: Bool) -> some View {
-        Label {
-            Text(title)
-        } icon: {
-            Image(systemName: systemImage)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
-                .fontWeight(isActive ? .semibold : .regular)
-                .symbolEffect(.bounce, value: isActive)
+    private func buttonFill(isActive: Bool, isHovered: Bool) -> Color {
+        if isActive {
+            return Stanford.lagunita.opacity(0.16)
         }
+        if isHovered {
+            return Color.primary.opacity(0.08)
+        }
+        return Color.clear
+    }
+
+    private func buttonStroke(isActive: Bool, isHovered: Bool) -> Color {
+        if isActive {
+            return Stanford.lagunita.opacity(0.34)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.12)
+        }
+        return Color.clear
     }
 }
 
