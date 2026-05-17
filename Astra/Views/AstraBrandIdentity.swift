@@ -101,25 +101,13 @@ struct AstraAppIconTile: View {
     var showsChannelBadge = AppChannel.current == .development
 
     private var backgroundColor: Color {
-        showsChannelBadge ? Color(hex: 0x6E0F0F) : Color(hex: 0x8C1515)
+        Color(hex: Stanford.cardinalRedLightHex)
     }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous)
                 .fill(backgroundColor)
-                .overlay {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white.opacity(0.07), location: 0),
-                            .init(color: .white.opacity(0.0), location: 0.38),
-                            .init(color: .black.opacity(0.08), location: 1)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous))
-                }
 
             AstraReticleMark(variant: variant, color: Color(hex: Stanford.warmCanvasLightHex))
                 .padding(size * 0.10)
