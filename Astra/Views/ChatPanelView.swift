@@ -712,9 +712,8 @@ struct ChatPanelView: View {
 
     private var heroView: some View {
         VStack(spacing: 24) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(Stanford.ui(56))
-                .foregroundStyle(Stanford.lagunita)
+            AstraReticleMark(color: Color(hex: Stanford.cardinalRedLightHex))
+                .frame(width: 76, height: 76)
 
             Text(newTaskPrompt)
                 .font(Stanford.heading(28))
