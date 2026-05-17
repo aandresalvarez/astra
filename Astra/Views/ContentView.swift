@@ -3358,6 +3358,9 @@ struct WorkspaceSetupForm: View {
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.scenePhase) private var scenePhase
     @Binding var draft: NewWorkspaceDraft
+    @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
     let rootPath: String
     let mode: WorkspaceSetupFormMode
     @Binding var validationIssues: [String]
@@ -3372,6 +3375,7 @@ struct WorkspaceSetupForm: View {
     @State private var probingCapabilityPackageIDs: Set<String> = []
     @State private var capabilityValidationStates: [String: WorkspaceCapabilityValidationState] = [:]
     @State private var capabilityValidationSignatures: [String: String] = [:]
+    @State private var copiedCapabilitySetup: CapabilitySetupCopySummary?
 
     private enum Field {
         case name
@@ -3525,6 +3529,10 @@ struct WorkspaceSetupForm: View {
                     availableCapabilityShortcut
                 }
 
+                if !copyableCapabilitySetupSourceWorkspaces.isEmpty {
+                    copyCapabilitySetupShortcut
+                }
+
                 ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
                     workspaceCapabilityRow(option)
                 }
@@ -3580,6 +3588,35 @@ struct WorkspaceSetupForm: View {
             .buttonStyle(.borderless)
             .tint(Stanford.lagunita)
             .disabled(!hasAvailableCapabilityDefaults)
+        }
+        .padding(.horizontal, 2)
+        .padding(.top, 1)
+    }
+
+    private var copyCapabilitySetupShortcut: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: copiedCapabilitySetup == nil ? "square.on.square" : "checkmark.circle.fill")
+                .font(Stanford.ui(10, weight: .medium))
+                .foregroundStyle(copiedCapabilitySetup == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
+                .frame(width: 14)
+            Text(copyCapabilitySetupText)
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.coolGrey)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Menu {
+                ForEach(copyableCapabilitySetupSourceWorkspaces, id: \.id) { workspace in
+                    Button(copyMenuTitle(for: workspace)) {
+                        copyCapabilitySetup(from: workspace)
+                    }
+                }
+            } label: {
+                Label("Copy From", systemImage: "arrow.down.doc")
+                    .font(Stanford.caption(11).weight(.medium))
+            }
+            .menuStyle(.button)
+            .fixedSize()
         }
         .padding(.horizontal, 2)
         .padding(.top, 1)
@@ -3904,6 +3941,45 @@ struct WorkspaceSetupForm: View {
         return "\(prefix): \(names.joined(separator: ", "))"
     }
 
+    private var copyableCapabilitySetupSourceWorkspaces: [Workspace] {
+        capabilitySetupSourceWorkspaces.filter { workspace in
+            let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
+            return !summary.selectedPackageIDs.isEmpty && !summary.inputsByPackageID.isEmpty
+        }
+    }
+
+    private var copyCapabilitySetupText: String {
+        guard let copiedCapabilitySetup else {
+            return "Reuse setup from another workspace"
+        }
+        let label = copiedCapabilitySetup.packageCount == 1 ? "1 capability" : "\(copiedCapabilitySetup.packageCount) capabilities"
+        return "Copied \(label) from \(copiedCapabilitySetup.sourceWorkspaceName)"
+    }
+
+    private func copyMenuTitle(for workspace: Workspace) -> String {
+        let names = OnboardingCapabilitySetup.selectedDisplayNames(
+            from: CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors).selectedPackageIDs
+        )
+        guard !names.isEmpty else { return workspace.name }
+        return "\(workspace.name) - \(names.joined(separator: ", "))"
+    }
+
+    private func copyCapabilitySetup(from workspace: Workspace) {
+        let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
+        guard !summary.selectedPackageIDs.isEmpty else { return }
+
+        draft.selectedCapabilityIDs = summary.selectedPackageIDs
+        draft.capabilityConfiguration = OnboardingCapabilityConfiguration()
+        draft.capabilityConfiguration.applyCopiedInputs(summary.inputsByPackageID)
+        copiedCapabilitySetup = summary
+        syncCapabilityValidationSignatures()
+        refreshValidationIssues()
+        Task {
+            await probeCapabilityPrerequisites(forceRefresh: false)
+            refreshValidationIssues()
+        }
+    }
+
     private func capabilityStatusText(for packageID: String) -> String {
         if draft.selectedCapabilityIDs.contains(packageID) {
             if capabilityIssue(for: packageID) != nil { return "Setup needed" }
@@ -3967,6 +4043,7 @@ struct WorkspaceSetupForm: View {
         Binding(
             get: { draft.selectedCapabilityIDs.contains(packageID) },
             set: { enabled in
+                copiedCapabilitySetup = nil
                 if enabled {
                     draft.selectedCapabilityIDs.insert(packageID)
                     capabilityValidationSignatures[packageID] = capabilityValidationSignature(for: packageID)
@@ -3994,6 +4071,7 @@ struct WorkspaceSetupForm: View {
     }
 
     private func selectAvailableCapabilities() {
+        copiedCapabilitySetup = nil
         applyCapabilityDefaults()
         if isGitHubHealthy {
             draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.githubPackageID)

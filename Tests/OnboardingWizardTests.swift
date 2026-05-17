@@ -1,7 +1,14 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import ASTRA
 import ASTRACore
+
+private func makeCapabilitySetupCopyContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
 
 /// Lightweight contract tests for the onboarding wizard's step machine.
 /// The view itself is mostly SwiftUI glue that's easier to verify by
@@ -200,5 +207,162 @@ struct OnboardingWizardTests {
         #expect(redcap.credentialInputs == ["REDCAP_API_TOKEN": "redcap-token"])
         #expect(redcap.configInputs == ["REDCAP_API_URL": "https://redcap.example.edu/api/"])
         #expect(redcap.baseURLOverrides == ["REDCap": "https://redcap.example.edu/api/"])
+    }
+
+    @Test("Workspace capability setup copies local configuration from another workspace")
+    @MainActor
+    func workspaceCapabilitySetupCopiesLocalConfiguration() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Clinical Ops", primaryPath: "/tmp/clinical-ops")
+        source.enabledCapabilityIDs = [
+            "jira-workflow",
+            "github-workflow",
+            "gcloud-workflow",
+            "redcap-workflow",
+            "security-auditor"
+        ]
+        context.insert(source)
+
+        let jira = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://clinical.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.workspace = source
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.credentialValues = ["", ""]
+        jira.configKeys = ["JIRA_PROJECTS"]
+        jira.configValues = ["CLIN, OPS"]
+        context.insert(jira)
+
+        let gcloud = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "GCP via gcloud",
+            authMethod: "none"
+        )
+        gcloud.workspace = source
+        gcloud.configKeys = ["GCP_PROJECT", "GCP_REGION"]
+        gcloud.configValues = ["astra-clinical", "us-west1"]
+        context.insert(gcloud)
+
+        let redcap = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            connectorDescription: "REDCap API",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        redcap.workspace = source
+        redcap.credentialKeys = ["REDCAP_API_TOKEN"]
+        redcap.credentialValues = [""]
+        context.insert(redcap)
+
+        let store = MockSecretStore()
+        store.save(
+            key: "JIRA_EMAIL",
+            value: "user@example.edu",
+            entityID: KeychainSecretStore.connectorEntityID(for: jira.id),
+            label: nil
+        )
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "jira-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: jira.id),
+            label: nil
+        )
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "redcap-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: redcap.id),
+            label: nil
+        )
+
+        let summary = CapabilitySetupCopier(secretStore: store).copySetup(from: source)
+
+        #expect(summary.sourceWorkspaceName == "Clinical Ops")
+        #expect(summary.selectedPackageIDs == [
+            "jira-workflow",
+            "github-workflow",
+            "gcloud-workflow",
+            "redcap-workflow"
+        ])
+        #expect(summary.copiedCredentialCount == 3)
+        #expect(summary.inputsByPackageID["jira-workflow"]?.configInputs["JIRA_BASE_URL"] == "https://clinical.atlassian.net")
+        #expect(summary.inputsByPackageID["jira-workflow"]?.configInputs["JIRA_PROJECTS"] == "CLIN, OPS")
+        #expect(summary.inputsByPackageID["gcloud-workflow"]?.configInputs["GCP_PROJECT"] == "astra-clinical")
+        #expect(summary.inputsByPackageID["redcap-workflow"]?.configInputs["REDCAP_API_URL"] == "https://redcap.example.edu/api/")
+
+        var copiedConfiguration = OnboardingCapabilityConfiguration(redcapAPIURL: "")
+        copiedConfiguration.applyCopiedInputs(summary.inputsByPackageID)
+
+        #expect(copiedConfiguration.jiraBaseURL == "https://clinical.atlassian.net")
+        #expect(copiedConfiguration.jiraEmail == "user@example.edu")
+        #expect(copiedConfiguration.jiraAPIToken == "jira-token")
+        #expect(copiedConfiguration.jiraProjects == "CLIN, OPS")
+        #expect(copiedConfiguration.gcpProject == "astra-clinical")
+        #expect(copiedConfiguration.gcpRegion == "us-west1")
+        #expect(copiedConfiguration.redcapAPIURL == "https://redcap.example.edu/api/")
+        #expect(copiedConfiguration.redcapAPIToken == "redcap-token")
+    }
+
+    @Test("Workspace capability setup infers legacy global connector configuration")
+    @MainActor
+    func workspaceCapabilitySetupInfersLegacyGlobalConnectorConfiguration() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Shared Jira", primaryPath: "/tmp/shared-jira")
+        context.insert(source)
+
+        let jira = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://shared.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.isGlobal = true
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.credentialValues = ["", ""]
+        jira.configKeys = ["JIRA_PROJECTS"]
+        jira.configValues = ["SHARED"]
+        context.insert(jira)
+        source.enabledGlobalConnectorIDs = [jira.id.uuidString]
+
+        let store = MockSecretStore()
+        store.save(
+            key: "JIRA_EMAIL",
+            value: "shared@example.edu",
+            entityID: KeychainSecretStore.connectorEntityID(for: jira.id),
+            label: nil
+        )
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "shared-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: jira.id),
+            label: nil
+        )
+
+        let summary = CapabilitySetupCopier(secretStore: store).copySetup(
+            from: source,
+            globalConnectors: [jira]
+        )
+        #expect(summary.selectedPackageIDs == ["jira-workflow"])
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let inputs = CapabilitySetupCopier(secretStore: store).installationInputs(
+            for: package,
+            from: source,
+            globalConnectors: [jira]
+        )
+
+        #expect(inputs.baseURLOverrides["Jira"] == "https://shared.atlassian.net")
+        #expect(inputs.configInputs["JIRA_BASE_URL"] == "https://shared.atlassian.net")
+        #expect(inputs.configInputs["JIRA_PROJECTS"] == "SHARED")
+        #expect(inputs.credentialInputs["JIRA_EMAIL"] == "shared@example.edu")
+        #expect(inputs.credentialInputs["JIRA_API_TOKEN"] == "shared-token")
     }
 }
