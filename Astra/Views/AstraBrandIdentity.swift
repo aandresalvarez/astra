@@ -35,6 +35,12 @@ enum AstraReticleVariant {
 
 struct AstraReticleShape: Shape {
     var variant: AstraReticleVariant = .standard
+    var focusProgress: CGFloat = 0
+
+    var animatableData: CGFloat {
+        get { focusProgress }
+        set { focusProgress = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
         let side = min(rect.width, rect.height)
@@ -56,23 +62,24 @@ struct AstraReticleShape: Shape {
         let inset = variant.inset
         let thickness = variant.thickness
         let arm = variant.arm
+        let focusOffset = focusProgress * 15
         let far = 200 - inset
 
         var path = Path()
         let brackets = [
-            scaledRect(x: inset, y: inset, width: arm, height: thickness),
-            scaledRect(x: inset, y: inset, width: thickness, height: arm),
-            scaledRect(x: far - arm, y: inset, width: arm, height: thickness),
-            scaledRect(x: far - thickness, y: inset, width: thickness, height: arm),
-            scaledRect(x: inset, y: far - thickness, width: arm, height: thickness),
-            scaledRect(x: inset, y: far - arm, width: thickness, height: arm),
-            scaledRect(x: far - arm, y: far - thickness, width: arm, height: thickness),
-            scaledRect(x: far - thickness, y: far - arm, width: thickness, height: arm)
+            scaledRect(x: inset + focusOffset, y: inset + focusOffset, width: arm, height: thickness),
+            scaledRect(x: inset + focusOffset, y: inset + focusOffset, width: thickness, height: arm),
+            scaledRect(x: far - arm - focusOffset, y: inset + focusOffset, width: arm, height: thickness),
+            scaledRect(x: far - thickness - focusOffset, y: inset + focusOffset, width: thickness, height: arm),
+            scaledRect(x: inset + focusOffset, y: far - thickness - focusOffset, width: arm, height: thickness),
+            scaledRect(x: inset + focusOffset, y: far - arm - focusOffset, width: thickness, height: arm),
+            scaledRect(x: far - arm - focusOffset, y: far - thickness - focusOffset, width: arm, height: thickness),
+            scaledRect(x: far - thickness - focusOffset, y: far - arm - focusOffset, width: thickness, height: arm)
         ]
         brackets.forEach { path.addRect($0) }
 
         let center = CGPoint(x: origin.x + 100 * scale, y: origin.y + 100 * scale)
-        let centerSize = variant.centerSize * scale
+        let centerSize = variant.centerSize * (1 + focusProgress * 0.08) * scale
         path.move(to: CGPoint(x: center.x, y: center.y - centerSize))
         path.addLine(to: CGPoint(x: center.x + centerSize, y: center.y))
         path.addLine(to: CGPoint(x: center.x, y: center.y + centerSize))
@@ -80,6 +87,33 @@ struct AstraReticleShape: Shape {
         path.closeSubpath()
 
         return path
+    }
+}
+
+struct AstraPulsingReticleMark: View {
+    var variant: AstraReticleVariant = .standard
+    var color: Color = Stanford.cardinalRed
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isFocused = false
+
+    var body: some View {
+        AstraReticleShape(variant: variant, focusProgress: reduceMotion ? 0 : (isFocused ? 1 : 0))
+            .fill(color)
+            .aspectRatio(1, contentMode: .fit)
+            .accessibilityHidden(true)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
+                    isFocused = true
+                }
+            }
+            .onDisappear {
+                isFocused = false
+            }
+            .onChange(of: reduceMotion) {
+                isFocused = !reduceMotion
+            }
     }
 }
 

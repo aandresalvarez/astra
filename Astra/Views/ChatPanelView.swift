@@ -712,7 +712,7 @@ struct ChatPanelView: View {
 
     private var heroView: some View {
         VStack(spacing: 24) {
-            AstraReticleMark(color: Color(hex: Stanford.cardinalRedLightHex))
+            AstraPulsingReticleMark(color: Color(hex: Stanford.cardinalRedLightHex))
                 .frame(width: 76, height: 76)
 
             Text(newTaskPrompt)
