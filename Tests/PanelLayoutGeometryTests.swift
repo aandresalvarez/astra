@@ -27,7 +27,10 @@ struct PanelLayoutGeometryTests {
 
     @Test("Inspector column width matches the production constant")
     func inspectorColumnWidthConstant() {
-        #expect(PanelLayoutGeometry.inspectorColumnWidth == 460)
+        #expect(PanelLayoutGeometry.inspectorMinColumnWidth == 340)
+        #expect(PanelLayoutGeometry.inspectorColumnWidth == 392)
+        #expect(PanelLayoutGeometry.inspectorDefaultMaxColumnWidth == 420)
+        #expect(PanelLayoutGeometry.inspectorMaxColumnWidth == 460)
     }
 
     // MARK: - isCompactPanelLayout
@@ -43,6 +46,53 @@ struct PanelLayoutGeometryTests {
         #expect(PanelLayoutGeometry.isCompactPanelLayout(width: 1_279) == true)
         #expect(PanelLayoutGeometry.isCompactPanelLayout(width: 1_280) == false)
         #expect(PanelLayoutGeometry.isCompactPanelLayout(width: 1_500) == false)
+    }
+
+    // MARK: - Inspector sizing
+
+    @Test("Inspector docked width uses viewport-relative clamp")
+    func inspectorDockedWidthClamp() {
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_000) == 340)
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_600) == 384)
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 2_000) == 420)
+    }
+
+    @Test("Resizable inspector width preserves detail minimum and user max")
+    func inspectorResizableWidthClamp() {
+        #expect(PanelLayoutGeometry.inspectorResizableColumnWidth(
+            500,
+            detailAreaWidth: 1_000,
+            minimumDetailWidth: 480
+        ) == 460)
+        #expect(PanelLayoutGeometry.inspectorResizableColumnWidth(
+            500,
+            detailAreaWidth: 850,
+            minimumDetailWidth: 480
+        ) == 370)
+        #expect(PanelLayoutGeometry.inspectorResizableColumnWidth(
+            200,
+            detailAreaWidth: 1_200,
+            minimumDetailWidth: 480
+        ) == 340)
+    }
+
+    @Test("Inspector becomes overlay when docked layout would squeeze detail")
+    func inspectorOverlayBreakpoint() {
+        #expect(PanelLayoutGeometry.shouldOverlayInspector(
+            detailAreaWidth: 819,
+            minimumDetailWidth: 480
+        ) == true)
+        #expect(PanelLayoutGeometry.shouldOverlayInspector(
+            detailAreaWidth: 820,
+            minimumDetailWidth: 480
+        ) == false)
+    }
+
+    @Test("Overlay inspector width stays readable but fits tiny windows")
+    func inspectorOverlayWidthClamp() {
+        #expect(PanelLayoutGeometry.inspectorOverlayWidth(for: 300) == 280)
+        #expect(abs(PanelLayoutGeometry.inspectorOverlayWidth(for: 380) - 349.6) < 0.01)
+        #expect(PanelLayoutGeometry.inspectorOverlayWidth(for: 900) == 420)
     }
 
     // MARK: - clampedShelfWidth (bug regression: detail must not collapse to 0)
@@ -135,7 +185,7 @@ struct PanelLayoutGeometryTests {
     @Test("Three columns fit comfortably at wide widths")
     func threeColumnsFitWide() {
         // Wide window: 1700pt detail area, browser (min 360), min detail 520.
-        // 1700 ≥ 360 + 520 + 460 = 1340 → fits.
+        // 1700 ≥ 360 + 520 + 340 = 1220 → fits.
         let cannotFit = PanelLayoutGeometry.cannotFitShelfAndInspector(
             detailAreaWidth: 1_700,
             shelfMinWidth: 360,
@@ -146,7 +196,7 @@ struct PanelLayoutGeometryTests {
 
     @Test("Three columns can't fit at narrow widths — caller must auto-close one")
     func threeColumnsCannotFitNarrow() {
-        // 1100pt detail area: 360 + 520 + 460 = 1340. 1100 < 1340 → can't fit.
+        // 1100pt detail area: 360 + 520 + 340 = 1220. 1100 < 1220 → can't fit.
         let cannotFit = PanelLayoutGeometry.cannotFitShelfAndInspector(
             detailAreaWidth: 1_100,
             shelfMinWidth: 360,
@@ -157,9 +207,9 @@ struct PanelLayoutGeometryTests {
 
     @Test("Boundary: exactly the minimum sum fits")
     func threeColumnsFitExactlyAtBoundary() {
-        // 1340pt = sum of minimums exactly. Should fit (no slack, but valid).
+        // 1220pt = sum of minimums exactly. Should fit (no slack, but valid).
         let cannotFit = PanelLayoutGeometry.cannotFitShelfAndInspector(
-            detailAreaWidth: 1_340,
+            detailAreaWidth: 1_220,
             shelfMinWidth: 360,
             minimumDetailWidth: 520
         )

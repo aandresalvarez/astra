@@ -41,6 +41,8 @@ struct WorkspaceRightRailView: View {
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
+    var isCompact = false
+    var onDismiss: (() -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
@@ -123,11 +125,11 @@ struct WorkspaceRightRailView: View {
 
             GeometryReader { viewport in
                 ScrollView {
-                    AdaptiveGlassContainer(spacing: Stanford.railListSpacing) {
+                    AdaptiveGlassContainer(spacing: contentListSpacing) {
                         configurePanel
-                            .padding(.horizontal, Stanford.railContentPadding)
-                            .padding(.top, 12)
-                            .padding(.bottom, Stanford.railContentPadding)
+                            .padding(.horizontal, contentPadding)
+                            .padding(.top, isCompact ? 10 : 12)
+                            .padding(.bottom, contentPadding)
                     }
                     .background {
                         GeometryReader { contentProxy in
@@ -156,19 +158,34 @@ struct WorkspaceRightRailView: View {
                 }
             }
         }
-        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(Color.secondary.opacity(0.22))
                 .frame(width: 2)
-                .ignoresSafeArea(.all, edges: .top)
                 .allowsHitTesting(false)
         }
     }
 
     private var showsTopRailScrollShadow: Bool {
         scrollMetrics.contentMinY < -2
+    }
+
+    private var contentPadding: CGFloat {
+        isCompact ? 12 : Stanford.railContentPadding
+    }
+
+    private var contentListSpacing: CGFloat {
+        isCompact ? 4 : Stanford.railListSpacing
+    }
+
+    private var panelSpacing: CGFloat {
+        isCompact ? 12 : Stanford.railPanelSpacing
+    }
+
+    private var sectionContentSpacing: CGFloat {
+        isCompact ? 8 : Stanford.railSectionContentSpacing
     }
 
     private var showsBottomRailScrollShadow: Bool {
@@ -212,10 +229,23 @@ struct WorkspaceRightRailView: View {
             }
 
             Spacer(minLength: 0)
+
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close Workspace Context")
+                .accessibilityLabel("Close Workspace Context")
+            }
         }
-        .padding(.top, 12)
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
+        .padding(.top, isCompact ? 10 : 12)
+        .padding(.horizontal, isCompact ? 12 : 14)
+        .padding(.bottom, isCompact ? 7 : 8)
     }
 
     // MARK: - Unified Configure Panel
@@ -223,17 +253,25 @@ struct WorkspaceRightRailView: View {
     private var configurePanel: some View {
         let snapshot = capabilityRailSnapshot
 
-        return VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
+        return VStack(alignment: .leading, spacing: panelSpacing) {
             collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
                 HStack(spacing: 10) {
                     if let onManageCapabilities {
                         Button {
                             onManageCapabilities()
                         } label: {
-                            Label("Manage", systemImage: "slider.horizontal.3")
-                                .font(Stanford.caption(11).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
-                                .labelStyle(.titleAndIcon)
+                            if isCompact {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(Stanford.ui(12, weight: .medium))
+                                    .foregroundStyle(Stanford.lagunita)
+                                    .frame(width: 20, height: 20)
+                                    .contentShape(Rectangle())
+                            } else {
+                                Label("Manage", systemImage: "slider.horizontal.3")
+                                    .font(Stanford.caption(11).weight(.medium))
+                                    .foregroundStyle(Stanford.lagunita)
+                                    .labelStyle(.titleAndIcon)
+                            }
                         }
                         .buttonStyle(.plain)
                         .help("Open the capability package library")
@@ -277,7 +315,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+        VStack(alignment: .leading, spacing: contentListSpacing) {
             if snapshot.items.isEmpty {
                 EmptyRailState(
                     title: "No active capabilities",
@@ -524,6 +562,7 @@ struct WorkspaceRightRailView: View {
                 statusLabel: capabilityBadgeTitle(for: item),
                 statusColor: capabilityBadgeColor(for: item),
                 isEnabled: item.isEnabled,
+                isCompact: isCompact,
                 onOpen: { openCapabilityConfiguration(item) }
             )
         }
@@ -1084,7 +1123,7 @@ struct WorkspaceRightRailView: View {
     // MARK: - Connector Subsection
 
     private var connectorSubsection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt.horizontal.circle")
@@ -1205,7 +1244,7 @@ struct WorkspaceRightRailView: View {
     // MARK: - Context Section
 
     private var workspaceContextPanel: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             instructionsContextSection
 
             Divider().opacity(0.3)
@@ -1228,7 +1267,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var instructionsContextSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+        VStack(alignment: .leading, spacing: contentListSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "text.quote")
                     .font(Stanford.ui(12, weight: .medium))
@@ -1278,7 +1317,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var memoryContextSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "text.badge.checkmark")
                     .font(Stanford.ui(12, weight: .medium))
@@ -1317,7 +1356,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var foldersContextSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+        VStack(alignment: .leading, spacing: contentListSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
                     .font(Stanford.ui(12, weight: .medium))
@@ -1388,7 +1427,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var sshContextSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+        VStack(alignment: .leading, spacing: contentListSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "network")
                     .font(Stanford.ui(12, weight: .medium))
@@ -1429,7 +1468,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var routinesContextSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railListSpacing) {
+        VStack(alignment: .leading, spacing: contentListSpacing) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(Stanford.ui(12, weight: .medium))
@@ -1504,7 +1543,7 @@ struct WorkspaceRightRailView: View {
     // MARK: - Access Section
 
     private var accessSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             // Paths
             HStack(spacing: 4) {
                 Text("Paths")
@@ -1591,7 +1630,7 @@ struct WorkspaceRightRailView: View {
                     .font(Stanford.caption(11))
                     .foregroundStyle(.tertiary)
             } else {
-                VStack(spacing: Stanford.railListSpacing) {
+                VStack(spacing: contentListSpacing) {
                     ForEach(sshConnections) { conn in
                         Button { onEditSSHConnection?(conn) } label: {
                             HStack(spacing: 8) {
@@ -1627,7 +1666,7 @@ struct WorkspaceRightRailView: View {
     // MARK: - Routines Content
 
     private var schedulesContent: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             if workspace.schedules.isEmpty {
                 Button { onNewSchedule?() } label: {
                     Text("+ Add routine")
@@ -1636,7 +1675,7 @@ struct WorkspaceRightRailView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                VStack(spacing: Stanford.railListSpacing) {
+                VStack(spacing: contentListSpacing) {
                     ForEach(workspace.schedules.sorted { $0.name < $1.name }) { schedule in
                         HStack(spacing: 8) {
                             Button { onEditSchedule?(schedule) } label: {
@@ -1684,7 +1723,7 @@ struct WorkspaceRightRailView: View {
         isCollapsed: Binding<Bool>,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                     isCollapsed.wrappedValue.toggle()
@@ -1733,7 +1772,7 @@ struct WorkspaceRightRailView: View {
         @ViewBuilder trailing: () -> Trailing,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
             HStack {
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
@@ -1953,7 +1992,7 @@ struct WorkspaceRightRailView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             Text(title)
                 .font(Stanford.ui(10, weight: .semibold))
                 .foregroundStyle(.tertiary)
@@ -1966,7 +2005,7 @@ struct WorkspaceRightRailView: View {
         @ViewBuilder trailing: () -> Trailing,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             HStack {
                 Text(title)
                     .font(Stanford.ui(10, weight: .semibold))
@@ -1994,7 +2033,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var workspaceSkillSection: some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "puzzlepiece.extension")
@@ -2041,7 +2080,7 @@ struct WorkspaceRightRailView: View {
         isExpanded: Binding<Bool>,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: Stanford.railSectionContentSpacing) {
+        VStack(alignment: .leading, spacing: sectionContentSpacing) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
                     isExpanded.wrappedValue.toggle()
@@ -2082,7 +2121,7 @@ struct WorkspaceRightRailView: View {
         if items.isEmpty {
             EmptyRailState(title: emptyTitle, description: emptyDescription)
         } else {
-            VStack(spacing: Stanford.railListSpacing) {
+            VStack(spacing: contentListSpacing) {
                 ForEach(items) { item in
                     row(item)
                 }
@@ -2429,6 +2468,7 @@ private struct CapabilityRailRow: View {
     let statusLabel: String?
     let statusColor: Color
     let isEnabled: Bool
+    var isCompact = false
     let onOpen: () -> Void
 
     var body: some View {
@@ -2470,7 +2510,7 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
-            .frame(height: 40, alignment: .leading)
+            .frame(height: isCompact ? 36 : 40, alignment: .leading)
         }
         .buttonStyle(.plain)
         .help(subtitle.isEmpty ? "Open details" : subtitle)
