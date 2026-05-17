@@ -96,6 +96,7 @@ struct AstraPulsingReticleMark: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isFocused = false
+    @State private var pulseID = UUID()
 
     var body: some View {
         AstraReticleShape(variant: variant, focusProgress: reduceMotion ? 0 : (isFocused ? 1 : 0))
@@ -104,15 +105,25 @@ struct AstraPulsingReticleMark: View {
             .accessibilityHidden(true)
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
+                let currentPulseID = UUID()
+                pulseID = currentPulseID
+                withAnimation(.easeInOut(duration: 0.7)) {
                     isFocused = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    guard pulseID == currentPulseID else { return }
+                    withAnimation(.easeInOut(duration: 0.7)) {
+                        isFocused = false
+                    }
                 }
             }
             .onDisappear {
+                pulseID = UUID()
                 isFocused = false
             }
             .onChange(of: reduceMotion) {
-                isFocused = !reduceMotion
+                pulseID = UUID()
+                isFocused = false
             }
     }
 }
