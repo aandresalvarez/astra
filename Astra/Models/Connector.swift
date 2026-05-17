@@ -292,19 +292,113 @@ final class Connector {
         request.httpMethod = method
         request.timeoutInterval = 10
 
-        // For POST with api_key auth, send token as form body (e.g. REDCap)
+        // For POST with api_key auth, send token as form body (e.g. REDCap).
+        // REDCap uses project info because it validates the token without
+        // exporting records or metadata that may contain PHI.
         if method == "POST" && authMethod == "api_key" {
             let token = creds.first { $0.key.contains("TOKEN") || $0.key.contains("KEY") }?.value
                 ?? creds.first?.value ?? ""
             let encodedToken = token.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? token
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            request.httpBody = "token=\(encodedToken)&content=version".data(using: .utf8)
+            request.httpBody = "token=\(encodedToken)&content=project&format=json&returnFormat=json".data(using: .utf8)
         } else {
             ConnectorRequestBuilder.applyAuthentication(authMethod: authMethod, credentials: creds, to: &request)
             request.setValue("application/json", forHTTPHeaderField: "Accept")
         }
 
+        if normalizedServiceType == "redcap" {
+            return await executeREDCapTestRequest(request, transport: transport, auditContext: auditContext)
+        }
         return await executeTestRequest(request, transport: transport, auditContext: auditContext)
+    }
+
+    private func executeREDCapTestRequest(
+        _ request: URLRequest,
+        transport: any ConnectorHTTPTransport,
+        auditContext: [String: String]
+    ) async -> (Bool, String) {
+        do {
+            let (data, response) = try await transport.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    "credential_evidence": "connector_auth_v1",
+                    "credential_state": "unknown",
+                    "auth_verified": "false",
+                    "credential_key_count": String(credentialKeys.count),
+                    "connector_updated_at": Self.auditTimestamp(updatedAt),
+                    "result": "unknown_response"
+                ], uniquingKeysWith: { _, new in new }), level: .warning)
+                return (false, "Unknown response from REDCap")
+            }
+
+            if (200...299).contains(http.statusCode) {
+                if let apiError = redcapAPIError(in: data) {
+                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                        "credential_evidence": "connector_auth_v1",
+                        "credential_state": "rejected",
+                        "auth_verified": "false",
+                        "credential_key_count": String(credentialKeys.count),
+                        "connector_updated_at": Self.auditTimestamp(updatedAt),
+                        "result": "api_error",
+                        "http_status": String(http.statusCode)
+                    ], uniquingKeysWith: { _, new in new }), level: .warning)
+                    return (false, apiError)
+                }
+
+                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    "credential_evidence": "connector_auth_v1",
+                    "credential_state": "authenticated",
+                    "auth_verified": "true",
+                    "credential_key_count": String(credentialKeys.count),
+                    "connector_updated_at": Self.auditTimestamp(updatedAt),
+                    "result": "success",
+                    "http_status": String(http.statusCode),
+                    "endpoint_kind": "redcap.project"
+                ], uniquingKeysWith: { _, new in new }))
+                return (true, "REDCap project endpoint responded successfully")
+            }
+
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": http.statusCode == 401 || http.statusCode == 403 ? "rejected" : "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
+                "result": http.statusCode == 401 || http.statusCode == 403 ? "auth_failed" : "http_error",
+                "http_status": String(http.statusCode),
+                "endpoint_kind": "redcap.project"
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
+            return (false, "REDCap returned HTTP \(http.statusCode)")
+        } catch {
+            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                "credential_evidence": "connector_auth_v1",
+                "credential_state": "unknown",
+                "auth_verified": "false",
+                "credential_key_count": String(credentialKeys.count),
+                "connector_updated_at": Self.auditTimestamp(updatedAt),
+                "result": "request_failed",
+                "endpoint_kind": "redcap.project",
+                "error_type": String(describing: type(of: error))
+            ], uniquingKeysWith: { _, new in new }), level: .warning)
+            return (false, error.localizedDescription)
+        }
+    }
+
+    private func redcapAPIError(in data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let message = object["error"] as? String,
+           !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return message
+        }
+        if let string = String(data: data, encoding: .utf8) {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.localizedCaseInsensitiveContains("error") {
+                let oneLine = trimmed.replacingOccurrences(of: "\n", with: " ")
+                return oneLine.count > 180 ? String(oneLine.prefix(180)) : oneLine
+            }
+        }
+        return nil
     }
 
     private func executeTestRequest(

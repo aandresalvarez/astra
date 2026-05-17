@@ -202,10 +202,10 @@ struct WorkspaceRightRailView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Task Context")
+                Text("Workspace Context")
                     .font(Stanford.heading(15))
                     .lineLimit(1)
-                Text("Workspace: \(workspace.name)")
+                Text(workspace.name)
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
