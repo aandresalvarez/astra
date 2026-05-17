@@ -260,6 +260,11 @@ public enum CopilotStreamEventParser {
         if let text = firstStringIncludingPayload(in: object, keys: ["text", "message", "content", "delta", "deltaContent", "delta_content", "chunk", "output", "result", "summary"]) {
             return text
         }
+        if let text = nestedStringIncludingPayload(object, path: ["result", "content"])
+            ?? nestedStringIncludingPayload(object, path: ["result", "detailedContent"])
+            ?? nestedStringIncludingPayload(object, path: ["error", "message"]) {
+            return text
+        }
         if let text = nestedString(object, path: ["content", "text"]) {
             return text
         }
@@ -417,8 +422,8 @@ public enum CopilotStreamEventParser {
     }
 
     private static func toolID(in object: [String: Any]) -> String {
-        firstString(in: object, keys: ["toolUseId", "tool_call_id", "callId"])
-            ?? payloadObject(in: object).flatMap { firstString(in: $0, keys: ["toolUseId", "tool_call_id", "callId", "id"]) }
+        firstString(in: object, keys: ["toolUseId", "tool_call_id", "toolCallId", "callId"])
+            ?? payloadObject(in: object).flatMap { firstString(in: $0, keys: ["toolUseId", "tool_call_id", "toolCallId", "callId", "id"]) }
             ?? firstString(in: object, keys: ["id"])
             ?? ""
     }

@@ -343,6 +343,24 @@ struct AstraBrowserTool {
         case "google-docs-read-document", "googledocsreaddocument", "google-docs-read", "googledocsread":
             let endpoint = try browserEndpoint()
             return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsReadDocument", object: [:])
+        case "google-docs-read-visible-page", "googledocsreadvisiblepage", "google-docs-read-visible", "googledocsreadvisible", "google-docs-read-page", "googledocsreadpage":
+            let endpoint = try browserEndpoint()
+            var object: [String: Any] = [
+                "format": args.value(after: "--format") ?? "markdown"
+            ]
+            if let limit = args.value(after: "--limit") {
+                guard let parsedLimit = Int(limit) else {
+                    throw ToolError("--limit must be an integer")
+                }
+                object["limit"] = parsedLimit
+            }
+            if let chunkSize = args.value(after: "--chunk-size") ?? args.value(after: "--chunk") {
+                guard let parsedChunkSize = Int(chunkSize) else {
+                    throw ToolError("--chunk-size must be an integer")
+                }
+                object["chunkSize"] = parsedChunkSize
+            }
+            return try await request(endpoint: endpoint, method: "POST", path: "/googleDocsReadVisiblePage", object: object)
         case "google-docs-replace-document", "googledocsreplacedocument":
             let endpoint = try browserEndpoint()
             let verify = args.value(after: "--verify")
@@ -563,6 +581,7 @@ struct AstraBrowserTool {
                 "astra-browser google-find-replace --find 'old text' --with 'new text'",
                 "astra-browser google-docs-find --query 'unique phrase'",
                 "astra-browser google-docs-insert --verify 'unique phrase' --text 'content to insert'",
+                "astra-browser google-docs-read-visible-page [--format text|markdown|json] [--limit n] [--chunk-size chars]",
                 "astra-browser google-docs-read-document",
                 "astra-browser google-docs-replace-document --verify 'unique phrase' --text 'full replacement content'",
                 "astra-browser google-drive-open --name 'Untitled document'",

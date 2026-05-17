@@ -132,6 +132,34 @@ struct AppLoggerTests {
         #expect(content.contains("\"base64\":\"abc123\""))
     }
 
+    @Test("Startup diagnostics snapshot includes retrievable crash context")
+    func startupDiagnosticsSnapshotIncludesCrashContext() {
+        let crash = CrashReportSummary(
+            url: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-120000.ips"),
+            appName: "ASTRA Dev",
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            sizeBytes: 12_000
+        )
+
+        let fields = StartupDiagnosticsService.snapshotFields(
+            stage: "test",
+            isUITesting: true,
+            skipWorkspaceRecovery: true,
+            persistentStoreURL: nil,
+            modelContainerResult: "created",
+            crashReports: [crash]
+        )
+
+        #expect(fields["stage"] == "test")
+        #expect(fields["store_mode"] == "memory")
+        #expect(fields["model_container"] == "created")
+        #expect(fields["recent_crash_reports"] == "1")
+        #expect(fields["latest_crash_report"] == "ASTRA Dev-2023-11-14-120000.ips")
+        #expect(fields["latest_crash_report_path"]?.contains("$HOME/Library/Logs/DiagnosticReports") == true)
+        #expect(fields["logging_subsystem"]?.isEmpty == false)
+    }
+
     @Test("onNewEntry callback fires on main thread")
     @MainActor
     func onNewEntryMainThread() async {

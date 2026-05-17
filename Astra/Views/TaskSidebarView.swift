@@ -19,8 +19,6 @@ struct TaskSidebarContainerView: View {
     var onEditWorkspace: ((Workspace) -> Void)?
     var onImportWorkspace: (() -> Void)?
     var onShowConfigure: (() -> Void)?
-    var onShowLogs: (() -> Void)?
-    var onShowDashboard: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
@@ -45,8 +43,6 @@ struct TaskSidebarContainerView: View {
             onEditWorkspace: onEditWorkspace,
             onImportWorkspace: onImportWorkspace,
             onShowConfigure: onShowConfigure,
-            onShowLogs: onShowLogs,
-            onShowDashboard: onShowDashboard,
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
@@ -103,8 +99,6 @@ struct TaskSidebarView: View {
     var onEditWorkspace: ((Workspace) -> Void)?
     var onImportWorkspace: (() -> Void)?
     var onShowConfigure: (() -> Void)?
-    var onShowLogs: (() -> Void)?
-    var onShowDashboard: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?

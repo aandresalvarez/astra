@@ -15,6 +15,7 @@ enum BrowserActionKind: String, CaseIterable {
     case googleFindReplace
     case googleDocsFind
     case googleDocsInsert
+    case googleDocsReadVisiblePage
     case googleDriveOpen
 
     static func normalized(_ value: String) -> BrowserActionKind? {
@@ -47,6 +48,8 @@ enum BrowserActionKind: String, CaseIterable {
             return .googleDocsFind
         case "googledocsinsert", "google-docs-insert":
             return .googleDocsInsert
+        case "googledocsreadvisiblepage", "google-docs-read-visible-page", "googledocsreadvisible", "google-docs-read-visible", "googledocsreadpage", "google-docs-read-page":
+            return .googleDocsReadVisiblePage
         case "googledriveopen", "google-drive-open", "drive-open":
             return .googleDriveOpen
         default:
@@ -1287,6 +1290,7 @@ enum BrowserAnalysisBuilder {
         switch pageType {
         case "googleDocsEditor":
             return [
+                ["action": BrowserActionKind.googleDocsReadVisiblePage.rawValue, "reason": "Use the visible page read helper for read-only summaries; coverage may be partial."],
                 ["action": BrowserActionKind.googleDocsFind.rawValue, "reason": "Google Docs content may be canvas-rendered."],
                 ["action": BrowserActionKind.googleDocsInsert.rawValue, "reason": "Use the document helper for reliable insertion."],
                 ["action": BrowserActionKind.googleFindReplace.rawValue, "reason": "Use the Google editor find/replace helper for text swaps."]

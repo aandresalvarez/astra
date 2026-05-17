@@ -4,6 +4,8 @@ import AppKit
 import AppIntents
 
 private let aboutAstraWindowID = "about-astra"
+private let logsWindowID = "astra-logs"
+private let usageWindowID = "astra-usage"
 
 // MARK: - Window-scoped actions exposed to app menu commands
 //
@@ -246,6 +248,12 @@ public struct ASTRAApp: App {
         }
         let config = persistentStoreURL.map { ModelConfiguration(url: $0) }
             ?? ModelConfiguration(isStoredInMemoryOnly: true)
+        StartupDiagnosticsService.record(
+            stage: "pre_model_container",
+            isUITesting: isUITesting,
+            skipWorkspaceRecovery: skipWorkspaceRecovery,
+            persistentStoreURL: persistentStoreURL
+        )
         if isUITesting {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: ["mode": "ui-testing"])
         } else if let persistentStoreURL {
@@ -263,6 +271,13 @@ public struct ASTRAApp: App {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "result": "model_container_created"
             ])
+            StartupDiagnosticsService.record(
+                stage: "model_container_ready",
+                isUITesting: isUITesting,
+                skipWorkspaceRecovery: skipWorkspaceRecovery,
+                persistentStoreURL: persistentStoreURL,
+                modelContainerResult: "created"
+            )
             if !isUITesting {
                 if !skipWorkspaceRecovery {
                     WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
@@ -286,6 +301,14 @@ public struct ASTRAApp: App {
                 "stage": "model_container_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .warning)
+            StartupDiagnosticsService.record(
+                stage: "model_container_failed",
+                isUITesting: isUITesting,
+                skipWorkspaceRecovery: skipWorkspaceRecovery,
+                persistentStoreURL: persistentStoreURL,
+                modelContainerResult: "initial_failed",
+                level: .warning
+            )
             WorkspaceRecoveryService.backupStore(at: config.url)
             do {
                 modelContainer = try ModelContainer(
@@ -296,6 +319,13 @@ public struct ASTRAApp: App {
                 AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                     "result": "model_container_recreated"
                 ])
+                StartupDiagnosticsService.record(
+                    stage: "model_container_recovered",
+                    isUITesting: isUITesting,
+                    skipWorkspaceRecovery: skipWorkspaceRecovery,
+                    persistentStoreURL: persistentStoreURL,
+                    modelContainerResult: "recreated"
+                )
                 if !isUITesting {
                     if !skipWorkspaceRecovery {
                         WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
@@ -319,6 +349,14 @@ public struct ASTRAApp: App {
                     "stage": "model_container_reset_failed",
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
+                StartupDiagnosticsService.record(
+                    stage: "model_container_reset_failed",
+                    isUITesting: isUITesting,
+                    skipWorkspaceRecovery: skipWorkspaceRecovery,
+                    persistentStoreURL: persistentStoreURL,
+                    modelContainerResult: "reset_failed",
+                    level: .error
+                )
                 fatalError("Failed to create ModelContainer: \(error)")
             }
         }
@@ -475,6 +513,25 @@ public struct ASTRAApp: App {
         }
         .defaultSize(width: 620, height: 560)
         .windowResizability(.contentSize)
+
+        Window("Logs", id: logsWindowID) {
+            LogViewerView()
+                .frame(minWidth: 760, minHeight: 460)
+                .tint(Stanford.cardinalRed)
+                .preferredColorScheme(resolvedAppearance.colorScheme)
+        }
+        .defaultSize(width: 980, height: 620)
+        .keyboardShortcut("l", modifiers: [.command, .option])
+
+        Window("Usage", id: usageWindowID) {
+            UsageDashboardView()
+                .frame(minWidth: 600, minHeight: 500)
+                .tint(Stanford.cardinalRed)
+                .preferredColorScheme(resolvedAppearance.colorScheme)
+                .modelContainer(modelContainer)
+        }
+        .defaultSize(width: 760, height: 620)
+        .keyboardShortcut("u", modifiers: [.command, .option])
 
         Settings {
             SettingsView(appUpdateController: appUpdateController)

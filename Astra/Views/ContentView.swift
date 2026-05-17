@@ -333,8 +333,6 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
-    @State private var showingDashboard = false
-    @State private var showingLogs = false
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -656,8 +654,6 @@ struct ContentView: View {
             onEditWorkspace: beginEditingWorkspace,
             onImportWorkspace: importWorkspace,
             onShowConfigure: openCapabilitiesManager,
-            onShowLogs: showLogs,
-            onShowDashboard: showDashboard,
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
@@ -702,8 +698,6 @@ struct ContentView: View {
             onSetDoneState: setDoneState,
             onRunQueue: runQueue,
             onConfigure: openCapabilitiesManager,
-            onShowDashboard: showDashboard,
-            onShowLogs: showLogs,
             onNewSchedule: showNewSchedule,
             onEditSchedule: beginEditingSchedule,
             onManageCapabilities: openCapabilitiesManager,
@@ -835,14 +829,6 @@ struct ContentView: View {
         }
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
-        }
-        .sheet(isPresented: $showingLogs) {
-            LogViewerView()
-                .frame(width: 980, height: 620)
-        }
-        .sheet(isPresented: $showingDashboard) {
-            UsageDashboardView()
-                .frame(width: 600, height: 500)
         }
         .sheet(isPresented: $showingConfigure) {
             if let ws = effectiveWorkspace {
@@ -1029,14 +1015,6 @@ struct ContentView: View {
         configureFocusItemID = nil
         configureFocusCapabilityPackageID = packageID
         showingConfigure = true
-    }
-
-    private func showLogs() {
-        showingLogs = true
-    }
-
-    private func showDashboard() {
-        showingDashboard = true
     }
 
     private func showWorkspaceEditor() {
@@ -2427,8 +2405,6 @@ private struct ContentDetailAreaView: View {
     let onSetDoneState: (AgentTask, Bool) -> Void
     let onRunQueue: () -> Void
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     let onNewSchedule: () -> Void
     let onEditSchedule: (TaskSchedule) -> Void
     let onManageCapabilities: () -> Void
@@ -2460,8 +2436,6 @@ private struct ContentDetailAreaView: View {
                         workspace: workspace,
                         onConfigure: onConfigure,
                         onEditWorkspace: onEditWorkspace,
-                        onShowDashboard: onShowDashboard,
-                        onShowLogs: onShowLogs,
                         onNewSchedule: onNewSchedule,
                         onEditSchedule: onEditSchedule,
                         onManageCapabilities: onManageCapabilities,
@@ -2692,8 +2666,6 @@ private struct ContentDetailAreaView: View {
             onSetDoneState: onSetDoneState,
             onRunQueue: onRunQueue,
             onConfigure: onConfigure,
-            onShowDashboard: onShowDashboard,
-            onShowLogs: onShowLogs,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
@@ -2775,8 +2747,6 @@ private struct ContentDetailContentView: View {
     let onSetDoneState: (AgentTask, Bool) -> Void
     let onRunQueue: () -> Void
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     let onNewSchedule: () -> Void
     let onEditSchedule: (TaskSchedule) -> Void
     let onManageCapabilities: () -> Void
@@ -2850,8 +2820,6 @@ private struct ContentDetailContentView: View {
                     onSetDoneState: onSetDoneState,
                     onRunQueue: onRunQueue,
                     onConfigure: onConfigure,
-                    onShowDashboard: onShowDashboard,
-                    onShowLogs: onShowLogs,
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
                     onManageCapabilities: onManageCapabilities

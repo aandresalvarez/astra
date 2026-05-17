@@ -5,6 +5,7 @@ struct LogViewerView: View {
     private static let maxVisibleEntries = 2000
 
     private enum DiagnosticsDelivery {
+        case archive
         case file
         case clipboard
     }
@@ -224,58 +225,82 @@ struct LogViewerView: View {
                 }
             }
 
-            HStack(spacing: 12) {
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(autoScroll ? Stanford.paloAltoGreen : Color.secondary.opacity(0.45))
-                        .frame(width: 7, height: 7)
-                    Toggle("Auto-scroll", isOn: $autoScroll)
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .fixedSize()
-                }
-
-                Divider()
-                    .frame(height: 18)
-
-                Picker("Diagnostics scope", selection: $diagnosticsScopeRawValue) {
-                    ForEach(LogDiagnosticsScope.allCases) { scope in
-                        Text(scope.label).tag(scope.rawValue)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 176)
-                .help("Choose how far back diagnostics should analyze")
-
-                Button {
-                    generateDiagnosticsReport(delivery: .file)
-                } label: {
-                    if isGeneratingDiagnostics {
-                        ProgressView()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(autoScroll ? Stanford.paloAltoGreen : Color.secondary.opacity(0.45))
+                            .frame(width: 7, height: 7)
+                        Toggle("Auto-scroll", isOn: $autoScroll)
+                            .toggleStyle(.switch)
                             .controlSize(.small)
-                    } else {
-                        Label("Diagnostics", systemImage: "stethoscope")
+                            .fixedSize()
                     }
+
+                    Divider()
+                        .frame(height: 18)
+
+                    Picker("Diagnostics scope", selection: $diagnosticsScopeRawValue) {
+                        ForEach(LogDiagnosticsScope.allCases) { scope in
+                            Text(scope.label).tag(scope.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 176)
+                    .help("Choose how far back diagnostics should analyze")
+
+                    Spacer(minLength: 0)
+
+                    Text(visibleEntrySummary)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.borderless)
-                .help("Generate a sanitized developer diagnostics report")
-                .disabled(isGeneratingDiagnostics)
 
-                Button {
-                    generateDiagnosticsReport(delivery: .clipboard)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.clipboard")
+                HStack(spacing: 12) {
+                    Button {
+                        generateDiagnosticsReport(delivery: .archive)
+                    } label: {
+                        Label("Download", systemImage: "arrow.down.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Create a diagnostics zip for the selected time window")
+                    .disabled(isGeneratingDiagnostics)
+
+                    Button {
+                        generateDiagnosticsReport(delivery: .file)
+                    } label: {
+                        if isGeneratingDiagnostics {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Diagnostics", systemImage: "stethoscope")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Generate a sanitized developer diagnostics report")
+                    .disabled(isGeneratingDiagnostics)
+
+                    Button {
+                        generateDiagnosticsReport(delivery: .clipboard)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy the diagnostics report markdown to the clipboard")
+                    .disabled(isGeneratingDiagnostics)
+
+                    Button {
+                        revealCrashReports()
+                    } label: {
+                        Label("Crashes", systemImage: "exclamationmark.triangle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Reveal recent ASTRA crash reports in Finder")
+                    .disabled(isGeneratingDiagnostics)
+
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.borderless)
-                .help("Copy the diagnostics report markdown to the clipboard")
-                .disabled(isGeneratingDiagnostics)
-
-                Spacer(minLength: 0)
-
-                Text(visibleEntrySummary)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 18)
@@ -463,15 +488,58 @@ struct LogViewerView: View {
         do {
             let reportEntries = LogDiagnosticsService.collectCurrentEntries(inMemoryEntries: latestEntries)
             let history = LogDiagnosticsService.loadHistory()
+            let analysisInterval = LogDiagnosticsService.analysisDateInterval(
+                scope: scope,
+                generatedAt: generatedAt,
+                previousGeneratedAt: history.lastGeneratedAt
+            )
+            let crashReports = CrashDiagnosticsService.reports(
+                limit: 50,
+                modifiedIn: analysisInterval
+            )
             let report = LogDiagnosticsService.makeReport(
                 entries: reportEntries,
                 generatedAt: generatedAt,
                 scope: scope,
+                history: history,
+                crashReports: crashReports
+            )
+            let analyzedEntries = LogDiagnosticsService.analyzedEntries(
+                reportEntries,
+                generatedAt: generatedAt,
+                scope: scope,
                 history: history
             )
-            LogDiagnosticsService.saveHistory(from: report)
 
             switch delivery {
+            case .archive:
+                let archive = try LogDiagnosticsService.writeArchive(
+                    report: report,
+                    analyzedEntries: analyzedEntries,
+                    analysisInterval: analysisInterval,
+                    crashReports: crashReports
+                )
+                diagnosticsReportURL = archive.url
+                diagnosticsMessage = diagnosticsArchiveSuccessMessage(
+                    report: report,
+                    scope: scope,
+                    archive: archive
+                )
+                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                    "entries": String(report.entryCount),
+                    "issues": String(report.issueCount),
+                    "notices": String(report.notices.count),
+                    "errors": String(report.errorCount),
+                    "warnings": String(report.warningCount),
+                    "crash_reports": String(report.crashReports.count),
+                    "scope": scope.rawValue,
+                    "delivery": "archive",
+                    "artifacts": String(archive.artifactCount),
+                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+                    "archive": archive.url.path
+                ], level: .info)
+                LogDiagnosticsService.saveHistory(from: report)
+                NSWorkspace.shared.activateFileViewerSelecting([archive.url])
             case .file:
                 let url = try LogDiagnosticsService.writeReport(report)
                 diagnosticsReportURL = url
@@ -486,11 +554,13 @@ struct LogViewerView: View {
                     "notices": String(report.notices.count),
                     "errors": String(report.errorCount),
                     "warnings": String(report.warningCount),
+                    "crash_reports": String(report.crashReports.count),
                     "scope": scope.rawValue,
                     "delivery": "file",
                     "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
                     "report": url.path
                 ], level: .info)
+                LogDiagnosticsService.saveHistory(from: report)
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             case .clipboard:
                 NSPasteboard.general.clearContents()
@@ -507,10 +577,12 @@ struct LogViewerView: View {
                     "notices": String(report.notices.count),
                     "errors": String(report.errorCount),
                     "warnings": String(report.warningCount),
+                    "crash_reports": String(report.crashReports.count),
                     "scope": scope.rawValue,
                     "delivery": "clipboard",
                     "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none"
                 ], level: .info)
+                LogDiagnosticsService.saveHistory(from: report)
             }
         } catch {
             diagnosticsReportURL = nil
@@ -521,6 +593,32 @@ struct LogViewerView: View {
         }
 
         isGeneratingDiagnostics = false
+    }
+
+    private func revealCrashReports() {
+        let reports = CrashDiagnosticsService.recentReports(limit: 20, withinDays: nil)
+        if reports.isEmpty {
+            let directory = CrashDiagnosticsService.defaultDiagnosticReportsDirectory
+            if FileManager.default.fileExists(atPath: directory.path) {
+                NSWorkspace.shared.open(directory)
+                diagnosticsMessage = "No ASTRA crash reports found. Opened macOS DiagnosticReports."
+            } else {
+                diagnosticsMessage = "No ASTRA crash reports found, and macOS has not created a DiagnosticReports folder yet."
+            }
+            AppLogger.audit(.crashReportsRevealed, category: "Diagnostics", fields: [
+                "count": "0",
+                "directory": CrashDiagnosticsService.userFacingPath(directory)
+            ], level: .info)
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting(reports.map(\.url))
+        diagnosticsMessage = "Revealed \(reports.count) recent ASTRA crash report\(reports.count == 1 ? "" : "s") in Finder."
+        AppLogger.audit(.crashReportsRevealed, category: "Diagnostics", fields: [
+            "count": String(reports.count),
+            "latest": reports.first?.fileName ?? "none",
+            "directory": CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory)
+        ], level: .info)
     }
 
     private func diagnosticsSuccessMessage(
@@ -535,6 +633,20 @@ struct LogViewerView: View {
             return "Diagnostics report \(verb). No actionable issues were detected for \(scope.label.lowercased()); \(report.notices.count) recovery event\(report.notices.count == 1 ? "" : "s") noted."
         }
         return "Diagnostics report \(verb) with \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s") for \(scope.label.lowercased())."
+    }
+
+    private func diagnosticsArchiveSuccessMessage(
+        report: LogDiagnosticsReport,
+        scope: LogDiagnosticsScope,
+        archive: LogDiagnosticsArchiveResult
+    ) -> String {
+        let crashText = archive.crashReportCount == 0
+            ? "no crash reports"
+            : "\(archive.crashReportCount) crash report\(archive.crashReportCount == 1 ? "" : "s")"
+        if report.issueCount == 0 {
+            return "Diagnostics bundle saved with \(archive.artifactCount) artifact\(archive.artifactCount == 1 ? "" : "s") and \(crashText) for \(scope.label.lowercased())."
+        }
+        return "Diagnostics bundle saved with \(archive.artifactCount) artifact\(archive.artifactCount == 1 ? "" : "s"), \(crashText), and \(report.issueCount) issue group\(report.issueCount == 1 ? "" : "s")."
     }
 }
 

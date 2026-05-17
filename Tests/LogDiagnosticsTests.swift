@@ -61,6 +61,161 @@ struct LogDiagnosticsTests {
         #expect(content.contains("Keychain operation failed"))
     }
 
+    @Test("Archive writer creates a diagnostics zip with windowed artifacts")
+    func writeArchiveBundle() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-log-diagnostics-archive-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let logDirectory = root.appendingPathComponent("logs", isDirectory: true)
+        let outputDirectory = root.appendingPathComponent("out", isDirectory: true)
+        let crashDirectory = root.appendingPathComponent("crashes-source", isDirectory: true)
+        let extractDirectory = root.appendingPathComponent("extract", isDirectory: true)
+        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: crashDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: extractDirectory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let inside = now.addingTimeInterval(-120)
+        let outside = now.addingTimeInterval(-60 * 60)
+        let appLog = logDirectory.appendingPathComponent("astra.log")
+        let taskLog = logDirectory.appendingPathComponent("task-0C48773F.log")
+        let oldTaskLog = logDirectory.appendingPathComponent("task-OLD.log")
+        let browserFlight = logDirectory.appendingPathComponent("browser-flight-0C48773F.jsonl")
+        let breadcrumbs = logDirectory.appendingPathComponent("last-actions.jsonl")
+        let crashURL = crashDirectory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+
+        try "[13:20:00.000] [INFO] [App] app.started channel=dev\n".write(to: appLog, atomically: true, encoding: .utf8)
+        try "[13:20:01.000] [ERROR] [Worker task:0C48773F] runtime.failure_diagnostic failure_category=model_unavailable\n".write(to: taskLog, atomically: true, encoding: .utf8)
+        try "[12:20:00.000] [ERROR] [Worker task:OLD] stale\n".write(to: oldTaskLog, atomically: true, encoding: .utf8)
+        try "{\"action\":\"click\",\"result\":\"failed\"}\n".write(to: browserFlight, atomically: true, encoding: .utf8)
+        try "{\"action\":\"open_logs\"}\n".write(to: breadcrumbs, atomically: true, encoding: .utf8)
+        try "crash report".write(to: crashURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: inside], ofItemAtPath: appLog.path)
+        try FileManager.default.setAttributes([.modificationDate: inside], ofItemAtPath: taskLog.path)
+        try FileManager.default.setAttributes([.modificationDate: outside], ofItemAtPath: oldTaskLog.path)
+        try FileManager.default.setAttributes([.modificationDate: inside], ofItemAtPath: browserFlight.path)
+        try FileManager.default.setAttributes([.modificationDate: inside], ofItemAtPath: breadcrumbs.path)
+        try FileManager.default.setAttributes([.modificationDate: inside], ofItemAtPath: crashURL.path)
+
+        let entries = [
+            LogEntry(level: .info, category: "App", message: "app.started channel=dev", timestamp: inside),
+            LogEntry(level: .error, category: "Worker", message: "stale.failure", timestamp: outside)
+        ]
+        let history = LogDiagnosticsHistory.empty
+        let report = LogDiagnosticsService.makeReport(
+            entries: entries,
+            generatedAt: now,
+            scope: .last15Minutes,
+            history: history,
+            crashReports: [
+                CrashReportSummary(url: crashURL, appName: "ASTRA Dev", modifiedAt: inside, sizeBytes: 12)
+            ]
+        )
+        let analyzedEntries = LogDiagnosticsService.analyzedEntries(
+            entries,
+            generatedAt: now,
+            scope: .last15Minutes,
+            history: history
+        )
+        let interval = LogDiagnosticsService.analysisDateInterval(scope: .last15Minutes, generatedAt: now)
+
+        let archive = try LogDiagnosticsService.writeArchive(
+            report: report,
+            analyzedEntries: analyzedEntries,
+            analysisInterval: interval,
+            logDirectory: logDirectory,
+            directory: outputDirectory,
+            crashReports: report.crashReports
+        )
+
+        #expect(archive.url.pathExtension == "zip")
+        #expect(archive.artifactCount >= 7)
+        #expect(archive.crashReportCount == 1)
+
+        try extractZip(archive.url, to: extractDirectory)
+        let bundleRoot = extractDirectory.appendingPathComponent(archive.url.deletingPathExtension().lastPathComponent, isDirectory: true)
+        let manifest = try String(contentsOf: bundleRoot.appendingPathComponent("manifest.json"), encoding: .utf8)
+        let analyzedLog = try String(
+            contentsOf: bundleRoot.appendingPathComponent("logs/analyzed-log-entries.jsonl"),
+            encoding: .utf8
+        )
+
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("ASTRA-Diagnostics-20231114-221320.md").path))
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/astra.log").path))
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/task-0C48773F.log").path))
+        #expect(!FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/task-OLD.log").path))
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/browser-flight-0C48773F.jsonl").path))
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/last-actions.jsonl").path))
+        #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("crashes/ASTRA Dev-2023-11-14-120000.ips").path))
+        #expect(manifest.contains("browser_flight_logs_when_present"))
+        #expect(analyzedLog.contains("app.started"))
+        #expect(!analyzedLog.contains("stale.failure"))
+    }
+
+    @Test("Crash report locator finds recent ASTRA crash reports")
+    func crashReportLocatorFindsRecentAstraReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-crash-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let newest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let older = directory.appendingPathComponent("ASTRA Dev-2023-11-13-120000.crash")
+        let stale = directory.appendingPathComponent("ASTRA Dev-2023-10-01-120000.ips")
+        let unrelated = directory.appendingPathComponent("Other App-2023-11-14-120000.ips")
+
+        try "newest".write(to: newest, atomically: true, encoding: .utf8)
+        try "older".write(to: older, atomically: true, encoding: .utf8)
+        try "stale".write(to: stale, atomically: true, encoding: .utf8)
+        try "unrelated".write(to: unrelated, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: newest.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: older.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60 * 60 * 24 * 60)], ofItemAtPath: stale.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: unrelated.path)
+
+        let reports = CrashDiagnosticsService.recentReports(
+            limit: 10,
+            withinDays: 30,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            now: now
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-13-120000.crash"
+        ])
+        #expect(reports.allSatisfy { $0.appName == "ASTRA Dev" })
+        #expect(reports.allSatisfy { $0.sizeBytes > 0 })
+    }
+
+    @Test("Report includes crash report retrieval details")
+    func reportIncludesCrashReports() {
+        let crashURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-120000.ips")
+        let crash = CrashReportSummary(
+            url: crashURL,
+            appName: "ASTRA Dev",
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            sizeBytes: 42_000
+        )
+
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(level: .info, category: "App", message: "app.started channel=dev")
+            ],
+            generatedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            crashReports: [crash]
+        )
+
+        #expect(report.crashReports == [crash])
+        #expect(report.markdown.contains("## Crash Reports"))
+        #expect(report.markdown.contains("ASTRA Dev-2023-11-14-120000.ips"))
+        #expect(report.markdown.contains("$HOME/Library/Logs/DiagnosticReports"))
+        #expect(report.markdown.contains("Crashes button"))
+    }
+
     @Test("Collects persisted app and task log entries")
     func collectPersistedLogs() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -872,5 +1027,24 @@ struct LogDiagnosticsTests {
 
         #expect(!report.issues.contains { $0.id.hasPrefix("plan.step.blocked") })
         #expect(report.issues.contains { $0.id == "runtime.failure_diagnostic.permission_denied" })
+    }
+
+    private func extractZip(_ archive: URL, to destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", archive.path, destination.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw NSError(
+                domain: "LogDiagnosticsTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: output]
+            )
+        }
     }
 }

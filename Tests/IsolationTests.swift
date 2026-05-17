@@ -26,7 +26,7 @@ struct IsolationTests {
         try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(atPath: dir) }
 
-        let (initCode, _) = runShell("git init && git -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit --allow-empty -m 'init'", in: dir)
+        let (initCode, _) = runShell("git init && git -c commit.gpgsign=false -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit --allow-empty -m 'init'", in: dir)
         #expect(initCode == 0)
 
         let branch = "astra/test-branch"

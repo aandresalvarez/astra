@@ -51,7 +51,15 @@ struct LogDiagnosticsReport: Equatable {
     let issueFingerprints: [String]
     let issues: [LogDiagnosticsIssue]
     let notices: [LogDiagnosticsNotice]
+    let crashReports: [CrashReportSummary]
     let markdown: String
+}
+
+struct LogDiagnosticsArchiveResult: Equatable {
+    let url: URL
+    let artifactCount: Int
+    let crashReportCount: Int
+    let includedRelativePaths: [String]
 }
 
 enum LogDiagnosticsFreshness: String, Codable, Equatable {
@@ -95,6 +103,8 @@ enum LogDiagnosticsService {
     static let maxMainLogLines = 5_000
     static let maxTaskLogLines = 300
     static let maxTaskLogFiles = 30
+    static let maxArchiveLogFiles = 80
+    static let maxArchiveCrashReports = 50
     private static let permissionWarningQuietThreshold: TimeInterval = 5 * 60
     private static let historyLastGeneratedAtKey = "astra.diagnostics.history.lastGeneratedAt.v1"
     private static let historyKnownFingerprintsKey = "astra.diagnostics.history.knownFingerprints.v1"
@@ -127,14 +137,15 @@ enum LogDiagnosticsService {
         entries: [LogEntry],
         generatedAt: Date = Date(),
         scope: LogDiagnosticsScope = .allRetained,
-        history: LogDiagnosticsHistory = .empty
+        history: LogDiagnosticsHistory = .empty,
+        crashReports: [CrashReportSummary] = []
     ) -> LogDiagnosticsReport {
-        let orderedEntries = uniqueDiagnosticEntries(filteredEntries(
+        let orderedEntries = analyzedEntries(
             entries,
-            scope: scope,
             generatedAt: generatedAt,
-            previousGeneratedAt: history.lastGeneratedAt
-        ).sorted { $0.timestamp < $1.timestamp })
+            scope: scope,
+            history: history
+        )
         let issueGroups = buildIssueGroups(
             from: orderedEntries,
             generatedAt: generatedAt,
@@ -150,6 +161,7 @@ enum LogDiagnosticsService {
             previousGeneratedAt: history.lastGeneratedAt,
             issues: visibleIssues,
             notices: notices,
+            crashReports: crashReports,
             omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
         )
 
@@ -166,8 +178,23 @@ enum LogDiagnosticsService {
             issueFingerprints: issueGroups.map(\.id).sorted(),
             issues: visibleIssues,
             notices: notices,
+            crashReports: crashReports,
             markdown: markdown
         )
+    }
+
+    static func analyzedEntries(
+        _ entries: [LogEntry],
+        generatedAt: Date = Date(),
+        scope: LogDiagnosticsScope = .allRetained,
+        history: LogDiagnosticsHistory = .empty
+    ) -> [LogEntry] {
+        uniqueDiagnosticEntries(filteredEntries(
+            entries,
+            scope: scope,
+            generatedAt: generatedAt,
+            previousGeneratedAt: history.lastGeneratedAt
+        ).sorted { $0.timestamp < $1.timestamp })
     }
 
     static func filteredEntries(
@@ -195,6 +222,31 @@ enum LogDiagnosticsService {
         return entries.filter { $0.timestamp >= start && $0.timestamp <= generatedAt }
     }
 
+    static func analysisDateInterval(
+        scope: LogDiagnosticsScope,
+        generatedAt: Date = Date(),
+        previousGeneratedAt: Date? = nil,
+        calendar: Calendar = .current
+    ) -> DateInterval? {
+        let start: Date?
+        switch scope {
+        case .sinceLastReport:
+            start = previousGeneratedAt
+        case .last15Minutes:
+            start = generatedAt.addingTimeInterval(-15 * 60)
+        case .lastHour:
+            start = generatedAt.addingTimeInterval(-60 * 60)
+        case .today:
+            start = calendar.startOfDay(for: generatedAt)
+        case .allRetained:
+            start = nil
+        }
+
+        guard let start else { return nil }
+        let boundedStart = min(start, generatedAt)
+        return DateInterval(start: boundedStart, end: generatedAt)
+    }
+
     static func writeReport(
         _ report: LogDiagnosticsReport,
         directory: URL = defaultDiagnosticsDirectory()
@@ -206,6 +258,92 @@ enum LogDiagnosticsService {
         try report.markdown.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
+    }
+
+    static func writeArchive(
+        report: LogDiagnosticsReport,
+        analyzedEntries: [LogEntry],
+        analysisInterval: DateInterval?,
+        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent(),
+        directory: URL = defaultDiagnosticsDirectory(),
+        crashReports: [CrashReportSummary] = [],
+        fileManager: FileManager = .default
+    ) throws -> LogDiagnosticsArchiveResult {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [
+            .posixPermissions: 0o700
+        ])
+
+        let archiveName = "ASTRA-Diagnostics-\(fileTimestamp(report.generatedAt))"
+        let stagingParent = directory.appendingPathComponent(".staging-\(archiveName)-\(UUID().uuidString)", isDirectory: true)
+        let stagingRoot = stagingParent.appendingPathComponent(archiveName, isDirectory: true)
+        defer { try? fileManager.removeItem(at: stagingParent) }
+
+        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true, attributes: [
+            .posixPermissions: 0o700
+        ])
+
+        var includedRelativePaths: [String] = []
+        func record(_ url: URL) {
+            let rootPath = stagingRoot.path + "/"
+            if url.path.hasPrefix(rootPath) {
+                includedRelativePaths.append(String(url.path.dropFirst(rootPath.count)))
+            }
+        }
+
+        let reportURL = stagingRoot.appendingPathComponent("ASTRA-Diagnostics-\(fileTimestamp(report.generatedAt)).md")
+        try report.markdown.write(to: reportURL, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: reportURL.path)
+        record(reportURL)
+
+        let entriesURL = stagingRoot
+            .appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("analyzed-log-entries.jsonl")
+        try writeAnalyzedEntries(analyzedEntries, to: entriesURL, fileManager: fileManager)
+        record(entriesURL)
+
+        let manifestURL = stagingRoot.appendingPathComponent("manifest.json")
+        try writeArchiveManifest(
+            report: report,
+            analysisInterval: analysisInterval,
+            analyzedEntries: analyzedEntries,
+            crashReports: crashReports,
+            logDirectory: logDirectory,
+            to: manifestURL,
+            fileManager: fileManager
+        )
+        record(manifestURL)
+
+        let readmeURL = stagingRoot.appendingPathComponent("README.txt")
+        try archiveReadme(report: report, analysisInterval: analysisInterval)
+            .write(to: readmeURL, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: readmeURL.path)
+        record(readmeURL)
+
+        for file in archiveLogFiles(in: logDirectory, interval: analysisInterval, fileManager: fileManager) {
+            if let copied = try copyArtifact(file, into: stagingRoot.appendingPathComponent("logs", isDirectory: true), fileManager: fileManager) {
+                record(copied)
+            }
+        }
+
+        for report in crashReports.prefix(maxArchiveCrashReports) {
+            if let copied = try copyArtifact(report.url, into: stagingRoot.appendingPathComponent("crashes", isDirectory: true), fileManager: fileManager) {
+                record(copied)
+            }
+        }
+
+        let archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+        if fileManager.fileExists(atPath: archiveURL.path) {
+            try fileManager.removeItem(at: archiveURL)
+        }
+        try createZipArchive(from: stagingRoot, to: archiveURL)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archiveURL.path)
+
+        return LogDiagnosticsArchiveResult(
+            url: archiveURL,
+            artifactCount: includedRelativePaths.count,
+            crashReportCount: min(crashReports.count, maxArchiveCrashReports),
+            includedRelativePaths: includedRelativePaths.sorted()
+        )
     }
 
     static func loadHistory(defaults: UserDefaults = .standard) -> LogDiagnosticsHistory {
@@ -228,6 +366,244 @@ enum LogDiagnosticsService {
         AppLogger.mainLogFile
             .deletingLastPathComponent()
             .appendingPathComponent("Diagnostics", isDirectory: true)
+    }
+
+    private static func writeAnalyzedEntries(
+        _ entries: [LogEntry],
+        to url: URL,
+        fileManager: FileManager
+    ) throws {
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let lines = entries.map { entry -> String in
+            let object: [String: Any] = [
+                "timestamp": archiveISOFormatter.string(from: entry.timestamp),
+                "level": entry.level,
+                "category": entry.category,
+                "taskID": entry.taskID?.uuidString ?? "",
+                "message": LogSanitizer.sanitize(entry.message, maxLength: 1_200)
+            ]
+            guard JSONSerialization.isValidJSONObject(object),
+                  let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+                  let line = String(data: data, encoding: .utf8)
+            else {
+                return ""
+            }
+            return line
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+        try (lines + (lines.isEmpty ? "" : "\n")).write(to: url, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func writeArchiveManifest(
+        report: LogDiagnosticsReport,
+        analysisInterval: DateInterval?,
+        analyzedEntries: [LogEntry],
+        crashReports: [CrashReportSummary],
+        logDirectory: URL,
+        to url: URL,
+        fileManager: FileManager
+    ) throws {
+        let logFiles = archiveLogFiles(in: logDirectory, interval: analysisInterval, fileManager: fileManager)
+        let manifest: [String: Any] = [
+            "formatVersion": 1,
+            "generatedAt": archiveISOFormatter.string(from: report.generatedAt),
+            "scope": report.scope.rawValue,
+            "scopeLabel": report.scope.label,
+            "analysisInterval": archiveIntervalObject(analysisInterval),
+            "analyzedEntryCount": analyzedEntries.count,
+            "errorCount": report.errorCount,
+            "warningCount": report.warningCount,
+            "issueCount": report.issueCount,
+            "noticeCount": report.notices.count,
+            "appChannel": AppChannel.current.displayName,
+            "appBuild": AppBuildInfo.current.installedBuildSummary,
+            "sensitiveMode": AppLogger.isSensitiveMode,
+            "logDirectory": CrashDiagnosticsService.userFacingPath(logDirectory),
+            "artifactKinds": [
+                "markdown_report",
+                "manifest",
+                "analyzed_log_entries_jsonl",
+                "app_and_task_logs",
+                "browser_flight_logs_when_present",
+                "macos_crash_reports_when_present"
+            ],
+            "sourceLogFiles": logFiles.map { file in
+                [
+                    "name": file.lastPathComponent,
+                    "path": CrashDiagnosticsService.userFacingPath(file),
+                    "modifiedAt": archiveISOFormatter.string(from: modificationDate(file)),
+                    "sizeBytes": fileSize(file, fileManager: fileManager)
+                ] as [String: Any]
+            },
+            "crashReports": crashReports.prefix(maxArchiveCrashReports).map { report in
+                [
+                    "name": report.fileName,
+                    "appName": report.appName,
+                    "path": report.displayPath,
+                    "modifiedAt": archiveISOFormatter.string(from: report.modifiedAt),
+                    "sizeBytes": report.sizeBytes
+                ] as [String: Any]
+            }
+        ]
+        try writeJSONObject(manifest, to: url, fileManager: fileManager)
+    }
+
+    private static func archiveReadme(report: LogDiagnosticsReport, analysisInterval: DateInterval?) -> String {
+        let intervalText: String
+        if let analysisInterval {
+            intervalText = "\(displayTimestamp(analysisInterval.start)) to \(displayTimestamp(analysisInterval.end))"
+        } else {
+            intervalText = "all retained ASTRA diagnostic logs"
+        }
+        return """
+        ASTRA Diagnostics Bundle
+
+        Generated: \(displayTimestamp(report.generatedAt))
+        Scope: \(report.scope.label)
+        Time window: \(intervalText)
+
+        Contents:
+        - ASTRA-Diagnostics-*.md: sanitized human-readable diagnostics report.
+        - manifest.json: machine-readable index of included diagnostics artifacts.
+        - logs/analyzed-log-entries.jsonl: sanitized log entries used by the report.
+        - logs/*.log and logs/browser-flight-*.jsonl: relevant app, task, breadcrumb, and browser debug artifacts from the selected time window.
+        - crashes/*.ips or *.crash: matching macOS crash reports from the selected time window, when present.
+
+        Browser flight logs may include compact page evidence and screenshot thumbnails only when Browser Debug Capture was enabled.
+        """
+    }
+
+    private static func writeJSONObject(_ object: [String: Any], to url: URL, fileManager: FileManager) throws {
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func archiveIntervalObject(_ interval: DateInterval?) -> Any {
+        guard let interval else { return NSNull() }
+        return [
+            "start": archiveISOFormatter.string(from: interval.start),
+            "end": archiveISOFormatter.string(from: interval.end)
+        ]
+    }
+
+    private static func archiveLogFiles(
+        in directory: URL,
+        interval: DateInterval?,
+        fileManager: FileManager
+    ) -> [URL] {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return Array(files
+            .filter { file in
+                guard isArchiveDiagnosticFile(file),
+                      let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                      values.isRegularFile == true else {
+                    return false
+                }
+                guard let interval else { return true }
+                let modified = values.contentModificationDate ?? .distantPast
+                return modified >= interval.start && modified <= interval.end
+            }
+            .sorted { lhs, rhs in
+                let lhsDate = modificationDate(lhs)
+                let rhsDate = modificationDate(rhs)
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return lhs.lastPathComponent < rhs.lastPathComponent
+            }
+            .prefix(maxArchiveLogFiles))
+    }
+
+    private static func isArchiveDiagnosticFile(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name == "astra.log"
+            || name == AppLogger.breadcrumbLogFile.lastPathComponent
+            || (name.hasPrefix("astra.") && name.hasSuffix(".log"))
+            || (name.hasPrefix("task-") && name.hasSuffix(".log"))
+            || (name.hasPrefix("browser-flight-") && name.hasSuffix(".jsonl"))
+    }
+
+    private static func copyArtifact(_ source: URL, into directory: URL, fileManager: FileManager) throws -> URL? {
+        guard let values = try? source.resourceValues(forKeys: [.isRegularFileKey]),
+              values.isRegularFile == true else {
+            return nil
+        }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [
+            .posixPermissions: 0o700
+        ])
+        let destination = uniqueDestination(for: source.lastPathComponent, in: directory, fileManager: fileManager)
+        try fileManager.copyItem(at: source, to: destination)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return destination
+    }
+
+    private static func uniqueDestination(for fileName: String, in directory: URL, fileManager: FileManager) -> URL {
+        let safeName = fileName.isEmpty ? "artifact" : fileName
+        let original = directory.appendingPathComponent(safeName)
+        guard fileManager.fileExists(atPath: original.path) else { return original }
+
+        let ext = original.pathExtension
+        let base = ext.isEmpty ? original.lastPathComponent : original.deletingPathExtension().lastPathComponent
+        for index in 2...999 {
+            let candidateName = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return directory.appendingPathComponent("\(UUID().uuidString)-\(safeName)")
+    }
+
+    private static func createZipArchive(from stagingRoot: URL, to archiveURL: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.currentDirectoryURL = stagingRoot.deletingLastPathComponent()
+        process.arguments = [
+            "-c",
+            "-k",
+            "--sequesterRsrc",
+            "--keepParent",
+            stagingRoot.lastPathComponent,
+            archiveURL.path
+        ]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            throw ZipArchiveError(status: process.terminationStatus, output: output)
+        }
+    }
+
+    private struct ZipArchiveError: LocalizedError {
+        let status: Int32
+        let output: String
+
+        var errorDescription: String? {
+            let suffix = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if suffix.isEmpty {
+                return "Failed to create diagnostics zip with status \(status)."
+            }
+            return "Failed to create diagnostics zip with status \(status): \(LogSanitizer.sanitize(suffix))"
+        }
     }
 
     private struct IssueBucket {
@@ -1200,6 +1576,7 @@ enum LogDiagnosticsService {
         previousGeneratedAt: Date?,
         issues: [LogDiagnosticsIssue],
         notices: [LogDiagnosticsNotice],
+        crashReports: [CrashReportSummary],
         omittedIssueCount: Int
     ) -> String {
         let errors = entries.filter { $0.logLevel == .error }.count
@@ -1238,6 +1615,7 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
+            "- Crash reports found: \(crashReports.count)",
             "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
@@ -1251,6 +1629,7 @@ enum LogDiagnosticsService {
             "",
             settingsSnapshotLines().joined(separator: "\n"),
         ]
+        appendCrashReports(crashReports, to: &lines)
         appendTraceSummaries(traceSummaries, to: &lines)
         lines += ["", "## Issues"]
 
@@ -1315,6 +1694,37 @@ enum LogDiagnosticsService {
         ]
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendCrashReports(_ crashReports: [CrashReportSummary], to lines: inout [String]) {
+        lines += [
+            "",
+            "## Crash Reports",
+            ""
+        ]
+
+        guard !crashReports.isEmpty else {
+            lines += [
+                "No recent ASTRA crash reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
+            ]
+            return
+        }
+
+        lines += [
+            "Recent macOS crash reports matching ASTRA app names:",
+            ""
+        ]
+
+        for report in crashReports {
+            lines.append(
+                "- `\(report.fileName)` | app: \(report.appName) | modified: \(displayTimestamp(report.modifiedAt)) | size: \(byteCount(report.sizeBytes)) | path: `\(report.displayPath)`"
+            )
+        }
+
+        lines += [
+            "",
+            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Crashes button in the log viewer to reveal these files in Finder."
+        ]
     }
 
     private static func appendNotices(_ notices: [LogDiagnosticsNotice], to lines: inout [String]) {
@@ -1471,6 +1881,10 @@ enum LogDiagnosticsService {
             "- Claude model suggestions: \(claudeCache.count) (\(claudeCache.checkedAt.map { "checked \(displayTimestamp($0))" } ?? "built-in defaults"))",
             "- Copilot model suggestions: \(copilotCache.count) (\(copilotCache.checkedAt.map { "checked \(displayTimestamp($0))" } ?? "built-in defaults"))"
         ]
+    }
+
+    private static func byteCount(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
     private static func runtimeFailureTitle(_ category: String) -> String {
@@ -1721,6 +2135,14 @@ enum LogDiagnosticsService {
         return values?.contentModificationDate ?? .distantPast
     }
 
+    private static func fileSize(_ url: URL, fileManager: FileManager = .default) -> Int64 {
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        if let size = attributes?[.size] as? NSNumber {
+            return size.int64Value
+        }
+        return 0
+    }
+
     private static func logTimestamp(_ timeText: String, anchoredTo date: Date) -> Date {
         let pieces = timeText.split(separator: ":")
         guard pieces.count == 3,
@@ -1771,6 +2193,12 @@ enum LogDiagnosticsService {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+
+    private static let archiveISOFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
 }

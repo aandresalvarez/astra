@@ -42,11 +42,13 @@ enum LogLevel: String, Comparable, CaseIterable {
 enum AuditEvent: String, CaseIterable {
     case appStarted = "app.started"
     case appActivated = "app.activated"
+    case startupDiagnostics = "startup.diagnostics"
     case userAction = "user.action"
     case dataStoreSelected = "data.store.selected"
     case dataStoreRecovered = "data.store.recovered"
     case diagnosticsGenerated = "diagnostics.generated"
     case diagnosticsGenerationFailed = "diagnostics.generation_failed"
+    case crashReportsRevealed = "crash_reports.revealed"
 
     case taskCreated = "task.created"
     case taskStarted = "task.started"

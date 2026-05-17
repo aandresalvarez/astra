@@ -1403,7 +1403,7 @@ struct TaskMainView: View {
 
     // MARK: - Chat Bubbles
 
-    private func chatUserBubble(text: String, timestamp: Date) -> some View {
+    private func chatUserBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Spacer(minLength: 120)
             VStack(alignment: .trailing, spacing: 4) {
@@ -1431,21 +1431,15 @@ struct TaskMainView: View {
                         .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
                     )
                     .textSelection(.enabled)
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
-                    .padding(.trailing, 4)
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Your message: \(text)")
     }
 
-    private func scheduleResultBubble(text: String, timestamp: Date) -> some View {
+    private func scheduleResultBubble(text: String, timestamp _: Date) -> some View {
         timelineEventRow(
             text: text,
-            timestamp: timestamp,
             icon: "arrow.triangle.2.circlepath",
             tint: Stanford.poppy
         )
@@ -1453,10 +1447,9 @@ struct TaskMainView: View {
         .accessibilityLabel("Routine result: \(text)")
     }
 
-    private func systemInfoBubble(text: String, timestamp: Date) -> some View {
+    private func systemInfoBubble(text: String, timestamp _: Date) -> some View {
         timelineEventRow(
             text: text,
-            timestamp: timestamp,
             icon: "info.circle",
             tint: Stanford.coolGrey
         )
@@ -1466,7 +1459,6 @@ struct TaskMainView: View {
 
     private func timelineEventRow(
         text: String,
-        timestamp: Date,
         icon: String,
         tint: Color
     ) -> some View {
@@ -1487,10 +1479,6 @@ struct TaskMainView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .tint(Stanford.link)
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta(11))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize()
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
@@ -1503,7 +1491,7 @@ struct TaskMainView: View {
         .padding(.horizontal, 14)
     }
 
-    private func recapBubble(text: String, timestamp: Date) -> some View {
+    private func recapBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "doc.text")
                 .font(Stanford.body(14))
@@ -1516,10 +1504,6 @@ struct TaskMainView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1537,7 +1521,7 @@ struct TaskMainView: View {
         .accessibilityLabel("Task recap")
     }
 
-    private func planAssistantBubble(text: String, timestamp: Date) -> some View {
+    private func planAssistantBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "list.bullet.clipboard")
                 .font(Stanford.body(14))
@@ -1550,9 +1534,6 @@ struct TaskMainView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1584,7 +1565,7 @@ struct TaskMainView: View {
         let hasUserFacingOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !run.hasVPNWarning
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
         let showResponseActions = run.status != .running
-        let hasRunMetadata = run.tokensUsed > 0 || run.completedAt != nil
+        let hasRunMetadata = run.tokensUsed > 0 || run.completedAt != nil || run.status == .running
 
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
@@ -1690,18 +1671,14 @@ struct TaskMainView: View {
                         .help("Fork from here")
                     }
 
-                    Spacer()
-
-                    HStack(spacing: 8) {
-                        if run.tokensUsed > 0 {
-                            Text(Formatters.formatTokens(run.tokensUsed))
-                                .font(Stanford.chatMeta())
-                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
-                        }
-                        if let completed = run.completedAt {
-                            Text(formatDuration(Int(completed.timeIntervalSince(run.startedAt))))
-                                .font(Stanford.chatMeta())
-                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                    if hasRunMetadata {
+                        HStack(spacing: 8) {
+                            if run.tokensUsed > 0 {
+                                Text(Formatters.formatTokens(run.tokensUsed))
+                                    .font(Stanford.chatMeta())
+                                    .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                            }
+                            runDurationMetadata(run)
                         }
                     }
                 }
@@ -1711,6 +1688,23 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    @ViewBuilder
+    private func runDurationMetadata(_ run: TaskRunSnapshot) -> some View {
+        if run.status == .running && run.completedAt == nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text("Working for \(formatChatDuration(Int(context.date.timeIntervalSince(run.startedAt))))")
+                    .font(Stanford.chatMeta())
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                    .monospacedDigit()
+            }
+        } else if let completed = run.completedAt {
+            Text("Worked for \(formatChatDuration(Int(completed.timeIntervalSince(run.startedAt))))")
+                .font(Stanford.chatMeta())
+                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                .monospacedDigit()
+        }
     }
 
     private func shouldShowRunActivityDisclosure(_ presentation: RunActivityPresentation) -> Bool {
@@ -4304,6 +4298,29 @@ struct TaskMainView: View {
     private func formatDuration(_ seconds: Int) -> String {
         if seconds < 60 { return "\(seconds)s" }
         return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    private func formatChatDuration(_ seconds: Int) -> String {
+        let clamped = max(0, seconds)
+        if clamped < 60 {
+            return "\(clamped) sec"
+        }
+
+        let totalMinutes = clamped / 60
+        let remainingSeconds = clamped % 60
+        if totalMinutes < 60 {
+            if remainingSeconds == 0 {
+                return "\(totalMinutes) min"
+            }
+            return "\(totalMinutes) min, \(remainingSeconds) sec"
+        }
+
+        let hours = totalMinutes / 60
+        let remainingMinutes = totalMinutes % 60
+        if remainingMinutes == 0 {
+            return "\(hours) hr"
+        }
+        return "\(hours) hr, \(remainingMinutes) min"
     }
 
 }

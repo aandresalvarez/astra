@@ -50,6 +50,29 @@ struct BrowserToolArgumentTests {
         }
     }
 
+    @Test("Page read options are allowed")
+    func pageReadOptionsAreAllowed() throws {
+        let sanitized = try BrowserToolCommandParser.sanitizedArguments([
+            "google-docs-read-visible-page",
+            "--format",
+            "markdown",
+            "--limit",
+            "50000",
+            "--chunk-size",
+            "8000"
+        ])
+
+        #expect(sanitized == [
+            "google-docs-read-visible-page",
+            "--format",
+            "markdown",
+            "--limit",
+            "50000",
+            "--chunk-size",
+            "8000"
+        ])
+    }
+
     @Test("Global task value does not leak into remaining text")
     func globalTaskValueDoesNotLeakIntoRemainingText() throws {
         let sanitized = try BrowserToolCommandParser.sanitizedArguments([
