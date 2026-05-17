@@ -62,7 +62,7 @@ struct AstraReticleShape: Shape {
         let inset = variant.inset
         let thickness = variant.thickness
         let arm = variant.arm
-        let focusOffset = focusProgress * 15
+        let focusOffset = focusProgress * 24
         let far = 200 - inset
 
         var path = Path()
