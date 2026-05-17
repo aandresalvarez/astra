@@ -69,6 +69,7 @@ struct TaskMainView: View {
     var sshReloadTrigger: Int = 0
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
@@ -249,6 +250,26 @@ struct TaskMainView: View {
             claudeVertexSonnetModel,
             claudeVertexHaikuModel
         ].joined(separator: "|")
+    }
+
+    private var chatStatusDisclosureAnimation: Animation? {
+        reduceMotion ? .easeInOut(duration: 0.12) : .easeInOut(duration: 0.26)
+    }
+
+    private var chatStatusDetailsTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: 0, y: -6)),
+            removal: .opacity
+        )
+    }
+
+    private var chatStatusBlockTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: 0, y: 8)),
+            removal: .opacity
+        )
     }
 
     private var threadScrollSignature: String {
@@ -984,7 +1005,7 @@ struct TaskMainView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    withAnimation(chatStatusDisclosureAnimation) {
                         isThreadStatusExpanded.toggle()
                     }
                 } label: {
@@ -1027,15 +1048,16 @@ struct TaskMainView: View {
 
                 if isThreadStatusExpanded {
                     threadStatusDetails
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(chatStatusDetailsTransition)
                 }
             }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Stanford.fog.opacity(0.45))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Task status. \(summary)")
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Stanford.fog.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Task status. \(summary)")
+            .transition(chatStatusBlockTransition)
         }
     }
 
@@ -1801,7 +1823,7 @@ struct TaskMainView: View {
 
         return VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(chatStatusDisclosureAnimation) {
                     if isExpanded {
                         expandedRunActivity.remove(run.id)
                     } else {
@@ -1839,7 +1861,7 @@ struct TaskMainView: View {
 
             if isExpanded {
                 runActivityDetails(run: run, presentation: presentation)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(chatStatusDetailsTransition)
             }
         }
         .padding(.horizontal, 8)
@@ -1848,6 +1870,7 @@ struct TaskMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(runActivityDisclosureTitle(run: run, notices: notices)). \(parts.joined(separator: ", "))")
+        .transition(chatStatusBlockTransition)
     }
 
     private func runActivityDisclosureTitle(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
@@ -2073,7 +2096,7 @@ struct TaskMainView: View {
         let color = policy.badge == nil ? Stanford.coolGrey : Stanford.poppy
         return VStack(alignment: .leading, spacing: 7) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(chatStatusDisclosureAnimation) {
                     if isExpanded {
                         expandedRunPolicyManifests.remove(run.id)
                     } else {
@@ -2111,7 +2134,7 @@ struct TaskMainView: View {
                         rawOutputDisclosure(rawPayload)
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(chatStatusDetailsTransition)
             }
         }
         .padding(.vertical, 1)
@@ -2411,6 +2434,7 @@ struct TaskMainView: View {
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Network access needed. Connect to VPN, then retry.")
+        .transition(chatStatusBlockTransition)
     }
 
     private func networkAccessStep(_ title: String, systemImage: String) -> some View {
@@ -2428,7 +2452,7 @@ struct TaskMainView: View {
         let presentation = NetworkAccessTechnicalDetailsPresentation(output: run.output)
         return VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(chatStatusDisclosureAnimation) {
                     if isExpanded {
                         expandedRunNetworkDetails.remove(run.id)
                     } else {
@@ -2483,9 +2507,10 @@ struct TaskMainView: View {
                 .padding(10)
                 .background(Stanford.fog.opacity(0.28))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(chatStatusDetailsTransition)
             }
         }
+        .transition(chatStatusBlockTransition)
     }
 
     private func runNoticePresentation(for notice: TaskRunNotice) -> (title: String, icon: String, color: Color) {
@@ -2730,7 +2755,7 @@ struct TaskMainView: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(chatStatusDisclosureAnimation) {
                     isAgentPlanExpanded.toggle()
                 }
             } label: {
@@ -2764,7 +2789,7 @@ struct TaskMainView: View {
                     }
                 }
                 .padding(.top, 2)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(chatStatusDetailsTransition)
             }
         }
         .padding(.horizontal, 12)
@@ -2775,6 +2800,7 @@ struct TaskMainView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Stanford.coolGrey.opacity(0.18), lineWidth: 1)
         )
+        .transition(chatStatusBlockTransition)
     }
 
     private func agentPlanItemRow(_ item: TaskProtocolTodoItem) -> some View {
