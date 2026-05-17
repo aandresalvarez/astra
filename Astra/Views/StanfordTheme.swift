@@ -15,8 +15,9 @@ enum Stanford {
     //
     // Light hexes are the official Stanford Identity values; dark hexes
     // were picked by eye to pair with a typical macOS dark window.
+    static let cardinalRedLightHex: UInt = 0x8C1515
     static let cardinalRed = Color(
-        light: 0x8C1515,  // Stanford cardinal
+        light: cardinalRedLightHex,  // Stanford cardinal
         dark:  0xD93A3A   // readable on dark; still distinctly red
     )
     static let errorRed = Color(
