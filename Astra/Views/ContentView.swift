@@ -2603,9 +2603,13 @@ private struct ContentDetailAreaView: View {
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
     @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
     @AppStorage(AppStorageKeys.queryShelfWidth) private var queryShelfStoredWidth = Double(WorkspaceCanvasItem.query.idealWidth)
+    @AppStorage(AppStorageKeys.rightRailWidth) private var rightRailStoredWidth = 0.0
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
     @State private var resizingShelfItem: WorkspaceCanvasItem?
+    @State private var rightRailDragStartWidth: CGFloat?
+    @State private var rightRailTransientWidth: CGFloat?
+    @State private var isResizingRightRail = false
 
     let onQuickRun: (AgentTask) -> Void
     let onTaskCreated: (AgentTask) -> Void
@@ -2638,60 +2642,170 @@ private struct ContentDetailAreaView: View {
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
 
-    private static let inspectorColumnWidth: CGFloat = PanelLayoutGeometry.inspectorColumnWidth
-    private static let inspectorMinColumnWidth: CGFloat = 320
     private static let contentMinWidth: CGFloat = 480
 
     var body: some View {
-        HStack(spacing: 0) {
-            contentWithOptionalCanvas
-                .frame(minWidth: Self.contentMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { proxy in
+            let availableWidth = proxy.size.width
+            let usesInspectorOverlay = isRightRailPresented
+                && PanelLayoutGeometry.shouldOverlayInspector(
+                    detailAreaWidth: availableWidth,
+                    minimumDetailWidth: Self.contentMinWidth
+                )
 
-            // Group with stable identity so the canvasTransition fires only on
-            // `isRightRailPresented` flips — never on workspace id swaps.
-            // The `.id(workspace.id)` stays on the inner view so workspace
-            // changes still rebuild the inspector, just without the width-reveal.
-            Group {
-                if isRightRailPresented, let workspace = effectiveWorkspace {
-                    WorkspaceRightRailView(
-                        workspace: workspace,
-                        onConfigure: onConfigure,
-                        onEditWorkspace: onEditWorkspace,
-                        onNewSchedule: onNewSchedule,
-                        onEditSchedule: onEditSchedule,
-                        onManageCapabilities: onManageCapabilities,
-                        onOpenConfigureTab: onOpenConfigureTab,
-                        onOpenCapabilityPackage: onOpenCapabilityPackage,
-                        onNewSSHConnection: onNewSSHConnection,
-                        onEditSSHConnection: onEditSSHConnection,
-                        sshReloadTrigger: sshReloadTrigger
-                    )
-                    .id(workspace.id)
-                    .frame(
-                        minWidth: Self.inspectorMinColumnWidth,
-                        idealWidth: Self.inspectorColumnWidth,
-                        maxWidth: Self.inspectorColumnWidth
-                    )
-                    .background(.bar, ignoresSafeAreaEdges: .top)
-                    .overlay(alignment: .leading) {
-                        // Skip the divider when a shelf is also visible — the
-                        // shelf's trailing edge already supplies the boundary
-                        // line, so drawing ours too produces a 2pt double-seam.
-                        if activeCanvasItem == nil {
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.12))
-                                .frame(width: 1)
-                                .ignoresSafeArea(.all, edges: .top)
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    contentWithOptionalCanvas
+                        .frame(
+                            minWidth: usesInspectorOverlay ? 0 : Self.contentMinWidth,
+                            maxWidth: .infinity,
+                            maxHeight: .infinity
+                        )
+
+                    // Group with stable identity so the canvasTransition fires only on
+                    // `isRightRailPresented` flips — never on workspace id swaps.
+                    // The `.id(workspace.id)` stays on the inner view so workspace
+                    // changes still rebuild the inspector, just without the width-reveal.
+                    Group {
+                        if isRightRailPresented, let workspace = effectiveWorkspace, !usesInspectorOverlay {
+                            rightRail(
+                                workspace: workspace,
+                                width: rightRailWidth(availableWidth: availableWidth),
+                                availableWidth: availableWidth,
+                                isOverlay: false
+                            )
                         }
                     }
-                    .shadow(color: .black.opacity(0.06), radius: 12, x: -3, y: 0)
+                    .transition(canvasTransition)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+
+                if isRightRailPresented, let workspace = effectiveWorkspace, usesInspectorOverlay {
+                    inspectorOverlayScrim
+                    rightRail(
+                        workspace: workspace,
+                        width: PanelLayoutGeometry.inspectorOverlayWidth(for: availableWidth),
+                        availableWidth: availableWidth,
+                        isOverlay: true
+                    )
+                    .padding(.trailing, PanelLayoutGeometry.inspectorOverlayHorizontalMargin)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(1)
                 }
             }
-            .transition(canvasTransition)
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(panelAnimation, value: activeCanvasItem)
         .animation(inspectorAnimation, value: isRightRailPresented)
+    }
+
+    private func rightRail(
+        workspace: Workspace,
+        width: CGFloat,
+        availableWidth: CGFloat,
+        isOverlay: Bool
+    ) -> some View {
+        WorkspaceRightRailView(
+            workspace: workspace,
+            onConfigure: onConfigure,
+            onEditWorkspace: onEditWorkspace,
+            onNewSchedule: onNewSchedule,
+            onEditSchedule: onEditSchedule,
+            onManageCapabilities: onManageCapabilities,
+            onOpenConfigureTab: onOpenConfigureTab,
+            onOpenCapabilityPackage: onOpenCapabilityPackage,
+            onNewSSHConnection: onNewSSHConnection,
+            onEditSSHConnection: onEditSSHConnection,
+            sshReloadTrigger: sshReloadTrigger,
+            isCompact: isOverlay || width <= PanelLayoutGeometry.inspectorMinColumnWidth + 8,
+            onDismiss: isOverlay ? { isRightRailPresented = false } : nil
+        )
+        .id(workspace.id)
+        .frame(width: width)
+        .background(.bar)
+        .overlay(alignment: .leading) {
+            ZStack(alignment: .leading) {
+                // Skip the divider when a shelf is also visible — the shelf's
+                // trailing edge already supplies the boundary line, so drawing
+                // ours too produces a 2pt double-seam.
+                if activeCanvasItem == nil {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.12))
+                        .frame(width: 1)
+                }
+
+                if !isOverlay {
+                    rightRailResizeHandle(availableWidth: availableWidth)
+                }
+            }
+        }
+        .shadow(
+            color: .black.opacity(isOverlay ? 0.16 : 0.06),
+            radius: isOverlay ? 18 : 12,
+            x: isOverlay ? -6 : -3,
+            y: 0
+        )
+    }
+
+    private func rightRailWidth(availableWidth: CGFloat) -> CGFloat {
+        let storedWidth = CGFloat(rightRailStoredWidth)
+        let committedWidth = storedWidth > 0
+            ? storedWidth
+            : PanelLayoutGeometry.inspectorDockedColumnWidth(for: availableWidth)
+        let candidate = isResizingRightRail ? (rightRailTransientWidth ?? committedWidth) : committedWidth
+        return clampedRightRailWidth(candidate, availableWidth: availableWidth)
+    }
+
+    private func clampedRightRailWidth(_ width: CGFloat, availableWidth: CGFloat) -> CGFloat {
+        PanelLayoutGeometry.inspectorResizableColumnWidth(
+            width,
+            detailAreaWidth: availableWidth,
+            minimumDetailWidth: Self.contentMinWidth
+        )
+    }
+
+    private func storeRightRailWidth(_ width: CGFloat, availableWidth: CGFloat) {
+        rightRailStoredWidth = Double(clampedRightRailWidth(width, availableWidth: availableWidth))
+    }
+
+    private func rightRailResizeHandle(availableWidth: CGFloat) -> some View {
+        ShelfResizeHandle(
+            isResizing: isResizingRightRail,
+            helpText: "Drag to resize the Workspace Context panel",
+            onChanged: { translation in
+                if rightRailDragStartWidth == nil || !isResizingRightRail {
+                    isResizingRightRail = true
+                    rightRailDragStartWidth = rightRailWidth(availableWidth: availableWidth)
+                }
+                guard let rightRailDragStartWidth else { return }
+                let proposedWidth = rightRailDragStartWidth - translation.width
+                let next = clampedRightRailWidth(proposedWidth, availableWidth: availableWidth)
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    rightRailTransientWidth = next
+                }
+            },
+            onEnded: {
+                if let rightRailTransientWidth {
+                    storeRightRailWidth(rightRailTransientWidth, availableWidth: availableWidth)
+                }
+                rightRailDragStartWidth = nil
+                rightRailTransientWidth = nil
+                isResizingRightRail = false
+            }
+        )
+    }
+
+    private var inspectorOverlayScrim: some View {
+        Color.black.opacity(0.08)
+            .ignoresSafeArea(.all, edges: .top)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isRightRailPresented = false
+            }
+            .accessibilityHidden(true)
     }
 
     private var panelAnimation: Animation? {

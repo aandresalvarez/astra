@@ -15,6 +15,7 @@ enum AppStorageKeys {
     static let browserShelfWidth = "astra.browserShelf.width.v1"
     static let markdownShelfWidth = "astra.markdownShelf.width.v1"
     static let queryShelfWidth = "astra.queryShelf.width.v1"
+    static let rightRailWidth = "astra.rightRail.width.v1"
     static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
     static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
     static let browserDebugCapture = "astra.browser.debugCapture.v1"
