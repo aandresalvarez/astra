@@ -158,6 +158,30 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Tool execution events use Copilot toolCallId for correlation")
+    func toolExecutionEventsUseToolCallID() {
+        let start = #"{"type":"tool.execution_start","data":{"toolCallId":"toolu_browser","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-start"}"#
+        let complete = #"{"type":"tool.execution_complete","data":{"toolCallId":"toolu_browser","success":true,"result":{"content":"{\"ok\":false,\"error\":\"google_docs_controlled_browser_required\"}"}},"id":"event-complete"}"#
+
+        let startEvents = CopilotStreamEventParser.parseAgentEvents(line: start)
+        let completeEvents = CopilotStreamEventParser.parseAgentEvents(line: complete)
+
+        if case .toolUse(let name, let id, let inputSummary) = startEvents.first {
+            #expect(name == "bash")
+            #expect(id == "toolu_browser")
+            #expect(inputSummary?.contains("astra-browser google-docs-read-document") == true)
+        } else {
+            Issue.record("Expected tool use")
+        }
+
+        if case .toolResult(let id, let content) = completeEvents.first {
+            #expect(id == "toolu_browser")
+            #expect(content.contains("google_docs_controlled_browser_required"))
+        } else {
+            Issue.record("Expected tool result")
+        }
+    }
+
     @Test("Permission request maps to permission denied event")
     func permissionRequest() {
         let line = #"{"type":"permission_request","tool":"shell(rm)","message":"approval needed"}"#
@@ -1008,6 +1032,184 @@ struct CopilotWorkerExecutionTests {
         #expect(run.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
         #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Approve to continue") })
+    }
+
+    @Test("Worker stops Copilot browser loops on Google Docs controlled browser requirement")
+    func copilotGoogleDocsControlledBrowserRequiredStopsRun() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-google-docs-browser-stop-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR --allow-all-tools"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        /usr/bin/python3 -u - <<'PY'
+        import json
+        print(json.dumps({
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "toolu_browser",
+                "toolName": "bash",
+                "arguments": {"command": "astra-browser google-docs-read-document"}
+            },
+            "id": "event-start"
+        }), flush=True)
+        print(json.dumps({
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "toolu_browser",
+                "success": True,
+                "result": {
+                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
+                }
+            },
+            "id": "event-complete"
+        }), flush=True)
+        PY
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Browser Stop", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Summarize Google Doc", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .pendingUser)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "google_docs_controlled_browser_required")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("requires Controlled mode") })
+        #expect(!task.events.contains { $0.type == "permission.approval.requested" })
+    }
+
+    @Test("Worker allows Copilot to finish after visible Google Docs read then full read requirement")
+    func copilotGoogleDocsVisibleReadAllowsFullReadRequirementRecovery() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-google-docs-visible-recovery-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR --allow-all-tools"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        /usr/bin/python3 -u - <<'PY'
+        import json
+        def emit(obj):
+            print(json.dumps(obj), flush=True)
+        emit({
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "toolu_visible",
+                "toolName": "bash",
+                "arguments": {"command": "astra-browser google-docs-read-visible-page --format markdown --limit 50000"}
+            },
+            "id": "event-visible-start"
+        })
+        emit({
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "toolu_visible",
+                "success": True,
+                "result": {
+                    "content": "{\\"ok\\":true,\\"googleDocsMode\\":\\"visible_page\\",\\"partialSummaryAllowed\\":true,\\"coverage\\":\\"partial\\",\\"content\\":\\"Visible page content\\"}"
+                }
+            },
+            "id": "event-visible-complete"
+        })
+        emit({
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "toolu_full",
+                "toolName": "bash",
+                "arguments": {"command": "astra-browser google-docs-read-document"}
+            },
+            "id": "event-full-start"
+        })
+        emit({
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "toolu_full",
+                "success": True,
+                "result": {
+                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
+                }
+            },
+            "id": "event-full-complete"
+        })
+        emit({
+            "type": "assistant.message",
+            "data": {"content": "Partial summary: Visible page content"}
+        })
+        PY
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Browser Recovery", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Summarize Google Doc", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .completed)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(run.output.contains("Partial summary: Visible page content"))
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("requires Controlled mode") })
     }
 
     @discardableResult

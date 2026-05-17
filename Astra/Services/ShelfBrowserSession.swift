@@ -215,6 +215,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "google.find.replace",
             "google.docs.find",
             "google.docs.insert",
+            "google.docs.read.visible.page",
             "google.docs.read.document",
             "google.docs.replace.document",
             "act",
@@ -1056,6 +1057,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     ],
                     [
                         "method": "POST",
+                        "path": "/googleDocsReadVisiblePage",
+                        "body": ["format": "text|markdown|json", "limit": "optional character count", "chunkSize": "optional character count"],
+                        "description": "Read visible Google Docs page content through the page-read service. This is read-only and may be partial; use it for partial summaries when full-document copy is unavailable."
+                    ],
+                    [
+                        "method": "POST",
                         "path": "/googleDocsReadDocument",
                         "body": [:],
                         "description": "Read the full current Google Docs document through the browser using focus, select-all, copy, and clipboard restore. If browser copy is unavailable, may fall back to an authenticated Docs API read path."
@@ -1492,6 +1499,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     text: command.text,
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
+                ))
+            case ("POST", "/googleDocsReadVisiblePage"):
+                let command = try request.decodeJSON(PageReadCommand.self)
+                return .json(try await googleDocsReadVisiblePage(
+                    format: command.format,
+                    limit: command.limit,
+                    chunkSize: command.chunkSize
                 ))
             case ("POST", "/googleDocsReadDocument"):
                 return .json(try await googleDocsReadDocument())
@@ -4724,6 +4738,34 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return result
     }
 
+    private func googleDocsReadVisiblePage(format: String?, limit: Int?, chunkSize: Int?) async throws -> [String: Any] {
+        guard isGoogleDocsEditor else {
+            return [
+                "ok": false,
+                "error": "not_google_docs_editor",
+                "hint": "Open a Google Docs document editor page first."
+            ]
+        }
+
+        var response = try await readPage(
+            format: format ?? "markdown",
+            limit: limit,
+            chunkSize: chunkSize
+        )
+        response["source"] = "browser_page_read"
+        response["googleDocsMode"] = "visible_page"
+        response["fullDocument"] = false
+        response["partialSummaryAllowed"] = true
+        response["coverage"] = "partial"
+
+        var warnings = response["warnings"] as? [String] ?? []
+        warnings.append("Google Docs visible-page reads are partial by design; summarize only the returned content unless the user explicitly accepts that limitation.")
+        warnings.append("Use google-docs-read-document in Controlled mode for a full-document summary.")
+        response["warnings"] = Array(Set(warnings)).sorted()
+        updateLastPageReadState(from: response)
+        return response
+    }
+
     private func googleDocsReplaceDocument(text: String, verifyText: String?) async throws -> [String: Any] {
         let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedText.isEmpty else {
@@ -5572,6 +5614,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             case "googledocsreaddocument", "google-docs-read-document", "googledocsread", "google-docs-read":
                 let result = try await googleDocsReadDocument()
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+            case "googledocsreadvisiblepage", "google-docs-read-visible-page", "googledocsreadvisible", "google-docs-read-visible", "googledocsreadpage", "google-docs-read-page":
+                let result = try await googleDocsReadVisiblePage(
+                    format: action.format ?? "markdown",
+                    limit: action.limit,
+                    chunkSize: action.chunkSize
+                )
+                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "googledocsreplacedocument", "google-docs-replace-document":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
@@ -6260,6 +6309,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let text: String
     }
 
+    private struct PageReadCommand: Decodable {
+        let format: String?
+        let limit: Int?
+        let chunkSize: Int?
+    }
+
     private struct WaitTextCommand: Decodable {
         let text: String
         let timeoutSeconds: Double?
@@ -6310,8 +6365,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let timeoutSeconds: Double?
         let intervalMilliseconds: Int?
         let mode: String?
+        let format: String?
         let query: String?
         let limit: Int?
+        let chunkSize: Int?
         let closeFindBar: Bool?
         let full: Bool?
         let debug: Bool?

@@ -416,10 +416,19 @@ struct ChatPanelView: View {
 
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
 
     private var availableSkills: [Skill] {
         guard let workspace else { return [] }
-        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+        return WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        ).activeSkills
     }
 
     private var selectedSkills: [Skill] {

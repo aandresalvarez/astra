@@ -812,8 +812,8 @@ struct TaskThreadSnapshotTests {
         }
     }
 
-    @Test("System lifecycle events appear as timeline notices")
-    func systemLifecycleEventsAppearAsTimelineNotices() {
+    @Test("Routine lifecycle events are hidden from the default chat transcript")
+    func systemLifecycleEventsHiddenFromDefaultChatTranscript() {
         let task = makeTask(goal: "Original goal")
         task.createdAt = Date(timeIntervalSince1970: 100)
         let approved = makeEvent(
@@ -836,16 +836,59 @@ struct TaskThreadSnapshotTests {
             runs: []
         )
 
-        #expect(snapshot.conversationItems.count == 3)
-        if case .systemInfo(let text, _) = snapshot.conversationItems[1] {
-            #expect(text == "Plan approved.")
+        #expect(snapshot.conversationItems.count == 1)
+        if case .userMessage(let text, _) = snapshot.conversationItems[0] {
+            #expect(text == "Original goal")
         } else {
-            Issue.record("Expected plan approval as a system notice")
+            Issue.record("Expected only the original user message")
         }
-        if case .systemInfo(let text, _) = snapshot.conversationItems[2] {
-            #expect(text == "Moved back to draft for editing.")
+    }
+
+    @Test("Actionable transcript events remain visible")
+    func actionableTranscriptEventsRemainVisible() {
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let planFailed = makeEvent(
+            task: task,
+            type: TaskPlanEventTypes.executionFailed,
+            payload: "{}",
+            timestamp: Date(timeIntervalSince1970: 110)
+        )
+        let scheduleFailed = makeEvent(
+            task: task,
+            type: "schedule.result",
+            payload: "Failed to create routine: invalid schedule.",
+            timestamp: Date(timeIntervalSince1970: 120)
+        )
+        let memorySaved = makeEvent(
+            task: task,
+            type: "system.info",
+            payload: #"Memory saved: "Use Python 3.11.""#,
+            timestamp: Date(timeIntervalSince1970: 130)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [memorySaved, scheduleFailed, planFailed],
+            runs: []
+        )
+
+        #expect(snapshot.conversationItems.count == 4)
+        if case .systemInfo(let text, _) = snapshot.conversationItems[1] {
+            #expect(text == "Plan execution stopped.")
         } else {
-            Issue.record("Expected retry/start event as a system notice")
+            Issue.record("Expected plan failure notice")
+        }
+        if case .scheduleResult(let text, _) = snapshot.conversationItems[2] {
+            #expect(text.contains("Failed to create routine"))
+        } else {
+            Issue.record("Expected schedule failure notice")
+        }
+        if case .systemInfo(let text, _) = snapshot.conversationItems[3] {
+            #expect(text.contains("Memory saved"))
+        } else {
+            Issue.record("Expected memory confirmation notice")
         }
     }
 
@@ -863,6 +906,25 @@ struct TaskThreadSnapshotTests {
         )
 
         #expect(snapshot.latestRun?.hasVPNWarning == true)
+    }
+
+    @Test("Network access technical details parse Google Cloud policy response")
+    func networkAccessTechnicalDetailsParseGoogleCloudPolicyResponse() {
+        let output = """
+        Failed to authenticate. API Error: 403 [{"error":{"code":403,"message":"Request is prohibited by organization's policy. vpcServiceControlsUniqueIdentifier: uid-from-message","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.PreconditionFailure","violations":[{"type":"VPC_SERVICE_CONTROLS","description":"uid-from-violation"}]},{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SECURITY_POLICY_VIOLATED","domain":"googleapis.com","metadata":{"uid":"uid-from-metadata","service":"aiplatform.googleapis.com","troubleshootToken":"troubleshoot-token-value"}}]}}]
+        """
+
+        let presentation = NetworkAccessTechnicalDetailsPresentation(output: output)
+
+        #expect(presentation.subtitle == "403 Permission Denied - aiplatform.googleapis.com")
+        #expect(presentation.summary.contains("VPC Service Controls"))
+        #expect(presentation.facts.contains(RunFactPresentation(title: "Status", value: "403 Permission Denied")))
+        #expect(presentation.facts.contains(RunFactPresentation(title: "Reason", value: "Security Policy Violated")))
+        #expect(presentation.facts.contains(RunFactPresentation(title: "Service", value: "aiplatform.googleapis.com", isMonospaced: true)))
+        #expect(presentation.facts.contains(RunFactPresentation(title: "Control", value: "VPC Service Controls")))
+        #expect(presentation.facts.contains(RunFactPresentation(title: "Identifier", value: "uid-from-violation", isMonospaced: true)))
+        #expect(presentation.copyText.contains("Troubleshoot token: troubleshoot-token-value"))
+        #expect(presentation.rawPayload.contains("\"service\" : \"aiplatform.googleapis.com\""))
     }
 
     @Test("Task run snapshot hides persisted ASTRA protocol marker fragments")

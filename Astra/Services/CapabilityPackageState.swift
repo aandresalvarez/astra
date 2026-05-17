@@ -21,31 +21,24 @@ struct CapabilityPackageState {
     let capabilities: WorkspaceCapabilities
 
     var linkedSkills: [Skill] {
-        let packageSkillNames = Set(package.skills.map(\.name) + [package.name])
-        return uniqueSkills((capabilities.workspaceSkills + capabilities.availableGlobalSkills).filter { skill in
-            packageSkillNames.contains(skill.name)
-        })
+        uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
     }
 
     var linkedConnectors: [Connector] {
-        let packageConnectorSpecs = package.connectors
-        let packageConnectors = (capabilities.workspaceConnectors + capabilities.availableGlobalConnectors).filter { connector in
-            packageConnectorSpecs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
-        }
-        return uniqueConnectors(packageConnectors + linkedSkills.flatMap(\.connectors))
+        uniqueConnectors(directlyLinkedConnectors + linkedSkills.flatMap(\.connectors))
     }
 
     var linkedTools: [LocalTool] {
-        let packageToolNames = Set(package.localTools.map(\.name))
-        let packageTools = (capabilities.workspaceTools + capabilities.availableGlobalTools).filter { tool in
-            packageToolNames.contains(tool.name)
-        }
-        return uniqueTools(packageTools + linkedSkills.flatMap(\.localTools))
+        uniqueTools(directlyLinkedTools + linkedSkills.flatMap(\.localTools))
     }
 
     var isEnabled: Bool {
         if workspace.enabledCapabilityIDs.contains(package.id) {
             return true
+        }
+
+        if isProjectedResourceCapability {
+            return linkedSkills.contains(where: isSkillEnabled)
         }
 
         if linkedSkills.contains(where: isSkillEnabled) {
@@ -61,6 +54,12 @@ struct CapabilityPackageState {
         }
 
         return false
+    }
+
+    private var isProjectedResourceCapability: Bool {
+        guard package.id.hasPrefix("skill.") else { return false }
+        let kind = package.sourceMetadata?.kind
+        return kind == "workspace" || kind == "shared"
     }
 
     var skillIDStrings: Set<String> {
@@ -97,6 +96,32 @@ struct CapabilityPackageState {
         skill.isGlobal
             ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
             : workspace.skills.contains { $0.id == skill.id }
+    }
+
+    private var directlyLinkedSkills: [Skill] {
+        let packageSkillNames = Set(
+            package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) }
+                + [CapabilityRuntimeResourceMatcher.normalizedName(package.name)]
+        )
+        return uniqueSkills((capabilities.workspaceSkills + capabilities.availableGlobalSkills).filter { skill in
+            packageSkillNames.contains(CapabilityRuntimeResourceMatcher.normalizedName(skill.name))
+        })
+    }
+
+    private var directlyLinkedConnectors: [Connector] {
+        let packageConnectorSpecs = package.connectors
+        guard !packageConnectorSpecs.isEmpty else { return [] }
+        return uniqueConnectors((capabilities.workspaceConnectors + capabilities.availableGlobalConnectors).filter { connector in
+            packageConnectorSpecs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
+        })
+    }
+
+    private var directlyLinkedTools: [LocalTool] {
+        let packageToolSpecs = package.localTools
+        guard !packageToolSpecs.isEmpty else { return [] }
+        return uniqueTools((capabilities.workspaceTools + capabilities.availableGlobalTools).filter { tool in
+            packageToolSpecs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
+        })
     }
 
     private func isConnectorEnabled(_ connector: Connector) -> Bool {

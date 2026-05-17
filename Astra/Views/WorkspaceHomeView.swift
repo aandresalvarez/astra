@@ -11,8 +11,6 @@ struct WorkspaceHomeContainerView: View {
     var onSetDoneState: ((AgentTask, Bool) -> Void)?
     let onRunQueue: () -> Void
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
@@ -28,8 +26,6 @@ struct WorkspaceHomeContainerView: View {
         onSetDoneState: ((AgentTask, Bool) -> Void)? = nil,
         onRunQueue: @escaping () -> Void,
         onConfigure: @escaping () -> Void,
-        onShowDashboard: @escaping () -> Void,
-        onShowLogs: @escaping () -> Void,
         onNewSchedule: (() -> Void)? = nil,
         onEditSchedule: ((TaskSchedule) -> Void)? = nil,
         onManageCapabilities: (() -> Void)? = nil
@@ -42,8 +38,6 @@ struct WorkspaceHomeContainerView: View {
         self.onSetDoneState = onSetDoneState
         self.onRunQueue = onRunQueue
         self.onConfigure = onConfigure
-        self.onShowDashboard = onShowDashboard
-        self.onShowLogs = onShowLogs
         self.onNewSchedule = onNewSchedule
         self.onEditSchedule = onEditSchedule
         self.onManageCapabilities = onManageCapabilities
@@ -66,8 +60,6 @@ struct WorkspaceHomeContainerView: View {
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
             onConfigure: onConfigure,
-            onShowDashboard: onShowDashboard,
-            onShowLogs: onShowLogs,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities
@@ -83,8 +75,6 @@ struct WorkspaceHomeView: View {
     let onDeleteTask: (AgentTask) -> Void
     var onSetDoneState: ((AgentTask, Bool) -> Void)?
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?

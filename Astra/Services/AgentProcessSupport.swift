@@ -840,6 +840,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
+    private var sawGoogleDocsVisiblePageRead = false
+    private var ignoredGoogleDocsFullReadRequirementAfterVisibleRead = false
     private var lastEventSignature: String = ""
     private var repetitionCount: Int = 0
     private var lastActivityTime = Date()
@@ -918,7 +920,21 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     browserShellIDs.insert(shellID)
                 }
             }
+            if Self.isSuccessfulGoogleDocsVisiblePageRead(content) {
+                sawGoogleDocsVisiblePageRead = true
+            }
             if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
+                if stop.reason == "google_docs_controlled_browser_required",
+                   sawGoogleDocsVisiblePageRead,
+                   !ignoredGoogleDocsFullReadRequirementAfterVisibleRead {
+                    ignoredGoogleDocsFullReadRequirementAfterVisibleRead = true
+                    AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                        "reason": stop.reason,
+                        "source": "browser_terminal_error_ignored_after_visible_page_read",
+                        "message": "A Google Docs visible-page read already succeeded, so ASTRA allowed the runtime to continue and summarize the partial content."
+                    ], level: .warning)
+                    return false
+                }
                 return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
             }
         }
@@ -1126,6 +1142,19 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             ids.insert(String(content[range]))
         }
         return ids
+    }
+
+    private static func isSuccessfulGoogleDocsVisiblePageRead(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        guard lower.contains("googledocsmode"),
+              lower.contains("visible_page"),
+              lower.contains("partialsummaryallowed"),
+              lower.contains(#""ok""#),
+              !lower.contains(#""ok" : false"#),
+              !lower.contains(#""ok":false"#) else {
+            return false
+        }
+        return true
     }
 
     private static func browserTerminalStop(content: String, isKnownBrowserTool: Bool) -> (reason: String, message: String)? {

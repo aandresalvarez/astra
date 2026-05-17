@@ -387,6 +387,24 @@ enum PayloadFormatter {
         return try? JSONSerialization.jsonObject(with: data)
     }
 
+    static func embeddedJSONObject(from payload: String) -> Any? {
+        for index in payload.indices where payload[index] == "{" || payload[index] == "[" {
+            let suffix = String(payload[index...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let object = jsonObject(from: suffix) {
+                return object
+            }
+
+            let closingCharacter: Character = payload[index] == "[" ? "]" : "}"
+            guard let endIndex = suffix.lastIndex(of: closingCharacter) else { continue }
+            let candidate = String(suffix[...endIndex])
+            if let object = jsonObject(from: candidate) {
+                return object
+            }
+        }
+
+        return nil
+    }
+
     private static func jsonSummary(from object: Any) -> String? {
         guard let dictionary = object as? [String: Any] else {
             if let array = object as? [Any] {
@@ -492,6 +510,241 @@ enum PayloadFormatter {
         default:
             key.prefix(1).uppercased() + key.dropFirst()
         }
+    }
+}
+
+struct NetworkAccessTechnicalDetailsPresentation: Hashable, Sendable {
+    let subtitle: String
+    let summary: String
+    let facts: [RunFactPresentation]
+    let rawPayload: String
+    let copyText: String
+
+    init(output: String) {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Self.parseGoogleCloudPolicyResponse(from: trimmed)
+        rawPayload = Self.prettyRawPayload(from: trimmed)
+
+        if let parsed {
+            let status = parsed.statusLabel ?? "Policy blocked"
+            let service = parsed.service ?? "Google Cloud"
+            subtitle = [status, service].filter { !$0.isEmpty }.joined(separator: " - ")
+            summary = "Google Cloud blocked the request with \(parsed.control ?? "organization policy"). Use these fields when checking VPN, VPC Service Controls, or Cloud access policy."
+            facts = Self.displayFacts(from: parsed)
+            copyText = Self.copyText(from: parsed, rawPayload: rawPayload)
+        } else {
+            subtitle = "Provider response"
+            summary = "The provider returned a network or policy error. The raw response is preserved for diagnostics."
+            facts = []
+            copyText = trimmed
+        }
+    }
+
+    private struct ParsedPolicyResponse: Hashable, Sendable {
+        var code: String?
+        var status: String?
+        var reason: String?
+        var message: String?
+        var service: String?
+        var domain: String?
+        var control: String?
+        var identifier: String?
+        var troubleshootToken: String?
+
+        var statusLabel: String? {
+            let statusText = status.map(Self.humanizedConstant)
+            if let code, let statusText {
+                return "\(code) \(statusText)"
+            }
+            return statusText ?? code
+        }
+
+        private static func humanizedConstant(_ value: String) -> String {
+            let words = value
+                .replacingOccurrences(of: "_", with: " ")
+                .lowercased()
+                .split(separator: " ")
+                .map { word in
+                    word.prefix(1).uppercased() + word.dropFirst()
+                }
+            return words.joined(separator: " ")
+        }
+    }
+
+    private static func parseGoogleCloudPolicyResponse(from output: String) -> ParsedPolicyResponse? {
+        guard let object = PayloadFormatter.embeddedJSONObject(from: output),
+              let error = googleCloudErrorObject(from: object) else {
+            return nil
+        }
+
+        var response = ParsedPolicyResponse()
+        response.code = stringValue(error["code"])
+        response.status = stringValue(error["status"])
+        response.message = stringValue(error["message"])
+
+        if let details = error["details"] as? [[String: Any]] {
+            for detail in details {
+                if let violations = detail["violations"] as? [[String: Any]],
+                   let violation = violations.first {
+                    response.control = response.control ?? humanizedConstant(stringValue(violation["type"]) ?? "")
+                    response.identifier = response.identifier ?? stringValue(violation["description"])
+                }
+
+                response.reason = response.reason ?? stringValue(detail["reason"])
+                response.domain = response.domain ?? stringValue(detail["domain"])
+
+                if let metadata = detail["metadata"] as? [String: Any] {
+                    response.service = response.service ?? stringValue(metadata["service"])
+                    response.identifier = response.identifier ??
+                        stringValue(metadata["uid"]) ??
+                        stringValue(metadata["vpcServiceControlsUniqueIdentifier"])
+                    response.troubleshootToken = response.troubleshootToken ?? stringValue(metadata["troubleshootToken"])
+                }
+            }
+        }
+
+        response.identifier = response.identifier ?? identifierFromMessage(response.message)
+        if response.control?.isEmpty == true {
+            response.control = nil
+        }
+        return response
+    }
+
+    private static func googleCloudErrorObject(from object: Any) -> [String: Any]? {
+        if let array = object as? [[String: Any]] {
+            for item in array {
+                if let nested = item["error"] as? [String: Any] {
+                    return nested
+                }
+                if item["code"] != nil || item["status"] != nil || item["message"] != nil {
+                    return item
+                }
+            }
+            return nil
+        }
+
+        guard let dictionary = object as? [String: Any] else { return nil }
+        if let nested = dictionary["error"] as? [String: Any] {
+            return nested
+        }
+        if dictionary["code"] != nil || dictionary["status"] != nil || dictionary["message"] != nil {
+            return dictionary
+        }
+        return nil
+    }
+
+    private static func displayFacts(from response: ParsedPolicyResponse) -> [RunFactPresentation] {
+        var facts: [RunFactPresentation] = []
+        appendFact("Status", response.statusLabel, to: &facts)
+        appendFact("Reason", response.reason.map(humanizedConstant), to: &facts)
+        appendFact("Service", response.service, to: &facts, isMonospaced: true)
+        appendFact("Control", response.control, to: &facts)
+        appendFact("Identifier", response.identifier.map(compactDiagnosticValue), to: &facts, isMonospaced: true)
+        appendFact("Troubleshoot token", response.troubleshootToken.map(compactDiagnosticValue), to: &facts, isMonospaced: true)
+        appendFact("Domain", response.domain, to: &facts, isMonospaced: true)
+        return facts
+    }
+
+    private static func copyText(from response: ParsedPolicyResponse, rawPayload: String) -> String {
+        var lines = ["Google Cloud policy response"]
+        appendCopyLine("Status", response.statusLabel, to: &lines)
+        appendCopyLine("Reason", response.reason.map(humanizedConstant), to: &lines)
+        appendCopyLine("Service", response.service, to: &lines)
+        appendCopyLine("Control", response.control, to: &lines)
+        appendCopyLine("Identifier", response.identifier, to: &lines)
+        appendCopyLine("Troubleshoot token", response.troubleshootToken, to: &lines)
+        appendCopyLine("Domain", response.domain, to: &lines)
+        if !rawPayload.isEmpty {
+            lines.append("")
+            lines.append("Raw response:")
+            lines.append(rawPayload)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func prettyRawPayload(from output: String) -> String {
+        if let object = PayloadFormatter.embeddedJSONObject(from: output),
+           JSONSerialization.isValidJSONObject(object),
+           let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+           let pretty = String(data: data, encoding: .utf8) {
+            let prefix = outputPrefix(beforeEmbeddedJSONIn: output)
+            return prefix.isEmpty ? pretty : "\(prefix)\n\(pretty)"
+        }
+        return output
+    }
+
+    private static func outputPrefix(beforeEmbeddedJSONIn output: String) -> String {
+        guard let index = output.indices.first(where: { output[$0] == "{" || output[$0] == "[" }) else {
+            return ""
+        }
+        return String(output[..<index]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func identifierFromMessage(_ message: String?) -> String? {
+        guard let message else { return nil }
+        let marker = "vpcServiceControlsUniqueIdentifier:"
+        guard let range = message.range(of: marker) else { return nil }
+        return message[range.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ")
+            .first
+            .map(String.init)
+    }
+
+    private static func appendFact(
+        _ title: String,
+        _ value: String?,
+        to facts: inout [RunFactPresentation],
+        isMonospaced: Bool = false
+    ) {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return
+        }
+        facts.append(.init(title: title, value: value, isMonospaced: isMonospaced))
+    }
+
+    private static func appendCopyLine(_ title: String, _ value: String?, to lines: inout [String]) {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return
+        }
+        lines.append("\(title): \(value)")
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let value as String:
+            value.trimmingCharacters(in: .whitespacesAndNewlines)
+        case let value as Int:
+            String(value)
+        case let value as Double:
+            String(value)
+        default:
+            nil
+        }
+    }
+
+    private static func humanizedConstant(_ value: String) -> String {
+        let known = [
+            "VPC_SERVICE_CONTROLS": "VPC Service Controls"
+        ]
+        if let knownValue = known[value] {
+            return knownValue
+        }
+        let words = value
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+            .split(separator: " ")
+            .map { word in
+                word.prefix(1).uppercased() + word.dropFirst()
+            }
+        return words.joined(separator: " ")
+    }
+
+    private static func compactDiagnosticValue(_ value: String) -> String {
+        guard value.count > 72 else { return value }
+        return "\(value.prefix(34))...\(value.suffix(18))"
     }
 }
 

@@ -125,14 +125,17 @@ struct TaskCapabilityResolver {
 
     private func enabledPackageSkills() -> [Skill] {
         let packages = enabledCapabilityPackages()
-        guard !packages.isEmpty else { return [] }
         let pluginSkills = packages.flatMap(\.skills)
-        guard !pluginSkills.isEmpty else { return [] }
 
         let candidates = workspaceSkills() + globalSkills()
-        return uniqueSkills(candidates.filter { skill in
+        let directlyMatched = pluginSkills.isEmpty ? [] : candidates.filter { skill in
             pluginSkills.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
-        })
+        }
+        let resourceOwners = (enabledPackageConnectors().compactMap(\.skill) + enabledPackageLocalTools().compactMap(\.skill))
+            .filter { skill in
+                candidates.contains { $0.id == skill.id }
+            }
+        return uniqueSkills(directlyMatched + resourceOwners)
     }
 
     private func enabledPackageConnectors() -> [Connector] {

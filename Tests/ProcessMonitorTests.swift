@@ -310,6 +310,84 @@ struct ProcessMonitorTests {
         #expect(monitor.budgetExceeded == false)
     }
 
+    @Test("Google Docs controlled browser required after visible read does not stop provider")
+    func googleDocsControlledBrowserRequiredAfterVisibleReadDoesNotStopProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "visible_read", input: nil),
+            process: nil
+        )
+        let visibleReadKill = monitor.processEvent(
+            .toolResult(
+                toolId: "visible_read",
+                content: #"{"ok":true,"googleDocsMode":"visible_page","partialSummaryAllowed":true,"coverage":"partial","content":"Visible page content"}"#
+            ),
+            process: nil
+        )
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "full_read", input: nil),
+            process: nil
+        )
+        let fullReadKill = monitor.processEvent(
+            .toolResult(
+                toolId: "full_read",
+                content: #"{"ok":false,"error":"google_docs_controlled_browser_required","reason":"embedded_webkit_clipboard_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(visibleReadKill == false)
+        #expect(fullReadKill == false)
+        #expect(monitor.runtimeStopped == false)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Repeated Google Docs controlled browser required after visible read stops provider")
+    func repeatedGoogleDocsControlledBrowserRequiredAfterVisibleReadStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "visible_read", input: nil),
+            process: nil
+        )
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "visible_read",
+                content: #"{"ok":true,"googleDocsMode":"visible_page","partialSummaryAllowed":true,"coverage":"partial","content":"Visible page content"}"#
+            ),
+            process: nil
+        )
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "full_read_1", input: nil),
+            process: nil
+        )
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "full_read_1",
+                content: #"{"ok":false,"error":"google_docs_controlled_browser_required","reason":"embedded_webkit_clipboard_unavailable"}"#
+            ),
+            process: nil
+        )
+        let _ = monitor.processEvent(
+            .toolUse(name: "astra-browser", id: "full_read_2", input: nil),
+            process: nil
+        )
+        let repeatedKill = monitor.processEvent(
+            .toolResult(
+                toolId: "full_read_2",
+                content: #"{"ok":false,"error":"google_docs_controlled_browser_required","reason":"embedded_webkit_clipboard_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(repeatedKill == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "google_docs_controlled_browser_required")
+        #expect(monitor.budgetExceeded == false)
+    }
+
     @Test("Controlled browser unavailable stops provider")
     func controlledBrowserUnavailableStopsProvider() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)

@@ -117,12 +117,12 @@ struct ComposerToolbar: View {
                 Divider()
 
                 Toggle(isOn: $isPlanMode) {
-                    Label("Plan mode", systemImage: "text.badge.checkmark")
+                    Label(isPlanMode ? "Plan mode on" : "Plan mode off", systemImage: "text.badge.checkmark")
                 }
                 .disabled(isPlanModeDisabled)
 
                 Toggle(isOn: $useAgentTeam) {
-                    Label("Agent team", systemImage: "person.3")
+                    Label(useAgentTeam ? "Agent team on" : "Agent team off", systemImage: "person.3")
                 }
 
                 if useAgentTeam {
@@ -137,12 +137,14 @@ struct ComposerToolbar: View {
             }
 
             Divider()
-            let userSkills = availableSkills.isEmpty
-                ? (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
-                : availableSkills
-            if !userSkills.isEmpty {
+            let taskCapabilities = composerMenuCapabilities
+            if !taskCapabilities.isEmpty || onManageSkills != nil {
                 Menu {
-                    ForEach(userSkills.sorted { $0.name < $1.name }) { skill in
+                    if taskCapabilities.isEmpty {
+                        Label("No task capabilities available", systemImage: "puzzlepiece")
+                    }
+
+                    ForEach(taskCapabilities) { skill in
                         let isEnabled = skills.contains { $0.id == skill.id }
                         Button {
                             onToggleSkill?(skill, !isEnabled)
@@ -159,11 +161,28 @@ struct ComposerToolbar: View {
                         Button {
                             onManageSkills?()
                         } label: {
-                            Label("Manage skills\u{2026}", systemImage: "gearshape")
+                            Label("Manage capabilities\u{2026}", systemImage: "gearshape")
                         }
                     }
                 } label: {
-                    Label("Skills", systemImage: "puzzlepiece")
+                    Label(capabilitiesMenuTitle, systemImage: skills.isEmpty ? "puzzlepiece" : "puzzlepiece.fill")
+                }
+            }
+
+            if !sshConnections.isEmpty {
+                Divider()
+                Menu {
+                    ForEach(sshConnections) { conn in
+                        let isOk = conn.lastTestResult == true
+                        Label {
+                            Text("\(conn.displayLabel) - \(conn.host)")
+                        } icon: {
+                            Image(systemName: isOk ? "circle.fill" : "circle")
+                                .foregroundStyle(isOk ? Stanford.paloAltoGreen : Stanford.coolGrey)
+                        }
+                    }
+                } label: {
+                    Label(remoteMachinesTitle, systemImage: "point.3.connected.trianglepath.dotted")
                 }
             }
         } label: {
@@ -186,10 +205,10 @@ struct ComposerToolbar: View {
         .accessibilityLabel("Composer actions")
     }
 
-    // MARK: - Model / Budget Pill
+    // MARK: - Provider / Model Pill
 
     private var runtimeStatusPill: some View {
-        modelBudgetPill(compact: false)
+        providerModelPill(compact: false)
     }
 
     @ViewBuilder
@@ -223,7 +242,7 @@ struct ComposerToolbar: View {
         return taskStatusPresentation(for: taskStatus)
     }
 
-    private func modelBudgetPill(compact: Bool) -> some View {
+    private func providerModelPill(compact: Bool) -> some View {
         Menu {
             Menu {
                 let runtimes = selectableRuntimes
@@ -272,56 +291,42 @@ struct ComposerToolbar: View {
                 Label("Model", systemImage: "cpu")
             }
 
+            Divider()
+
             Menu {
-                ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { b in
-                    Button { onBudgetChange?(b) } label: {
+                ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
+                    Button {
+                        onBudgetChange?(preset)
+                    } label: {
                         HStack {
-                            Text(budgetSummary(b))
-                            if budget == b { Image(systemName: "checkmark") }
+                            Text(budgetSummary(preset))
+                            if budget == preset {
+                                Image(systemName: "checkmark")
+                            }
                         }
                     }
+                    .disabled(onBudgetChange == nil)
                 }
             } label: {
-                Label("Budget", systemImage: "gauge.with.needle")
+                Label("Budget: \(budgetSummary(budget))", systemImage: "gauge.with.needle")
             }
 
-            Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
-
-            if !skills.isEmpty || !sshConnections.isEmpty || showPermissionControls {
-                Divider()
-            }
-
-            if showPermissionControls {
-                Label(useAgentTeam ? "Team: \(teamSize)" : "Solo agent", systemImage: useAgentTeam ? "person.3.fill" : "person")
-                Label(isPlanMode ? "Plan mode on" : "Plan mode off", systemImage: "text.badge.checkmark")
-            }
-
-            if !skills.isEmpty {
-                Menu {
-                    ForEach(skills.sorted { $0.name < $1.name }) { skill in
-                        Button {
-                            onRemoveSkill?(skill)
-                        } label: {
-                            Label("Remove \(skill.name)", systemImage: "xmark")
+            Menu {
+                ForEach(BudgetEnforcementMode.allCases) { mode in
+                    Button {
+                        budgetEnforcementModeRaw = mode.rawValue
+                    } label: {
+                        HStack {
+                            Text(mode.label)
+                            if budgetEnforcementMode == mode {
+                                Image(systemName: "checkmark")
+                            }
                         }
                     }
-                } label: {
-                    Label(skills.count == 1 ? "1 skill active" : "\(skills.count) skills active", systemImage: "puzzlepiece.fill")
+                    .help(mode.helpText)
                 }
-            }
-
-            if !sshConnections.isEmpty {
-                Section("Remote Machines") {
-                    ForEach(sshConnections) { conn in
-                        let isOk = conn.lastTestResult == true
-                        Label {
-                            Text("\(conn.displayLabel)  —  \(conn.host)")
-                        } icon: {
-                            Image(systemName: isOk ? "circle.fill" : "circle")
-                                .foregroundStyle(isOk ? Stanford.paloAltoGreen : Stanford.coolGrey)
-                        }
-                    }
-                }
+            } label: {
+                Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
             }
         } label: {
             runtimeStatusLabel(style: .full)
@@ -519,9 +524,38 @@ struct ComposerToolbar: View {
         .accessibilityIdentifier("PlanModeToggle")
     }
 
-    // MARK: - Skill Chips
+    // MARK: - Capability Chips
 
     private var visibleSkillLimit: Int { 1 }
+
+    private var composerMenuCapabilities: [Skill] {
+        let configuredSkills = availableSkills.isEmpty
+            ? (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
+            : availableSkills
+        var seenIDs = Set<UUID>()
+        var merged: [Skill] = []
+
+        for skill in configuredSkills + skills {
+            guard !seenIDs.contains(skill.id) else { continue }
+            seenIDs.insert(skill.id)
+            merged.append(skill)
+        }
+
+        return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var capabilitiesMenuTitle: String {
+        if skills.isEmpty { return "Task capabilities" }
+        return skills.count == 1 ? "1 task capability active" : "\(skills.count) task capabilities active"
+    }
+
+    private var remoteMachinesTitle: String {
+        let readyCount = sshConnections.filter { $0.lastTestResult == true }.count
+        if readyCount > 0 {
+            return readyCount == 1 ? "1 remote ready" : "\(readyCount) remotes ready"
+        }
+        return sshConnections.count == 1 ? "1 remote configured" : "\(sshConnections.count) remotes configured"
+    }
 
     @ViewBuilder
     private var skillChips: some View {
@@ -591,7 +625,7 @@ struct ComposerToolbar: View {
 
     private func skillsTooltip(_ skills: [Skill]) -> String {
         let names = skills.map(\.name).joined(separator: ", ")
-        return skills.count == 1 ? "Skill: \(names)" : "Skills (\(skills.count)): \(names)"
+        return skills.count == 1 ? "Task capability: \(names)" : "Task capabilities (\(skills.count)): \(names)"
     }
 
     private func skillChip(_ skill: Skill) -> some View {

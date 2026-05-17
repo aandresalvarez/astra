@@ -138,7 +138,7 @@ enum OnboardingCapabilitySetup {
         id: requiredRuntimeID,
         packageID: nil,
         title: "Agent runtime",
-        subtitle: "Selected provider CLI",
+        subtitle: "Selected AI runtime",
         icon: "sparkles"
     )
 
@@ -214,9 +214,9 @@ enum OnboardingCapabilitySetup {
 }
 
 /// Multi-step first-run wizard. Owns its own step state and the
-/// completion flag in `@AppStorage`. Drives runtime CLI probes up
-/// front so the user knows whether their machine can run the selected agent and
-/// GitHub capabilities, then walks them through workspace setup.
+/// completion flag in `@AppStorage`. Drives AI runtime probes up
+/// front so the user knows whether their machine can run tasks, then walks
+/// them through global access and first workspace setup.
 ///
 /// Visuals follow the Stanford design system (`StanfordTheme.swift`) so
 /// the wizard matches the rest of the app — cardinal red for primary
@@ -226,18 +226,18 @@ enum OnboardingCapabilitySetup {
 ///
 /// Steps:
 ///   0. Welcome — what ASTRA is + what it needs
-///   1. Required CLI — Claude Code or GitHub Copilot CLI
+///   1. AI runtime — Claude Code or GitHub Copilot
 ///   2. Permissions — macOS access needed for browser control
-///   3. Workspace root — pick where projects live
-///   4. Ready — "start your first workspace"
+///   3. Workspace — create the first workspace and quick-start capabilities
+///   4. Ready — open the configured workspace
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
     @Binding var hasCompletedOnboarding: Bool
 
-    /// Called when the user hits "Create First Workspace" on the final step.
-    /// The wrapping ContentView opens the actual workspace-creation sheet.
-    var onCreateWorkspace: () -> Void
+    /// Called when the user finishes the workspace setup step.
+    /// The wrapping ContentView persists the workspace and selects it.
+    var onCreateWorkspace: (NewWorkspaceDraft) -> Bool
     var allowsDismiss: Bool
     var onDismiss: () -> Void
     @Binding var capabilityConfiguration: OnboardingCapabilityConfiguration
@@ -257,7 +257,7 @@ struct OnboardingWizardView: View {
         allowsDismiss: Bool = false,
         onDismiss: @escaping () -> Void = {},
         capabilityConfiguration: Binding<OnboardingCapabilityConfiguration> = .constant(OnboardingCapabilityConfiguration()),
-        onCreateWorkspace: @escaping () -> Void
+        onCreateWorkspace: @escaping (NewWorkspaceDraft) -> Bool
     ) {
         self._hasCompletedOnboarding = hasCompletedOnboarding
         self._currentStep = State(initialValue: initialStep)
@@ -278,9 +278,9 @@ struct OnboardingWizardView: View {
         var title: String {
             switch self {
             case .welcome:        "Welcome to ASTRA"
-            case .requiredCLIs:   "AI CLI"
+            case .requiredCLIs:   "AI Runtime"
             case .permissions:    "macOS Access"
-            case .workspaceRoot:  "Workspace Root"
+            case .workspaceRoot:  "First Workspace"
             case .ready:          "You're Ready"
             }
         }
@@ -291,9 +291,9 @@ struct OnboardingWizardView: View {
         var progressLabel: String {
             switch self {
             case .welcome:        "Welcome"
-            case .requiredCLIs:   "CLIs"
+            case .requiredCLIs:   "Runtime"
             case .permissions:    "Access"
-            case .workspaceRoot:  "Setup"
+            case .workspaceRoot:  "Workspace"
             case .ready:          "Done"
             }
         }
@@ -325,6 +325,11 @@ struct OnboardingWizardView: View {
     @State private var showCLITechnicalDetails = false
     @State private var installingRuntime: AgentRuntimeID?
     @State private var cliInstallResult: RuntimeCLIInstallResult?
+    @State private var workspaceDraft = NewWorkspaceDraft()
+    @State private var workspaceValidationIssues: [String] = []
+    @State private var workspaceValidationWarnings: [String] = []
+    @State private var isShowingWorkspaceValidationWarning = false
+    @State private var createdWorkspaceName: String?
     @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
     var body: some View {
@@ -354,6 +359,14 @@ struct OnboardingWizardView: View {
         }
         .frame(minWidth: 760, minHeight: 560)
         .background(Stanford.panelBackground)
+        .alert("Continue with unvalidated capabilities?", isPresented: $isShowingWorkspaceValidationWarning) {
+            Button("Continue Anyway") {
+                createFirstWorkspaceAndAdvance()
+            }
+            Button("Back", role: .cancel) {}
+        } message: {
+            Text(workspaceValidationWarnings.prefix(3).joined(separator: "\n"))
+        }
     }
 
     // MARK: - Progress Bar
@@ -432,20 +445,20 @@ struct OnboardingWizardView: View {
             stepHeader(
                 icon: "hand.wave.fill",
                 title: "Welcome to ASTRA",
-                subtitle: "Agent Routines for Tasks, Runs, and Automation",
+                subtitle: "Workspaces, tasks, capabilities, and automation",
                 tint: Stanford.cardinalRed
             )
 
             bulletList([
-                ("square.stack.3d.up.fill", "Queue AI tasks across multiple workspaces"),
-                ("puzzlepiece.extension.fill", "Pick skills, connectors, and tools from a catalog"),
-                ("checkmark.shield.fill", "We'll verify one AI CLI before anything runs")
+                ("square.stack.3d.up.fill", "Organize agent work into separate workspaces"),
+                ("puzzlepiece.extension.fill", "Enable capability packages per workspace"),
+                ("sidebar.right", "Use task shelves for plans, text, query, and browser work when relevant")
             ])
 
             calloutBox(
                 icon: "info.circle.fill",
-                title: "What we'll check",
-                body: "ASTRA needs Claude Code CLI or GitHub Copilot CLI. You only need one. GitHub CLI is optional unless you enable GitHub repository workflows.",
+                title: "What ASTRA checks first",
+                body: "ASTRA needs one AI runtime: Claude Code or GitHub Copilot. GitHub CLI is only needed when you enable GitHub repository capabilities.",
                 tint: Stanford.sky
             )
         }
@@ -455,8 +468,8 @@ struct OnboardingWizardView: View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
                 icon: "terminal.fill",
-                title: "Choose an AI CLI",
-                subtitle: "ASTRA needs one local AI runtime: Claude Code CLI or GitHub Copilot CLI.",
+                title: "Choose an AI Runtime",
+                subtitle: "ASTRA runs tasks through Claude Code or GitHub Copilot. Pick one runtime for new tasks.",
                 tint: Stanford.lagunita
             )
 
@@ -481,7 +494,7 @@ struct OnboardingWizardView: View {
             stepHeader(
                 icon: "checkmark.shield.fill",
                 title: "macOS Access",
-                subtitle: "Check the local permissions ASTRA uses for browser control, credentials, and workspace files.",
+                subtitle: "Check the local permissions ASTRA needs now. Browser control is verified later, when you use it.",
                 tint: Stanford.lagunita
             )
 
@@ -494,7 +507,7 @@ struct OnboardingWizardView: View {
             calloutBox(
                 icon: "info.circle.fill",
                 title: "Why this matters",
-                body: "ASTRA checks global app access here. Capability-specific access is checked when you enable the capability that needs it.",
+                body: "ASTRA checks credentials and workspace storage here. Browser control and capability-specific access are checked when you choose to use those features.",
                 tint: Stanford.sky
             )
         }
@@ -503,42 +516,18 @@ struct OnboardingWizardView: View {
     private var workspaceStep: some View {
         VStack(alignment: .leading, spacing: 20) {
             stepHeader(
-                icon: "folder.fill",
-                title: "Workspace Root",
-                subtitle: "Where ASTRA stores task history, logs, and per-workspace config.",
+                icon: "folder.badge.plus",
+                title: "Create Your First Workspace",
+                subtitle: "Name the workspace, add guidance, and connect the systems this work can use immediately.",
                 tint: Stanford.lagunita
             )
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Current location")
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .textCase(.uppercase)
-                HStack(spacing: 10) {
-                    Text(resolvedWorkspaceRoot)
-                        .font(Stanford.mono(12))
-                        .foregroundStyle(Stanford.black)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Stanford.fog)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
-                        )
-                    Button("Change…") { pickWorkspaceRoot() }
-                        .font(Stanford.body(13))
-                }
-            }
-
-            calloutBox(
-                icon: "lightbulb.fill",
-                title: "Good defaults",
-                body: "\(AppChannel.current.defaultWorkspacesRoot) keeps things tidy and iCloud-backup-friendly. You can change this later in Settings.",
-                tint: Stanford.illuminating
+            WorkspaceSetupForm(
+                draft: $workspaceDraft,
+                rootPath: resolvedWorkspaceRoot,
+                mode: .onboarding,
+                validationIssues: $workspaceValidationIssues,
+                validationWarnings: $workspaceValidationWarnings
             )
         }
     }
@@ -548,30 +537,25 @@ struct OnboardingWizardView: View {
             stepHeader(
                 icon: "checkmark.seal.fill",
                 title: "You're Ready",
-                subtitle: "Create your first workspace and queue up a task.",
+                subtitle: "Your workspace is ready. Open it and start asking tasks that use its enabled capabilities.",
                 tint: Stanford.paloAltoGreen
             )
 
             VStack(alignment: .leading, spacing: 10) {
+                readinessRow(
+                    title: "Workspace",
+                    status: createdWorkspaceName ?? workspaceDraft.trimmedName,
+                    ready: createdWorkspaceName != nil
+                )
                 readinessRow(
                     title: "AI runtime",
                     status: selectedRuntimeStatusSummary,
                     ready: isSelectedRuntimeHealthy
                 )
                 readinessRow(
-                    title: "GitHub CLI",
-                    status: githubStatusSummary,
-                    ready: isGitHubHealthy
-                )
-                readinessRow(
-                    title: "macOS access",
-                    status: macOSPermissions.onboardingSummary,
-                    ready: macOSPermissions.isReady
-                )
-                readinessRow(
-                    title: "Workspace root",
-                    status: resolvedWorkspaceRoot,
-                    ready: !resolvedWorkspaceRoot.isEmpty
+                    title: "Capabilities",
+                    status: firstWorkspaceCapabilitySummary,
+                    ready: true
                 )
             }
             .padding(14)
@@ -586,7 +570,7 @@ struct OnboardingWizardView: View {
                 Image(systemName: "lightbulb.fill")
                     .font(Stanford.ui(11))
                     .foregroundStyle(Stanford.illuminating)
-                Text("Tip: check macOS permissions any time from Settings -> Permissions.")
+                Text("Tip: add or remove capabilities any time from Workspace Context.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
             }
@@ -682,7 +666,7 @@ struct OnboardingWizardView: View {
 
     private var aiRuntimeChooser: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Pick one")
+            Text("Runtime")
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(Stanford.coolGrey)
                 .textCase(.uppercase)
@@ -864,7 +848,7 @@ struct OnboardingWizardView: View {
         if isCoreRuntimeReady {
             return "Ready to run tasks"
         }
-        return "One AI CLI required"
+        return "One AI runtime required"
     }
 
     private var cliSummarySubtitle: String {
@@ -872,9 +856,9 @@ struct OnboardingWizardView: View {
             if isGitHubHealthy {
                 return "\(selectedRuntime.displayName) is ready, and GitHub capabilities are available."
             }
-            return "\(selectedRuntime.displayName) is ready. GitHub CLI can be connected later for repository workflows."
+            return "\(selectedRuntime.displayName) is ready. GitHub repository capabilities can be connected later."
         }
-        return "Install or sign in to Claude Code CLI or GitHub Copilot CLI, then check again."
+        return "Install or sign in to Claude Code or GitHub Copilot, then check again."
     }
 
     private var cliSummarySymbol: String {
@@ -1091,7 +1075,7 @@ struct OnboardingWizardView: View {
         case .blocked:
             return "Resolve the blocking item before creating workspaces."
         case .none:
-            return "ASTRA verifies more than CLI version: auth and provider setup are included."
+            return "ASTRA verifies more than the command path: auth and provider setup are included."
         }
     }
 
@@ -1118,10 +1102,10 @@ struct OnboardingWizardView: View {
             return "ASTRA is running the full check now. If it stalls, use Re-check after installing or logging in."
         }
         if runtimeBlockers.isEmpty {
-            return "Core runtime is ready. GitHub CLI is optional for repository workflows."
+            return "Core runtime is ready. GitHub repository capabilities are optional."
         }
         if !runtimeIsInstalled(.claudeCode), !runtimeIsInstalled(.copilotCLI) {
-            return "Install one AI CLI:\nClaude: npm install -g @anthropic-ai/claude-code\nCopilot: brew install copilot-cli"
+            return "Install one AI runtime:\nClaude Code: npm install -g @anthropic-ai/claude-code\nGitHub Copilot: brew install copilot-cli"
         }
         return runtimeBlockers
             .prefix(2)
@@ -1526,7 +1510,7 @@ struct OnboardingWizardView: View {
                 Image(systemName: isGitHubHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .font(Stanford.ui(12))
                     .foregroundStyle(isGitHubHealthy ? Stanford.paloAltoGreen : Stanford.poppy)
-                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the CLI step." : "Run gh auth login, then re-check the CLI step.")
+                Text(isGitHubHealthy ? "Uses the authenticated gh CLI from the runtime step." : "Run gh auth login, then re-check the runtime step.")
                     .font(Stanford.caption(11))
                     .foregroundStyle(Stanford.coolGrey)
             }
@@ -1667,17 +1651,34 @@ struct OnboardingWizardView: View {
         return suggestions.joined(separator: ". ") + "."
     }
 
+    private var firstWorkspaceCapabilitySummary: String {
+        let names = OnboardingCapabilitySetup.selectedDisplayNames(from: workspaceDraft.selectedCapabilityIDs)
+        if names.isEmpty {
+            return "None selected. Add capabilities later from Workspace Context."
+        }
+        return names.joined(separator: ", ")
+    }
+
+    private var canCreateFirstWorkspace: Bool {
+        !workspaceDraft.trimmedName.isEmpty && workspaceValidationIssues.isEmpty
+    }
+
     // MARK: - Footer
 
     private var footerBar: some View {
         HStack(spacing: 10) {
-            if currentStep != .welcome {
+            if currentStep != .welcome && !(currentStep == .ready && createdWorkspaceName != nil) {
                 Button("Back") { goBack() }
                     .font(Stanford.body(13))
             }
 
             if let continueBlocker {
                 Label(continueBlocker, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(2)
+            } else if let continueWarning {
+                Label(continueWarning, systemImage: "exclamationmark.triangle.fill")
                     .font(Stanford.caption(11))
                     .foregroundStyle(Stanford.poppy)
                     .lineLimit(2)
@@ -1688,10 +1689,9 @@ struct OnboardingWizardView: View {
             if currentStep == .ready {
                 Button {
                     hasCompletedOnboarding = true
-                    onCreateWorkspace()
                 } label: {
                     HStack(spacing: 4) {
-                        Text("Create First Workspace")
+                        Text("Open Workspace")
                         Image(systemName: "arrow.right")
                     }
                 }
@@ -1718,6 +1718,24 @@ struct OnboardingWizardView: View {
     // MARK: - Actions
 
     private func goNext() {
+        if currentStep == .workspaceRoot, createdWorkspaceName == nil {
+            guard canCreateFirstWorkspace else { return }
+            if !workspaceValidationWarnings.isEmpty {
+                isShowingWorkspaceValidationWarning = true
+                return
+            }
+            createFirstWorkspaceAndAdvance()
+            return
+        }
+        if let next = Step(rawValue: currentStep.rawValue + 1) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { currentStep = next }
+        }
+    }
+
+    private func createFirstWorkspaceAndAdvance() {
+        let workspaceName = workspaceDraft.trimmedName
+        guard onCreateWorkspace(workspaceDraft) else { return }
+        createdWorkspaceName = workspaceName
         if let next = Step(rawValue: currentStep.rawValue + 1) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { currentStep = next }
         }
@@ -1897,6 +1915,8 @@ struct OnboardingWizardView: View {
         switch currentStep {
         case .requiredCLIs:
             return isCoreRuntimeReady
+        case .workspaceRoot:
+            return canCreateFirstWorkspace || createdWorkspaceName != nil
         default:
             return true
         }
@@ -1905,7 +1925,21 @@ struct OnboardingWizardView: View {
     private var continueBlocker: String? {
         switch currentStep {
         case .requiredCLIs:
-            return isCoreRuntimeReady ? nil : "Finish AI CLI setup before continuing."
+            return isCoreRuntimeReady ? nil : "Finish AI runtime setup before continuing."
+        case .workspaceRoot:
+            if workspaceDraft.trimmedName.isEmpty {
+                return "Name your first workspace before continuing."
+            }
+            return workspaceValidationIssues.first
+        default:
+            return nil
+        }
+    }
+
+    private var continueWarning: String? {
+        switch currentStep {
+        case .workspaceRoot:
+            return workspaceValidationWarnings.first
         default:
             return nil
         }

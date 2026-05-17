@@ -10,6 +10,7 @@ enum MacOSPermissionCheckState: Equatable {
     case notChecked
     case checking
     case ready
+    case deferred(String)
     case needsAction(MacOSPermissionIssue)
     case unavailable(String)
 
@@ -18,6 +19,7 @@ enum MacOSPermissionCheckState: Equatable {
         case .notChecked: "Not checked"
         case .checking: "Checking"
         case .ready: "Ready"
+        case .deferred: "When needed"
         case .needsAction: "Needs attention"
         case .unavailable: "Needs attention"
         }
@@ -28,6 +30,7 @@ enum MacOSPermissionCheckState: Equatable {
         case .notChecked: "circle.dotted"
         case .checking: "arrow.triangle.2.circlepath"
         case .ready: "checkmark.circle.fill"
+        case .deferred: "clock"
         case .needsAction: "exclamationmark.triangle.fill"
         case .unavailable: "xmark.octagon.fill"
         }
@@ -35,7 +38,7 @@ enum MacOSPermissionCheckState: Equatable {
 
     var tint: Color {
         switch self {
-        case .notChecked, .checking: Stanford.coolGrey
+        case .notChecked, .checking, .deferred: Stanford.coolGrey
         case .ready: Stanford.statusHealthy
         case .needsAction: Stanford.statusWarn
         case .unavailable: Stanford.statusError
@@ -45,6 +48,15 @@ enum MacOSPermissionCheckState: Equatable {
     var issue: MacOSPermissionIssue? {
         if case .needsAction(let issue) = self { return issue }
         return nil
+    }
+
+    var isReadyOrDeferred: Bool {
+        switch self {
+        case .ready, .deferred:
+            return true
+        case .notChecked, .checking, .needsAction, .unavailable:
+            return false
+        }
     }
 }
 
@@ -88,16 +100,17 @@ final class MacOSPermissionsViewModel: ObservableObject {
         if isChecking { return "Checking access" }
         if readyCount == checks.count { return "All ready" }
         if checks.contains(where: { $0.state.needsAttention }) { return "Needs attention" }
+        if hasRunCheck, checks.allSatisfy(\.state.isReadyOrDeferred) { return "Ready for setup" }
         return hasRunCheck ? "Needs attention" : "Preparing"
     }
 
     var isReady: Bool {
-        readyCount == checks.count
+        checks.allSatisfy(\.state.isReadyOrDeferred)
     }
 
     var onboardingSummary: String {
         if isChecking { return "Checking..." }
-        if isReady { return "Ready - browser, Keychain, and workspace files" }
+        if isReady { return "Ready - Keychain and workspace files" }
         if !hasRunCheck { return "Not checked yet" }
 
         let attention = checks
@@ -109,7 +122,7 @@ final class MacOSPermissionsViewModel: ObservableObject {
         return "Needs attention - \(attention.joined(separator: ", "))"
     }
 
-    func checkAll(workspaceRoot: String) async {
+    func checkAll(workspaceRoot: String, includeBrowserControl: Bool = true) async {
         hasRunCheck = true
         checks = checks.map { item in
             var copy = item
@@ -125,6 +138,14 @@ final class MacOSPermissionsViewModel: ObservableObject {
             workspaceRoot: workspaceRoot
         )
         setState(workspaceIssue.map(MacOSPermissionCheckState.needsAction) ?? .ready, for: .workspaceStorage)
+
+        guard includeBrowserControl else {
+            setState(
+                .deferred("ASTRA will check controlled browser access the first time you open or use it."),
+                for: .browserControl
+            )
+            return
+        }
 
         await browser.launch(initialAddress: "about:blank")
         if browser.isRunning {
@@ -193,6 +214,10 @@ struct MacOSPermissionsSectionView: View {
     private let context: Context
     private let workspaceRoot: String
 
+    private var shouldProbeBrowserControl: Bool {
+        context == .settings
+    }
+
     init(
         context: Context,
         workspaceRoot: String,
@@ -225,7 +250,7 @@ struct MacOSPermissionsSectionView: View {
         .task(id: workspaceRoot) {
             guard checkedWorkspaceRoot != workspaceRoot else { return }
             checkedWorkspaceRoot = workspaceRoot
-            await model.checkAll(workspaceRoot: workspaceRoot)
+            await model.checkAll(workspaceRoot: workspaceRoot, includeBrowserControl: shouldProbeBrowserControl)
         }
     }
 
@@ -242,7 +267,7 @@ struct MacOSPermissionsSectionView: View {
                 Text(context == .onboarding ? "Grant macOS Access" : "macOS Permissions")
                     .font(Stanford.heading(18))
                     .foregroundStyle(Stanford.black)
-                Text("Check browser control, secure credentials, and workspace storage.")
+                Text(headerSubtitle)
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
@@ -260,13 +285,27 @@ struct MacOSPermissionsSectionView: View {
 
             if model.hasRunCheck {
                 Button {
-                    Task { await model.checkAll(workspaceRoot: workspaceRoot) }
+                    Task {
+                        await model.checkAll(
+                            workspaceRoot: workspaceRoot,
+                            includeBrowserControl: shouldProbeBrowserControl
+                        )
+                    }
                 } label: {
                     Label(model.isChecking ? "Checking" : "Retry", systemImage: "arrow.clockwise")
                         .font(Stanford.caption(12).weight(.semibold))
                 }
                 .disabled(model.isChecking)
             }
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch context {
+        case .onboarding:
+            return "Check secure credentials and workspace storage. Browser control is checked when you use it."
+        case .settings:
+            return "Check browser control, secure credentials, and workspace storage."
         }
     }
 
@@ -302,6 +341,8 @@ struct MacOSPermissionsSectionView: View {
             switch check.state {
             case .ready:
                 rowMessage(check.readyMessage, tint: check.state.tint, icon: "checkmark.circle.fill")
+            case .deferred(let message):
+                rowMessage(message, tint: check.state.tint, icon: "clock")
             case .needsAction(let issue):
                 rowMessage(issue.message, tint: check.state.tint, icon: "exclamationmark.triangle.fill")
                 setupSteps(issue.setupSteps, tint: check.state.tint)
@@ -390,7 +431,7 @@ struct MacOSPermissionsSectionView: View {
                 .foregroundStyle(Stanford.sky)
                 .frame(width: 14)
                 .padding(.top, 2)
-            Text("Extra access, such as Apple Mail Automation, is checked when you enable that capability.")
+            Text(accessNoteText)
                 .font(Stanford.caption(11))
                 .foregroundStyle(Stanford.coolGrey)
                 .fixedSize(horizontal: false, vertical: true)
@@ -398,9 +439,20 @@ struct MacOSPermissionsSectionView: View {
         .padding(.top, 2)
     }
 
+    private var accessNoteText: String {
+        switch context {
+        case .onboarding:
+            return "Browser control and capability-specific access are checked later, when you choose to use them."
+        case .settings:
+            return "Extra access, such as Apple Mail Automation, is checked when you enable that capability."
+        }
+    }
+
     private var summaryColor: Color {
         if model.isChecking { return Stanford.coolGrey }
-        if model.readyCount == model.checks.count { return Stanford.statusHealthy }
+        if model.readyCount == model.checks.count || model.checks.allSatisfy(\.state.isReadyOrDeferred) {
+            return Stanford.statusHealthy
+        }
         if model.checks.contains(where: { $0.state.needsAttention }) { return Stanford.statusWarn }
         return Stanford.coolGrey
     }
@@ -430,7 +482,7 @@ private extension MacOSPermissionCheckState {
     var needsAttention: Bool {
         switch self {
         case .needsAction, .unavailable: true
-        case .notChecked, .checking, .ready: false
+        case .notChecked, .checking, .ready, .deferred: false
         }
     }
 }

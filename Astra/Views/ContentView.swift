@@ -261,10 +261,10 @@ private extension View {
     }
 }
 
-// Width-driven panel transition: panel content is rendered at its full natural
-// width and revealed via a mask that grows from the leading edge to the
-// trailing edge. Reads as "unfold" rather than "slide-in" because nothing
-// translates — the content stays where it'll finally land.
+// Width-driven panel transition for the right-docked Shelf / Control Panel:
+// panel content is rendered at its full natural width and revealed from the
+// trailing edge inward. That keeps child content moving with the panel's
+// right-edge attachment instead of appearing to wipe in from the opposite side.
 private struct WidthRevealModifier: ViewModifier, Animatable {
     var progress: CGFloat
 
@@ -278,9 +278,9 @@ private struct WidthRevealModifier: ViewModifier, Animatable {
             .mask {
                 GeometryReader { proxy in
                     HStack(spacing: 0) {
+                        Spacer(minLength: 0)
                         Rectangle()
                             .frame(width: max(0, proxy.size.width * progress))
-                        Spacer(minLength: 0)
                     }
                 }
             }
@@ -333,8 +333,6 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
-    @State private var showingDashboard = false
-    @State private var showingLogs = false
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -380,6 +378,7 @@ struct ContentView: View {
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
+    @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
@@ -519,12 +518,24 @@ struct ContentView: View {
         guard let selectedTask else { return "none" }
         let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
         let inputSignature = selectedTask.inputs.joined(separator: "|")
-        let state = TaskPlanService.reconstruct(for: selectedTask)
-        guard let plan = state.plan else {
-            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature):\(inputSignature)"
-        }
-        let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature):\(inputSignature)"
+        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        let latestRunSignature = [
+            latestRun?.id.uuidString ?? "none",
+            latestRun?.status.rawValue ?? "none",
+            String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
+            String(latestRun?.output.count ?? 0),
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: ":")
+        return [
+            selectedTask.id.uuidString,
+            selectedTask.status.rawValue,
+            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
+            String(selectedTask.events.count),
+            String(selectedTask.runs.count),
+            latestRunSignature,
+            htmlPreviewSignature,
+            inputSignature
+        ].joined(separator: "|")
     }
 
     private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
@@ -545,18 +556,18 @@ struct ContentView: View {
     private var hasQueryShelfAffordance: Bool {
         activeWorkspaceCanvasItem == .query
             || selectedTaskHasQueryShelfContent
-            || workspaceHasQueryCapability(effectiveWorkspace)
     }
 
     private var topRightActions: WorkspaceTopRightActions {
         WorkspaceTopRightActions(
             hasWorkspace: effectiveWorkspace != nil,
             hasTaskThread: hasOpenTaskThread,
-            canShowPlanShelf: hasWorkspaceCanvasContent,
+            canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
             canShowTextShelf: hasOpenTaskThread && (selectedTaskHasMarkdownShelfContent || activeWorkspaceCanvasItem == .markdown),
-            canShowBrowserShelf: effectiveWorkspace != nil,
-            canShowQueryShelf: hasQueryShelfAffordance,
+            canShowBrowserShelf: hasOpenTaskThread,
+            canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
             activeCanvasItem: activeWorkspaceCanvasItem,
+            browserEngine: browserToolbarEngine,
             isRightRailVisible: isWorkspaceRightRailVisible
         )
     }
@@ -656,8 +667,6 @@ struct ContentView: View {
             onEditWorkspace: beginEditingWorkspace,
             onImportWorkspace: importWorkspace,
             onShowConfigure: openCapabilitiesManager,
-            onShowLogs: showLogs,
-            onShowDashboard: showDashboard,
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
@@ -702,8 +711,6 @@ struct ContentView: View {
             onSetDoneState: setDoneState,
             onRunQueue: runQueue,
             onConfigure: openCapabilitiesManager,
-            onShowDashboard: showDashboard,
-            onShowLogs: showLogs,
             onNewSchedule: showNewSchedule,
             onEditSchedule: beginEditingSchedule,
             onManageCapabilities: openCapabilitiesManager,
@@ -746,62 +753,16 @@ struct ContentView: View {
             )
 
             if topRightActions.hasWorkspace {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button(action: toggleBrowserCanvas) {
-                        Label(
-                            topRightActions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf",
-                            systemImage: "globe"
-                        )
-                        .foregroundStyle(topRightActions.isBrowserShelfVisible ? Stanford.lagunita : Color.primary)
-                    }
-                    .help(topRightActions.isBrowserShelfVisible ? "Hide Browser Shelf" : "Show Browser Shelf")
-
-                    if topRightActions.canShowPlanShelf {
-                        Button(action: toggleWorkspaceCanvas) {
-                            Label(
-                                topRightActions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                                systemImage: "list.bullet.clipboard"
-                            )
-                            .foregroundStyle(topRightActions.isPlanShelfVisible ? Stanford.lagunita : Color.primary)
-                        }
-                        .help(topRightActions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf")
-                    }
-
-                    if topRightActions.canShowTextShelf {
-                        Button(action: toggleMarkdownCanvas) {
-                            Label(
-                                topRightActions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
-                                systemImage: "doc.text"
-                            )
-                            .foregroundStyle(topRightActions.isTextShelfVisible ? Stanford.lagunita : Color.primary)
-                        }
-                        .help(topRightActions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf")
-                    }
-
-                    if topRightActions.canShowQueryShelf {
-                        Button(action: toggleQueryCanvas) {
-                            Label(
-                                topRightActions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                                systemImage: "cylinder.split.1x2"
-                            )
-                            .foregroundStyle(topRightActions.isQueryShelfVisible ? Stanford.lagunita : Color.primary)
-                        }
-                        .help(topRightActions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf")
-                    }
-
-                    Button(action: toggleRightRail) {
-                        Label(
-                            topRightActions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                            systemImage: "sidebar.right"
-                        )
-                        .foregroundStyle(topRightActions.isRightRailVisible ? Stanford.lagunita : Color.primary)
-                    }
-                    // Restores the Cmd-Opt-I shortcut that SwiftUI's built-in
-                    // `.inspector(isPresented:)` modifier used to provide; we
-                    // dropped that modifier when moving to a custom HStack column.
-                    .keyboardShortcut("i", modifiers: [.command, .option])
-                    .help(topRightActions.isRightRailVisible ? "Hide Control Panel (⌥⌘I)" : "Show Control Panel (⌥⌘I)")
-                    .accessibilityIdentifier("ControlPanelToolbarButton")
+                ToolbarItem(placement: .primaryAction) {
+                    WorkspaceTopRightToolbar(
+                        actions: topRightActions,
+                        onToggleBrowser: toggleBrowserCanvas,
+                        onOpenBrowserEngine: openBrowserCanvas,
+                        onTogglePlan: toggleWorkspaceCanvas,
+                        onToggleText: toggleMarkdownCanvas,
+                        onToggleQuery: toggleQueryCanvas,
+                        onToggleControlPanel: toggleRightRail
+                    )
                 }
             }
         }
@@ -829,20 +790,18 @@ struct ContentView: View {
             handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
-            if !hasOpenTaskThread, activeWorkspaceCanvasItem == .markdown {
-                activeWorkspaceCanvasItem = nil
+            if !hasOpenTaskThread, activeWorkspaceCanvasItem != nil {
+                let _ = nextPanelTransitionGeneration()
+                animatePanelChange {
+                    activeWorkspaceCanvasItem = nil
+                }
             }
         }
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
         }
-        .sheet(isPresented: $showingLogs) {
-            LogViewerView()
-                .frame(width: 980, height: 620)
-        }
-        .sheet(isPresented: $showingDashboard) {
-            UsageDashboardView()
-                .frame(width: 600, height: 500)
+        .onReceive(currentBrowserSession.$engine) { engine in
+            browserToolbarEngine = engine
         }
         .sheet(isPresented: $showingConfigure) {
             if let ws = effectiveWorkspace {
@@ -979,9 +938,7 @@ struct ContentView: View {
                 onDismiss: {
                     hasCompletedOnboarding = true
                 },
-                onCreateWorkspace: {
-                    createWorkspace()
-                }
+                onCreateWorkspace: finalizeOnboardingWorkspace
             )
             .environment(\.preflightCache, runtime.preflightCache)
             .interactiveDismissDisabled(!isReplayingOnboarding)
@@ -1029,14 +986,6 @@ struct ContentView: View {
         configureFocusItemID = nil
         configureFocusCapabilityPackageID = packageID
         showingConfigure = true
-    }
-
-    private func showLogs() {
-        showingLogs = true
-    }
-
-    private func showDashboard() {
-        showingDashboard = true
     }
 
     private func showWorkspaceEditor() {
@@ -1268,6 +1217,18 @@ struct ContentView: View {
         }
     }
 
+    private func openBrowserCanvas(engine: ShelfBrowserEngine) {
+        let session = currentBrowserSession
+        session.bindToTask(selectedTask?.id)
+        if session.engine != engine {
+            session.engine = engine
+        }
+        browserToolbarEngine = engine
+        if activeWorkspaceCanvasItem != .browser {
+            presentCanvas(.browser)
+        }
+    }
+
     private func toggleMarkdownCanvas() {
         guard selectedTaskHasMarkdownShelfContent, selectedTask != nil || isComposingTask else {
             if activeWorkspaceCanvasItem == .markdown {
@@ -1379,16 +1340,21 @@ struct ContentView: View {
         guard let selectedTask else {
             selectedTaskHasQueryShelfContent = false
             selectedTaskPreferredQueryPath = ""
+            closeQueryShelfIfUnavailable()
             return
         }
 
         let taskID = selectedTask.id
         let attachedSQLPath = preferredAttachedSQLPath(for: selectedTask)
+        let hasQueryIntent = taskHasQueryIntent(selectedTask)
         selectedTaskPreferredQueryPath = attachedSQLPath ?? ""
-        selectedTaskHasQueryShelfContent = attachedSQLPath != nil
+        selectedTaskHasQueryShelfContent = attachedSQLPath != nil || hasQueryIntent
 
         let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
-        guard !taskFolder.isEmpty else { return }
+        guard !taskFolder.isEmpty else {
+            closeQueryShelfIfUnavailable()
+            return
+        }
 
         queryAvailabilityTask = Task {
             let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
@@ -1406,9 +1372,13 @@ struct ContentView: View {
                 } else if let attachedSQLPath {
                     selectedTaskPreferredQueryPath = attachedSQLPath
                     selectedTaskHasQueryShelfContent = true
+                } else if hasQueryIntent {
+                    selectedTaskPreferredQueryPath = ""
+                    selectedTaskHasQueryShelfContent = true
                 } else {
                     selectedTaskPreferredQueryPath = ""
                     selectedTaskHasQueryShelfContent = false
+                    closeQueryShelfIfUnavailable()
                 }
             }
         }
@@ -1417,6 +1387,47 @@ struct ContentView: View {
     private func preferredAttachedSQLPath(for task: AgentTask) -> String? {
         let paths = TaskGeneratedFiles.sqlFiles(inInputs: task.inputs)
         return TaskGeneratedFiles.preferredSQLFile(in: paths)
+    }
+
+    private func taskHasQueryIntent(_ task: AgentTask) -> Bool {
+        let normalized = normalizedQueryIntentText([
+            task.title,
+            task.goal,
+            task.inputs.joined(separator: " "),
+            task.constraints.joined(separator: " "),
+            task.acceptanceCriteria.joined(separator: " ")
+        ].joined(separator: " "))
+        guard !normalized.isEmpty else { return false }
+
+        let tokens = Set(normalized.split(separator: " ").map(String.init))
+        let strongQueryTerms: Set<String> = [
+            "sql", "bigquery", "bq", "query", "queries",
+            "database", "databases", "dataset", "datasets",
+            "schema", "schemas", "omop", "cohort"
+        ]
+        if !tokens.isDisjoint(with: strongQueryTerms) {
+            return true
+        }
+
+        guard workspaceHasQueryCapability(task.workspace) else { return false }
+
+        let queryVerbs: Set<String> = [
+            "count", "list", "check", "inspect", "find", "show",
+            "get", "read", "validate", "verify", "summarize"
+        ]
+        let dataNouns: Set<String> = [
+            "table", "tables", "row", "rows", "column", "columns",
+            "patient", "patients", "person", "mrn", "record", "records"
+        ]
+        return !tokens.isDisjoint(with: queryVerbs) && !tokens.isDisjoint(with: dataNouns)
+    }
+
+    private func normalizedQueryIntentText(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func workspaceHasQueryCapability(_ workspace: Workspace?) -> Bool {
@@ -1434,6 +1445,14 @@ struct ContentView: View {
 
     private func closeMarkdownShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .markdown else { return }
+        let _ = nextPanelTransitionGeneration()
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+        }
+    }
+
+    private func closeQueryShelfIfUnavailable() {
+        guard activeWorkspaceCanvasItem == .query, !selectedTaskHasQueryShelfContent else { return }
         let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
@@ -1679,7 +1698,11 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+        if selectedTask?.id == task.id {
+            guard cachedHasCanvasContent else { return }
+        } else {
+            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+        }
         if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
             let _ = nextPanelTransitionGeneration()
             animatePanelChange {
@@ -1909,17 +1932,28 @@ struct ContentView: View {
     }
 
     private func finalizeNewWorkspace() {
-        guard newWorkspaceDraft.canCreate else { return }
-        let workspace = coordinator.createWorkspace(name: newWorkspaceDraft.trimmedName, rootPath: resolvedRoot)
-        workspace.instructions = newWorkspaceDraft.trimmedInstructions
-        applyNewWorkspaceCapabilities(to: workspace)
-        selectedWorkspace = workspace
+        guard createWorkspace(from: newWorkspaceDraft, source: "workspace_creation") else { return }
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }
 
-    private func applyNewWorkspaceCapabilities(to workspace: Workspace) {
-        let selectedIDs = newWorkspaceDraft.selectedCapabilityIDs
+    @discardableResult
+    private func finalizeOnboardingWorkspace(_ draft: NewWorkspaceDraft) -> Bool {
+        createWorkspace(from: draft, source: "onboarding")
+    }
+
+    @discardableResult
+    private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
+        guard draft.canCreate else { return false }
+        let workspace = coordinator.createWorkspace(name: draft.trimmedName, rootPath: resolvedRoot)
+        workspace.instructions = draft.trimmedInstructions
+        applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
+        selectedWorkspace = workspace
+        return true
+    }
+
+    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) {
+        let selectedIDs = draft.selectedCapabilityIDs
         guard !selectedIDs.isEmpty else { return }
 
         var packagesByID: [String: PluginPackage] = [:]
@@ -1934,10 +1968,10 @@ struct ContentView: View {
 
         let installer = CapabilityInstaller()
         for package in packages {
-            let inputs = newWorkspaceDraft.capabilityConfiguration.installationInputs(for: package.id)
-            let traceID = AuditTrace.make("onboarding-capability")
+            let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
+            let traceID = AuditTrace.make("workspace-capability")
             AppLogger.breadcrumb(action: "onboarding_capability_enable_selected", category: "Capabilities", traceID: traceID, fields: [
-                "source": "onboarding",
+                "source": source,
                 "package_id": package.id,
                 "package_name": package.name,
                 "workspace_id": workspace.id.uuidString,
@@ -1957,7 +1991,7 @@ struct ContentView: View {
                 )
             } catch {
                 AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                    "source": "onboarding",
+                    "source": source,
                     "trace_id": traceID,
                     "package_id": package.id,
                     "package_name": package.name,
@@ -2358,12 +2392,177 @@ private struct WorkspaceTopRightActions: Equatable {
     let canShowBrowserShelf: Bool
     let canShowQueryShelf: Bool
     let activeCanvasItem: WorkspaceCanvasItem?
+    let browserEngine: ShelfBrowserEngine
     let isRightRailVisible: Bool
 
     var isPlanShelfVisible: Bool { activeCanvasItem == .plan }
     var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
     var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
     var isQueryShelfVisible: Bool { activeCanvasItem == .query }
+
+    var hasShelfControls: Bool {
+        hasTaskThread && (canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf)
+    }
+}
+
+private struct WorkspaceTopRightToolbar: View {
+    let actions: WorkspaceTopRightActions
+    let onToggleBrowser: () -> Void
+    let onOpenBrowserEngine: (ShelfBrowserEngine) -> Void
+    let onTogglePlan: () -> Void
+    let onToggleText: () -> Void
+    let onToggleQuery: () -> Void
+    let onToggleControlPanel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if actions.hasShelfControls {
+                toolbarCluster {
+                    if actions.canShowPlanShelf {
+                        toolbarButton(
+                            title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                            label: "Plan",
+                            systemImage: "list.bullet.clipboard",
+                            isActive: actions.isPlanShelfVisible,
+                            action: onTogglePlan
+                        )
+                    }
+
+                    if actions.canShowTextShelf {
+                        toolbarButton(
+                            title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
+                            label: "Text",
+                            systemImage: "doc.text",
+                            isActive: actions.isTextShelfVisible,
+                            action: onToggleText
+                        )
+                    }
+
+                    if actions.canShowQueryShelf {
+                        toolbarButton(
+                            title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                            label: "Query",
+                            systemImage: "cylinder.split.1x2",
+                            isActive: actions.isQueryShelfVisible,
+                            action: onToggleQuery
+                        )
+                    }
+
+                    if actions.canShowBrowserShelf {
+                        browserMenuButton
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Task shelves")
+            }
+
+            toolbarCluster {
+                toolbarButton(
+                    title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
+                    systemImage: "sidebar.right",
+                    isActive: actions.isRightRailVisible,
+                    action: onToggleControlPanel
+                )
+                // Restores the Cmd-Opt-I shortcut that SwiftUI's built-in
+                // `.inspector(isPresented:)` modifier used to provide; we
+                // dropped that modifier when moving to a custom HStack column.
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .help(actions.isRightRailVisible ? "Hide Control Panel (⌥⌘I)" : "Show Control Panel (⌥⌘I)")
+                .accessibilityIdentifier("ControlPanelToolbarButton")
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Control Panel")
+        }
+    }
+
+    private var browserMenuButton: some View {
+        Menu {
+            Button {
+                onOpenBrowserEngine(.embedded)
+            } label: {
+                Label(
+                    "Open Embedded Browser",
+                    systemImage: actions.browserEngine == .embedded ? "checkmark" : "globe"
+                )
+            }
+
+            Button {
+                onOpenBrowserEngine(.controlled)
+            } label: {
+                Label(
+                    "Open Controlled Browser",
+                    systemImage: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
+                )
+            }
+
+            if actions.isBrowserShelfVisible {
+                Divider()
+
+                Button {
+                    onToggleBrowser()
+                } label: {
+                    Label("Hide Browser Shelf", systemImage: "xmark")
+                }
+            }
+        } label: {
+            toolbarLabel(systemImage: "globe", text: "Browser", isActive: actions.isBrowserShelfVisible)
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .help("Open Browser Shelf")
+        .accessibilityLabel("Browser shelf mode")
+    }
+
+    private func toolbarCluster<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 2) {
+            content()
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private func toolbarButton(
+        title: String,
+        label: String? = nil,
+        systemImage: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            if let label {
+                toolbarLabel(systemImage: systemImage, text: label, isActive: isActive)
+            } else {
+                Image(systemName: systemImage)
+                    .font(Stanford.ui(16, weight: .medium))
+                    .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
+                    .frame(width: 30, height: 28)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+    }
+
+    private func toolbarLabel(systemImage: String, text: String, isActive: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(Stanford.ui(15, weight: .medium))
+            Text(text)
+                .font(Stanford.ui(11, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .contentShape(Rectangle())
+    }
 }
 
 private struct ContentToolbar: ToolbarContent {
@@ -2427,8 +2626,6 @@ private struct ContentDetailAreaView: View {
     let onSetDoneState: (AgentTask, Bool) -> Void
     let onRunQueue: () -> Void
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     let onNewSchedule: () -> Void
     let onEditSchedule: (TaskSchedule) -> Void
     let onManageCapabilities: () -> Void
@@ -2460,8 +2657,6 @@ private struct ContentDetailAreaView: View {
                         workspace: workspace,
                         onConfigure: onConfigure,
                         onEditWorkspace: onEditWorkspace,
-                        onShowDashboard: onShowDashboard,
-                        onShowLogs: onShowLogs,
                         onNewSchedule: onNewSchedule,
                         onEditSchedule: onEditSchedule,
                         onManageCapabilities: onManageCapabilities,
@@ -2692,8 +2887,6 @@ private struct ContentDetailAreaView: View {
             onSetDoneState: onSetDoneState,
             onRunQueue: onRunQueue,
             onConfigure: onConfigure,
-            onShowDashboard: onShowDashboard,
-            onShowLogs: onShowLogs,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
@@ -2775,8 +2968,6 @@ private struct ContentDetailContentView: View {
     let onSetDoneState: (AgentTask, Bool) -> Void
     let onRunQueue: () -> Void
     let onConfigure: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     let onNewSchedule: () -> Void
     let onEditSchedule: (TaskSchedule) -> Void
     let onManageCapabilities: () -> Void
@@ -2850,8 +3041,6 @@ private struct ContentDetailContentView: View {
                     onSetDoneState: onSetDoneState,
                     onRunQueue: onRunQueue,
                     onConfigure: onConfigure,
-                    onShowDashboard: onShowDashboard,
-                    onShowLogs: onShowLogs,
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
                     onManageCapabilities: onManageCapabilities
@@ -2867,34 +3056,31 @@ private struct ContentDetailContentView: View {
 }
 
 private struct NewWorkspaceSheet: View {
-    @Environment(\.preflightCache) private var preflightCache
-    @Environment(\.scenePhase) private var scenePhase
     @Binding var draft: NewWorkspaceDraft
     let rootPath: String
     let onCancel: () -> Void
     let onCreate: () -> Void
 
-    @FocusState private var focusedField: Field?
-    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
-    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
-    @State private var isCapabilitiesExpanded = false
-    @State private var capabilityPreflightStatuses: [String: [String: HealthStatus]] = [:]
-    @State private var probingCapabilityPackageIDs: Set<String> = []
-
-    private enum Field {
-        case name
-        case instructions
-    }
-
-    private var displayedRootPath: String {
-        (rootPath as NSString).abbreviatingWithTildeInPath
-    }
+    @State private var validationIssues: [String] = []
+    @State private var validationWarnings: [String] = []
+    @State private var isShowingValidationWarning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             header
             ScrollView {
-                formFields
+                WorkspaceSetupForm(
+                    draft: $draft,
+                    rootPath: rootPath,
+                    mode: .standard,
+                    validationIssues: $validationIssues,
+                    validationWarnings: $validationWarnings,
+                    onSubmit: {
+                        if canCreate {
+                            attemptCreate()
+                        }
+                    }
+                )
             }
             .scrollIndicators(.visible)
             footer
@@ -2903,14 +3089,13 @@ private struct NewWorkspaceSheet: View {
         .frame(width: 620)
         .frame(maxHeight: 760)
         .background(Stanford.panelBackground)
-        .onAppear {
-            focusedField = .name
-            applyCapabilityDefaults()
-            Task { await probeCapabilityPrerequisites(forceRefresh: false) }
-        }
-        .onChange(of: scenePhase) {
-            guard scenePhase == .active else { return }
-            Task { await probeCapabilityPrerequisites(forceRefresh: true) }
+        .alert("Create with unvalidated capabilities?", isPresented: $isShowingValidationWarning) {
+            Button("Continue Anyway") {
+                onCreate()
+            }
+            Button("Back", role: .cancel) {}
+        } message: {
+            Text(validationWarnings.prefix(3).joined(separator: "\n"))
         }
     }
 
@@ -2938,7 +3123,169 @@ private struct NewWorkspaceSheet: View {
         }
     }
 
-    private var formFields: some View {
+    private var canCreate: Bool {
+        !draft.trimmedName.isEmpty && validationIssues.isEmpty
+    }
+
+    private var footer: some View {
+        HStack {
+            if let firstIssue = validationIssues.first {
+                Label(firstIssue, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else if let firstWarning = validationWarnings.first {
+                Label(firstWarning, systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer()
+
+            Button("Cancel", action: onCancel)
+                .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                .keyboardShortcut(.cancelAction)
+
+            Button("Create", action: attemptCreate)
+                .buttonStyle(StanfordButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canCreate)
+                .opacity(canCreate ? 1 : 0.45)
+        }
+    }
+
+    private func attemptCreate() {
+        guard canCreate else { return }
+        if validationWarnings.isEmpty {
+            onCreate()
+        } else {
+            isShowingValidationWarning = true
+        }
+    }
+}
+
+enum WorkspaceSetupFormMode {
+    case onboarding
+    case standard
+
+    var isCapabilityForward: Bool {
+        self == .onboarding
+    }
+
+    var guidanceDescription: String {
+        switch self {
+        case .onboarding:
+            return "Add persistent context agents should know for this workspace: conventions, usernames, preferred tools, or boundaries."
+        case .standard:
+            return "Add persistent context agents should know for this workspace. You can edit this later from Workspace Context."
+        }
+    }
+
+    var guidancePlaceholder: String {
+        switch self {
+        case .onboarding:
+            return "Example: GitHub PR review. Username: alvaro. Prefer concise summaries. Ask before release changes."
+        case .standard:
+            return "Example: PR review workspace. Prefer concise summaries and ask before release changes."
+        }
+    }
+
+    var guidanceMinHeight: CGFloat {
+        isCapabilityForward ? 104 : 86
+    }
+
+    var capabilitiesTitle: String {
+        isCapabilityForward ? "Quick-start capabilities" : "Workspace capabilities"
+    }
+
+    var capabilitiesDescription: String {
+        if isCapabilityForward {
+            return "Connect the systems this workspace can use immediately."
+        }
+        return "None selected · can be added later from Workspace Context."
+    }
+}
+
+private enum WorkspaceCapabilityValidationState: Equatable {
+    case unchecked
+    case checking
+    case ready(String)
+    case failed(String)
+}
+
+private struct WorkspaceSetupValidationSecretStore: SecretStore {
+    var credentials: [String: String]
+
+    func load(key: String, entityID _: String) -> String? {
+        credentials[key] ?? credentials[key.uppercased()]
+    }
+
+    @discardableResult
+    func save(key _: String, value _: String, entityID _: String, label _: String?) -> Bool {
+        false
+    }
+
+    @discardableResult
+    func delete(key _: String, entityID _: String) -> Bool {
+        false
+    }
+
+    func deleteAll(entityID _: String) {}
+
+    func exists(key: String, entityID _: String) -> Bool {
+        load(key: key, entityID: "") != nil
+    }
+}
+
+struct WorkspaceSetupForm: View {
+    @Environment(\.preflightCache) private var preflightCache
+    @Environment(\.scenePhase) private var scenePhase
+    @Binding var draft: NewWorkspaceDraft
+    let rootPath: String
+    let mode: WorkspaceSetupFormMode
+    @Binding var validationIssues: [String]
+    @Binding var validationWarnings: [String]
+    var onSubmit: (() -> Void)?
+
+    @FocusState private var focusedField: Field?
+    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
+    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
+    @State private var isCapabilitiesExpanded: Bool
+    @State private var capabilityPreflightStatuses: [String: [String: HealthStatus]] = [:]
+    @State private var probingCapabilityPackageIDs: Set<String> = []
+    @State private var capabilityValidationStates: [String: WorkspaceCapabilityValidationState] = [:]
+    @State private var capabilityValidationSignatures: [String: String] = [:]
+
+    private enum Field {
+        case name
+        case guidance
+    }
+
+    init(
+        draft: Binding<NewWorkspaceDraft>,
+        rootPath: String,
+        mode: WorkspaceSetupFormMode,
+        validationIssues: Binding<[String]>,
+        validationWarnings: Binding<[String]> = .constant([]),
+        onSubmit: (() -> Void)? = nil
+    ) {
+        self._draft = draft
+        self.rootPath = rootPath
+        self.mode = mode
+        self._validationIssues = validationIssues
+        self._validationWarnings = validationWarnings
+        self.onSubmit = onSubmit
+        self._isCapabilitiesExpanded = State(initialValue: mode.isCapabilityForward)
+    }
+
+    private var displayedRootPath: String {
+        (rootPath as NSString).abbreviatingWithTildeInPath
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Workspace name")
@@ -2958,9 +3305,7 @@ private struct NewWorkspaceSheet: View {
                     )
                     .focused($focusedField, equals: .name)
                     .onSubmit {
-                        if canCreate {
-                            onCreate()
-                        }
+                        onSubmit?()
                     }
             }
 
@@ -2969,7 +3314,7 @@ private struct NewWorkspaceSheet: View {
                     Image(systemName: "text.alignleft")
                         .font(Stanford.ui(12, weight: .medium))
                         .foregroundStyle(Stanford.lagunita)
-                    Text("Workspace instructions")
+                    Text("Workspace guidance")
                         .font(Stanford.caption(13).weight(.semibold))
                         .foregroundStyle(Stanford.black)
                     Text("Optional")
@@ -2977,7 +3322,7 @@ private struct NewWorkspaceSheet: View {
                         .foregroundStyle(Stanford.coolGrey)
                 }
 
-                Text("Add context that helps the AI agents understand this workspace: the type of work, important people or usernames, project conventions, preferred tools, or anything that helps them ask fewer repeat questions. You can always add or edit this later.")
+                Text(mode.guidanceDescription)
                     .font(Stanford.body(13))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2987,17 +3332,17 @@ private struct NewWorkspaceSheet: View {
                         .font(Stanford.body(14))
                         .scrollContentBackground(.hidden)
                         .padding(8)
-                        .frame(minHeight: 118)
+                        .frame(minHeight: mode.guidanceMinHeight)
                         .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(focusedField == .instructions ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
+                                .stroke(focusedField == .guidance ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
                         )
-                        .focused($focusedField, equals: .instructions)
+                        .focused($focusedField, equals: .guidance)
 
                     if draft.instructions.isEmpty {
-                        Text("Example: This workspace is for GitHub PR review. My GitHub username is alvaro, prefer concise summaries, and ask before changing release files.")
+                        Text(mode.guidancePlaceholder)
                             .font(Stanford.body(14))
                             .foregroundStyle(Stanford.coolGrey.opacity(0.62))
                             .padding(.horizontal, 14)
@@ -3020,13 +3365,50 @@ private struct NewWorkspaceSheet: View {
                     .truncationMode(.middle)
             }
         }
+        .onAppear {
+            focusedField = .name
+            applyCapabilityDefaults()
+            syncCapabilityValidationSignatures()
+            refreshValidationIssues()
+            Task {
+                await probeCapabilityPrerequisites(forceRefresh: false)
+                refreshValidationIssues()
+            }
+        }
+        .onChange(of: scenePhase) {
+            guard scenePhase == .active else { return }
+            Task {
+                await probeCapabilityPrerequisites(forceRefresh: true)
+                refreshValidationIssues()
+            }
+        }
+        .onChange(of: draft) {
+            invalidateChangedCapabilityValidations()
+            refreshValidationIssues()
+        }
+        .onChange(of: capabilityPreflightStatuses) {
+            refreshValidationIssues()
+        }
+        .onChange(of: probingCapabilityPackageIDs) {
+            refreshValidationIssues()
+        }
+        .onChange(of: capabilityValidationStates) {
+            refreshValidationIssues()
+        }
     }
 
     private var capabilitiesSection: some View {
         DisclosureGroup(isExpanded: $isCapabilitiesExpanded) {
             VStack(alignment: .leading, spacing: 10) {
-                if hasReadyCapabilityDefaults {
-                    workspaceSetupAssistant
+                if mode.isCapabilityForward {
+                    Text("Pick one or more capabilities now so the first task can use them right away. You can change these later in Workspace Context.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if hasAvailableCapabilityDefaults {
+                    availableCapabilityShortcut
                 }
 
                 ForEach(OnboardingCapabilitySetup.configurableOptions) { option in
@@ -3041,7 +3423,7 @@ private struct NewWorkspaceSheet: View {
                     .foregroundStyle(Stanford.lagunita)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("Capabilities")
+                        Text(mode.capabilitiesTitle)
                             .font(Stanford.caption(13).weight(.semibold))
                             .foregroundStyle(Stanford.black)
                         Text("Optional")
@@ -3057,44 +3439,36 @@ private struct NewWorkspaceSheet: View {
             }
         }
         .padding(12)
-        .background(Stanford.cardBackground)
+        .background(mode.isCapabilityForward ? Stanford.lagunita.opacity(0.06) : Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.sandstone.opacity(0.22), lineWidth: 1)
+                .stroke(mode.isCapabilityForward ? Stanford.lagunita.opacity(0.24) : Stanford.sandstone.opacity(0.22), lineWidth: 1)
         )
     }
 
-    private var workspaceSetupAssistant: some View {
-        HStack(alignment: .center, spacing: 10) {
+    private var availableCapabilityShortcut: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: "wand.and.stars")
-                .font(Stanford.ui(13, weight: .semibold))
+                .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(Stanford.lagunita)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Ready defaults")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(setupAssistantSummary)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                .frame(width: 14)
+            Text(availableCapabilityShortcutText)
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.coolGrey)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer()
-            Button("Apply") {
-                enableReadyDefaults()
+            Button("Select available") {
+                selectAvailableCapabilities()
             }
             .font(Stanford.caption(11))
+            .buttonStyle(.borderless)
             .tint(Stanford.lagunita)
-            .disabled(!hasReadyCapabilityDefaults)
+            .disabled(!hasAvailableCapabilityDefaults)
         }
-        .padding(10)
-        .background(Stanford.lagunita.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
-        )
+        .padding(.horizontal, 2)
+        .padding(.top, 1)
     }
 
     private func workspaceCapabilityRow(_ option: OnboardingCapabilityOption) -> some View {
@@ -3112,7 +3486,7 @@ private struct NewWorkspaceSheet: View {
                     Text(option.title)
                         .font(Stanford.body(13).weight(.medium))
                         .foregroundStyle(Stanford.black)
-                    Text(option.subtitle)
+                    Text(capabilityOutcomeSubtitle(for: option))
                         .font(Stanford.caption(11))
                         .foregroundStyle(Stanford.coolGrey)
                         .lineLimit(1)
@@ -3140,6 +3514,14 @@ private struct NewWorkspaceSheet: View {
 
             if let packageID, isSelected {
                 capabilitySetupFields(for: packageID)
+                if let issue = capabilityIssue(for: packageID) {
+                    capabilityInlineMessage(
+                        icon: "exclamationmark.triangle.fill",
+                        message: issue,
+                        tint: Stanford.poppy
+                    )
+                }
+                capabilityValidationControls(for: packageID)
             }
         }
         .padding(.horizontal, 10)
@@ -3200,6 +3582,92 @@ private struct NewWorkspaceSheet: View {
         }
     }
 
+    private func capabilityInlineMessage(icon: String, message: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 14)
+                .padding(.top, 1)
+            Text(message)
+                .font(Stanford.caption(11))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func capabilityValidationControls(for packageID: String) -> some View {
+        let state = capabilityValidationState(for: packageID)
+        let blocked = capabilityIssue(for: packageID) != nil
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    Task { await validateCapability(packageID) }
+                } label: {
+                    HStack(spacing: 6) {
+                        if case .checking = state {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "checkmark.shield")
+                        }
+                        Text(state == .checking ? "Testing" : "Test Connection")
+                    }
+                }
+                .font(Stanford.caption(11).weight(.semibold))
+                .disabled(blocked || state == .checking)
+                .help(blocked ? "Complete setup fields before testing this capability." : "Run the checks ASTRA uses before task execution.")
+
+                Text(capabilityValidationSummary(for: packageID))
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(capabilityValidationColor(for: packageID))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+
+            if let message = capabilityValidationDetail(for: packageID), !blocked {
+                capabilityInlineMessage(
+                    icon: capabilityValidationIcon(for: packageID),
+                    message: message,
+                    tint: capabilityValidationColor(for: packageID)
+                )
+            }
+        }
+    }
+
+    private func capabilityOutcomeSubtitle(for option: OnboardingCapabilityOption) -> String {
+        switch option.packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            return "Create, update, and summarize Jira tickets"
+        case OnboardingCapabilitySetup.githubPackageID:
+            return "Review PRs, issues, and CI"
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            return "Query BigQuery and work with GCP resources"
+        case OnboardingCapabilitySetup.redcapPackageID:
+            return "Talk to REDCap projects and metadata"
+        default:
+            return option.subtitle
+        }
+    }
+
+    private func capabilityReadyMessage(for packageID: String) -> String {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            return "Ready: tasks in this workspace can use Jira."
+        case OnboardingCapabilitySetup.githubPackageID:
+            return "Ready: tasks in this workspace can use GitHub."
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            return "Ready: tasks in this workspace can use Google Cloud and BigQuery."
+        case OnboardingCapabilitySetup.redcapPackageID:
+            return "Ready: tasks in this workspace can use REDCap."
+        default:
+            return "Ready: tasks in this workspace can use this capability."
+        }
+    }
+
     private func capabilityTextField(_ label: String, prompt: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
@@ -3226,24 +3694,70 @@ private struct NewWorkspaceSheet: View {
 
     private var selectedCapabilitySummary: String {
         let names = OnboardingCapabilitySetup.selectedDisplayNames(from: draft.selectedCapabilityIDs)
-        return names.isEmpty ? "Add Jira, GitHub, Google Cloud, or REDCap for this workspace." : names.joined(separator: ", ")
-    }
-
-    private var canCreate: Bool {
-        !draft.trimmedName.isEmpty && capabilityIssues.isEmpty
+        if names.isEmpty {
+            return mode.capabilitiesDescription
+        }
+        let label = names.count == 1 ? "1 selected" : "\(names.count) selected"
+        return "\(label): \(names.joined(separator: ", "))"
     }
 
     private var capabilityIssues: [String] {
-        let configurationIssues = draft.capabilitySetupIssues(githubCLIReady: true)
-        let prerequisiteIssues = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> String? in
+        draft.capabilitySetupIssues(githubCLIReady: true)
+    }
+
+    private var capabilityWarnings: [String] {
+        OnboardingCapabilitySetup.configurableOptions.compactMap { option -> String? in
             guard let packageID = option.packageID,
                   draft.selectedCapabilityIDs.contains(packageID),
-                  let issue = capabilityPrerequisiteIssue(for: packageID) else {
+                  configurationIssue(for: packageID) == nil else {
                 return nil
             }
-            return "\(option.title): \(issue)"
+
+            if let issue = capabilityPrerequisiteIssue(for: packageID) {
+                return "\(option.title): \(issue)"
+            }
+
+            switch capabilityValidationState(for: packageID) {
+            case .ready:
+                return nil
+            case .checking:
+                return "\(option.title): connection test is still running"
+            case .failed(let message):
+                return "\(option.title): \(message)"
+            case .unchecked:
+                return "\(option.title): connection has not been tested"
+            }
         }
-        return configurationIssues + prerequisiteIssues
+    }
+
+    private func refreshValidationIssues() {
+        validationIssues = capabilityIssues
+        validationWarnings = capabilityWarnings
+    }
+
+    private func configurationIssue(for packageID: String) -> String? {
+        guard draft.selectedCapabilityIDs.contains(packageID) else { return nil }
+        let githubReady = capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.githubPackageID)
+        return draft.capabilityConfiguration
+            .missingRequirements(for: packageID, githubCLIReady: githubReady)
+            .first
+    }
+
+    private func capabilityIssue(for packageID: String) -> String? {
+        if let configurationIssue = configurationIssue(for: packageID) {
+            return configurationIssue
+        }
+        return nil
+    }
+
+    private func capabilityIsReady(for packageID: String) -> Bool {
+        guard draft.selectedCapabilityIDs.contains(packageID),
+              capabilityIssue(for: packageID) == nil,
+              capabilityPrerequisiteIssue(for: packageID) == nil,
+              case .ready = capabilityValidationState(for: packageID) else {
+            return false
+        }
+        return true
     }
 
     private var isGitHubHealthy: Bool {
@@ -3255,52 +3769,81 @@ private struct NewWorkspaceSheet: View {
             || !claudeVertexRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var hasReadyCapabilityDefaults: Bool {
-        isGitHubHealthy ||
-            (hasVertexDefaults && capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID))
-    }
-
-    private var setupAssistantSummary: String {
-        var suggestions: [String] = []
+    private var availableCapabilityNames: [String] {
+        var names: [String] = []
         if isGitHubHealthy {
-            suggestions.append("GitHub is ready")
+            names.append("GitHub")
         }
         if hasVertexDefaults && capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID) {
-            suggestions.append("Google Cloud can use Vertex settings")
+            names.append("Google Cloud")
         }
-        return suggestions.joined(separator: ". ") + "."
+        return names
+    }
+
+    private var hasAvailableCapabilityDefaults: Bool {
+        !availableCapabilityNames.isEmpty
+    }
+
+    private var availableCapabilityShortcutText: String {
+        let names = availableCapabilityNames
+        let prefix = names.count == 1 ? "1 available now" : "\(names.count) available now"
+        return "\(prefix): \(names.joined(separator: ", "))"
     }
 
     private func capabilityStatusText(for packageID: String) -> String {
-        if isProbingCapability(packageID) { return "Checking" }
-        if let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) {
-            return prerequisiteStatusLabel(prerequisite, status: status)
+        if draft.selectedCapabilityIDs.contains(packageID) {
+            if capabilityIssue(for: packageID) != nil { return "Setup needed" }
+            if let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) {
+                return prerequisiteStatusLabel(prerequisite, status: status)
+            }
+            switch capabilityValidationState(for: packageID) {
+            case .unchecked:
+                return "Unchecked"
+            case .checking:
+                return "Checking"
+            case .ready:
+                return "Ready"
+            case .failed:
+                return "Error"
+            }
         }
 
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
-            return "Ready"
+            if isProbingCapability(packageID) { return "Checking" }
+            return isGitHubHealthy ? "Available" : "Setup needed"
         case OnboardingCapabilitySetup.gcloudPackageID:
+            if isProbingCapability(packageID) { return "Checking" }
             let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !project.isEmpty { return "Ready" }
-            return hasVertexDefaults ? "Can fill" : "Needs project"
+            if !project.isEmpty, capabilityPrerequisitesReady(for: packageID) { return "Available" }
+            if hasVertexDefaults, capabilityPrerequisitesReady(for: packageID) { return "Available" }
+            return "Setup needed"
         case OnboardingCapabilitySetup.jiraPackageID, OnboardingCapabilitySetup.redcapPackageID:
-            return "Needs setup"
+            return "Setup needed"
         default:
             return "Optional"
         }
     }
 
     private func capabilityStatusColor(for packageID: String) -> Color {
-        if isProbingCapability(packageID) { return Stanford.coolGrey }
-        if firstUnreadyPrerequisite(for: packageID) != nil { return Stanford.coolGrey }
+        if draft.selectedCapabilityIDs.contains(packageID) {
+            if capabilityIssue(for: packageID) != nil { return Stanford.coolGrey }
+            if firstUnreadyPrerequisite(for: packageID) != nil { return Stanford.poppy }
+            switch capabilityValidationState(for: packageID) {
+            case .ready:
+                return Stanford.paloAltoGreen
+            case .failed:
+                return Stanford.poppy
+            case .checking, .unchecked:
+                return Stanford.coolGrey
+            }
+        }
 
         switch packageID {
         case OnboardingCapabilitySetup.githubPackageID:
-            return Stanford.paloAltoGreen
+            return Stanford.coolGrey
         case OnboardingCapabilitySetup.gcloudPackageID:
-            let project = draft.capabilityConfiguration.gcpProject.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (!project.isEmpty || hasVertexDefaults) ? Stanford.paloAltoGreen : Stanford.coolGrey
+            return Stanford.coolGrey
         default:
             return Stanford.coolGrey
         }
@@ -3312,13 +3855,19 @@ private struct NewWorkspaceSheet: View {
             set: { enabled in
                 if enabled {
                     draft.selectedCapabilityIDs.insert(packageID)
+                    capabilityValidationSignatures[packageID] = capabilityValidationSignature(for: packageID)
+                    capabilityValidationStates[packageID] = .unchecked
                     if packageID == OnboardingCapabilitySetup.gcloudPackageID {
                         applyCapabilityDefaults()
+                        capabilityValidationSignatures[packageID] = capabilityValidationSignature(for: packageID)
                     }
                     Task { await probeCapabilityPrerequisites(for: packageID, forceRefresh: false) }
                 } else {
                     draft.selectedCapabilityIDs.remove(packageID)
+                    capabilityValidationStates.removeValue(forKey: packageID)
+                    capabilityValidationSignatures.removeValue(forKey: packageID)
                 }
+                refreshValidationIssues()
             }
         )
     }
@@ -3330,7 +3879,7 @@ private struct NewWorkspaceSheet: View {
         )
     }
 
-    private func enableReadyDefaults() {
+    private func selectAvailableCapabilities() {
         applyCapabilityDefaults()
         if isGitHubHealthy {
             draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.githubPackageID)
@@ -3339,6 +3888,279 @@ private struct NewWorkspaceSheet: View {
            capabilityPrerequisitesReady(for: OnboardingCapabilitySetup.gcloudPackageID) {
             draft.selectedCapabilityIDs.insert(OnboardingCapabilitySetup.gcloudPackageID)
         }
+        syncCapabilityValidationSignatures()
+        refreshValidationIssues()
+    }
+
+    private func syncCapabilityValidationSignatures() {
+        let selected = draft.selectedCapabilityIDs
+        for packageID in selected {
+            capabilityValidationSignatures[packageID] = capabilityValidationSignature(for: packageID)
+            capabilityValidationStates[packageID] = capabilityValidationStates[packageID] ?? .unchecked
+        }
+        for packageID in Array(capabilityValidationStates.keys) where !selected.contains(packageID) {
+            capabilityValidationStates.removeValue(forKey: packageID)
+            capabilityValidationSignatures.removeValue(forKey: packageID)
+        }
+    }
+
+    private func invalidateChangedCapabilityValidations() {
+        let selected = draft.selectedCapabilityIDs
+        for packageID in selected {
+            let signature = capabilityValidationSignature(for: packageID)
+            guard capabilityValidationSignatures[packageID] != signature else { continue }
+            capabilityValidationSignatures[packageID] = signature
+            capabilityValidationStates[packageID] = .unchecked
+        }
+        for packageID in Array(capabilityValidationStates.keys) where !selected.contains(packageID) {
+            capabilityValidationStates.removeValue(forKey: packageID)
+            capabilityValidationSignatures.removeValue(forKey: packageID)
+        }
+    }
+
+    private func capabilityValidationSignature(for packageID: String) -> String {
+        let config = draft.capabilityConfiguration
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            return [
+                config.jiraBaseURL,
+                config.jiraEmail,
+                config.jiraAPIToken,
+                config.jiraProjects
+            ].map(trimmed).joined(separator: "|")
+        case OnboardingCapabilitySetup.githubPackageID:
+            return packageID
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            return [
+                config.gcpProject,
+                config.gcpRegion
+            ].map(trimmed).joined(separator: "|")
+        case OnboardingCapabilitySetup.redcapPackageID:
+            return [
+                config.redcapAPIURL,
+                config.redcapAPIToken
+            ].map(trimmed).joined(separator: "|")
+        default:
+            return packageID
+        }
+    }
+
+    private func capabilityValidationState(for packageID: String) -> WorkspaceCapabilityValidationState {
+        capabilityValidationStates[packageID] ?? .unchecked
+    }
+
+    private func capabilityValidationSummary(for packageID: String) -> String {
+        switch capabilityValidationState(for: packageID) {
+        case .unchecked:
+            return "Not tested yet"
+        case .checking:
+            return "Checking now..."
+        case .ready:
+            return "Connection verified"
+        case .failed:
+            return "Needs attention"
+        }
+    }
+
+    private func capabilityValidationDetail(for packageID: String) -> String? {
+        switch capabilityValidationState(for: packageID) {
+        case .unchecked:
+            return "Run Test Connection to verify this setup before the first task uses it."
+        case .checking:
+            return "ASTRA is checking this capability with a bounded timeout."
+        case .ready(let message):
+            return message.isEmpty ? capabilityReadyMessage(for: packageID) : message
+        case .failed(let message):
+            return message.isEmpty ? "Connection test failed." : message
+        }
+    }
+
+    private func capabilityValidationIcon(for packageID: String) -> String {
+        switch capabilityValidationState(for: packageID) {
+        case .ready:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .checking:
+            return "clock"
+        case .unchecked:
+            return "info.circle"
+        }
+    }
+
+    private func capabilityValidationColor(for packageID: String) -> Color {
+        switch capabilityValidationState(for: packageID) {
+        case .ready:
+            return Stanford.paloAltoGreen
+        case .failed:
+            return Stanford.poppy
+        case .checking, .unchecked:
+            return Stanford.coolGrey
+        }
+    }
+
+    @MainActor
+    private func validateCapability(_ packageID: String) async {
+        guard draft.selectedCapabilityIDs.contains(packageID),
+              capabilityIssue(for: packageID) == nil else {
+            refreshValidationIssues()
+            return
+        }
+
+        let signature = capabilityValidationSignature(for: packageID)
+        capabilityValidationSignatures[packageID] = signature
+        capabilityValidationStates[packageID] = .checking
+        refreshValidationIssues()
+
+        let result = await runCapabilityValidation(for: packageID)
+        guard capabilityValidationSignature(for: packageID) == signature else {
+            capabilityValidationStates[packageID] = .unchecked
+            refreshValidationIssues()
+            return
+        }
+
+        capabilityValidationStates[packageID] = result
+        refreshValidationIssues()
+    }
+
+    private func runCapabilityValidation(for packageID: String) async -> WorkspaceCapabilityValidationState {
+        switch packageID {
+        case OnboardingCapabilitySetup.githubPackageID:
+            await probeCapabilityPrerequisites(for: packageID, forceRefresh: true)
+            if let issue = capabilityPrerequisiteIssue(for: packageID) {
+                return .failed(issue)
+            }
+            return .ready("GitHub CLI is installed and authenticated.")
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            await probeCapabilityPrerequisites(for: packageID, forceRefresh: true)
+            if let issue = capabilityPrerequisiteIssue(for: packageID) {
+                return .failed(issue)
+            }
+            return await validateGCloudProject()
+        case OnboardingCapabilitySetup.jiraPackageID:
+            return await validateConnectorCapability(
+                packageID: packageID,
+                connector: jiraValidationConnector(),
+                credentials: [
+                    "JIRA_EMAIL": draft.capabilityConfiguration.jiraEmail,
+                    "JIRA_API_TOKEN": draft.capabilityConfiguration.jiraAPIToken
+                ]
+            )
+        case OnboardingCapabilitySetup.redcapPackageID:
+            return await validateConnectorCapability(
+                packageID: packageID,
+                connector: redcapValidationConnector(),
+                credentials: [
+                    "REDCAP_API_TOKEN": draft.capabilityConfiguration.redcapAPIToken
+                ]
+            )
+        default:
+            return .ready("No connection test is required for this capability.")
+        }
+    }
+
+    private func validateConnectorCapability(
+        packageID: String,
+        connector: Connector,
+        credentials: [String: String]
+    ) async -> WorkspaceCapabilityValidationState {
+        let traceID = AuditTrace.make("workspace-capability-validate")
+        let result = await connector.testConnection(
+            store: WorkspaceSetupValidationSecretStore(credentials: credentials),
+            source: mode.isCapabilityForward ? "onboarding_workspace_validation" : "new_workspace_validation",
+            packageID: packageID,
+            traceID: traceID
+        )
+        return result.0 ? .ready(result.1) : .failed(result.1)
+    }
+
+    private func jiraValidationConnector() -> Connector {
+        let config = draft.capabilityConfiguration
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            icon: "list.bullet.clipboard",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: trimmed(config.jiraBaseURL),
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.credentialValues = ["", ""]
+        connector.configKeys = ["JIRA_PROJECTS"]
+        connector.configValues = [trimmed(config.jiraProjects)]
+        return connector
+    }
+
+    private func redcapValidationConnector() -> Connector {
+        let config = draft.capabilityConfiguration
+        let connector = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            icon: "tablecells",
+            connectorDescription: "Stanford REDCap API",
+            baseURL: trimmed(config.redcapAPIURL),
+            authMethod: "api_key"
+        )
+        connector.credentialKeys = ["REDCAP_API_TOKEN"]
+        connector.credentialValues = [""]
+        connector.testHTTPMethod = "POST"
+        return connector
+    }
+
+    private func validateGCloudProject() async -> WorkspaceCapabilityValidationState {
+        let project = trimmed(draft.capabilityConfiguration.gcpProject)
+        guard !project.isEmpty else {
+            return .failed("Add a GCP project before testing.")
+        }
+        guard let gcloudPath = healthyPrerequisitePath(for: OnboardingCapabilitySetup.gcloudPackageID, binary: "gcloud") else {
+            return .failed("Google Cloud CLI path was not resolved.")
+        }
+
+        let result = await ProcessBinaryRunner().run(
+            path: gcloudPath,
+            args: ["projects", "describe", project, "--format=value(projectId)"],
+            timeout: 10,
+            environment: nil
+        )
+        if result.isSuccess {
+            let verifiedProject = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .ready(verifiedProject.isEmpty
+                ? "gcloud can access the configured project."
+                : "gcloud can access project \(verifiedProject).")
+        }
+        return .failed("gcloud could not access \(project): \(runResultMessage(result))")
+    }
+
+    private func healthyPrerequisitePath(for packageID: String, binary: String) -> String? {
+        let statuses = capabilityPreflightStatuses[packageID] ?? [:]
+        for prerequisite in prerequisites(for: packageID) where prerequisite.binary == binary {
+            if case .healthy(let path, _) = statuses[prerequisite.id] {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func runResultMessage(_ result: RunResult) -> String {
+        let output = result.stderr.isEmpty ? result.stdout : result.stderr
+        let cleaned = output
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty {
+            return cleaned.count > 140 ? String(cleaned.prefix(140)) : cleaned
+        }
+        switch result.outcome {
+        case .exited(let code):
+            return "exit \(code)"
+        case .timedOut:
+            return "timed out after 10s"
+        case .launchFailed(let reason):
+            return reason
+        }
+    }
+
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @ViewBuilder
@@ -3408,6 +4230,7 @@ private struct NewWorkspaceSheet: View {
             statuses[prerequisite.id] = await preflightCache.status(for: prerequisite)
         }
         capabilityPreflightStatuses[packageID] = statuses
+        refreshValidationIssues()
     }
 
     private func prerequisites(for packageID: String) -> [CLIPrerequisite] {
@@ -3490,7 +4313,7 @@ private struct NewWorkspaceSheet: View {
 
     private func capabilityPrerequisiteMessage(for packageID: String, readyMessage: String) -> String {
         if isProbingCapability(packageID) {
-            return "Checking CLI prerequisites..."
+            return "Checking local prerequisites..."
         }
         guard let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) else {
             return readyMessage
@@ -3518,30 +4341,6 @@ private struct NewWorkspaceSheet: View {
 
     private func capabilityPrerequisiteColor(for packageID: String) -> Color {
         capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
-    }
-
-    private var footer: some View {
-        HStack {
-            if let firstIssue = capabilityIssues.first {
-                Label(firstIssue, systemImage: "exclamationmark.triangle.fill")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.poppy)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
-            Spacer()
-
-            Button("Cancel", action: onCancel)
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                .keyboardShortcut(.cancelAction)
-
-            Button("Create", action: onCreate)
-                .buttonStyle(StanfordButtonStyle())
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canCreate)
-                .opacity(canCreate ? 1 : 0.45)
-        }
     }
 }
 

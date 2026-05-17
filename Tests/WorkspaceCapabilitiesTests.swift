@@ -99,6 +99,71 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeConnectors.map(\.name) == ["Configured Jira"])
     }
 
+    @Test("enabled package skills include matched tool owner when package skill name changes")
+    @MainActor
+    func enabledPackageSkillsIncludeMatchedToolOwnerWhenPackageSkillNameChanges() {
+        let workspace = Workspace(name: "Package Rename", primaryPath: "/tmp/package-rename")
+        workspace.enabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
+
+        let legacySkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the Stanford Graph mail helper."
+        )
+        legacySkill.isGlobal = true
+
+        let graphTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read SHC mail through Graph",
+            toolType: "cli",
+            command: "stanford-graph-mail"
+        )
+        graphTool.isGlobal = true
+        graphTool.skill = legacySkill
+
+        let package = PluginPackage(
+            id: "stanford-healthcare-graph-mail",
+            name: "Stanford Health Care Mail via Graph",
+            icon: "envelope",
+            description: "Read SHC mail",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Stanford Health Care Graph Mail Agent",
+                icon: "envelope",
+                description: "Current package skill name",
+                allowedTools: ["Read", "Bash"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use Graph mail.",
+                environmentKeys: [],
+                environmentValues: []
+            )],
+            connectors: [],
+            localTools: [PluginLocalTool(
+                name: "stanford-graph-mail",
+                description: "Read SHC mail through Graph",
+                icon: "terminal",
+                toolType: "cli",
+                command: "stanford-graph-mail",
+                arguments: ""
+            )],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [legacySkill],
+            globalTools: [graphTool]
+        )
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+
+        #expect(capabilities.activeSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(state.linkedSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+    }
+
     @Test("active connectors ignore unenabled global skill attachments")
     @MainActor
     func activeConnectorsIgnoreUnenabledGlobalSkillAttachments() {
@@ -404,6 +469,48 @@ struct WorkspaceCapabilitiesTests {
         )
 
         #expect(packages.map(\.name) == ["Enabled Shared"])
+    }
+
+    @Test("disabled standalone shared capability is not enabled by overlapping resources")
+    @MainActor
+    func disabledStandaloneSharedCapabilityIgnoresOverlappingEnabledResources() throws {
+        let workspace = Workspace(name: "Overlapping Resources", primaryPath: "/tmp/overlapping-resources")
+
+        let disabledShared = Skill(name: "Bigquery Analyst", allowedTools: ["Read", "Bash"])
+        disabledShared.isGlobal = true
+
+        let connector = Connector(name: "Google Cloud", serviceType: "gcloud", authMethod: "none")
+        connector.isGlobal = true
+        connector.skill = disabledShared
+
+        let tool = LocalTool(name: "bq — BigQuery CLI", toolType: "cli", command: "bq")
+        tool.isGlobal = true
+        tool.skill = disabledShared
+
+        workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+        workspace.enabledGlobalToolIDs = [tool.id.uuidString]
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [disabledShared],
+            globalConnectors: [connector],
+            globalTools: [tool]
+        )
+        let package = try #require(CapabilityCatalogInventory.packages(
+            catalogPackages: [],
+            capabilities: capabilities
+        ).first)
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+
+        #expect(package.sourceMetadata?.kind == "shared")
+        #expect(state.linkedConnectors.map(\.name) == ["Google Cloud"])
+        #expect(state.linkedTools.map(\.name) == ["bq — BigQuery CLI"])
+        #expect(!state.isEnabled)
+        #expect(CapabilityCatalogInventory.configuredPackages(
+            catalogPackages: [],
+            capabilities: capabilities,
+            workspace: workspace
+        ).isEmpty)
     }
 
     @Test("disabling a workspace-only capability removes its local skill activation")

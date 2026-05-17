@@ -1,39 +1,6 @@
-import AppKit
 import ASTRACore
 import SwiftData
 import SwiftUI
-
-private enum WorkspaceRightRailTab: String, CaseIterable, Identifiable {
-    case configure
-    case usage
-    case logs
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .configure: "Configure"
-        case .usage: "Usage"
-        case .logs: "Logs"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .configure: "Packages, shared resources, context, and settings"
-        case .usage: "Tokens, costs, and task activity"
-        case .logs: "Runtime diagnostics and log access"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .configure: "slider.horizontal.3"
-        case .usage: "chart.bar"
-        case .logs: "doc.text.magnifyingglass"
-        }
-    }
-}
 
 private let workspaceRightRailScrollCoordinateSpace = "workspaceRightRailScrollCoordinateSpace"
 
@@ -63,13 +30,9 @@ private enum CapabilityRailGroupStyle: Equatable {
 }
 
 struct WorkspaceRightRailView: View {
-    private static let maxRecentLogEntries = 64
-
     let workspace: Workspace
     let onConfigure: () -> Void
     let onEditWorkspace: () -> Void
-    let onShowDashboard: () -> Void
-    let onShowLogs: () -> Void
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
@@ -90,16 +53,11 @@ struct WorkspaceRightRailView: View {
     private var globalTools: [LocalTool]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var selectedTab: WorkspaceRightRailTab = .configure
     @State private var isIdentityCollapsed = true
     @State private var isCapabilitiesCollapsed = false
     @State private var isContextCollapsed = true
     @State private var isAccessCollapsed = true
     @State private var isSchedulesSectionCollapsed = false
-    @State private var isActivityCollapsed = true
-    @State private var logEntries: [LogEntry] = []
-    @State private var logEntryCount = AppLogger.entryCount
-    @State private var pendingLogEntries: [LogEntry] = []
     @State private var sshConnections: [SSHConnection] = []
     @State private var isConnectorsExpanded = false
     @State private var isToolsExpanded = false
@@ -115,12 +73,6 @@ struct WorkspaceRightRailView: View {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter
-    }()
-
-    private static let logTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
 
@@ -159,22 +111,6 @@ struct WorkspaceRightRailView: View {
 
     private var templates: [TaskTemplate] {
         workspace.templates.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private var recentTasks: [AgentTask] {
-        workspace.tasks.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    private var completedTasks: [AgentTask] {
-        workspace.tasks.filter { $0.status == .completed }
-    }
-
-    private var failedTasks: [AgentTask] {
-        workspace.tasks.filter { $0.status == .failed || $0.status == .budgetExceeded }
-    }
-
-    private var activeTasks: [AgentTask] {
-        workspace.tasks.filter { $0.status == .running || $0.status == .pendingUser || $0.status == .queued }
     }
 
     var body: some View {
@@ -229,51 +165,6 @@ struct WorkspaceRightRailView: View {
                 .ignoresSafeArea(.all, edges: .top)
                 .allowsHitTesting(false)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .appLoggerDidAppendEntry)) { notification in
-            guard let entry = notification.userInfo?["entry"] as? LogEntry else { return }
-            DispatchQueue.main.async {
-                if !isActivityCollapsed {
-                    logEntryCount = AppLogger.entryCount
-                }
-                guard selectedTab == .logs else { return }
-                pendingLogEntries.append(entry)
-            }
-        }
-        .onChange(of: isActivityCollapsed) { _, isCollapsed in
-            if !isCollapsed {
-                logEntryCount = AppLogger.entryCount
-            }
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            flushPendingLogEntries()
-        }
-        .onChange(of: selectedTab) { _, newTab in
-            if newTab == .logs {
-                refreshRecentLogEntries()
-            } else {
-                pendingLogEntries.removeAll(keepingCapacity: true)
-            }
-        }
-        .onDisappear {
-            pendingLogEntries.removeAll(keepingCapacity: true)
-        }
-    }
-
-    private func refreshRecentLogEntries() {
-        let latestEntries = AppLogger.entries
-        logEntryCount = latestEntries.count
-        logEntries = Array(latestEntries.suffix(Self.maxRecentLogEntries))
-        pendingLogEntries.removeAll(keepingCapacity: true)
-    }
-
-    private func flushPendingLogEntries() {
-        guard selectedTab == .logs, !pendingLogEntries.isEmpty else { return }
-        logEntryCount += pendingLogEntries.count
-        logEntries.append(contentsOf: pendingLogEntries)
-        if logEntries.count > Self.maxRecentLogEntries {
-            logEntries.removeFirst(logEntries.count - Self.maxRecentLogEntries)
-        }
-        pendingLogEntries.removeAll(keepingCapacity: true)
     }
 
     private var showsTopRailScrollShadow: Bool {
@@ -311,10 +202,10 @@ struct WorkspaceRightRailView: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Task Context")
+                Text("Workspace Context")
                     .font(Stanford.heading(15))
                     .lineLimit(1)
-                Text("Workspace: \(workspace.name)")
+                Text(workspace.name)
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -325,57 +216,6 @@ struct WorkspaceRightRailView: View {
         .padding(.top, 12)
         .padding(.horizontal, 14)
         .padding(.bottom, 8)
-    }
-
-    // MARK: - Compact Tab Strip
-
-    private var tabStrip: some View {
-        HStack(spacing: Stanford.railTabStripSpacing) {
-            ForEach(WorkspaceRightRailTab.allCases) { tab in
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
-                        selectedTab = tab
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: tab.icon)
-                            .font(Stanford.ui(12, weight: .semibold))
-                        Text(tab.title)
-                            .font(Stanford.caption(11).weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                    }
-                    .foregroundStyle(selectedTab == tab ? Stanford.lagunita : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 30)
-                    .contentShape(Rectangle())
-                    .background(selectedTab == tab ? Stanford.lagunita.opacity(0.12) : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius - 1))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(Stanford.railTabStripPadding)
-        .liquidSurface(
-            cornerRadius: Stanford.railCompactCardCornerRadius + 1,
-            interactive: true,
-            fallbackFill: Color.primary.opacity(0.03),
-            fallbackStrokeOpacity: 0
-        )
-        .padding(.horizontal, 14)
-        .padding(.bottom, 10)
-    }
-
-    @ViewBuilder
-    private var selectedTabContent: some View {
-        switch selectedTab {
-        case .configure:
-            configurePanel
-        case .usage:
-            usagePanel
-        case .logs:
-            logsPanel
-        }
     }
 
     // MARK: - Unified Configure Panel
@@ -412,13 +252,6 @@ struct WorkspaceRightRailView: View {
                 workspaceContextPanel
             }
 
-            collapsibleSection(
-                "Activity",
-                summary: activitySummary,
-                isCollapsed: $isActivityCollapsed
-            ) {
-                activitySection
-            }
         }
         .tint(Stanford.lagunita)
         .onAppear {
@@ -1668,110 +1501,6 @@ struct WorkspaceRightRailView: View {
         .help(help ?? subtitle)
     }
 
-    private var activitySection: some View {
-        VStack(spacing: Stanford.railListSpacing) {
-            RailActivityButton(
-                title: "Usage",
-                subtitle: usageActivitySubtitle,
-                icon: "chart.bar",
-                color: usageActivityColor,
-                progress: workspaceBudgetProgress,
-                status: usageActivityStatus,
-                action: onShowDashboard
-            )
-
-            RailActivityButton(
-                title: "Logs",
-                subtitle: logsActivitySubtitle,
-                icon: "doc.text.magnifyingglass",
-                color: logsActivityColor,
-                progress: nil,
-                status: logsActivityStatus,
-                action: onShowLogs
-            )
-        }
-    }
-
-    private var usageActivitySubtitle: String {
-        "\(workspace.tasks.count) tasks · \(Formatters.formatTokens(workspace.totalTokens)) tokens"
-    }
-
-    private var workspaceBudgetTotal: Int {
-        workspace.tasks.reduce(0) { partial, task in
-            guard task.tokenBudget > 0 else { return partial }
-            return partial + task.tokenBudget
-        }
-    }
-
-    private var workspaceBudgetProgress: Double? {
-        guard workspaceBudgetTotal > 0 else { return nil }
-        return Double(workspace.totalTokens) / Double(workspaceBudgetTotal)
-    }
-
-    private var usageActivityStatus: String {
-        guard let progress = workspaceBudgetProgress else {
-            return "No budget limit"
-        }
-        if progress >= 1 { return "Over budget" }
-        if progress >= 0.85 { return "Near budget" }
-        return "\(Int(progress * 100))% of budget"
-    }
-
-    private var usageActivityColor: Color {
-        guard let progress = workspaceBudgetProgress else { return Stanford.lagunita }
-        if progress >= 1 { return Stanford.failed }
-        if progress >= 0.85 { return Stanford.poppy }
-        return Stanford.lagunita
-    }
-
-    private var recentLogEntriesForSummary: [LogEntry] {
-        AppLogger.entries
-    }
-
-    private var todayLogEntries: [LogEntry] {
-        let calendar = Calendar.current
-        return recentLogEntriesForSummary.filter { calendar.isDateInToday($0.timestamp) }
-    }
-
-    private var todayErrorCount: Int {
-        todayLogEntries.filter { $0.logLevel == .error }.count
-    }
-
-    private var todayWarningCount: Int {
-        todayLogEntries.filter { $0.logLevel == .warning }.count
-    }
-
-    private var logsActivitySubtitle: String {
-        "\(logEntryCount) runtime entries"
-    }
-
-    private var logsActivityStatus: String {
-        if todayErrorCount > 0 {
-            return "\(todayErrorCount) \(todayErrorCount == 1 ? "error" : "errors") today"
-        }
-        if todayWarningCount > 0 {
-            return "\(todayWarningCount) \(todayWarningCount == 1 ? "warning" : "warnings") today"
-        }
-        return "No errors today"
-    }
-
-    private var logsActivityColor: Color {
-        if todayErrorCount > 0 { return Stanford.failed }
-        if todayWarningCount > 0 { return Stanford.poppy }
-        return Stanford.sky
-    }
-
-    private var activitySummary: String {
-        let taskCount = workspace.tasks.count
-        let taskLabel = taskCount == 1 ? "1 task" : "\(taskCount) tasks"
-        let tokenLabel = "\(Formatters.formatTokens(workspace.totalTokens)) tokens"
-        if failedTasks.isEmpty {
-            return "\(taskLabel) · \(tokenLabel)"
-        }
-        let issueLabel = failedTasks.count == 1 ? "1 needs review" : "\(failedTasks.count) need review"
-        return "\(taskLabel) · \(issueLabel)"
-    }
-
     // MARK: - Access Section
 
     private var accessSection: some View {
@@ -2046,7 +1775,6 @@ struct WorkspaceRightRailView: View {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
         isContextCollapsed = true
-        isActivityCollapsed = true
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
@@ -2262,123 +1990,6 @@ struct WorkspaceRightRailView: View {
                 .lineLimit(2)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
-        }
-    }
-
-    private var usagePanel: some View {
-        VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
-            RailActionButton(
-                title: "Usage Dashboard",
-                subtitle: "Full report with filters and breakdowns",
-                icon: "chart.bar",
-                color: Stanford.poppy,
-                action: onShowDashboard
-            )
-
-            // Stats grid — compact inline rows
-            inspectorSection("Stats") {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: Stanford.railListSpacing) {
-                    RailMetricCard(title: "Tasks", value: "\(workspace.tasks.count)", color: Stanford.lagunita)
-                    RailMetricCard(title: "Active", value: "\(activeTasks.count)", color: Stanford.running)
-                    RailMetricCard(title: "Done", value: "\(completedTasks.count)", color: Stanford.completed)
-                    RailMetricCard(title: "Failed", value: "\(failedTasks.count)", color: Stanford.failed)
-                    RailMetricCard(title: "Tokens", value: Formatters.formatTokens(workspace.totalTokens), color: Stanford.poppy)
-                    RailMetricCard(title: "Cost", value: String(format: "$%.2f", workspace.totalCost), color: Stanford.sky)
-                }
-
-                if let progress = workspaceBudgetProgress {
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("Budget")
-                                .font(Stanford.caption(11).weight(.medium))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(Formatters.formatTokens(workspace.totalTokens)) / \(Formatters.formatTokens(workspaceBudgetTotal))")
-                                .font(Stanford.caption(11).weight(.medium))
-                                .foregroundStyle(usageActivityColor)
-                        }
-                        ProgressView(value: min(max(progress, 0), 1))
-                            .progressViewStyle(.linear)
-                            .tint(usageActivityColor)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color.primary.opacity(0.03))
-                    .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
-                }
-            }
-
-            // Recent activity — flat rows
-            inspectorSection("Recent Activity") {
-                if recentTasks.isEmpty {
-                    Text("No task history yet")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(recentTasks.prefix(5))) { task in
-                            CompactTaskUsageRow(task: task)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var logsPanel: some View {
-        VStack(alignment: .leading, spacing: Stanford.railPanelSpacing) {
-            VStack(spacing: Stanford.railListSpacing) {
-                RailActionButton(
-                    title: "Logs Viewer",
-                    subtitle: "Full log viewer with filters and search",
-                    icon: "doc.text.magnifyingglass",
-                    color: Stanford.sky,
-                    action: onShowLogs
-                )
-
-                RailActionButton(
-                    title: "Open Log Folder",
-                    subtitle: AppLogger.mainLogFile.deletingLastPathComponent().path,
-                    icon: "folder",
-                    color: Stanford.paloAltoGreen,
-                    action: {
-                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppLogger.mainLogFile.deletingLastPathComponent().path)
-                    }
-                )
-            }
-
-            inspectorSectionWithTrailing("Recent Entries") {
-                HStack(spacing: 8) {
-                    RailCountBadge(count: logEntryCount)
-                    RailCountBadge(logsActivityStatus)
-
-                    Button {
-                        refreshRecentLogEntries()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(Stanford.ui(11))
-                            .foregroundStyle(.secondary)
-                            .frame(width: Stanford.railBadgeHeight, height: Stanford.railBadgeHeight)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Refresh logs")
-                }
-            } content: {
-                if logEntries.isEmpty {
-                    Text("Runtime logs will appear here as the app runs.")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(logEntries.suffix(8).reversed())) { entry in
-                            CompactLogRow(entry: entry, timeFormatter: Self.logTimeFormatter)
-                        }
-                    }
-                }
-            }
-        }
-        .onAppear {
-            refreshRecentLogEntries()
         }
     }
 
@@ -2643,124 +2254,6 @@ struct CapabilityRailPackagePresentation: Equatable {
     }
 }
 
-private struct RailActionButton: View {
-    let title: String
-    let subtitle: String
-    let icon: String
-    let color: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(13, weight: .semibold))
-                    .foregroundStyle(color)
-                    .frame(width: Stanford.railIconFrame, height: Stanford.railIconFrame)
-                    .background(color.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(Stanford.body(13).weight(.medium))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-            }
-            .padding(.vertical, 5)
-            .padding(.horizontal, 8)
-            .frame(height: Stanford.railActionRowHeight, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .liquidSurface(
-                cornerRadius: Stanford.railCompactCardCornerRadius,
-                interactive: true,
-                fallbackFill: Color.primary.opacity(0.03),
-                fallbackStrokeOpacity: 0
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct RailActivityButton: View {
-    let title: String
-    let subtitle: String
-    let icon: String
-    let color: Color
-    let progress: Double?
-    let status: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Image(systemName: icon)
-                        .font(Stanford.ui(13, weight: .semibold))
-                        .foregroundStyle(color)
-                        .frame(width: Stanford.railIconFrame, height: Stanford.railIconFrame)
-                        .background(color.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title)
-                            .font(Stanford.body(13).weight(.medium))
-                            .foregroundStyle(.primary)
-                        Text(subtitle)
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Text(status)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(color)
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(color.opacity(0.10))
-                        .clipShape(Capsule())
-
-                    Image(systemName: "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.quaternary)
-                }
-
-                if let progress {
-                    ProgressView(value: min(max(progress, 0), 1))
-                        .progressViewStyle(.linear)
-                        .tint(color)
-                        .frame(height: 3)
-                        .help(status)
-                }
-            }
-            .padding(.vertical, 7)
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .liquidSurface(
-                cornerRadius: Stanford.railCompactCardCornerRadius,
-                interactive: true,
-                fallbackFill: Color.primary.opacity(0.03),
-                fallbackStrokeOpacity: 0
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 private struct RailCountBadge: View {
     let text: String
 
@@ -2785,32 +2278,6 @@ private struct RailCountBadge: View {
                     style: .continuous
                 )
             )
-    }
-}
-
-private struct RailMetricCard: View {
-    let title: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(Stanford.heading(15))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-
-            Text(title)
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
     }
 }
 
@@ -3024,88 +2491,6 @@ private struct CapabilityStatusBadge: View {
             .padding(.vertical, 1)
             .background(color.opacity(0.1))
             .clipShape(Capsule())
-    }
-}
-
-private struct CompactTaskUsageRow: View {
-    let task: AgentTask
-
-    private var statusText: String {
-        task.status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-
-    private var statusColor: Color {
-        switch task.status {
-        case .draft: Stanford.plum
-        case .queued, .cancelled: Stanford.sandstone
-        case .running: Stanford.running
-        case .pendingUser: Stanford.pendingUser
-        case .completed: Stanford.completed
-        case .failed, .budgetExceeded: Stanford.failed
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 5, height: 5)
-
-            Text(task.title)
-                .font(Stanford.body(12).weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            Text("\(Formatters.formatTokens(task.tokensUsed))")
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-                .monospacedDigit()
-        }
-        .padding(.vertical, 4)
-        .frame(height: Stanford.railCompactRowHeight, alignment: .leading)
-    }
-}
-
-private struct CompactLogRow: View {
-    let entry: LogEntry
-    let timeFormatter: DateFormatter
-
-    private var levelColor: Color {
-        switch entry.logLevel {
-        case .debug: .secondary
-        case .info: Stanford.lagunita
-        case .warning: Stanford.poppy
-        case .error: Stanford.failed
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
-                Text(timeFormatter.string(from: entry.timestamp))
-                    .font(Stanford.mono(11))
-                    .foregroundStyle(.quaternary)
-
-                Text(entry.level.uppercased())
-                    .font(Stanford.ui(11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(levelColor)
-
-                Text(entry.category)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-
-            Text(entry.message)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 4)
-        .frame(height: Stanford.railCompactLogRowHeight, alignment: .leading)
     }
 }
 

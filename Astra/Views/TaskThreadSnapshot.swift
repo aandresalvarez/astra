@@ -606,16 +606,7 @@ struct TaskThreadSnapshot: Sendable {
         var items: [TaskConversationItem] = [
             .userMessage(text: goal, timestamp: createdAt)
         ]
-        let conversationEvents = events.filter {
-            $0.type == "user.message" ||
-            $0.type == "agent.response" ||
-            $0.type == TaskPlanConversationEventTypes.userMessage ||
-            $0.type == TaskPlanConversationEventTypes.assistantMessage ||
-            systemTimelineEventTypes.contains($0.type) ||
-            $0.type == "schedule.result" ||
-            $0.type == "system.info" ||
-            $0.type == "recap.result"
-        }
+        let conversationEvents = events.filter(Self.isVisibleConversationEvent)
         let visibleRuns = runs.filter {
             shouldShowAgentResponse(
                 for: $0,
@@ -646,12 +637,16 @@ struct TaskThreadSnapshot: Sendable {
                 items.append(.planUserMessage(text: event.payload, timestamp: event.timestamp))
             case TaskPlanConversationEventTypes.assistantMessage:
                 items.append(.planAssistantMessage(text: event.payload, timestamp: event.timestamp))
-            case let type where systemTimelineEventTypes.contains(type):
+            case let type where visibleSystemTimelineEventTypes.contains(type):
                 items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp))
             case "schedule.result":
-                items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
+                if isActionableScheduleResult(event.payload) {
+                    items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
+                }
             case "system.info":
-                items.append(.systemInfo(text: event.payload, timestamp: event.timestamp))
+                if isVisibleSystemInfo(event.payload) {
+                    items.append(.systemInfo(text: event.payload, timestamp: event.timestamp))
+                }
             case "recap.result":
                 items.append(.recapResult(text: event.payload, timestamp: event.timestamp))
             default:
@@ -667,15 +662,58 @@ struct TaskThreadSnapshot: Sendable {
         return items
     }
 
-    private static let systemTimelineEventTypes: Set<String> = [
-        "task.started",
-        "task.approved",
-        TaskPlanEventTypes.approved,
-        TaskPlanEventTypes.cancelled,
-        TaskPlanEventTypes.executionStarted,
-        TaskPlanEventTypes.executionCompleted,
+    private static func isVisibleConversationEvent(_ event: TaskEventSnapshot) -> Bool {
+        switch event.type {
+        case "user.message",
+             "agent.response",
+             TaskPlanConversationEventTypes.userMessage,
+             TaskPlanConversationEventTypes.assistantMessage,
+             "recap.result":
+            return true
+        case "system.info":
+            return isVisibleSystemInfo(event.payload)
+        case "schedule.result":
+            return isActionableScheduleResult(event.payload)
+        case let type where visibleSystemTimelineEventTypes.contains(type):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static let visibleSystemTimelineEventTypes: Set<String> = [
         TaskPlanEventTypes.executionFailed
     ]
+
+    private static func isVisibleSystemInfo(_ payload: String) -> Bool {
+        let normalized = payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return false }
+
+        let hiddenLifecycleMarkers = [
+            "started working on:",
+            "stream started",
+            "approval granted",
+            "plan approved",
+            "plan execution started",
+            "plan execution completed",
+            "task moved back to draft"
+        ]
+        return !hiddenLifecycleMarkers.contains { normalized.contains($0) }
+    }
+
+    private static func isActionableScheduleResult(_ payload: String) -> Bool {
+        let normalized = payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return false }
+        return normalized.hasPrefix("failed") ||
+            normalized.hasPrefix("could not") ||
+            normalized.hasPrefix("invalid") ||
+            normalized.contains(" error") ||
+            normalized.contains(" failed")
+    }
 
     private static func systemTimelineText(for event: TaskEventSnapshot) -> String {
         switch event.type {

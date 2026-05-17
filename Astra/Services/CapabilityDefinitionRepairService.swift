@@ -74,9 +74,9 @@ enum CapabilityDefinitionRepairService {
         connectors: [Connector],
         workspaces: [Workspace]
     ) -> Int {
-        let packageSkillNames = Set(package.skills.map(\.name))
+        let packageSkillNames = Set(package.skills.map { normalizedName($0.name) })
         let packageSkills = skills.filter { skill in
-            skill.isGlobal && packageSkillNames.contains(skill.name)
+            skill.isGlobal && packageSkillNames.contains(normalizedName(skill.name))
         }
         guard !packageSkills.isEmpty else { return 0 }
 
@@ -119,7 +119,7 @@ enum CapabilityDefinitionRepairService {
         serviceTypes: Set<String>,
         connectors: [Connector]
     ) -> Bool {
-        guard skill.name == pluginSkill.name else { return false }
+        guard normalizedName(skill.name) == normalizedName(pluginSkill.name) else { return false }
         guard isLikelyApprovedPackageCopy(skill, pluginSkill: pluginSkill) else { return false }
         if skill.isGlobal { return true }
 
@@ -138,6 +138,10 @@ enum CapabilityDefinitionRepairService {
     }
 
     private static func normalizedServiceType(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedName(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 

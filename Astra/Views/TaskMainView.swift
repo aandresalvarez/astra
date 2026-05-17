@@ -71,6 +71,10 @@ struct TaskMainView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
@@ -99,7 +103,7 @@ struct TaskMainView: View {
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
     @State private var isPlanning = false
-    @State private var isAgentPlanCompletedExpanded = false
+    @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
@@ -123,7 +127,12 @@ struct TaskMainView: View {
 
     private var availableSkills: [Skill] {
         guard let workspace = task.workspace else { return [] }
-        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+        return WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools
+        ).activeSkills
     }
 
     private func logTaskCapabilityContext(
@@ -1403,7 +1412,7 @@ struct TaskMainView: View {
 
     // MARK: - Chat Bubbles
 
-    private func chatUserBubble(text: String, timestamp: Date) -> some View {
+    private func chatUserBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Spacer(minLength: 120)
             VStack(alignment: .trailing, spacing: 4) {
@@ -1431,21 +1440,15 @@ struct TaskMainView: View {
                         .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
                     )
                     .textSelection(.enabled)
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
-                    .padding(.trailing, 4)
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Your message: \(text)")
     }
 
-    private func scheduleResultBubble(text: String, timestamp: Date) -> some View {
+    private func scheduleResultBubble(text: String, timestamp _: Date) -> some View {
         timelineEventRow(
             text: text,
-            timestamp: timestamp,
             icon: "arrow.triangle.2.circlepath",
             tint: Stanford.poppy
         )
@@ -1453,10 +1456,9 @@ struct TaskMainView: View {
         .accessibilityLabel("Routine result: \(text)")
     }
 
-    private func systemInfoBubble(text: String, timestamp: Date) -> some View {
+    private func systemInfoBubble(text: String, timestamp _: Date) -> some View {
         timelineEventRow(
             text: text,
-            timestamp: timestamp,
             icon: "info.circle",
             tint: Stanford.coolGrey
         )
@@ -1466,7 +1468,6 @@ struct TaskMainView: View {
 
     private func timelineEventRow(
         text: String,
-        timestamp: Date,
         icon: String,
         tint: Color
     ) -> some View {
@@ -1487,10 +1488,6 @@ struct TaskMainView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .tint(Stanford.link)
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta(11))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize()
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
@@ -1503,7 +1500,7 @@ struct TaskMainView: View {
         .padding(.horizontal, 14)
     }
 
-    private func recapBubble(text: String, timestamp: Date) -> some View {
+    private func recapBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "doc.text")
                 .font(Stanford.body(14))
@@ -1516,10 +1513,6 @@ struct TaskMainView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
-
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1537,7 +1530,7 @@ struct TaskMainView: View {
         .accessibilityLabel("Task recap")
     }
 
-    private func planAssistantBubble(text: String, timestamp: Date) -> some View {
+    private func planAssistantBubble(text: String, timestamp _: Date) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "list.bullet.clipboard")
                 .font(Stanford.body(14))
@@ -1550,9 +1543,6 @@ struct TaskMainView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
-                Text(timestamp, style: .relative)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(Stanford.coolGrey)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1584,7 +1574,6 @@ struct TaskMainView: View {
         let hasUserFacingOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !run.hasVPNWarning
         let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
         let showResponseActions = run.status != .running
-        let hasRunMetadata = run.tokensUsed > 0 || run.completedAt != nil
 
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
@@ -1647,15 +1636,7 @@ struct TaskMainView: View {
                 runCancellationNotice(run)
             }
 
-            if shouldShowRunActivityDisclosure(runActivityPresentation) {
-                runActivityDisclosure(
-                    run: run,
-                    presentation: runActivityPresentation,
-                    notices: displayNotices
-                )
-            }
-
-            if showResponseActions || hasRunMetadata {
+            if showResponseActions || shouldShowRunFooterSummary(run) {
                 HStack(spacing: 12) {
                     if showResponseActions {
                         Button {
@@ -1690,27 +1671,119 @@ struct TaskMainView: View {
                         .help("Fork from here")
                     }
 
-                    Spacer()
-
-                    HStack(spacing: 8) {
-                        if run.tokensUsed > 0 {
-                            Text(Formatters.formatTokens(run.tokensUsed))
-                                .font(Stanford.chatMeta())
-                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
-                        }
-                        if let completed = run.completedAt {
-                            Text(formatDuration(Int(completed.timeIntervalSince(run.startedAt))))
-                                .font(Stanford.chatMeta())
-                                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
-                        }
-                    }
+                    runFooterSummaryLabel(
+                        run: run,
+                        presentation: runActivityPresentation,
+                        notices: displayNotices
+                    )
                 }
                 .padding(.top, 2)
+            }
+
+            if shouldShowRunActivityDisclosure(runActivityPresentation) {
+                runActivityDisclosure(
+                    run: run,
+                    presentation: runActivityPresentation,
+                    notices: displayNotices
+                )
             }
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    @ViewBuilder
+    private func runFooterSummaryLabel(
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        notices: [TaskRunNotice]
+    ) -> some View {
+        if run.status == .running && run.completedAt == nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(runFooterSummaryParts(
+                    run: run,
+                    presentation: presentation,
+                    notices: notices,
+                    now: context.date
+                ).joined(separator: " · "))
+                    .font(Stanford.chatMeta())
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                    .monospacedDigit()
+            }
+        } else {
+            Text(runFooterSummaryParts(
+                run: run,
+                presentation: presentation,
+                notices: notices,
+                now: Date()
+            ).joined(separator: " · "))
+                .font(Stanford.chatMeta())
+                .foregroundStyle(Stanford.coolGrey.opacity(0.5))
+                .monospacedDigit()
+        }
+    }
+
+    private func shouldShowRunFooterSummary(_ run: TaskRunSnapshot) -> Bool {
+        run.status == .running || run.completedAt != nil || run.tokensUsed > 0 || run.exitCode != nil || !run.stopReason.isEmpty
+    }
+
+    private func runFooterSummaryParts(
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        notices: [TaskRunNotice],
+        now: Date
+    ) -> [String] {
+        var parts = [runFooterStatusLabel(run: run, notices: notices)]
+        let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
+        if toolCallCount > 0 {
+            parts.append("\(toolCallCount) \(toolCallCount == 1 ? "tool" : "tools")")
+        }
+        if presentation.files.count > 0 {
+            parts.append("\(presentation.files.count) \(presentation.files.count == 1 ? "file" : "files")")
+        }
+        if shouldShowBudgetTokenCount(run) {
+            let used = max(task.tokensUsed, run.tokensUsed)
+            parts.append("Budget \(Formatters.formatTokens(used))/\(Formatters.formatTokens(task.tokenBudget))")
+        }
+        if let duration = runFooterDurationLabel(run, now: now) {
+            parts.append(duration)
+        }
+        return parts
+    }
+
+    private func runFooterStatusLabel(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
+        if run.status == .running {
+            return "Running"
+        }
+        if runStoppedByPolicy(run, notices: notices) {
+            return "Blocked"
+        }
+        if runStoppedBySystem(run, notices: notices) {
+            return "Stopped"
+        }
+        switch run.status {
+        case .completed: return "Completed"
+        case .failed: return "Failed"
+        case .cancelled: return "Cancelled"
+        case .budgetExceeded: return "Over budget"
+        case .timeout: return "Timed out"
+        case .running: return "Running"
+        }
+    }
+
+    private func runFooterDurationLabel(_ run: TaskRunSnapshot, now: Date) -> String? {
+        if run.status == .running && run.completedAt == nil {
+            return "Working for \(formatChatDuration(Int(now.timeIntervalSince(run.startedAt))))"
+        }
+        guard let completed = run.completedAt else { return nil }
+        return "Worked for \(formatChatDuration(Int(completed.timeIntervalSince(run.startedAt))))"
+    }
+
+    private func shouldShowBudgetTokenCount(_ run: TaskRunSnapshot) -> Bool {
+        guard task.tokenBudget > 0 else { return false }
+        let used = max(task.tokensUsed, run.tokensUsed)
+        return task.status == .budgetExceeded || Double(used) >= Double(task.tokenBudget) * 0.8
     }
 
     private func shouldShowRunActivityDisclosure(_ presentation: RunActivityPresentation) -> Bool {
@@ -1779,23 +1852,9 @@ struct TaskMainView: View {
 
     private func runActivityDisclosureTitle(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
         if run.status == .running {
-            return "Working"
+            return "Activity"
         }
-        if notices.contains(where: { notice in
-            notice.type == "error" ||
-                notice.type == "budget.exceeded" ||
-                notice.type == "budget.warning" ||
-                notice.type == "permission.approval.requested"
-        }) || run.status == .cancelled {
-            if runStoppedByPolicy(run, notices: notices) {
-                return "Run blocked"
-            }
-            if runStoppedBySystem(run, notices: notices) {
-                return "Run stopped"
-            }
-            return "Run status"
-        }
-        return "Run details"
+        return "Details"
     }
 
     private func runActivityDetails(
@@ -2137,12 +2196,12 @@ struct TaskMainView: View {
         }
     }
 
-    private func rawOutputDisclosure(_ rawPayload: String) -> some View {
+    private func rawOutputDisclosure(_ rawPayload: String, label: String = "Show raw output") -> some View {
         DisclosureGroup {
             rawOutputBlock(rawPayload)
                 .padding(.top, 4)
         } label: {
-            Text("Show raw output")
+            Text(label)
                 .font(Stanford.chatMeta())
                 .foregroundStyle(Stanford.coolGrey)
         }
@@ -2366,6 +2425,7 @@ struct TaskMainView: View {
 
     private func networkAccessTechnicalDetails(_ run: TaskRunSnapshot) -> some View {
         let isExpanded = expandedRunNetworkDetails.contains(run.id)
+        let presentation = NetworkAccessTechnicalDetailsPresentation(output: run.output)
         return VStack(alignment: .leading, spacing: 8) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
@@ -2382,7 +2442,7 @@ struct TaskMainView: View {
                     Text("Technical details")
                         .font(Stanford.chatSection())
                     Spacer(minLength: 8)
-                    Text("Google Cloud policy response")
+                    Text(presentation.subtitle)
                         .font(Stanford.chatMeta())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -2392,15 +2452,37 @@ struct TaskMainView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                Text(run.output)
-                    .font(Stanford.chatRaw())
-                    .foregroundStyle(Stanford.coolGrey)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(Stanford.fog.opacity(0.45))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(presentation.summary)
+                        .font(Stanford.chatMeta(12))
+                        .foregroundStyle(Stanford.readingText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+
+                    if !presentation.facts.isEmpty {
+                        factList(presentation.facts)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(presentation.copyText, forType: .string)
+                        } label: {
+                            Label("Copy diagnostics", systemImage: "doc.on.doc")
+                                .font(Stanford.chatMeta())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Stanford.statusInfo)
+                        .help("Copy parsed diagnostics and the raw provider response")
+
+                        Spacer(minLength: 0)
+                    }
+
+                    rawOutputDisclosure(presentation.rawPayload, label: "Show raw provider response")
+                }
+                .padding(10)
+                .background(Stanford.fog.opacity(0.28))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -2642,79 +2724,51 @@ struct TaskMainView: View {
     }
 
     private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
-        let activeItems = items.filter { !$0.isDone }
-        let completedItems = items.filter(\.isDone)
+        let completedCount = items.filter(\.isDone).count
+        let totalCount = items.count
+        let progress = totalCount == 0 ? "No steps" : "\(completedCount)/\(totalCount) complete"
 
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "checklist")
-                    .font(Stanford.ui(12))
-                Text("Agent Plan")
-                    .font(Stanford.chatSection())
-                Spacer()
-                if !completedItems.isEmpty {
-                    Text("\(completedItems.count) done")
-                        .font(Stanford.chatMeta(10))
-                        .foregroundStyle(Stanford.paloAltoGreen)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Stanford.paloAltoGreen.opacity(0.10))
-                        .clipShape(Capsule())
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isAgentPlanExpanded.toggle()
                 }
-            }
-            .foregroundStyle(Stanford.coolGrey)
-
-            VStack(alignment: .leading, spacing: 6) {
-                if activeItems.isEmpty, !completedItems.isEmpty {
-                    HStack(alignment: .top, spacing: 8) {
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isAgentPlanExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(10))
+                        .frame(width: 12)
+                    Image(systemName: "checklist")
+                        .font(Stanford.ui(12))
+                    Text("Plan")
+                        .font(Stanford.chatSection())
+                    Text(progress)
+                        .font(Stanford.chatMeta())
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if completedCount == totalCount, totalCount > 0 {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(Stanford.ui(12))
+                            .font(Stanford.ui(11))
                             .foregroundStyle(Stanford.paloAltoGreen)
-                            .frame(width: 14, height: 16)
-                        Text("All plan steps are complete")
-                            .font(Stanford.chatMeta(13))
-                            .foregroundStyle(Stanford.black)
-                        Spacer(minLength: 0)
                     }
-                } else {
-                    ForEach(activeItems) { item in
+                }
+                .foregroundStyle(Stanford.coolGrey)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isAgentPlanExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(items) { item in
                         agentPlanItemRow(item)
                     }
                 }
-
-                if !completedItems.isEmpty {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            isAgentPlanCompletedExpanded.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: isAgentPlanCompletedExpanded ? "chevron.down" : "chevron.right")
-                                .font(Stanford.ui(10))
-                                .frame(width: 12)
-                            Text("\(completedItems.count) completed \(completedItems.count == 1 ? "step" : "steps")")
-                                .font(Stanford.chatSection())
-                            Spacer(minLength: 0)
-                        }
-                        .foregroundStyle(Stanford.coolGrey)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    if isAgentPlanCompletedExpanded {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(completedItems) { item in
-                                agentPlanItemRow(item)
-                            }
-                        }
-                        .padding(.top, 2)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                }
+                .padding(.top, 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(Stanford.fog.opacity(0.65))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
@@ -4304,6 +4358,29 @@ struct TaskMainView: View {
     private func formatDuration(_ seconds: Int) -> String {
         if seconds < 60 { return "\(seconds)s" }
         return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    private func formatChatDuration(_ seconds: Int) -> String {
+        let clamped = max(0, seconds)
+        if clamped < 60 {
+            return "\(clamped) sec"
+        }
+
+        let totalMinutes = clamped / 60
+        let remainingSeconds = clamped % 60
+        if totalMinutes < 60 {
+            if remainingSeconds == 0 {
+                return "\(totalMinutes) min"
+            }
+            return "\(totalMinutes) min, \(remainingSeconds) sec"
+        }
+
+        let hours = totalMinutes / 60
+        let remainingMinutes = totalMinutes % 60
+        if remainingMinutes == 0 {
+            return "\(hours) hr"
+        }
+        return "\(hours) hr, \(remainingMinutes) min"
     }
 
 }

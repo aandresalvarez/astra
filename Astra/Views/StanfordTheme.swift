@@ -289,7 +289,6 @@ enum Stanford {
     static var railActionRowHeight: CGFloat { density(40) }
     static var railResourceRowHeight: CGFloat { density(42) }
     static var railCompactRowHeight: CGFloat { density(30) }
-    static var railCompactLogRowHeight: CGFloat { density(40) }
     static var railInfoLabelWidth: CGFloat { density(64) }
     static var inspectorLabelWidth: CGFloat { density(72) }
 
