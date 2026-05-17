@@ -1438,6 +1438,9 @@ struct PluginInstallSheet: View {
     let onInstalled: (PluginPackage) -> Void
 
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
     @State private var credentialValues: [String: String] = [:]
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
@@ -1446,6 +1449,7 @@ struct PluginInstallSheet: View {
     @State private var validationPassed = false
     @State private var isValidatingSetup = false
     @State private var lastValidationTraceID: String?
+    @State private var copiedSetupSourceName: String?
 
     private let validationPreflightCache = PreflightCache()
 
@@ -1499,6 +1503,10 @@ struct PluginInstallSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     setupStepperSection
+
+                    if !copyableSetupSourceWorkspaces.isEmpty {
+                        copySetupSection
+                    }
 
                     // Configuration fields per connector
                     ForEach(package.connectors, id: \.name) { connector in
@@ -1609,7 +1617,7 @@ struct PluginInstallSheet: View {
             "package_name": package.name,
             "workspace_id": workspace.id.uuidString,
             "credential_input_count": String(credentialValues.count),
-            "config_input_count": String(configValues.count),
+            "config_input_count": String(installConfigValues.count),
             "base_url_override_count": String(baseURLValues.count)
         ])
         do {
@@ -1618,7 +1626,7 @@ struct PluginInstallSheet: View {
                 into: workspace,
                 modelContext: modelContext,
                 credentialInputs: credentialValues,
-                configInputs: configValues,
+                configInputs: installConfigValues,
                 baseURLOverrides: baseURLValues,
                 traceID: traceID
             )
@@ -1670,6 +1678,91 @@ struct PluginInstallSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var copySetupSection: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: copiedSetupSourceName == nil ? "square.on.square" : "checkmark.circle.fill")
+                .font(Stanford.ui(12, weight: .medium))
+                .foregroundStyle(copiedSetupSourceName == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(copiedSetupSourceName.map { "Copied from \($0)" } ?? "Reuse setup")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                Text(copySetupSourceSummary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Menu {
+                ForEach(copyableSetupSourceWorkspaces, id: \.id) { sourceWorkspace in
+                    Button(sourceWorkspace.name) {
+                        copySetup(from: sourceWorkspace)
+                    }
+                }
+            } label: {
+                Label("Copy From", systemImage: "arrow.down.doc")
+                    .font(Stanford.caption(11).weight(.medium))
+            }
+            .menuStyle(.button)
+            .fixedSize()
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.035))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var copyableSetupSourceWorkspaces: [Workspace] {
+        capabilitySetupSourceWorkspaces.filter { sourceWorkspace in
+            sourceWorkspace.id != workspace.id &&
+            hasCopyableSetupInputs(from: sourceWorkspace)
+        }
+    }
+
+    private var copySetupSourceSummary: String {
+        let count = copyableSetupSourceWorkspaces.count
+        return count == 1 ? "1 workspace has this capability" : "\(count) workspaces have this capability"
+    }
+
+    private var installConfigValues: [String: String] {
+        var values = configValues
+        let environmentKeys = package.skills.flatMap(\.environmentKeys)
+        for connector in package.connectors {
+            let baseURL = resolvedBaseURL(for: connector)
+            for key in environmentKeys where CapabilitySetupCopier.shouldMapBaseURL(baseURL, toEnvironmentKey: key, connector: connector) {
+                values[key] = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return values
+    }
+
+    private func copySetup(from sourceWorkspace: Workspace) {
+        let inputs = CapabilitySetupCopier().installationInputs(
+            for: package,
+            from: sourceWorkspace,
+            globalConnectors: globalConnectors
+        )
+        credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
+        configValues.merge(inputs.configInputs) { _, copied in copied }
+        baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }
+        copiedSetupSourceName = sourceWorkspace.name
+        resetValidation()
+    }
+
+    private func hasCopyableSetupInputs(from sourceWorkspace: Workspace) -> Bool {
+        let inputs = CapabilitySetupCopier().installationInputs(
+            for: package,
+            from: sourceWorkspace,
+            globalConnectors: globalConnectors
+        )
+        return !inputs.credentialInputs.isEmpty ||
+            !inputs.configInputs.isEmpty ||
+            !inputs.baseURLOverrides.isEmpty
     }
 
     private var validationStatusSection: some View {
@@ -1925,7 +2018,7 @@ struct PluginInstallSheet: View {
     }
 
     private var filledConfigInputCount: Int {
-        configValues.values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        installConfigValues.values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
     }
 
     private func resetValidation() {

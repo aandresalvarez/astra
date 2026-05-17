@@ -513,8 +513,8 @@ struct PluginCatalogSeedTests {
         #expect(!FileManager.default.fileExists(atPath: deprecatedPath))
     }
 
-    @Test("Seed skips overwrite when on-disk version >= built-in")
-    func seedSkipsSameVersion() throws {
+    @Test("Seed overwrites same-version built-in drift")
+    func seedOverwritesSameVersionDrift() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -530,23 +530,21 @@ struct PluginCatalogSeedTests {
             from: Data(contentsOf: URL(fileURLWithPath: path))
         )
 
-        // Manually write a modified description at same version
+        // Manually write a modified description at the same version.
         let customPkg = firstPkg
-        // Keep same version but change description to prove it's not overwritten
         let customJSON = try JSONEncoder().encode(customPkg)
-        // Write a marker we can detect
         var jsonObj = try JSONSerialization.jsonObject(with: customJSON) as! [String: Any]
         jsonObj["description"] = "CUSTOM_MARKER"
         let markedData = try JSONSerialization.data(withJSONObject: jsonObj, options: .prettyPrinted)
         try markedData.write(to: URL(fileURLWithPath: path))
 
-        // Re-seed — same version should NOT overwrite
+        // Re-seed: same-version built-in drift should be restored from the catalog source.
         catalog.seedBuiltInPlugins()
 
         let afterSeed = try JSONSerialization.jsonObject(
             with: Data(contentsOf: URL(fileURLWithPath: path))
         ) as? [String: Any]
-        #expect(afterSeed?["description"] as? String == "CUSTOM_MARKER")
+        #expect(afterSeed?["description"] as? String == firstPkg.description)
     }
 
     @Test("Built-in packages all have valid versions")

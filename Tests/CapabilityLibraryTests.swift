@@ -270,7 +270,7 @@ struct CapabilityLibraryTests {
         #expect(!library.hasUpdate(for: same))
     }
 
-    @Test("seed approved packages writes package files and preserves newer local versions")
+    @Test("seed approved packages writes package files and preserves newer built-in versions")
     func seedApprovedPackages() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-capability-seed-\(UUID().uuidString)", isDirectory: true)
@@ -299,6 +299,78 @@ struct CapabilityLibraryTests {
         approved.version = "0.9.0"
         try library.seedApprovedPackages([approved])
         #expect(library.installedPackage(id: approved.id)?.version == "1.0.0")
+    }
+
+    @Test("seed approved packages overwrites same-version built-in drift")
+    func seedApprovedPackagesOverwritesSameVersionDrift() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-seed-drift-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let approved = PluginPackage(
+            id: "stanford.approved.drift",
+            name: "Approved Drift",
+            icon: "checkmark.seal",
+            description: "Canonical approved capability",
+            author: "Stanford",
+            category: "Approved",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.github]
+        )
+        var stale = approved
+        stale.name = "Old Approved Drift"
+        stale.description = "Stale same-version capability"
+        stale.browserAdapters = []
+
+        try library.install(stale, sourceMetadata: .builtIn())
+        try library.seedApprovedPackages([approved])
+
+        let installed = try #require(library.installedPackage(id: approved.id))
+        #expect(installed.name == "Approved Drift")
+        #expect(installed.description == "Canonical approved capability")
+        #expect(installed.browserAdapters == [BrowserSiteAdapterID.github])
+        #expect(installed.sourceMetadata == .builtIn())
+    }
+
+    @Test("seed approved packages prevents local packages from shadowing approved IDs")
+    func seedApprovedPackagesOverwritesLocalIDShadow() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-seed-shadow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let library = CapabilityLibrary(directory: root)
+        let approved = PluginPackage(
+            id: "stanford.approved.shadow",
+            name: "Approved Shadow",
+            icon: "checkmark.seal",
+            description: "Canonical approved capability",
+            author: "Stanford",
+            category: "Approved",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        var localShadow = approved
+        localShadow.name = "Local Shadow"
+        localShadow.description = "Should not shadow the approved built-in ID"
+        localShadow.version = "99.0.0"
+
+        try library.install(localShadow, sourceMetadata: .localLibrary())
+        try library.seedApprovedPackages([approved])
+
+        let installed = try #require(library.installedPackage(id: approved.id))
+        #expect(installed.name == "Approved Shadow")
+        #expect(installed.version == "1.0.0")
+        #expect(installed.sourceMetadata == .builtIn())
     }
 
     @Test("sync approved packages removes stale built-in packages but keeps local packages")

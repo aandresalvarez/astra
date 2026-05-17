@@ -100,19 +100,14 @@ struct CapabilityLibrary {
         try ensureDirectoryExists()
         let decoder = JSONDecoder()
         for package in packages {
+            let approved = approvedPackage(package)
             let url = packageURL(for: package.id)
             if let data = try? Data(contentsOf: url),
                let existing = try? decoder.decode(PluginPackage.self, from: data),
-               let existingVersion = SemanticVersion(string: existing.version),
-               let packageVersion = SemanticVersion(string: package.version),
-               existingVersion >= packageVersion {
+               shouldPreserveExistingPackage(existing, insteadOf: approved) {
                 continue
             }
 
-            var approved = package
-            if approved.sourceMetadata == nil {
-                approved.sourceMetadata = .builtIn()
-            }
             try install(approved, sourceMetadata: approved.sourceMetadata)
         }
     }
@@ -167,5 +162,39 @@ struct CapabilityLibrary {
         let scalars = id.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
         let sanitized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
         return sanitized.isEmpty ? "capability" : sanitized
+    }
+
+    private func approvedPackage(_ package: PluginPackage) -> PluginPackage {
+        var approved = package
+        if approved.sourceMetadata == nil {
+            approved.sourceMetadata = .builtIn()
+        }
+        return approved
+    }
+
+    private func shouldPreserveExistingPackage(_ existing: PluginPackage, insteadOf approved: PluginPackage) -> Bool {
+        if approved.sourceMetadata?.kind == "built-in", existing.sourceMetadata?.kind != "built-in" {
+            return false
+        }
+
+        if let existingVersion = SemanticVersion(string: existing.version),
+           let approvedVersion = SemanticVersion(string: approved.version) {
+            if existingVersion > approvedVersion {
+                return true
+            }
+            if existingVersion < approvedVersion {
+                return false
+            }
+        } else if existing.version != approved.version {
+            return false
+        }
+
+        return canonicalPackageData(existing) == canonicalPackageData(approved)
+    }
+
+    private func canonicalPackageData(_ package: PluginPackage) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(package)
     }
 }

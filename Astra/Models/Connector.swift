@@ -293,14 +293,14 @@ final class Connector {
         request.timeoutInterval = 10
 
         // For POST with api_key auth, send token as form body (e.g. REDCap).
-        // REDCap uses project info because it validates the token without
-        // exporting records or metadata that may contain PHI.
+        // REDCap uses the version endpoint for setup validation because it
+        // exercises token auth without reading project metadata or records.
         if method == "POST" && authMethod == "api_key" {
             let token = creds.first { $0.key.contains("TOKEN") || $0.key.contains("KEY") }?.value
                 ?? creds.first?.value ?? ""
             let encodedToken = token.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? token
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            request.httpBody = "token=\(encodedToken)&content=project&format=json&returnFormat=json".data(using: .utf8)
+            request.httpBody = "token=\(encodedToken)&content=version&format=json&returnFormat=json".data(using: .utf8)
         } else {
             ConnectorRequestBuilder.applyAuthentication(authMethod: authMethod, credentials: creds, to: &request)
             request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -353,9 +353,9 @@ final class Connector {
                     "connector_updated_at": Self.auditTimestamp(updatedAt),
                     "result": "success",
                     "http_status": String(http.statusCode),
-                    "endpoint_kind": "redcap.project"
+                    "endpoint_kind": "redcap.version"
                 ], uniquingKeysWith: { _, new in new }))
-                return (true, "REDCap project endpoint responded successfully")
+                return (true, "REDCap version endpoint responded successfully")
             }
 
             AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
@@ -366,7 +366,7 @@ final class Connector {
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": http.statusCode == 401 || http.statusCode == 403 ? "auth_failed" : "http_error",
                 "http_status": String(http.statusCode),
-                "endpoint_kind": "redcap.project"
+                "endpoint_kind": "redcap.version"
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "REDCap returned HTTP \(http.statusCode)")
         } catch {
@@ -377,7 +377,7 @@ final class Connector {
                 "credential_key_count": String(credentialKeys.count),
                 "connector_updated_at": Self.auditTimestamp(updatedAt),
                 "result": "request_failed",
-                "endpoint_kind": "redcap.project",
+                "endpoint_kind": "redcap.version",
                 "error_type": String(describing: type(of: error))
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, error.localizedDescription)

@@ -280,21 +280,8 @@ final class PluginCatalog {
             try? FileManager.default.removeItem(atPath: path)
         }
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let decoder = JSONDecoder()
-        for package in Self.builtInPackages {
-            let path = (dir as NSString).appendingPathComponent("\(package.id).json")
-            if let existingData = FileManager.default.contents(atPath: path),
-               let existing = try? decoder.decode(PluginPackage.self, from: existingData),
-               let existingVer = SemanticVersion(string: existing.version),
-               let builtInVer = SemanticVersion(string: package.version),
-               existingVer >= builtInVer {
-                continue
-            }
-            guard let data = try? encoder.encode(package) else { continue }
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
+        let library = CapabilityLibrary(directory: URL(fileURLWithPath: dir, isDirectory: true))
+        try? library.syncApprovedPackages(Self.builtInPackages)
     }
 
     // MARK: - Built-in Package Definitions (Curated)

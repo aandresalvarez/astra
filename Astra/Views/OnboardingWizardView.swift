@@ -88,6 +88,13 @@ struct OnboardingCapabilityConfiguration: Equatable {
         return inputs
     }
 
+    mutating func applyCopiedInputs(_ inputsByPackageID: [String: OnboardingCapabilityInstallationInputs]) {
+        for packageID in OnboardingCapabilitySetup.orderedPackageIDs(Set(inputsByPackageID.keys)) {
+            guard let inputs = inputsByPackageID[packageID] else { continue }
+            applyCopiedInputs(inputs, for: packageID)
+        }
+    }
+
     mutating func clearSecrets() {
         jiraAPIToken = ""
         redcapAPIToken = ""
@@ -124,6 +131,45 @@ struct OnboardingCapabilityConfiguration: Equatable {
 
     private func trimmed(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private mutating func applyCopiedInputs(
+        _ inputs: OnboardingCapabilityInstallationInputs,
+        for packageID: String
+    ) {
+        switch packageID {
+        case OnboardingCapabilitySetup.jiraPackageID:
+            jiraBaseURL = firstNonEmpty(
+                inputs.configInputs["JIRA_BASE_URL"],
+                inputs.baseURLOverrides["Jira"],
+                jiraBaseURL
+            )
+            jiraProjects = firstNonEmpty(inputs.configInputs["JIRA_PROJECTS"], jiraProjects)
+            jiraEmail = firstNonEmpty(inputs.credentialInputs["JIRA_EMAIL"], jiraEmail)
+            jiraAPIToken = firstNonEmpty(inputs.credentialInputs["JIRA_API_TOKEN"], jiraAPIToken)
+        case OnboardingCapabilitySetup.gcloudPackageID:
+            gcpProject = firstNonEmpty(inputs.configInputs["GCP_PROJECT"], gcpProject)
+            gcpRegion = firstNonEmpty(inputs.configInputs["GCP_REGION"], gcpRegion)
+        case OnboardingCapabilitySetup.redcapPackageID:
+            redcapAPIURL = firstNonEmpty(
+                inputs.configInputs["REDCAP_API_URL"],
+                inputs.baseURLOverrides["REDCap"],
+                redcapAPIURL
+            )
+            redcapAPIToken = firstNonEmpty(inputs.credentialInputs["REDCAP_API_TOKEN"], redcapAPIToken)
+        default:
+            break
+        }
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmedValue = trimmed(value ?? "")
+            if !trimmedValue.isEmpty {
+                return trimmedValue
+            }
+        }
+        return ""
     }
 }
 
@@ -205,7 +251,7 @@ enum OnboardingCapabilitySetup {
         }
     }
 
-    private static func orderedPackageIDs(_ packageIDs: Set<String>) -> [String] {
+    static func orderedPackageIDs(_ packageIDs: Set<String>) -> [String] {
         configurableOptions.compactMap { option in
             guard let packageID = option.packageID, packageIDs.contains(packageID) else { return nil }
             return packageID
@@ -293,7 +339,7 @@ struct OnboardingWizardView: View {
             case .welcome:        "Welcome"
             case .requiredCLIs:   "Runtime"
             case .permissions:    "Access"
-            case .workspaceRoot:  "Workspace"
+            case .workspaceRoot:  "Folder"
             case .ready:          "Done"
             }
         }
