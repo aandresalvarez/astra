@@ -517,12 +517,24 @@ struct ContentView: View {
         guard let selectedTask else { return "none" }
         let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
         let inputSignature = selectedTask.inputs.joined(separator: "|")
-        let state = TaskPlanService.reconstruct(for: selectedTask)
-        guard let plan = state.plan else {
-            return "\(selectedTask.id.uuidString):none:\(htmlPreviewSignature):\(inputSignature)"
-        }
-        let stepSummary = plan.steps.map { "\($0.id):\($0.status.rawValue)" }.joined(separator: "|")
-        return "\(selectedTask.id.uuidString):\(plan.planID.uuidString):\(state.lifecycleStatus.rawValue):\(stepSummary):\(htmlPreviewSignature):\(inputSignature)"
+        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        let latestRunSignature = [
+            latestRun?.id.uuidString ?? "none",
+            latestRun?.status.rawValue ?? "none",
+            String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
+            String(latestRun?.output.count ?? 0),
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: ":")
+        return [
+            selectedTask.id.uuidString,
+            selectedTask.status.rawValue,
+            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
+            String(selectedTask.events.count),
+            String(selectedTask.runs.count),
+            latestRunSignature,
+            htmlPreviewSignature,
+            inputSignature
+        ].joined(separator: "|")
     }
 
     private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
@@ -1657,7 +1669,11 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+        if selectedTask?.id == task.id {
+            guard cachedHasCanvasContent else { return }
+        } else {
+            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+        }
         if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
             let _ = nextPanelTransitionGeneration()
             animatePanelChange {

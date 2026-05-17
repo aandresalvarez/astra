@@ -9,16 +9,34 @@ struct WorkspaceCanvasPanelView: View {
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var draftPlan: TaskPlan?
     @State private var lastPlanSignature = ""
+    @State private var cachedPlanState = TaskPlanState.empty
+    @State private var cachedPlanInputSignature = ""
+    @State private var pendingPlanRefreshTask: Task<Void, Never>?
 
     private let knownTools = ["Read", "Grep", "Write", "Edit", "Bash"]
 
     private var planState: TaskPlanState {
-        guard let selectedTask else { return .empty }
-        return TaskPlanService.reconstruct(for: selectedTask)
+        guard cachedPlanInputSignature == planInputSignature else { return .empty }
+        return cachedPlanState
     }
 
     private var sourcePlan: TaskPlan? {
         planState.plan
+    }
+
+    private var planInputSignature: String {
+        guard let selectedTask else { return "none" }
+        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        return [
+            selectedTask.id.uuidString,
+            selectedTask.status.rawValue,
+            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
+            String(selectedTask.events.count),
+            String(selectedTask.runs.count),
+            latestRun?.id.uuidString ?? "none",
+            latestRun?.status.rawValue ?? "none",
+            String(latestRun?.output.count ?? 0)
+        ].joined(separator: "|")
     }
 
     private var planSignature: String {
@@ -75,16 +93,31 @@ struct WorkspaceCanvasPanelView: View {
             Divider()
             if let sourcePlan {
                 planCanvas(sourcePlan)
+            } else if shouldShowPlanLoadingState {
+                loadingCanvas
             } else {
                 emptyCanvas
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // No background — parent paints .bar material that extends behind toolbar.
-        .onAppear { syncDraftIfNeeded(force: true) }
+        .onAppear {
+            schedulePlanStateRefresh(force: true)
+        }
+        .onChange(of: planInputSignature) {
+            schedulePlanStateRefresh(force: true)
+        }
         .onChange(of: planSignature) {
             syncDraftIfNeeded(force: true)
         }
+        .onDisappear {
+            pendingPlanRefreshTask?.cancel()
+            pendingPlanRefreshTask = nil
+        }
+    }
+
+    private var shouldShowPlanLoadingState: Bool {
+        selectedTask != nil && cachedPlanInputSignature != planInputSignature
     }
 
     private var header: some View {
@@ -538,6 +571,27 @@ struct WorkspaceCanvasPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var loadingCanvas: some View {
+        ZStack {
+            Stanford.panelBackground
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading plan")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(18)
+            .frame(maxWidth: 240)
+            .liquidSurface(
+                cornerRadius: Stanford.radiusLarge,
+                fallbackFill: Stanford.cardBackground,
+                fallbackStrokeOpacity: Stanford.strokeRest
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func placeholderField(icon: String, placeholder: String, text: Binding<String>) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: icon)
@@ -662,6 +716,24 @@ struct WorkspaceCanvasPanelView: View {
         guard force || lastPlanSignature != planSignature || draftPlan?.planID != sourcePlan.planID else { return }
         draftPlan = sourcePlan
         lastPlanSignature = planSignature
+    }
+
+    private func schedulePlanStateRefresh(force: Bool = false) {
+        let requestedSignature = planInputSignature
+        guard force || cachedPlanInputSignature != requestedSignature else { return }
+
+        pendingPlanRefreshTask?.cancel()
+        pendingPlanRefreshTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+
+            let refreshedState = selectedTask.map { TaskPlanService.reconstruct(for: $0) } ?? .empty
+            guard !Task.isCancelled, requestedSignature == planInputSignature else { return }
+
+            cachedPlanState = refreshedState
+            cachedPlanInputSignature = requestedSignature
+            syncDraftIfNeeded(force: true)
+        }
     }
 
     private func saveDraft() {

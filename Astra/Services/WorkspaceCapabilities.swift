@@ -112,10 +112,15 @@ struct WorkspaceCapabilities {
 
     private var enabledPackageSkills: [Skill] {
         let specs = enabledPackageSkillSpecs
-        guard !specs.isEmpty else { return [] }
-        return sortedSkills((workspaceSkills + availableGlobalSkills).filter { skill in
+        let candidates = workspaceSkills + availableGlobalSkills
+        let directlyMatched = specs.isEmpty ? [] : candidates.filter { skill in
             specs.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
-        })
+        }
+        let resourceOwners = (enabledPackageConnectors.compactMap(\.skill) + enabledPackageTools.compactMap(\.skill))
+            .filter { skill in
+                candidates.contains { $0.id == skill.id }
+            }
+        return uniqueSkills(directlyMatched + resourceOwners)
     }
 
     private var enabledPackageConnectors: [Connector] {

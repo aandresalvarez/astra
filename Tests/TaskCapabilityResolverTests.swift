@@ -202,6 +202,54 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
     }
 
+    @Test("Enabled package uses matched local tool owner when package skill name changed")
+    func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let graphPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" })
+
+        let workspace = Workspace(name: "Graph Mail Rename", primaryPath: "/tmp/graph-mail-rename")
+        workspace.enabledCapabilityIDs = [graphPackage.id]
+        context.insert(workspace)
+
+        let legacySkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the stanford-graph-mail helper."
+        )
+        legacySkill.isGlobal = true
+        context.insert(legacySkill)
+
+        let graphTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read SHC mail through Graph",
+            toolType: "cli",
+            command: "stanford-graph-mail"
+        )
+        graphTool.isGlobal = true
+        graphTool.skill = legacySkill
+        context.insert(graphTool)
+
+        let task = AgentTask(
+            title: "Read mail",
+            goal: "Summarize recent SHC mail",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(resolver.allLocalTools.map(\.command) == ["stanford-graph-mail"])
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [graphPackage],
+            checkExecutables: false
+        )
+        #expect(issues.isEmpty)
+    }
+
     @Test("Runtime integrity reports selected package skill missing companion connector")
     func runtimeIntegrityReportsSelectedPackageSkillMissingConnector() throws {
         let container = try makeTaskCapabilityResolverContainer()

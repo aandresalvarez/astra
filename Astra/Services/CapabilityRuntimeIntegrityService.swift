@@ -111,7 +111,13 @@ enum CapabilityRuntimeIntegrityService {
         var issues: [CapabilityRuntimeIntegrityIssue] = []
 
         if source == .enabledPackage {
-            for pluginSkill in package.skills where !resolvedSkills.contains(where: { CapabilityRuntimeResourceMatcher.skillMatches(pluginSkill, skill: $0) }) {
+            for pluginSkill in package.skills where !isPackageSkillResolved(
+                pluginSkill,
+                package: package,
+                resolvedSkills: resolvedSkills,
+                resolvedConnectors: resolvedConnectors,
+                resolvedTools: resolvedTools
+            ) {
                 issues.append(issue(
                     package: package,
                     source: source,
@@ -198,6 +204,47 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         return issues
+    }
+
+    private static func isPackageSkillResolved(
+        _ pluginSkill: PluginSkill,
+        package: PluginPackage,
+        resolvedSkills: [Skill],
+        resolvedConnectors: [Connector],
+        resolvedTools: [LocalTool]
+    ) -> Bool {
+        if resolvedSkills.contains(where: { CapabilityRuntimeResourceMatcher.skillMatches(pluginSkill, skill: $0) }) {
+            return true
+        }
+
+        guard package.skills.count == 1 else { return false }
+        let resolvedSkillIDs = Set(resolvedSkills.map(\.id))
+        return companionSkills(
+            for: package,
+            resolvedConnectors: resolvedConnectors,
+            resolvedTools: resolvedTools
+        )
+        .contains { resolvedSkillIDs.contains($0.id) }
+    }
+
+    private static func companionSkills(
+        for package: PluginPackage,
+        resolvedConnectors: [Connector],
+        resolvedTools: [LocalTool]
+    ) -> [Skill] {
+        let connectorSkills = package.connectors.flatMap { pluginConnector in
+            resolvedConnectors
+                .filter { CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: $0) }
+                .compactMap(\.skill)
+        }
+        let toolSkills = package.localTools.flatMap { pluginTool in
+            resolvedTools
+                .filter { CapabilityRuntimeResourceMatcher.toolMatches(pluginTool, tool: $0) }
+                .compactMap(\.skill)
+        }
+
+        var seen = Set<UUID>()
+        return (connectorSkills + toolSkills).filter { seen.insert($0.id).inserted }
     }
 
     private static func availableConnectors(for task: AgentTask) -> [Connector] {
