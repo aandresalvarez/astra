@@ -181,6 +181,8 @@ struct TaskSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            AstraSidebarIdentityHeader(workspaceCount: workspaces.count)
+
             // Top new task button
             if selectedWorkspace != nil {
                 NewTaskButton(
@@ -191,7 +193,6 @@ struct TaskSidebarView: View {
                 )
                 .keyboardShortcut("n", modifiers: .command)
                 .padding(.horizontal, 12)
-                .padding(.top, 16)
                 .padding(.bottom, 10)
                 .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
                     NewTaskNudgePopover(onDismiss: dismissNewTaskNudge)

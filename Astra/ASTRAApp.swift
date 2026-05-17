@@ -161,7 +161,8 @@ private struct AboutAstraView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 16) {
-            appIcon
+            AstraAppIconTile(size: 76)
+                .shadow(color: Stanford.black.opacity(0.12), radius: 10, x: 0, y: 6)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(appInfo.displayName)
@@ -174,24 +175,6 @@ private struct AboutAstraView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-
-    private var appIcon: some View {
-        Group {
-            if let icon = NSApplication.shared.applicationIconImage {
-                Image(nsImage: icon)
-                    .resizable()
-                    .scaledToFit()
-            } else {
-                Image(systemName: "app.fill")
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(Stanford.cardinalRed)
-            }
-        }
-        .frame(width: 76, height: 76)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: Stanford.black.opacity(0.12), radius: 10, x: 0, y: 6)
     }
 }
 
@@ -222,7 +205,10 @@ public struct ASTRAApp: App {
         NSApplication.shared.setActivationPolicy(.regular)
         let resourceBundle = AstraResourceBundle.current
         StanfordFontRegistrar.registerBundledFonts(bundle: resourceBundle)
-        if let iconURL = resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
+        let iconResourceName = AppChannel.current == .development ? "AppIconDev" : "AppIcon"
+        if let iconURL = resourceBundle.url(forResource: iconResourceName, withExtension: "icns")
+            ?? resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
+            ?? Bundle.main.url(forResource: iconResourceName, withExtension: "icns")
             ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApplication.shared.applicationIconImage = icon

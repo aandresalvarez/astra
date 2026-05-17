@@ -149,8 +149,13 @@ for tool_product in "${TOOL_PRODUCTS[@]}"; do
   chmod +x "$BUNDLED_TOOLS_DIR/$tool_product"
 done
 
-if [ -f "$ROOT_DIR/Astra/Resources/AppIcon.icns" ]; then
-  cp "$ROOT_DIR/Astra/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+APP_ICON_SOURCE="$ROOT_DIR/Astra/Resources/AppIcon.icns"
+if [[ "$ASTRA_CHANNEL" == "dev" && -f "$ROOT_DIR/Astra/Resources/AppIconDev.icns" ]]; then
+  APP_ICON_SOURCE="$ROOT_DIR/Astra/Resources/AppIconDev.icns"
+fi
+
+if [ -f "$APP_ICON_SOURCE" ]; then
+  cp "$APP_ICON_SOURCE" "$APP_RESOURCES/AppIcon.icns"
 fi
 
 copy_sparkle_framework() {

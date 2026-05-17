@@ -55,6 +55,7 @@ let package = Package(
             resources: [
                 .process("Assets.xcassets"),
                 .copy("Resources/AppIcon.icns"),
+                .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),
                 .copy("Resources/Fonts"),
                 .copy("Resources/Tools")
