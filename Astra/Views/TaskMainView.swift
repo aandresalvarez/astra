@@ -1014,15 +1014,9 @@ struct TaskMainView: View {
                             .font(Stanford.ui(10))
                             .frame(width: 12)
 
-                        if task.status == .running && !runtimeHealth.isAttentionState {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 14, height: 14)
-                        } else {
-                            Image(systemName: threadStatusIcon)
-                                .font(Stanford.ui(12))
-                                .frame(width: 14)
-                        }
+                        Image(systemName: threadStatusIcon)
+                            .font(Stanford.ui(12))
+                            .frame(width: 14)
 
                         Text("Task status")
                             .font(Stanford.chatSection())
@@ -1069,8 +1063,7 @@ struct TaskMainView: View {
                     title: runtimeHealth.message,
                     detail: runtimeHealth.detail,
                     icon: runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
-                    color: runtimeHealth.isAttentionState ? Stanford.poppy : Stanford.lagunita,
-                    isLoading: !runtimeHealth.isAttentionState
+                    color: runtimeHealth.isAttentionState ? Stanford.poppy : Stanford.lagunita
                 )
             }
 
@@ -1221,6 +1214,9 @@ struct TaskMainView: View {
         if shouldShowPendingApprovalStatus {
             return "person.crop.circle.badge.questionmark"
         }
+        if task.status == .running {
+            return "dot.radiowaves.left.and.right"
+        }
         return "list.bullet.rectangle"
     }
 
@@ -1350,7 +1346,7 @@ struct TaskMainView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.down")
                         .font(Stanford.ui(11))
-                    Text("New activity")
+                    Text("Jump to latest")
                         .font(Stanford.chatSection())
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -1364,6 +1360,7 @@ struct TaskMainView: View {
                 )
             }
             .buttonStyle(.plain)
+            .help("Jump to latest activity")
             .padding(.bottom, 10)
         }
     }
@@ -1751,7 +1748,7 @@ struct TaskMainView: View {
     }
 
     private func shouldShowRunFooterSummary(_ run: TaskRunSnapshot) -> Bool {
-        run.status == .running || run.completedAt != nil || run.tokensUsed > 0 || run.exitCode != nil || !run.stopReason.isEmpty
+        run.status != .running && (run.completedAt != nil || run.tokensUsed > 0 || run.exitCode != nil || !run.stopReason.isEmpty)
     }
 
     private func runFooterSummaryParts(
@@ -1763,7 +1760,7 @@ struct TaskMainView: View {
         var parts = [runFooterStatusLabel(run: run, notices: notices)]
         let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
         if toolCallCount > 0 {
-            parts.append("\(toolCallCount) \(toolCallCount == 1 ? "tool" : "tools")")
+            parts.append("\(toolCallCount) tool \(toolCallCount == 1 ? "call" : "calls")")
         }
         if presentation.files.count > 0 {
             parts.append("\(presentation.files.count) \(presentation.files.count == 1 ? "file" : "files")")
@@ -1816,14 +1813,41 @@ struct TaskMainView: View {
         presentation.hasVisibleDetails
     }
 
+    @ViewBuilder
     private func runActivityDisclosure(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> some View {
+        if run.status == .running && run.completedAt == nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                runActivityDisclosureContent(
+                    run: run,
+                    presentation: presentation,
+                    notices: notices,
+                    now: context.date
+                )
+            }
+        } else {
+            runActivityDisclosureContent(
+                run: run,
+                presentation: presentation,
+                notices: notices,
+                now: Date()
+            )
+        }
+    }
+
+    private func runActivityDisclosureContent(
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        notices: [TaskRunNotice],
+        now: Date
+    ) -> some View {
         let isExpanded = expandedRunActivity.contains(run.id)
         let accent = runActivitySummaryColor(run: run, notices: notices)
-        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices)
+        let title = runActivityDisclosureTitle(run: run, notices: notices)
+        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices, now: now)
 
         return VStack(alignment: .leading, spacing: 6) {
             Button {
@@ -1841,21 +1865,21 @@ struct TaskMainView: View {
                         .frame(width: 12)
                     Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
                         .font(Stanford.ui(12))
-                    Text(runActivityDisclosureTitle(run: run, notices: notices))
-                        .font(Stanford.chatSection())
-                    Text(parts.joined(separator: " · "))
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(Stanford.chatSection())
+                            .lineLimit(1)
+                        if !parts.isEmpty {
+                            Text(parts.joined(separator: " · "))
+                                .font(Stanford.chatMeta())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .monospacedDigit()
+                        }
+                    }
                     Spacer(minLength: 8)
                     if run.status == .running {
-                        Text("Live")
-                            .font(Stanford.chatMeta(10))
-                            .foregroundStyle(Stanford.lagunita)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Stanford.lagunita.opacity(0.10))
-                            .clipShape(Capsule())
+                        runActivityLiveBadge(run: run, now: now)
                     }
                 }
                 .foregroundStyle(accent)
@@ -1873,13 +1897,14 @@ struct TaskMainView: View {
         .background(Stanford.fog.opacity(0.24))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(runActivityDisclosureTitle(run: run, notices: notices)). \(parts.joined(separator: ", "))")
+        .accessibilityLabel("\(title). \(parts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
     }
 
     private func runActivityDisclosureTitle(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
         if run.status == .running {
-            return "Activity"
+            let message = runtimeHealth.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.isEmpty ? "Agent is working..." : message
         }
         return "Details"
     }
@@ -1971,19 +1996,14 @@ struct TaskMainView: View {
     private func runActivitySummaryParts(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
-        notices: [TaskRunNotice]
+        notices: [TaskRunNotice],
+        now: Date
     ) -> [String] {
         var parts: [String] = []
         let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
         let warningCount = presentation.issues.filter { $0.severity == .warning }.count
         let issueCount = presentation.issues.filter { $0.severity == .error }.count
 
-        if run.status == .running {
-            let message = runtimeHealth.message.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !message.isEmpty {
-                parts.append(message)
-            }
-        }
         if toolCallCount > 0 {
             parts.append("\(toolCallCount) tool \(toolCallCount == 1 ? "call" : "calls")")
         }
@@ -2008,8 +2028,39 @@ struct TaskMainView: View {
         if presentation.technicalOutputs.count > 0 && toolCallCount == 0 {
             parts.append("\(presentation.technicalOutputs.count) technical \(presentation.technicalOutputs.count == 1 ? "output" : "outputs")")
         }
+        guard !parts.isEmpty else { return [runStatusLabel(run).lowercased()] }
+        return Array(parts.prefix(4))
+    }
 
-        return parts.isEmpty ? [runStatusLabel(run).lowercased()] : Array(parts.prefix(4))
+    private func runActivityLiveBadge(run: TaskRunSnapshot, now: Date) -> some View {
+        let elapsed = compactLiveDuration(Int(now.timeIntervalSince(run.startedAt)))
+        let pulsePhase = Int(now.timeIntervalSinceReferenceDate) % 2
+        let backgroundOpacity = pulsePhase == 0 ? 0.10 : 0.18
+        let strokeOpacity = pulsePhase == 0 ? 0.18 : 0.32
+
+        return Text("Live · \(elapsed)")
+            .font(Stanford.chatMeta(10))
+            .foregroundStyle(Stanford.lagunita)
+            .monospacedDigit()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Stanford.lagunita.opacity(backgroundOpacity))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Stanford.lagunita.opacity(strokeOpacity), lineWidth: 1)
+            )
+    }
+
+    private func compactLiveDuration(_ seconds: Int) -> String {
+        let clamped = max(0, seconds)
+        let hours = clamped / 3_600
+        let minutes = (clamped % 3_600) / 60
+        let remainingSeconds = clamped % 60
+        if hours > 0 {
+            return "\(hours):\(String(format: "%02d", minutes)):\(String(format: "%02d", remainingSeconds))"
+        }
+        return "\(minutes):\(String(format: "%02d", remainingSeconds))"
     }
 
     private func runActivitySummaryIcon(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
