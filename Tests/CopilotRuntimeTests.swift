@@ -379,12 +379,19 @@ struct AgentRuntimeStreamTelemetryTests {
 struct AgentRuntimeStreamDebugTests {
     @Test("ASTRA_STREAM_DEBUG enables bounded stream diagnostics")
     func streamDebugFlagParsing() {
-        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "1"]))
-        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "true"]))
-        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "on"]))
-        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: [:]))
-        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "0"]))
-        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "false"]))
+        let suiteName = "astra-stream-debug-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: [:], defaults: defaults))
+
+        defaults.set(false, forKey: AppStorageKeys.runtimeStreamDebugCapture)
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: [:], defaults: defaults))
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "1"], defaults: defaults))
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "true"], defaults: defaults))
+        #expect(AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "on"], defaults: defaults))
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "0"], defaults: defaults))
+        #expect(!AgentRuntimeStreamDebugCapture.isEnabled(environment: ["ASTRA_STREAM_DEBUG": "false"], defaults: defaults))
     }
 
     @Test("Stream debug captures samples, counters, stderr tail, and unknown JSON shape")

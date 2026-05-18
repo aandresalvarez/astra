@@ -4,8 +4,12 @@ import Testing
 
 @Suite("Browser Failure Debug Capture", .serialized)
 struct BrowserFailureDebugCaptureTests {
-    @Test("Debug capture is failure-only and explicitly opt-in")
+    @Test("Debug capture is failure-only and enabled by default")
     func debugCapturePolicyAndTrigger() {
+        let suiteName = "astra-browser-debug-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
         let defaultRequest = BrowserBridgeRequest(
             method: "POST",
             path: "/click",
@@ -21,9 +25,13 @@ struct BrowserFailureDebugCaptureTests {
             body: Data()
         )
 
-        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: [:]).isEnabled == false)
-        #expect(BrowserFailureDebugCapture.policy(for: optedInRequest, environment: [:]).isEnabled == true)
-        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: ["ASTRA_BROWSER_DEBUG_CAPTURE": "true"]).isEnabled == true)
+        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: [:], defaults: defaults).isEnabled == true)
+
+        defaults.set(false, forKey: AppStorageKeys.browserDebugCapture)
+        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: [:], defaults: defaults).isEnabled == false)
+        #expect(BrowserFailureDebugCapture.policy(for: optedInRequest, environment: [:], defaults: defaults).isEnabled == true)
+        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: ["ASTRA_BROWSER_DEBUG_CAPTURE": "true"], defaults: defaults).isEnabled == true)
+        #expect(BrowserFailureDebugCapture.policy(for: defaultRequest, environment: ["ASTRA_BROWSER_DEBUG_CAPTURE": "0"], defaults: defaults).isEnabled == false)
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 200, result: ["ok": true]) == false)
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 500, result: ["ok": true]) == true)
         #expect(BrowserFailureDebugCapture.shouldCapture(statusCode: 200, result: ["ok": false, "error": "target_obscured"]) == true)
@@ -53,6 +61,9 @@ struct BrowserFailureDebugCaptureTests {
             isPresented: true,
             isEnabled: true
         )
+
+        UserDefaults.standard.removeObject(forKey: key)
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: taskID)[BrowserFailureDebugCapture.environmentVariable] == "1")
 
         UserDefaults.standard.set(false, forKey: key)
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: taskID)[BrowserFailureDebugCapture.environmentVariable] == nil)

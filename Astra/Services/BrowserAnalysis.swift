@@ -1213,7 +1213,27 @@ enum BrowserAnalysisBuilder {
         let lowerTag = tag.lowercased()
         let lowerRole = role.lowercased()
         let isEditable = lowerTag == "input" || lowerTag == "textarea" || lowerRole.contains("textbox")
-        if !isEditable, containsAny(text, ["send", "email", "message", "post", "publish", "comment", "reply"]) {
+        if !isEditable, containsAny(text, [
+            "send",
+            "email",
+            "message",
+            "post",
+            "publish",
+            "comment",
+            "reply",
+            "reply all",
+            "forward",
+            "archive",
+            "move",
+            "mark read",
+            "mark as read",
+            "mark unread",
+            "mark as unread",
+            "junk",
+            "report junk",
+            "phishing",
+            "report phishing"
+        ]) {
             return .sendMessage
         }
         if type.lowercased() == "submit" || containsAny(text, ["submit", "confirm"]) {

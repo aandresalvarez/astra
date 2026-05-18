@@ -382,10 +382,10 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         isEnabled(environment: ProcessInfo.processInfo.environment)
     }
 
-    static func isEnabled(environment: [String: String]) -> Bool {
+    static func isEnabled(environment: [String: String], defaults: UserDefaults = .standard) -> Bool {
         guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !value.isEmpty else {
-            return false
+            return LoggingPreferences.runtimeStreamDebugCaptureEnabled(in: defaults)
         }
         return !["0", "false", "no", "off"].contains(value)
     }
@@ -830,11 +830,20 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let summary: String?
     }
 
+    enum RuntimeProgressKind: String {
+        case lifecycleMetadata = "lifecycle_metadata"
+        case semanticProgress = "semantic_progress"
+        case accounting = "accounting"
+        case terminal = "terminal"
+        case diagnostic = "diagnostic"
+    }
+
     let tokenBudget: Int
     let budgetEnforcementMode: BudgetEnforcementMode
     let maxTurns: Int
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
+    let noSemanticProgressTimeoutSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
 
@@ -865,6 +874,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var lastEventSignature: String = ""
     private var repetitionCount: Int = 0
     private var lastActivityTime = Date()
+    private var lastAnyActivityTime = Date()
+    private var hasSeenAnyActivity = false
+    private var hasSeenProgressActivity = false
     private var watchdogRunning = false
 
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
@@ -889,6 +901,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
+        noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil
     ) {
@@ -897,6 +910,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 90)
         self.taskID = taskID
         self.policyGuard = policyGuard
     }
@@ -910,7 +924,13 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        lastActivityTime = Date()
+        let now = Date()
+        lastAnyActivityTime = now
+        hasSeenAnyActivity = true
+        if Self.refreshesRuntimeActivity(parsed) {
+            lastActivityTime = now
+            hasSeenProgressActivity = true
+        }
 
         if case .astraProtocol(.valid(.complete)) = parsed {
             _sawAstraComplete = true
@@ -994,21 +1014,25 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         }
 
-        let signature = Self.eventSignature(parsed)
-        if signature == lastEventSignature {
-            repetitionCount += 1
-            if repetitionCount >= maxRepetitions {
-                AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
-                    "reason": "repetition_detected",
-                    "repetition_count": String(repetitionCount)
-                ], level: .error)
-                _repetitionKilled = true
-                process?.terminate()
-                return true
+        if let signature = Self.repetitionSignature(parsed) {
+            if signature == lastEventSignature {
+                repetitionCount += 1
+                if repetitionCount >= maxRepetitions {
+                    AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
+                        "reason": "repetition_detected",
+                        "event_kind": Self.progressKind(for: parsed).rawValue,
+                        "event_signature": LogSanitizer.sanitize(signature, maxLength: 240),
+                        "repetition_count": String(repetitionCount),
+                        "semantic_activity_age_seconds": String(Int(now.timeIntervalSince(lastActivityTime)))
+                    ], level: .error, fieldMaxLength: 260)
+                    _repetitionKilled = true
+                    process?.terminate()
+                    return true
+                }
+            } else {
+                lastEventSignature = signature
+                repetitionCount = 1
             }
-        } else {
-            lastEventSignature = signature
-            repetitionCount = 1
         }
 
         if case .usage(let totalInput, let totalOutput) = parsed {
@@ -1259,33 +1283,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func browserTerminalStop(content: String, isKnownBrowserTool: Bool) -> (reason: String, message: String)? {
-        let lower = content.lowercased()
-        let code: String?
-        if lower.contains("google_docs_controlled_browser_required") {
-            code = "google_docs_controlled_browser_required"
-        } else if lower.contains("google_docs_browser_copy_unavailable") {
-            code = "google_docs_browser_copy_unavailable"
-        } else if lower.contains("drive_file_name_mismatch") {
-            code = "drive_file_name_mismatch"
-        } else if lower.contains("drive_file_not_opened") {
-            code = "drive_file_not_opened"
-        } else if lower.contains("google_docs_safe_edit_unavailable") {
-            code = "google_docs_safe_edit_unavailable"
-        } else if lower.contains("google_docs_safe_edit_verification_failed") {
-            code = "google_docs_safe_edit_verification_failed"
-        } else if lower.contains("controlled_browser_unavailable") {
-            code = "controlled_browser_unavailable"
-        } else if lower.contains("unauthorized_browser_bridge_request") {
-            code = "unauthorized_browser_bridge_request"
-        } else if lower.contains("browser_action_budget_exceeded") {
-            code = "browser_action_budget_exceeded"
-        } else if lower.contains("dangerous_keypress_sequence") {
-            code = "dangerous_keypress_sequence"
-        } else {
-            code = nil
-        }
+        let code = isKnownBrowserTool
+            ? browserTerminalStopCode(inRawContent: content)
+            : browserTerminalStopCode(inStructuredContent: content)
         guard let code else { return nil }
-        guard isKnownBrowserTool || looksLikeBrowserToolResult(content) else { return nil }
 
         switch code {
         case "drive_file_name_mismatch":
@@ -1343,17 +1344,92 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
     }
 
-    private static func looksLikeBrowserToolResult(_ content: String) -> Bool {
+    private static let browserTerminalStopCodes = [
+        "google_docs_controlled_browser_required",
+        "google_docs_browser_copy_unavailable",
+        "drive_file_name_mismatch",
+        "drive_file_not_opened",
+        "google_docs_safe_edit_unavailable",
+        "google_docs_safe_edit_verification_failed",
+        "controlled_browser_unavailable",
+        "unauthorized_browser_bridge_request",
+        "browser_action_budget_exceeded",
+        "dangerous_keypress_sequence"
+    ]
+
+    private static func browserTerminalStopCode(inRawContent content: String) -> String? {
         let lower = content.lowercased()
-        if lower.contains("astra-browser") || lower.contains("browsertrace") || lower.contains("browserflight") {
-            return true
+        return browserTerminalStopCodes.first { lower.contains($0) }
+    }
+
+    private static func browserTerminalStopCode(inStructuredContent content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let object = jsonObject(fromExactContent: trimmed),
+           let code = browserTerminalStopCode(inJSONObject: object) {
+            return code
         }
-        guard lower.contains("\"ok\"") || lower.contains("\"error\"") else { return false }
-        guard let data = content.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+        for line in trimmed.split(whereSeparator: \.isNewline) {
+            let line = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let object = jsonObject(fromExactContent: line),
+                  let code = browserTerminalStopCode(inJSONObject: object) else {
+                continue
+            }
+            return code
+        }
+        return nil
+    }
+
+    private static func jsonObject(fromExactContent content: String) -> [String: Any]? {
+        guard content.hasPrefix("{"), content.hasSuffix("}"),
+              let data = content.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return false
+            return nil
         }
-        return object["ok"] != nil || object["error"] != nil || object["browserTrace"] != nil || object["debugCapture"] != nil
+        return object
+    }
+
+    private static func browserTerminalStopCode(inJSONObject object: [String: Any]) -> String? {
+        if looksLikeStructuredBrowserResponse(object) {
+            for key in ["error", "stopReason"] {
+                if let code = browserTerminalStopCode(fromExactValue: object[key]) {
+                    return code
+                }
+            }
+        }
+
+        for key in ["content", "output", "stdout"] {
+            guard let string = object[key] as? String,
+                  let nested = jsonObject(fromExactContent: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let code = browserTerminalStopCode(inJSONObject: nested) else {
+                continue
+            }
+            return code
+        }
+
+        for key in ["result", "response", "data"] {
+            if let nested = object[key] as? [String: Any],
+               let code = browserTerminalStopCode(inJSONObject: nested) {
+                return code
+            }
+        }
+
+        return nil
+    }
+
+    private static func looksLikeStructuredBrowserResponse(_ object: [String: Any]) -> Bool {
+        object["ok"] != nil
+            || object["browserTrace"] != nil
+            || object["debugCapture"] != nil
+            || object["requiredEngine"] != nil
+            || object["selectedEngine"] != nil
+            || (object["source"] as? String)?.lowercased().contains("browser") == true
+    }
+
+    private static func browserTerminalStopCode(fromExactValue value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return browserTerminalStopCodes.contains(normalized) ? normalized : nil
     }
 
     private static func isProviderPermissionDenial(_ content: String) -> Bool {
@@ -1489,7 +1565,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     func recordActivity() {
         lock.lock()
-        lastActivityTime = Date()
+        let now = Date()
+        lastActivityTime = now
+        lastAnyActivityTime = now
+        hasSeenAnyActivity = true
+        hasSeenProgressActivity = true
         lock.unlock()
     }
 
@@ -1507,8 +1587,33 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 guard let self, processBox.isRunning else { return }
 
                 self.lock.lock()
-                let idleDuration = Date().timeIntervalSince(self.lastActivityTime)
+                let now = Date()
+                let idleDuration = now.timeIntervalSince(self.lastActivityTime)
+                let anyIdleDuration = now.timeIntervalSince(self.lastAnyActivityTime)
+                let hasMetadataOnlyActivity = self.hasSeenAnyActivity && !self.hasSeenProgressActivity
                 self.lock.unlock()
+
+                if hasMetadataOnlyActivity && idleDuration >= self.noSemanticProgressTimeoutSeconds {
+                    let reason = "provider_no_semantic_progress"
+                    let message = """
+                    ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
+                    Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+                    """
+                    AppLogger.audit(.workerTimeout, category: "Worker", taskID: self.taskID, fields: [
+                        "reason": reason,
+                        "semantic_idle_seconds": String(Int(idleDuration)),
+                        "last_event_age_seconds": String(Int(anyIdleDuration)),
+                        "limit_seconds": String(Int(self.noSemanticProgressTimeoutSeconds))
+                    ], level: .error)
+                    self.lock.lock()
+                    if self._runtimeStopReason == nil {
+                        self._runtimeStopReason = reason
+                        self._runtimeStopMessage = message
+                    }
+                    self.lock.unlock()
+                    processBox.terminate()
+                    return
+                }
 
                 if idleDuration >= self.idleTimeoutSeconds {
                     AppLogger.audit(.workerTimeout, category: "Worker", taskID: self.taskID, fields: [
@@ -1522,6 +1627,63 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     return
                 }
             }
+        }
+    }
+
+    static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {
+        switch parsed {
+        case .systemInit:
+            return .lifecycleMetadata
+        case .unknown:
+            return .diagnostic
+        case .usage:
+            return .accounting
+        case .result:
+            return .terminal
+        case .astraProtocol:
+            return .terminal
+        case .text(let text), .thinking(let text):
+            return nonEmpty(text) == nil ? .diagnostic : .semanticProgress
+        case .toolResult(_, let content):
+            return nonEmpty(content) == nil ? .diagnostic : .semanticProgress
+        case .toolUse, .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage, .permissionDenied:
+            return .semanticProgress
+        }
+    }
+
+    static func repetitionSignature(_ parsed: ParsedEvent) -> String? {
+        switch parsed {
+        case .text(let text):
+            return nonEmpty(text).map { textSignature(prefix: "text", text: $0) }
+        case .thinking(let text):
+            return nonEmpty(text).map { textSignature(prefix: "think", text: $0) }
+        case .toolUse(let name, _, let input):
+            return "tool:\(name):\(inputSignature(input))"
+        case .toolResult(_, let content):
+            return nonEmpty(content).map { textSignature(prefix: "tool.result", text: $0) }
+        case .teammateStarted(_, let name, let prompt):
+            return "teammate.start:\(name):\(textSignature(prefix: "prompt", text: prompt))"
+        case .teammateCompleted(_, let name):
+            return "teammate.done:\(name)"
+        case .teamCreated(let name, let description):
+            return "team.created:\(name):\(textSignature(prefix: "description", text: description))"
+        case .teamDeleted(let name):
+            return "team.deleted:\(name)"
+        case .teamMessage(let from, let to, let content):
+            return nonEmpty(content).map { textSignature(prefix: "team.msg:\(from)->\(to)", text: $0) }
+        case .permissionDenied(let tool, let reason):
+            return "perm.denied:\(tool):\(textSignature(prefix: "reason", text: reason))"
+        case .usage, .result, .systemInit, .astraProtocol, .unknown:
+            return nil
+        }
+    }
+
+    private static func refreshesRuntimeActivity(_ parsed: ParsedEvent) -> Bool {
+        switch progressKind(for: parsed) {
+        case .semanticProgress, .accounting, .terminal:
+            return true
+        case .lifecycleMetadata, .diagnostic:
+            return false
         }
     }
 
@@ -1549,6 +1711,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private static func textSignature(prefix: String, text: String) -> String {
         "\(prefix):\(text.count):\(text.prefix(80))"
+    }
+
+    private static func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func inputSignature(_ input: [String: Any]?) -> String {

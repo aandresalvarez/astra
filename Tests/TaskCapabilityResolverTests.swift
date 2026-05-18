@@ -287,6 +287,213 @@ struct TaskCapabilityResolverTests {
         #expect(issues.first?.resourceName == "Jira")
     }
 
+    @Test("Runtime integrity still blocks live package skill missing browser adapter")
+    func runtimeIntegrityBlocksLivePackageSkillMissingBrowserAdapter() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+
+        let workspace = Workspace(name: "GitHub Workspace", primaryPath: "/tmp/github-workspace")
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use GitHub CLI."
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh - GitHub CLI",
+            toolDescription: "Run GitHub CLI commands",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.workspace = workspace
+        githubTool.skill = githubSkill
+        context.insert(githubTool)
+
+        let task = AgentTask(
+            title: "Use GitHub",
+            goal: "List pull requests",
+            workspace: workspace
+        )
+        task.skills = [githubSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false
+        )
+
+        #expect(issues.map(\.source) == [.selectedPackageSkill])
+        #expect(issues.map(\.resourceKind) == [.browserAdapter])
+        #expect(issues.first?.resourceName == BrowserSiteAdapterID.github)
+    }
+
+    @Test("Runtime integrity ignores stale package skill snapshots")
+    func runtimeIntegrityIgnoresStalePackageSkillSnapshots() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+
+        let workspace = Workspace(name: "Email Workspace", primaryPath: "/tmp/email-workspace")
+        context.insert(workspace)
+
+        let liveSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        liveSkill.workspace = workspace
+        context.insert(liveSkill)
+
+        let task = AgentTask(
+            title: "Summarize email",
+            goal: "Summarize my emails from today",
+            workspace: workspace
+        )
+        task.skills = [liveSkill]
+        task.skillSnapshots = [
+            SkillSnapshotConfig(
+                id: UUID().uuidString,
+                name: "GitHub Agent",
+                icon: "chevron.left.forwardslash.chevron.right",
+                description: "Old GitHub capability snapshot",
+                allowedTools: ["Read", "Bash"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use GitHub CLI for GitHub work.",
+                environmentKeys: [],
+                environmentValues: [],
+                isGlobal: false,
+                connectorIDs: nil,
+                localToolIDs: nil,
+                connectorSnapshots: nil,
+                localToolSnapshots: nil,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        ]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false
+        )
+
+        #expect(issues.isEmpty)
+    }
+
+    @Test("Runtime integrity ignores stale snapshots for arbitrary package resources")
+    func runtimeIntegrityIgnoresStaleSnapshotsForArbitraryPackageResources() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let futurePackage = PluginPackage(
+            id: "future-workflow",
+            name: "Future Workflow",
+            icon: "sparkles",
+            description: "Synthetic future capability package",
+            author: "ASTRA",
+            category: "Custom",
+            tags: ["future"],
+            version: "1.0.0",
+            skills: [
+                PluginSkill(
+                    name: "Future Agent",
+                    icon: "sparkles",
+                    description: "Synthetic future package skill",
+                    allowedTools: ["Read", "Bash"],
+                    disallowedTools: [],
+                    customTools: [],
+                    behaviorInstructions: "Use future workflow resources.",
+                    environmentKeys: [],
+                    environmentValues: []
+                )
+            ],
+            connectors: [
+                PluginConnector(
+                    name: "Future API",
+                    serviceType: "future-api",
+                    icon: "link",
+                    description: "Synthetic future connector",
+                    baseURL: "https://future.example.test",
+                    authMethod: "apiKey",
+                    credentialHints: [
+                        .init(key: "FUTURE_API_KEY", hint: "API key")
+                    ],
+                    configHints: [],
+                    notes: ""
+                )
+            ],
+            localTools: [
+                PluginLocalTool(
+                    name: "futurectl",
+                    description: "Synthetic future CLI",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "futurectl",
+                    arguments: ""
+                )
+            ],
+            templates: []
+        )
+
+        let workspace = Workspace(name: "Future Workspace", primaryPath: "/tmp/future-workspace")
+        context.insert(workspace)
+
+        let liveSkill = Skill(
+            name: "Unrelated Agent",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Handle unrelated work."
+        )
+        liveSkill.workspace = workspace
+        context.insert(liveSkill)
+
+        let task = AgentTask(
+            title: "Unrelated work",
+            goal: "Do work that no longer uses the future capability",
+            workspace: workspace
+        )
+        task.skills = [liveSkill]
+        task.skillSnapshots = [
+            SkillSnapshotConfig(
+                id: UUID().uuidString,
+                name: "Future Agent",
+                icon: "sparkles",
+                description: "Old future capability snapshot",
+                allowedTools: ["Read", "Bash"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use future workflow resources.",
+                environmentKeys: [],
+                environmentValues: [],
+                isGlobal: false,
+                connectorIDs: nil,
+                localToolIDs: nil,
+                connectorSnapshots: nil,
+                localToolSnapshots: nil,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        ]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [futurePackage],
+            checkExecutables: false
+        )
+
+        #expect(issues.isEmpty)
+    }
+
     @Test("Runtime integrity names disabled shared connector candidates")
     func runtimeIntegrityNamesDisabledSharedConnectorCandidate() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -606,5 +813,71 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("JIRA_PROJECTS: STAR"))
         #expect(!prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
         #expect(!prompt.contains("Apple Mail mailbox bridge"))
+    }
+
+    @Test("Browser mail task prompt prunes unrelated capabilities but keeps mail tools")
+    func browserMailTaskPromptPrunesUnrelatedCapabilitiesButKeepsMailTools() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Mail Browser Workspace", primaryPath: "/tmp/mail-browser-workspace")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Work with Jira tickets and issues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST APIs for ticket lookup."
+        )
+        jiraSkill.workspace = workspace
+        context.insert(jiraSkill)
+
+        let mailSkill = Skill(
+            name: "Stanford Mail via Apple Mail Agent",
+            skillDescription: "Read Stanford email through Apple Mail",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Stanford mail tasks must use the Apple Mail mailbox bridge."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-apple-mail",
+            toolDescription: "Read Stanford email through Apple Mail",
+            command: "stanford-apple-mail"
+        )
+        mailTool.skill = mailSkill
+        context.insert(mailTool)
+
+        let task = AgentTask(
+            title: "Summarize my last email",
+            goal: "summarize my last email",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill, mailSkill]
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://outlook.cloud.microsoft/mail/inbox/id/example",
+            currentTitle: "Outlook",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.excludedSkillNames.contains("Jira Agent"))
+        #expect(scope.behaviorSkills.map(\.name) == ["Stanford Mail via Apple Mail Agent"])
+        #expect(scope.localTools.map(\.command).contains("stanford-apple-mail"))
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("[Stanford Mail via Apple Mail Agent]:"))
+        #expect(prompt.contains("stanford-apple-mail"))
+        #expect(!prompt.contains("[Jira Agent]:"))
+        #expect(prompt.contains("Mail Read Safety:"))
     }
 }

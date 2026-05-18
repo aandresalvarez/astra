@@ -39,7 +39,7 @@ enum CapabilityRuntimeIntegrityService {
 
         let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions()
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
-        let selectedSkillNames = selectedPackageSkillNames(for: task)
+        let selectedSkillNames = liveSelectedPackageSkillNames(for: task)
         let resolver = TaskCapabilityResolver(task: task)
         let resolvedSkills = resolver.allBehaviorSkills
         let resolvedConnectors = resolver.allConnectors
@@ -280,9 +280,12 @@ enum CapabilityRuntimeIntegrityService {
         return "connector \(displayName) is configured but not active for this workspace"
     }
 
-    private static func selectedPackageSkillNames(for task: AgentTask) -> Set<String> {
+    private static func liveSelectedPackageSkillNames(for task: AgentTask) -> Set<String> {
+        // Snapshots are durable history for prompt reconstruction. They can outlive
+        // the user's current capability selection, so only live task skills should
+        // trigger selected-package launch blockers.
         Set(
-            (task.skills.map(\.name) + task.skillSnapshots.map(\.name))
+            task.skills.map(\.name)
                 .map(CapabilityRuntimeResourceMatcher.normalizedName)
                 .filter { !$0.isEmpty }
         )

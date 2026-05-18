@@ -197,7 +197,9 @@ public struct ASTRAApp: App {
     @State private var runtime = AppRuntimeController()
 
     public init() {
-        UserDefaults.standard.register(defaults: [AppLogger.sensitiveModeKey: true])
+        var defaults = LoggingPreferences.registeredDefaults
+        defaults[AppLogger.sensitiveModeKey] = true
+        UserDefaults.standard.register(defaults: defaults)
         // Rotate logs if needed
         AppLogger.rotateIfNeeded()
         AppLogger.audit(.appStarted, category: "App")

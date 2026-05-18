@@ -1033,7 +1033,7 @@ enum BrowserAutomationScripts {
             if (!actionability.ok) return { ok: false, error: actionability.error, el, point: actionability.point, coveredBy: actionability.coveredBy };
             const targetLabel = labelFor(el);
             const type = String(el.getAttribute("type") || "").toLowerCase();
-            const dangerous = /\\b(send|submit|delete|remove|purchase|pay|confirm|authorize|approve|place order)\\b/i.test(targetLabel) || type === "submit";
+            const dangerous = /\\b(send|submit|delete|remove|purchase|pay|confirm|authorize|approve|place order|reply|reply all|forward|archive|move|mark read|mark as read|mark unread|mark as unread|junk|report junk|phishing|report phishing|discard)\\b/i.test(targetLabel) || type === "submit";
             if (dangerous && !allowDangerous) {
               return { ok: false, error: "confirmation_required", needsConfirmation: true, el, point: actionability.point };
             }

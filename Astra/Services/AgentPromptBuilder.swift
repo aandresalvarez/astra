@@ -306,6 +306,19 @@ enum AgentPromptBuilder {
             enabledBrowserAdapters: override
         ) else { return }
         parts.append(browserContext)
+        if MailTaskIntent.isReadOnlyMailRequest([
+            task.title,
+            task.goal,
+            task.inputs.joined(separator: " "),
+            task.acceptanceCriteria.joined(separator: " ")
+        ]) {
+            parts.append("""
+            Mail Read Safety:
+            The current task is a read-only mail request. If a read-only mail helper is available in the listed tools, use it before browser scraping: `stanford-mail`, `stanford-graph-mail`, or `stanford-apple-mail`.
+            If only the browser is available, treat Outlook/mail pages as read-only evidence. Use `astra-browser read-page` and `analyze` for inspection, ignore reminders/toasts/calendar panes unless the user asked about them, and verify that any opened message subject/sender matches the requested inbox item before summarizing.
+            Do not click Reply, Reply all, Forward, Send, Delete, Archive, Move, Mark read/unread, Junk, Report phishing, or Discard for this task. If the latest email cannot be identified from read-only evidence, ask for clarification instead of mutating the mailbox.
+            """)
+        }
     }
 
     static func buildFreshFollowUpPrompt(message: String, task: AgentTask) -> String {

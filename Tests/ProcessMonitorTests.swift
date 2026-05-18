@@ -310,6 +310,51 @@ struct ProcessMonitorTests {
         #expect(monitor.budgetExceeded == false)
     }
 
+    @Test("Quoted browser guardrail text in unrelated Bash output does not stop provider")
+    func quotedBrowserGuardrailTextInUnrelatedBashOutputDoesNotStopProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let commandKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "ps_check", input: [
+                "command": #"ps aux | grep -i "main_OMOP_Subset\|python3.*IRB66991" | grep -v grep"#
+            ]),
+            process: process
+        )
+        let resultKill = monitor.processEvent(
+            .toolResult(
+                toolId: "ps_check",
+                content: #"alvaro1 31266 ?? /Users/alvaro1/.local/bin/claude -p For full Google Docs reads: astra-browser google-docs-read-document. If it returns google_docs_controlled_browser_required, stop instead of probing the editor."#
+            ),
+            process: process
+        )
+
+        #expect(commandKill == false)
+        #expect(resultKill == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopped == false)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.budgetExceeded == false)
+    }
+
+    @Test("Uncorrelated structured browser guardrail result stops provider")
+    func uncorrelatedStructuredBrowserGuardrailResultStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "unknown_tool",
+                content: #"{"ok":false,"error":"google_docs_controlled_browser_required","reason":"embedded_webkit_clipboard_unavailable"}"#
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "google_docs_controlled_browser_required")
+        #expect(monitor.budgetExceeded == false)
+    }
+
     @Test("Google Docs controlled browser required after visible read does not stop provider")
     func googleDocsControlledBrowserRequiredAfterVisibleReadDoesNotStopProvider() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
@@ -659,6 +704,58 @@ struct ProcessMonitorTests {
         #expect(monitor.repetitionKilled == true)
     }
 
+    @Test("Provider lifecycle metadata does not trigger repetition")
+    func lifecycleMetadataDoesNotTriggerRepetition() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+
+        for index in 0..<12 {
+            let shouldKill = monitor.processEvent(
+                .systemInit(model: "claude-opus-4-6", sessionId: "session-\(index)"),
+                process: nil
+            )
+            #expect(shouldKill == false)
+        }
+
+        #expect(monitor.repetitionKilled == false)
+    }
+
+    @Test("Provider diagnostic metadata does not trigger repetition")
+    func diagnosticMetadataDoesNotTriggerRepetition() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+
+        for _ in 0..<12 {
+            let shouldKill = monitor.processEvent(.unknown(type: "queue-operation"), process: nil)
+            #expect(shouldKill == false)
+        }
+
+        #expect(monitor.repetitionKilled == false)
+    }
+
+    @Test("Empty tool results do not trigger repetition")
+    func emptyToolResultsDoNotTriggerRepetition() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+
+        for _ in 0..<12 {
+            let shouldKill = monitor.processEvent(.toolResult(toolId: "toolu_metadata", content: ""), process: nil)
+            #expect(shouldKill == false)
+        }
+
+        #expect(monitor.repetitionKilled == false)
+    }
+
+    @Test("Tool repetition ignores volatile provider IDs")
+    func toolRepetitionIgnoresVolatileProviderIDs() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+
+        let input = ["command": "pwd"]
+        let _ = monitor.processEvent(.toolUse(name: "Bash", id: "toolu_1", input: input), process: nil)
+        let _ = monitor.processEvent(.toolUse(name: "Bash", id: "toolu_2", input: input), process: nil)
+        let shouldKill = monitor.processEvent(.toolUse(name: "Bash", id: "toolu_3", input: input), process: nil)
+
+        #expect(shouldKill == true)
+        #expect(monitor.repetitionKilled == true)
+    }
+
     // MARK: - Event Signatures
 
     @Test("Event signatures are distinct per type")
@@ -681,6 +778,20 @@ struct ProcessMonitorTests {
         let longText = String(repeating: "a", count: 200)
         let sig = AgentRuntimeWorker.ProcessMonitor.eventSignature(.text(text: longText))
         #expect(sig.count <= 95) // "text:" prefix + length + 80 chars
+    }
+
+    @Test("Repetition signatures classify provider-neutral progress")
+    func repetitionSignaturesClassifyProviderNeutralProgress() {
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.systemInit(model: "sonnet", sessionId: "s1")) == nil)
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.unknown(type: "last-prompt")) == nil)
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.usage(totalInputTokens: 1, totalOutputTokens: 0)) == nil)
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.result(text: nil, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)) == nil)
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.toolResult(toolId: "t1", content: "")) == nil)
+
+        let first = AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.toolUse(name: "Bash", id: "toolu_1", input: ["command": "pwd"]))
+        let second = AgentRuntimeWorker.ProcessMonitor.repetitionSignature(.toolUse(name: "Bash", id: "toolu_2", input: ["command": "pwd"]))
+        #expect(first == second)
+        #expect(first != nil)
     }
 
     // MARK: - ProcessResult

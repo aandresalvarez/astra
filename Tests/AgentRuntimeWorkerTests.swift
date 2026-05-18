@@ -519,6 +519,34 @@ struct BuildPromptTests {
         #expect(prompt.contains("Do not use osascript"))
     }
 
+    @Test("Prompt adds read-only mail safety for browser-backed email tasks")
+    func promptAddsReadOnlyMailSafetyForBrowserEmailTasks() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Mail Browser", primaryPath: "/tmp/prompt-mail-browser")
+        ctx.insert(ws)
+        let task = AgentTask(title: "Summarize my last email", goal: "summarize my last email", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://outlook.cloud.microsoft/mail/inbox/id/example",
+            currentTitle: "Outlook",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Mail Read Safety:"))
+        #expect(prompt.contains("stanford-mail"))
+        #expect(prompt.contains("treat Outlook/mail pages as read-only evidence"))
+        #expect(prompt.contains("Do not click Reply, Reply all, Forward, Send"))
+    }
+
     @Test("Prompt keeps promoted Shelf browser when inactive shared session starts")
     func promptKeepsPromotedShelfBrowserAfterInactiveSharedSessionUpdate() throws {
         let container = try makeContainer()
@@ -804,6 +832,8 @@ struct ControlledBrowserTests {
 
         #expect(script.contains("confirmation_required"))
         #expect(script.contains("allowDangerous = false"))
+        #expect(script.contains("reply all"))
+        #expect(script.contains("archive"))
     }
 
     @Test("click script supports viewport coordinate targets")

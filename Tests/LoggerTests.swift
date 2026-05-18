@@ -20,6 +20,27 @@ struct AppLoggerTests {
         #expect(AppLogger.isSensitiveMode)
     }
 
+    @Test("Detailed logging preferences default on with one-week retention")
+    func detailedLoggingPreferencesDefaultOn() {
+        let suiteName = "astra-logging-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(LoggingPreferences.runtimeStreamDebugCaptureEnabled(in: defaults) == true)
+        #expect(LoggingPreferences.browserDebugCaptureEnabled(in: defaults) == true)
+        #expect(LoggingPreferences.logRetentionDays(in: defaults) == 7)
+
+        defaults.set(false, forKey: AppStorageKeys.runtimeStreamDebugCapture)
+        defaults.set(false, forKey: AppStorageKeys.browserDebugCapture)
+        defaults.set(0, forKey: AppStorageKeys.logRetentionDays)
+        #expect(LoggingPreferences.runtimeStreamDebugCaptureEnabled(in: defaults) == false)
+        #expect(LoggingPreferences.browserDebugCaptureEnabled(in: defaults) == false)
+        #expect(LoggingPreferences.logRetentionDays(in: defaults) == 1)
+
+        defaults.set(999, forKey: AppStorageKeys.logRetentionDays)
+        #expect(LoggingPreferences.logRetentionDays(in: defaults) == 365)
+    }
+
     @Test("Sanitizer redacts sensitive payloads")
     func sanitizerRedactsSensitivePayloads() {
         let raw = """

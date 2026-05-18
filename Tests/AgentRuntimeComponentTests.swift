@@ -162,6 +162,74 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.stopReason == "capability_runtime_resources_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
     }
+
+    @Test("Capability preflight ignores stale package skill snapshots")
+    func capabilityPreflightIgnoresStalePackageSkillSnapshots() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Email", primaryPath: NSTemporaryDirectory())
+        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
+        jiraSkill.workspace = workspace
+
+        let jiraConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "none"
+        )
+        jiraConnector.workspace = workspace
+        jiraConnector.skill = jiraSkill
+
+        let task = AgentTask(
+            title: "Summarize email",
+            goal: "Summarize my emails from today",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        task.skillSnapshots = [
+            SkillSnapshotConfig(
+                id: UUID().uuidString,
+                name: "GitHub Agent",
+                icon: "chevron.left.forwardslash.chevron.right",
+                description: "Stale GitHub capability snapshot",
+                allowedTools: ["Read", "Bash"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use GitHub CLI for GitHub work.",
+                environmentKeys: [],
+                environmentValues: [],
+                isGlobal: false,
+                connectorIDs: nil,
+                localToolIDs: nil,
+                connectorSnapshots: nil,
+                localToolSnapshots: nil,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        ]
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(jiraSkill)
+        context.insert(jiraConnector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "resume"
+        )
+
+        #expect(passed)
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+        #expect(run.stopReason.isEmpty)
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
+    }
 }
 
 @Suite("Agent Runtime Run Persistence")

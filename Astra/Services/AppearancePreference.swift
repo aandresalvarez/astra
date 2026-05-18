@@ -19,6 +19,8 @@ enum AppStorageKeys {
     static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
     static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
     static let browserDebugCapture = "astra.browser.debugCapture.v1"
+    static let runtimeStreamDebugCapture = "astra.runtime.streamDebugCapture.v1"
+    static let logRetentionDays = "astra.logging.retentionDays.v1"
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
     static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
@@ -32,6 +34,47 @@ enum AppStorageKeys {
     static let claudeModelsCheckedAt = "astra.claude.modelsCheckedAt.v1"
     static let copilotAvailableModels = "astra.copilot.availableModels.v1"
     static let copilotModelsCheckedAt = "astra.copilot.modelsCheckedAt.v1"
+}
+
+enum LoggingPreferences {
+    static let defaultRuntimeStreamDebugCapture = true
+    static let defaultBrowserDebugCapture = true
+    static let defaultLogRetentionDays = 7
+    static let logRetentionDayOptions = [1, 3, 7, 14, 30, 90]
+
+    static let registeredDefaults: [String: Any] = [
+        AppStorageKeys.runtimeStreamDebugCapture: defaultRuntimeStreamDebugCapture,
+        AppStorageKeys.browserDebugCapture: defaultBrowserDebugCapture,
+        AppStorageKeys.logRetentionDays: defaultLogRetentionDays
+    ]
+
+    static func runtimeStreamDebugCaptureEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        boolPreference(
+            AppStorageKeys.runtimeStreamDebugCapture,
+            defaultValue: defaultRuntimeStreamDebugCapture,
+            in: defaults
+        )
+    }
+
+    static func browserDebugCaptureEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        boolPreference(
+            AppStorageKeys.browserDebugCapture,
+            defaultValue: defaultBrowserDebugCapture,
+            in: defaults
+        )
+    }
+
+    static func logRetentionDays(in defaults: UserDefaults = .standard) -> Int {
+        guard defaults.object(forKey: AppStorageKeys.logRetentionDays) != nil else {
+            return defaultLogRetentionDays
+        }
+        return min(365, max(1, defaults.integer(forKey: AppStorageKeys.logRetentionDays)))
+    }
+
+    private static func boolPreference(_ key: String, defaultValue: Bool, in defaults: UserDefaults) -> Bool {
+        guard defaults.object(forKey: key) != nil else { return defaultValue }
+        return defaults.bool(forKey: key)
+    }
 }
 
 enum TaskExecutionDefaults {
