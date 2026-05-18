@@ -1183,6 +1183,74 @@ struct TaskThreadSnapshotTests {
         })
     }
 
+    @Test("Budget warning is promoted to an inline run notice")
+    func budgetWarningPromotesToInlineRunNotice() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let events = [
+            makeEvent(
+                task: task,
+                type: "budget.warning",
+                payload: "Budget exceeded in warning mode (110638/10000).",
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let notice = activity.notices.first!
+
+        #expect(TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
+
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices,
+            suppressedNoticeIDs: [notice.id]
+        )
+
+        #expect(presentation.issues.isEmpty)
+        #expect(presentation.technicalOutputs.first?.title == "Budget warning details")
+    }
+
+    @Test("Inline notice rules keep warning budget visible")
+    func inlineNoticeRulesKeepWarningBudgetVisible() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.completedAt = Date(timeIntervalSince1970: 2)
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+
+        let visibleTypes = [
+            "budget.warning",
+            "budget.exceeded",
+            "error",
+            "permission.approval.requested"
+        ]
+        for type in visibleTypes {
+            let notice = TaskRunNotice(id: UUID(), type: type, payload: "payload")
+            #expect(TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
+        }
+
+        for type in ["task.stats", "astra.permission_summary", "tool.result"] {
+            let notice = TaskRunNotice(id: UUID(), type: type, payload: "payload")
+            #expect(!TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
+        }
+    }
+
     @Test("Provider error event is visible in run activity")
     func providerErrorCreatesRunNotice() {
         let task = makeTask(status: .failed)
@@ -3222,6 +3290,23 @@ struct SidebarGroupingTests {
             matchingSearch: true,
             workspaceMatchesSearch: false
         ).map(\.id) == [taskMatchedTask.id])
+    }
+
+    @Test("Sidebar task index invalidates when workspace relationship materializes")
+    func sidebarTaskIndexInvalidatesWhenWorkspaceRelationshipChanges() {
+        let workspace = makeWorkspace(name: "Bigquery Analyst")
+        workspace.isStarred = true
+
+        let task = makeTask(title: "List BigQuery dataset tables", status: .completed)
+        let before = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        task.workspace = workspace
+        let after = SidebarTaskIndexInvalidation.signature(for: [task])
+
+        #expect(before != after)
+
+        let index = SidebarTaskIndex(tasks: [task], searchText: "")
+        #expect(index.reviewTasks(for: workspace).map(\.id) == [task.id])
     }
 
     @Test("TaskThreadSnapshotTrigger ignores unrelated task metadata updates")

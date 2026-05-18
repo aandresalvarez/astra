@@ -276,6 +276,18 @@ final class AgentLockedBuffer: @unchecked Sendable {
         return lines
     }
 
+    func appendAndProcessLines(_ string: String, _ processLine: (String) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        _value += string
+        while let newlineIndex = _value.firstIndex(of: "\n") {
+            let line = String(_value[_value.startIndex..<newlineIndex])
+            _value = String(_value[_value.index(after: newlineIndex)...])
+            processLine(line)
+        }
+    }
+
     func drainRemaining() -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -812,6 +824,12 @@ struct AgentProcessResult {
 /// Encapsulates budget enforcement, repetition circuit breaker, and idle timeout
 /// for agent runtime processes.
 nonisolated final class AgentProcessMonitor: @unchecked Sendable {
+    private struct ToolUseContext {
+        let id: String
+        let name: String
+        let summary: String?
+    }
+
     let tokenBudget: Int
     let budgetEnforcementMode: BudgetEnforcementMode
     let maxTurns: Int
@@ -840,6 +858,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
+    private var toolUseContextsByID: [String: ToolUseContext] = [:]
+    private var recentToolUseContexts: [ToolUseContext] = []
     private var sawGoogleDocsVisiblePageRead = false
     private var ignoredGoogleDocsFullReadRequirementAfterVisibleRead = false
     private var lastEventSignature: String = ""
@@ -901,11 +921,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return false
         }
 
-        if case .toolUse(let name, let id, let input) = parsed, !id.isEmpty {
-            let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
-            let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
-            if isBrowserTool || isBrowserShellContinuation {
-                browserToolUseIDs.insert(id)
+        if case .toolUse(let name, let id, let input) = parsed {
+            rememberToolUse(name: name, id: id, input: input)
+            if !id.isEmpty {
+                let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
+                let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
+                if isBrowserTool || isBrowserShellContinuation {
+                    browserToolUseIDs.insert(id)
+                }
             }
         }
 
@@ -913,7 +936,25 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return recordPolicyViolation(violation, process: process)
         }
 
+        if case .permissionDenied(let tool, let reason) = parsed,
+           Self.isProviderPermissionDenial(reason) {
+            return recordProviderPermissionDenial(
+                toolID: nil,
+                explicitToolName: tool,
+                detail: reason,
+                process: process
+            )
+        }
+
         if case .toolResult(let toolID, let content) = parsed {
+            if Self.isProviderPermissionDenial(content) {
+                return recordProviderPermissionDenial(
+                    toolID: toolID,
+                    explicitToolName: nil,
+                    detail: content,
+                    process: process
+                )
+            }
             let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
             if isKnownBrowserTool {
                 for shellID in Self.browserShellIDs(fromToolResult: content) {
@@ -962,7 +1003,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     "repetition_count": String(repetitionCount)
                 ], level: .error)
                 _repetitionKilled = true
-                _budgetExceeded = true
                 process?.terminate()
                 return true
             }
@@ -1065,6 +1105,67 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private func rememberToolUse(name: String, id: String, input: [String: Any]?) {
+        let context = ToolUseContext(
+            id: id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: Self.toolUseSummary(name: name, input: input)
+        )
+        if !id.isEmpty {
+            toolUseContextsByID[id] = context
+        }
+        recentToolUseContexts.append(context)
+        if recentToolUseContexts.count > 8 {
+            recentToolUseContexts.removeFirst(recentToolUseContexts.count - 8)
+        }
+    }
+
+    private static func toolUseSummary(name _: String, input: [String: Any]?) -> String? {
+        guard let input else { return nil }
+        if let command = commandString(in: input) {
+            return command
+        }
+        if let summary = input["summary"] as? String {
+            if let parsedCommand = commandString(fromJSONString: summary) {
+                return parsedCommand
+            }
+            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : String(trimmed.prefix(500))
+        }
+        return String(valueSignature(input).prefix(500))
+    }
+
+    private static func commandString(in dictionary: [String: Any]) -> String? {
+        for key in ["command", "cmd"] {
+            if let value = dictionary[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        for key in ["input", "arguments", "args", "data", "payload"] {
+            if let nested = dictionary[key] as? [String: Any],
+               let command = commandString(in: nested) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandString(fromJSONString value: String) -> String? {
+        guard let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return commandString(in: object)
+    }
+
+    private func toolContext(for toolID: String?) -> ToolUseContext? {
+        if let toolID, !toolID.isEmpty, let context = toolUseContextsByID[toolID] {
+            return context
+        }
+        return recentToolUseContexts.last
     }
 
     private static func isBrowserToolUse(name: String, input: [String: Any]?) -> Bool {
@@ -1255,6 +1356,75 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return object["ok"] != nil || object["error"] != nil || object["browserTrace"] != nil || object["debugCapture"] != nil
     }
 
+    private static func isProviderPermissionDenial(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        return lower.contains("permission denied and could not request permission from user")
+            || (lower.contains("allow access to these paths") && lower.contains("(y/n)"))
+    }
+
+    private func recordProviderPermissionDenial(
+        toolID: String?,
+        explicitToolName: String?,
+        detail: String,
+        process: AgentRuntimeProcessControl?
+    ) -> Bool {
+        guard !_policyViolation,
+              !_policyApprovalRequired,
+              _runtimeStopReason == nil else {
+            return false
+        }
+
+        let context = toolContext(for: toolID)
+        let toolName = Self.nonEmpty(explicitToolName?.trimmingCharacters(in: .whitespacesAndNewlines))
+            ?? Self.nonEmpty(context?.name)
+            ?? "ToolApproval"
+        let providerName = policyGuard?.providerID.displayName ?? "The provider"
+        let providerDetail = LogSanitizer.sanitize(detail, maxLength: 360)
+        let requestText = context?.summary
+            .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
+            ?? ""
+
+        if policyGuard?.usesBroadProviderPermissions == true {
+            let message = """
+            \(providerName) denied a tool request even though ASTRA launched it with broad provider permissions (`--allow-all-tools`). This is a provider-side, account, organization, or CLI policy denial, not an ASTRA permission that another approval can expand.
+            Tool: \(toolName).\(requestText)
+            Provider detail: \(providerDetail)
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_denied_broad_permissions",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_denied_broad_permissions"
+            _runtimeStopMessage = message
+        } else {
+            let message = """
+            Permission requested for tool: \(toolName). ASTRA paused the provider because Copilot reported a tool permission prompt that ASTRA cannot answer inside the non-interactive runtime.\(requestText)
+            Provider detail: \(providerDetail)
+
+            Approve to continue this task with one-time expanded runtime permissions.
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_approval_required",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "detail": providerDetail
+            ], level: .warning, fieldMaxLength: 360)
+            _policyApprovalRequired = true
+            _policyApprovalMessage = message
+        }
+
+        process?.terminate()
+        return true
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private func recordPolicyViolation(_ violation: AgentRuntimePolicyViolation, process: AgentRuntimeProcessControl?) -> Bool {
         guard !_policyViolation, !_policyApprovalRequired else { return false }
         let redactedDetail = violation.detail.map { LogSanitizer.sanitize($0, maxLength: 240) }
@@ -1357,21 +1527,50 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     static func eventSignature(_ parsed: ParsedEvent) -> String {
         switch parsed {
-        case .text(let t): return "text:\(t.prefix(80))"
-        case .thinking(let t): return "think:\(t.prefix(80))"
-        case .toolUse(let name, _, _): return "tool:\(name)"
-        case .toolResult(let id, _): return "result:\(id)"
+        case .text(let t): return textSignature(prefix: "text", text: t)
+        case .thinking(let t): return textSignature(prefix: "think", text: t)
+        case .toolUse(let name, let id, let input):
+            return "tool:\(name):\(id):\(inputSignature(input))"
+        case .toolResult(let id, let content):
+            return "\(textSignature(prefix: "tool.result:\(id)", text: content))"
         case .usage(let input, let output): return "usage:\(input):\(output)"
-        case .result(let t, _, _, _, _, _, _): return "result:\(String((t ?? "").prefix(80)))"
+        case .result(let t, _, _, _, _, _, _): return textSignature(prefix: "result", text: t ?? "")
         case .systemInit: return "init"
         case .teammateStarted(_, let name, _): return "teammate.start:\(name)"
         case .teammateCompleted(_, let name): return "teammate.done:\(name)"
         case .teamCreated(let name, _): return "team.created:\(name)"
         case .teamDeleted(let name): return "team.deleted:\(name)"
-        case .teamMessage(let from, let to, _): return "team.msg:\(from)->\(to)"
+        case .teamMessage(let from, let to, let content): return textSignature(prefix: "team.msg:\(from)->\(to)", text: content)
         case .permissionDenied(let tool, _): return "perm.denied:\(tool)"
         case .astraProtocol: return "astra.protocol"
         case .unknown(let type): return "unknown:\(type)"
         }
+    }
+
+    private static func textSignature(prefix: String, text: String) -> String {
+        "\(prefix):\(text.count):\(text.prefix(80))"
+    }
+
+    private static func inputSignature(_ input: [String: Any]?) -> String {
+        guard let input else { return "" }
+        return valueSignature(input)
+    }
+
+    private static func valueSignature(_ value: Any?) -> String {
+        if let string = value as? String {
+            return "s:\(string.count):\(string.prefix(80))"
+        }
+        if let dictionary = value as? [String: Any] {
+            let joined = dictionary.keys.sorted().map { key in
+                "\(key)=\(valueSignature(dictionary[key]))"
+            }.joined(separator: ";")
+            return "d:\(joined.count):\(joined.prefix(120))"
+        }
+        if let array = value as? [Any] {
+            let joined = array.map(valueSignature).joined(separator: ",")
+            return "a:\(joined.count):\(joined.prefix(120))"
+        }
+        let description = String(describing: value ?? "")
+        return "v:\(description.count):\(description.prefix(80))"
     }
 }

@@ -335,7 +335,7 @@ final class AgentRuntimeWorker {
             "token_budget": String(task.tokenBudget)
         ], level: result.exitCode == 0 ? .info : .warning)
 
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .claudeCode,
             model: task.model,
             exitCode: result.exitCode,
@@ -383,6 +383,7 @@ final class AgentRuntimeWorker {
                 "max_turns": String(task.maxTurns)
             ], level: .error)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "run") {
+        } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "run") {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -411,15 +412,15 @@ final class AgentRuntimeWorker {
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
-            run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
+            run.stopReason = "max_budget_reached"
             task.status = .budgetExceeded
-            let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-                "reason": result.repetitionKilled ? "repetition_detected" : "max_budget_reached",
+                "reason": "max_budget_reached",
                 "tokens_used": String(task.tokensUsed),
                 "token_budget": String(task.tokenBudget)
             ], level: .error)
@@ -967,7 +968,7 @@ final class AgentRuntimeWorker {
             )
         }
 
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .claudeCode,
             model: task.model,
             exitCode: result.exitCode,
@@ -1016,6 +1017,7 @@ final class AgentRuntimeWorker {
                 "max_turns": String(task.maxTurns)
             ], level: .error)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "resume") {
+        } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "resume") {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -1044,16 +1046,16 @@ final class AgentRuntimeWorker {
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
-            run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
+            run.stopReason = "max_budget_reached"
             task.status = .budgetExceeded
-            let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
                 "phase": "resume",
-                "reason": result.repetitionKilled ? "repetition_detected" : "max_budget_reached",
+                "reason": "max_budget_reached",
                 "tokens_used": String(task.tokensUsed),
                 "token_budget": String(task.tokenBudget)
             ], level: .error)
@@ -1373,6 +1375,15 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
+        recordCopilotSessionMetricsIfNeeded(
+            copilotHome: copilotHome,
+            task: task,
+            run: run,
+            runStartedAt: startTime,
+            modelContext: modelContext,
+            recordingState: recordingState,
+            onEvent: onEvent
+        )
         let streamSnapshot = streamTelemetry.snapshot()
 
         AgentFileChangeDetector.appendInferredFileChanges(
@@ -1406,7 +1417,7 @@ final class AgentRuntimeWorker {
                 exitCode: result.exitCode
             )
         }
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: .copilotCLI,
             model: task.model,
             exitCode: result.exitCode,
@@ -1414,7 +1425,7 @@ final class AgentRuntimeWorker {
             providerVersion: result.providerVersion,
             stream: streamSnapshot,
             timedOut: result.timedOut,
-            budgetExceeded: result.budgetExceeded || result.repetitionKilled,
+            budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded
         )
         if let failureDiagnostic {
@@ -1451,6 +1462,7 @@ final class AgentRuntimeWorker {
                                   payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
             modelContext.insert(event)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
+        } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.stopReason = "permission_approval_required"
@@ -1479,9 +1491,9 @@ final class AgentRuntimeWorker {
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
-            run.stopReason = result.repetitionKilled ? "repetition_detected" : "max_budget_reached"
+            run.stopReason = "max_budget_reached"
             task.status = .budgetExceeded
-            let reason = result.repetitionKilled ? "Repetition loop detected" : "Token budget exceeded"
+            let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
@@ -1612,6 +1624,46 @@ final class AgentRuntimeWorker {
             copilotPath: copilotPath,
             copilotHome: copilotHome
         )
+    }
+
+    @MainActor
+    private func recordCopilotSessionMetricsIfNeeded(
+        copilotHome: String,
+        task: AgentTask,
+        run: TaskRun,
+        runStartedAt: Date,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState,
+        onEvent: @escaping (ParsedEvent) -> Void
+    ) {
+        guard run.tokensUsed == 0,
+              let metrics = CopilotSessionMetricsReader.finalMetrics(
+                copilotHome: copilotHome,
+                taskID: task.id,
+                runStartedAt: runStartedAt
+              ) else {
+            return
+        }
+
+        AgentEventRecorder.recordCopilotEvent(
+            metrics.event,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+        if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {
+            onEvent(parsed)
+        }
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+            "source": "copilot_session_state",
+            "session_id_prefix": String(metrics.sessionID.prefix(8)),
+            "tokens_total": String(metrics.totalTokens),
+            "tokens_input": String(metrics.inputTokens),
+            "tokens_output": String(metrics.outputTokens),
+            "turns": metrics.turns.map(String.init) ?? "unknown",
+            "duration_ms": metrics.durationMs.map(String.init) ?? "unknown"
+        ])
     }
 
     private func permissionApprovalRequestPayload(
@@ -1921,7 +1973,7 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.stopReason = reason
-        task.status = .pendingUser
+        task.status = reason == "provider_permission_denied_broad_permissions" ? .failed : .pendingUser
 
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
@@ -1930,6 +1982,34 @@ final class AgentRuntimeWorker {
             "phase": phase,
             "reason": reason,
             "source": "runtime_stop"
+        ], level: .error)
+        return true
+    }
+
+    @MainActor
+    private func applyRepetitionStopIfNeeded(
+        _ result: AgentProcessResult,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        guard result.repetitionKilled else { return false }
+
+        run.status = .failed
+        run.stopReason = "repetition_detected"
+        task.status = .failed
+
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: "error",
+            payload: "Repetition loop detected. ASTRA stopped the provider after repeated identical runtime events.",
+            run: run
+        ))
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+            "phase": phase,
+            "reason": "repetition_detected",
+            "source": "runtime_repetition_guard"
         ], level: .error)
         return true
     }

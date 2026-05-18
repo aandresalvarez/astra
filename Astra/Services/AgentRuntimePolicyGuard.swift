@@ -24,6 +24,14 @@ struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
     private let allowedPathRoots: [String]
 
+    var providerID: AgentRuntimeID {
+        manifest.providerID
+    }
+
+    var usesBroadProviderPermissions: Bool {
+        manifest.providerRender.usesBroadProviderPermissions
+    }
+
     init(manifest: RunPermissionManifest) {
         self.manifest = manifest
         let roots = [manifest.workspacePath] + manifest.additionalPaths

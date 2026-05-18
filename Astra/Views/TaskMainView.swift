@@ -1658,6 +1658,10 @@ struct TaskMainView: View {
                 runCancellationNotice(run)
             }
 
+            ForEach(actionableNotices) { notice in
+                runNoticeView(notice, prominence: .actionable)
+            }
+
             if showResponseActions || shouldShowRunFooterSummary(run) {
                 HStack(spacing: 12) {
                     if showResponseActions {
@@ -2047,13 +2051,7 @@ struct TaskMainView: View {
     }
 
     private func isActionableRunNotice(_ notice: TaskRunNotice, for run: TaskRunSnapshot) -> Bool {
-        guard !run.hasVPNWarning || notice.type != "error" else { return false }
-        switch notice.type {
-        case "error", "budget.exceeded", "permission.approval.requested":
-            return true
-        default:
-            return false
-        }
+        TaskRunNoticePresentationRules.shouldShowInline(notice, for: run)
     }
 
     private func runStoppedByPolicy(_ run: TaskRunSnapshot, notices: [TaskRunNotice]) -> Bool {

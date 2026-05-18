@@ -75,6 +75,23 @@ enum WorkspaceSidebarFilter {
     }
 }
 
+enum SidebarTaskIndexInvalidation {
+    static func signature(for tasks: [AgentTask]) -> Int {
+        tasks.reduce(into: 0) { acc, task in
+            acc ^= task.id.hashValue
+            acc ^= task.workspace?.id.hashValue ?? 0
+            acc ^= task.title.hashValue
+            acc ^= task.goal.hashValue
+            acc ^= task.status.rawValue.hashValue
+            acc ^= task.isPinned ? 1 : 0
+            acc ^= task.isDone ? 2 : 0
+            acc ^= task.shouldShowUnread ? 4 : 0
+            acc &+= Int(task.updatedAt.timeIntervalSince1970)
+            acc &+= Int(task.unreadAt?.timeIntervalSince1970 ?? 0)
+        }
+    }
+}
+
 private struct SidebarTaskAttemptGroup: Identifiable {
     let task: AgentTask
     let attemptCount: Int
@@ -141,14 +158,7 @@ struct TaskSidebarView: View {
     // Lightweight fingerprint of task fields that the sidebar index cares about.
     // Avoids rebuilding the index when unrelated fields (output, tokens) change.
     private var sidebarTasksVersion: Int {
-        tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc ^= task.shouldShowUnread ? 4 : 0
-            acc &+= Int(task.updatedAt.timeIntervalSince1970)
-        }
+        SidebarTaskIndexInvalidation.signature(for: tasks)
     }
 
     private var schedulesVersion: Int {
@@ -238,7 +248,7 @@ struct TaskSidebarView: View {
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
         .onChange(of: searchText) { rebuildTaskIndex() }
         .onChange(of: schedulesVersion) { rebuildSchedules() }
-        .onChange(of: selectedWorkspace?.id) { updateNewTaskNudge() }
+        .onChange(of: selectedWorkspace?.id) { handleSelectedWorkspaceChanged() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .toolbar {
@@ -1408,9 +1418,24 @@ struct TaskSidebarView: View {
     }
 
     private func toggleStarred(for workspace: Workspace) {
+        if selectedWorkspace?.id == workspace.id {
+            ensureWorkspaceExpanded(workspace)
+        }
         workspace.isStarred.toggle()
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    private func handleSelectedWorkspaceChanged() {
+        if let selectedWorkspace {
+            ensureWorkspaceExpanded(selectedWorkspace)
+        }
+        updateNewTaskNudge()
+    }
+
+    private func ensureWorkspaceExpanded(_ workspace: Workspace) {
+        collapsedWorkspaceIDs.remove(workspace.id)
+        expandedWorkspaceIDs.insert(workspace.id)
     }
 
     private func handleNewTaskButton() {

@@ -106,6 +106,18 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
     }
 }
 
+enum TaskRunNoticePresentationRules {
+    static func shouldShowInline(_ notice: TaskRunNotice, for run: TaskRunSnapshot) -> Bool {
+        guard !run.hasVPNWarning || notice.type != "error" else { return false }
+        switch notice.type {
+        case "error", "budget.exceeded", "budget.warning", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct TechnicalOutputPresentation: Identifiable, Hashable, Sendable {
     let id: String
     let title: String

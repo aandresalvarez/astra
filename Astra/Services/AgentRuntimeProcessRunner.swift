@@ -124,7 +124,7 @@ final class AgentRuntimeProcessRunner {
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
-                for line in lineBuffer.appendAndDrainLines(chunk) {
+                lineBuffer.appendAndProcessLines(chunk) { line in
                     if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                         onLine(line)
                         for parsed in StreamEventParser.parseAll(line: line) {
@@ -151,7 +151,7 @@ final class AgentRuntimeProcessRunner {
                     data: proc.stdoutFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !chunk.isEmpty {
-                    for line in lineBuffer.appendAndDrainLines(chunk) {
+                    lineBuffer.appendAndProcessLines(chunk) { line in
                         if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                             onLine(line)
                             for parsed in StreamEventParser.parseAll(line: line) {
@@ -337,20 +337,21 @@ final class AgentRuntimeProcessRunner {
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
-                for line in lineBuffer.appendAndDrainLines(chunk) {
-                    guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                    onLine(line, plan.parsesJSONLines)
-                    let parsedEvents = plan.parsesJSONLines
-                        ? CopilotStreamEventParser.parseAll(line: line)
-                        : CopilotStreamEventParser.parsePlainText(line: line)
-                    for parsed in parsedEvents {
-                        for filtered in eventPipeline.process(parsed) {
-                            _ = monitor.processEvent(filtered, process: process)
+                lineBuffer.appendAndProcessLines(chunk) { line in
+                    if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        onLine(line, plan.parsesJSONLines)
+                        let parsedEvents = plan.parsesJSONLines
+                            ? CopilotStreamEventParser.parseAll(line: line)
+                            : CopilotStreamEventParser.parsePlainText(line: line)
+                        for parsed in parsedEvents {
+                            for filtered in eventPipeline.process(parsed) {
+                                _ = monitor.processEvent(filtered, process: process)
+                            }
                         }
-                    }
-                    if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
-                        errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
-                        process.terminate()
+                        if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
+                            errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
+                            process.terminate()
+                        }
                     }
                 }
             }
@@ -370,20 +371,21 @@ final class AgentRuntimeProcessRunner {
                     data: proc.stdoutFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !chunk.isEmpty {
-                    for line in lineBuffer.appendAndDrainLines(chunk) {
-                        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                        onLine(line, plan.parsesJSONLines)
-                        let parsedEvents = plan.parsesJSONLines
-                            ? CopilotStreamEventParser.parseAll(line: line)
-                            : CopilotStreamEventParser.parsePlainText(line: line)
-                        for parsed in parsedEvents {
-                            for filtered in eventPipeline.process(parsed) {
-                                _ = monitor.processEvent(filtered, process: process)
+                    lineBuffer.appendAndProcessLines(chunk) { line in
+                        if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            onLine(line, plan.parsesJSONLines)
+                            let parsedEvents = plan.parsesJSONLines
+                                ? CopilotStreamEventParser.parseAll(line: line)
+                                : CopilotStreamEventParser.parsePlainText(line: line)
+                            for parsed in parsedEvents {
+                                for filtered in eventPipeline.process(parsed) {
+                                    _ = monitor.processEvent(filtered, process: process)
+                                }
                             }
-                        }
-                        if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
-                            errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
-                            process.terminate()
+                            if CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) {
+                                errorOutput.append("Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n")
+                                process.terminate()
+                            }
                         }
                     }
                 }

@@ -206,6 +206,41 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
 
+    @Test("Copilot repetition stop is reported separately from token budget")
+    func copilotRepetitionStopIsNotBudgetExceeded() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            for i in 1 2 3 4 5 6 7 8 9; do
+              printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_repeat","success":true,"result":{"content":"same output"}}}'
+            done
+            sleep 1
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "Trigger repeated provider events",
+            model: "gpt-5",
+            tokenBudget: 50_000
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.budgetEnforcementModeOverride = .warning
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "repetition_detected")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Repetition loop detected") })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
     @Test("Claude hard stop rejects budgets below launch overhead before starting")
     func claudeHardStopRejectsLowBudgetBeforeLaunch() async throws {
         let harness = try HeadlessChatHarness()
@@ -319,6 +354,47 @@ struct HeadlessChatScenarioTests {
 
         let autoArgs = try String(contentsOf: autoArgsURL, encoding: .utf8)
         #expect(autoArgs.contains("--allow-all-tools"))
+    }
+
+    @Test("Copilot autonomous provider denial fails without approval loop")
+    func copilotAutonomousProviderDenialFailsWithoutApprovalLoop() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_denied","toolName":"bash","input":{"command":"cat ~/.zsh_history"}}}'
+            printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_denied","success":false,"error":{"message":"Permission denied and could not request permission from user","code":"denied"}}}'
+            sleep 1
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "Read shell history",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "provider_permission_denied_broad_permissions")
+        #expect(!task.events.contains { $0.type == "permission.approval.requested" })
+        #expect(task.events.contains {
+            $0.type == "error"
+                && $0.payload.contains("--allow-all-tools")
+                && $0.payload.contains("cat ~/.zsh_history")
+        })
     }
 
     @Test("Copilot hidden permission prompt pauses for user approval and can continue")
