@@ -31,12 +31,8 @@ struct TaskCapabilityResolver {
             }
         }
 
-        var connEnvVars: [String: String] = [:]
-        for connector in liveConnectors {
-            for (key, value) in connector.allEnvironmentVariables {
-                connEnvVars[key] = value
-            }
-        }
+        let connEnvVars = ConnectorRuntimeProjection(connectors: liveConnectors)
+            .environmentVariables()
 
         return SkillResolver(
             effectiveSnapshots: effectiveSkillSnapshots,
@@ -385,12 +381,8 @@ struct TaskCapabilityResolver {
             }
         }
 
-        var connectorEnvVars: [String: String] = [:]
-        for connector in connectors {
-            for (key, value) in connector.allEnvironmentVariables {
-                connectorEnvVars[key] = value
-            }
-        }
+        let connectorEnvVars = ConnectorRuntimeProjection(connectors: connectors)
+            .environmentVariables()
 
         let resolver = SkillResolver(
             effectiveSnapshots: liveSnapshots + detachedSnapshots,

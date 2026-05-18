@@ -96,13 +96,18 @@ struct Phase1FunctionalTest {
 
     // MARK: - Full E2E with workspace
 
-    @Test("Workspace → Task → Worker → Events → Files", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
+    @Test(
+        "Workspace → Task → Worker → Events → Files",
+        .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
+        arguments: E2ETestSupport.runtimeCases
+    )
     @MainActor
-    func workerEndToEnd() async throws {
+    func workerEndToEnd(runtimeCase: E2ETestSupport.RuntimeCase) async throws {
         // 1. Create workspace directory
-        let testDir = "/tmp/phase1_worker_test_\(UUID().uuidString.prefix(8))"
+        let testDir = "/tmp/phase1_\(runtimeCase.directoryNameComponent)_worker_test_\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: testDir) }
+        defer { try? FileManager.default.removeItem(atPath: E2ETestSupport.copilotHomePath(forTemporaryRootPath: testDir)) }
 
         // 2. Create SwiftData container and workspace
         let container = try makeTestContainer()
@@ -126,8 +131,9 @@ struct Phase1FunctionalTest {
             """,
             workspace: workspace,
             tokenBudget: 250000,
-            model: "claude-sonnet-4-6"
+            model: runtimeCase.model
         )
+        task.runtimeID = runtimeCase.runtimeID.rawValue
         task.status = .queued
         context.insert(task)
         try context.save()
@@ -139,24 +145,36 @@ struct Phase1FunctionalTest {
 
         // 4. Run through AgentRuntimeWorker (same code path as the app)
         let worker = AgentRuntimeWorker()
+        try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
-        await worker.execute(task: task, modelContext: context) { event in
-            receivedEvents.append(event)
+        await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { event in
+                receivedEvents.append(event)
+            }
         }
 
         // 5. Verify task lifecycle
         let isTerminal = task.isTerminal || task.status == .pendingUser
         #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
         #expect(task.status != .failed, "Task should not have failed, status: \(task.status.rawValue)")
-        #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
-        #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
-        #expect(task.sessionId != nil, "Session ID should be captured")
+        if runtimeCase.expectsUsageStats {
+            #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
+        }
+        if runtimeCase.expectsCostUSD {
+            #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
+        }
+        if runtimeCase.expectsSessionID {
+            #expect(task.sessionId != nil, "Session ID should be captured")
+        }
 
         // 6. Verify TaskRun
         #expect(task.runs.count >= 1, "Should have at least 1 run")
         let run = task.runs.first!
-        #expect(run.tokensUsed > 0)
+        #expect(run.runtimeID == runtimeCase.runtimeID.rawValue)
+        if runtimeCase.expectsUsageStats {
+            #expect(run.tokensUsed > 0)
+        }
         #expect(run.completedAt != nil)
         #expect(run.exitCode == 0, "Exit code should be 0, got: \(run.exitCode)")
 
@@ -168,13 +186,19 @@ struct Phase1FunctionalTest {
         #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
         #expect(eventTypes.contains("tool.use"), "Missing tool.use")
         #expect(eventTypes.contains("agent.response"), "Missing agent.response")
-        #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        if runtimeCase.expectsUsageStats {
+            #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        }
         #expect(eventTypes.contains("task.completed"), "Missing task.completed")
 
         // Verify Write and Bash tool usage recorded
         let toolPayloads = allEvents.filter { $0.type == "tool.use" }.map(\.payload)
-        #expect(toolPayloads.contains { $0.contains("Write") }, "Should record Write tool use")
-        #expect(toolPayloads.contains { $0.contains("Bash") }, "Should record Bash tool use")
+        if runtimeCase.runtimeID == .claudeCode {
+            #expect(toolPayloads.contains { $0.contains("Write") }, "Should record Write tool use")
+            #expect(toolPayloads.contains { $0.contains("Bash") }, "Should record Bash tool use")
+        } else {
+            #expect(!run.fileChanges.isEmpty, "Copilot should infer file changes")
+        }
 
         // 8. Verify Artifacts (these are what the Artifacts tab renders)
         let artifacts = task.artifacts
@@ -207,11 +231,14 @@ struct Phase1FunctionalTest {
 
         // 10. Verify callback events match SwiftData events
         let parsedTypes = receivedEvents.map { "\($0)" }
-        #expect(parsedTypes.contains { $0.hasPrefix("systemInit") }, "Callback should include systemInit")
+        if runtimeCase.expectsSessionID {
+            #expect(parsedTypes.contains { $0.hasPrefix("systemInit") }, "Callback should include systemInit")
+        }
         #expect(parsedTypes.contains { $0.hasPrefix("result") }, "Callback should include result")
 
         // Summary
         print("\n=== Phase 1 Worker E2E Results ===")
+        print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Workspace: \(workspace.name) → \(workspace.primaryPath)")
         print("Status: \(task.status.rawValue)")
         print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")

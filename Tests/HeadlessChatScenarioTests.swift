@@ -131,6 +131,7 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .budgetExceeded)
         #expect(run.status == .budgetExceeded)
         #expect(run.stopReason == "max_budget_reached")
+        #expect(!worker.isRunning)
         #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.events.contains { $0.type == "budget.exceeded" && $0.payload.contains("Provider was not started") })
     }
@@ -236,6 +237,7 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .budgetExceeded)
         #expect(run.status == .budgetExceeded)
         #expect(run.stopReason == "max_budget_reached")
+        #expect(!worker.isRunning)
         #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.events.contains { $0.type == "budget.exceeded" && $0.payload.contains("Provider was not started") })
     }
@@ -319,6 +321,38 @@ struct HeadlessChatScenarioTests {
 
         let autoArgs = try String(contentsOf: autoArgsURL, encoding: .utf8)
         #expect(autoArgs.contains("--allow-all-tools"))
+
+        let skipHarness = try HeadlessChatHarness()
+        defer { skipHarness.cleanup() }
+        let skipArgsURL = skipHarness.rootURL.appendingPathComponent("skip-args.txt")
+        let skipClaudePath = try skipHarness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"skip-session","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"skip mode"}}]}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"skip mode","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 0
+                """,
+                argsFile: skipArgsURL
+            )
+        )
+        let skipTask = skipHarness.makeTask(
+            runtime: .claudeCode,
+            goal: "Run with skipPermissions",
+            model: "claude-sonnet-4-6"
+        )
+        let skipWorker = skipHarness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: skipClaudePath,
+            permissionPolicy: .restricted
+        )
+        skipWorker.skipPermissions = true
+
+        _ = await skipHarness.execute(task: skipTask, worker: skipWorker)
+
+        let skipArgs = try String(contentsOf: skipArgsURL, encoding: .utf8)
+        #expect(skipArgs.contains("--dangerously-skip-permissions"))
     }
 
     @Test("Copilot hidden permission prompt pauses for user approval and can continue")

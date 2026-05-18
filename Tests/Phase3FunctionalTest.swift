@@ -14,16 +14,41 @@ private func makeTestContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private func findOutputFile(named name: String, workspacePath: String, task: AgentTask) -> String? {
+    let fm = FileManager.default
+    let directCandidates = [
+        (workspacePath as NSString).appendingPathComponent(name),
+        (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(name),
+        ((TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs") as NSString).appendingPathComponent(name)
+    ].filter { !$0.isEmpty }
+
+    if let direct = directCandidates.first(where: { fm.fileExists(atPath: $0) }) {
+        return direct
+    }
+
+    guard let enumerator = fm.enumerator(atPath: workspacePath) else { return nil }
+    for case let relativePath as String in enumerator {
+        guard (relativePath as NSString).lastPathComponent == name else { continue }
+        return (workspacePath as NSString).appendingPathComponent(relativePath)
+    }
+    return nil
+}
+
 @Suite("Phase 3 Functional — Parallel Debate Swarm", .tags(.integration))
 struct Phase3FunctionalTest {
 
-    @Test("3-agent debate with synthesis to markdown", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
+    @Test(
+        "3-agent debate with synthesis to markdown",
+        .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
+        arguments: E2ETestSupport.runtimeCases
+    )
     @MainActor
-    func parallelDebateSwarm() async throws {
+    func parallelDebateSwarm(runtimeCase: E2ETestSupport.RuntimeCase) async throws {
         // 1. Create workspace directory
-        let testDir = "/tmp/phase3_swarm_test_\(UUID().uuidString.prefix(8))"
+        let testDir = "/tmp/phase3_\(runtimeCase.directoryNameComponent)_swarm_test_\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: testDir) }
+        defer { try? FileManager.default.removeItem(atPath: E2ETestSupport.copilotHomePath(forTemporaryRootPath: testDir)) }
 
         // 2. Create SwiftData container and workspace
         let container = try makeTestContainer()
@@ -37,53 +62,72 @@ struct Phase3FunctionalTest {
             title: "State management debate",
             goal: """
             I need to decide on a state management library for a new React project. \
-            Investigate Redux Toolkit, Zustand, and React Context API. \
+            Compare Redux Toolkit, Zustand, and React Context API from general knowledge only; \
+            do not use web search. \
             Compare them on bundle size, boilerplate, ease of use, TypeScript support, \
             and performance. Challenge each approach's assumptions. \
             Output a final markdown file named state-decision.md with a comparison matrix table \
-            and a clear recommendation with reasoning.
+            and a clear recommendation with reasoning. Use a file-write tool or shell redirection \
+            to create state-decision.md on disk; keep it under 350 words. Do not only answer in chat. Once state-decision.md \
+            exists, finish immediately.
             """,
             workspace: workspace,
             tokenBudget: 200000,
-            model: "claude-sonnet-4-6"
+            model: runtimeCase.model
         )
-        task.useAgentTeam = true
-        task.teamSize = 3
+        task.runtimeID = runtimeCase.runtimeID.rawValue
+        task.useAgentTeam = runtimeCase.expectsTeamEvents
+        task.teamSize = runtimeCase.expectsTeamEvents ? 3 : 1
         task.teamInstructions = """
         Create an agent team with 3 teammates:
         - Teammate 1 advocates for Redux Toolkit
         - Teammate 2 advocates for Zustand
         - Teammate 3 advocates for React Context API
-        Have them research and debate the pros and cons based on bundle size, boilerplate, \
-        ease of use, TypeScript support, and performance. They must actively challenge each \
-        other's assumptions. Once they reach a consensus, output a final markdown file named \
-        state-decision.md with a comparison matrix and recommendation.
+        Have them debate from general knowledge only; do not use web search. Each teammate should \
+        respond with no more than 3 concise bullets covering bundle size, boilerplate, ease of use, \
+        TypeScript support, and performance. They must challenge one assumption from another option. \
+        Once they reach a consensus, output a final markdown file named state-decision.md with a \
+        comparison matrix and recommendation. Use at most one pass per teammate and finish immediately \
+        after writing the file.
         """
+        task.maxTurns = 8
         context.insert(task)
         try context.save()
 
-        #expect(task.useAgentTeam == true)
-        #expect(task.teamSize == 3)
+        #expect(task.useAgentTeam == runtimeCase.expectsTeamEvents)
+        #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 3 : 1))
 
         // 4. Run through AgentRuntimeWorker
         let worker = AgentRuntimeWorker()
+        try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
-        await worker.execute(task: task, modelContext: context) { event in
-            receivedEvents.append(event)
+        await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { event in
+                receivedEvents.append(event)
+            }
         }
 
         // 5. Verify task lifecycle
         let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded
         #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
-        #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
-        #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
-        #expect(task.sessionId != nil, "Session ID should be captured")
+        if runtimeCase.expectsUsageStats {
+            #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
+        }
+        if runtimeCase.expectsCostUSD {
+            #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
+        }
+        if runtimeCase.expectsSessionID {
+            #expect(task.sessionId != nil, "Session ID should be captured")
+        }
 
         // 6. Verify TaskRun
         #expect(task.runs.count >= 1, "Should have at least 1 run")
         let run = task.runs.first!
-        #expect(run.tokensUsed > 0)
+        #expect(run.runtimeID == runtimeCase.runtimeID.rawValue)
+        if runtimeCase.expectsUsageStats {
+            #expect(run.tokensUsed > 0)
+        }
         #expect(run.completedAt != nil)
 
         // 7. Verify core events
@@ -92,7 +136,9 @@ struct Phase3FunctionalTest {
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
         #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
-        #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        if runtimeCase.expectsUsageStats {
+            #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        }
 
         // 8. Verify parallel team activity
         let teamStartEvents = allEvents.filter { $0.type == "team.agent.started" }
@@ -100,20 +146,21 @@ struct Phase3FunctionalTest {
         let agentToolUses = allEvents.filter { $0.type == "tool.use" && $0.payload.contains("Agent") }
         let hasTeamActivity = !teamStartEvents.isEmpty || !agentToolUses.isEmpty
 
-        #expect(hasTeamActivity,
-                "Should have team spawning activity (team.agent.started: \(teamStartEvents.count), Agent tools: \(agentToolUses.count))")
+        if runtimeCase.expectsTeamEvents {
+            #expect(hasTeamActivity,
+                    "Should have team spawning activity (team.agent.started: \(teamStartEvents.count), Agent tools: \(agentToolUses.count))")
 
-        // For a 3-agent team, expect multiple agent spawns
-        let totalAgentSpawns = teamStartEvents.count + agentToolUses.count
-        #expect(totalAgentSpawns >= 2,
-                "Should spawn at least 2 agents for a 3-teammate task, got \(totalAgentSpawns)")
+            // For a 3-agent team, expect multiple agent spawns
+            let totalAgentSpawns = teamStartEvents.count + agentToolUses.count
+            #expect(totalAgentSpawns >= 2,
+                    "Should spawn at least 2 agents for a 3-teammate task, got \(totalAgentSpawns)")
+        }
 
         // 9. Verify output file — state-decision.md
-        let fm = FileManager.default
-        let decisionPath = "\(testDir)/state-decision.md"
-        let hasDecisionFile = fm.fileExists(atPath: decisionPath)
+        let decisionPath = findOutputFile(named: "state-decision.md", workspacePath: testDir, task: task)
+        let hasDecisionFile = decisionPath != nil
 
-        if hasDecisionFile {
+        if let decisionPath {
             let content = try String(contentsOfFile: decisionPath, encoding: .utf8)
             #expect(!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     "state-decision.md should have content")
@@ -141,12 +188,15 @@ struct Phase3FunctionalTest {
         // Agent teams report tokens in large batches (per-agent result events), so overshoot
         // can be significant. We verify the budget mechanism fired, not exact cutoff.
         if task.status == .budgetExceeded {
-            #expect(task.tokensUsed > task.tokenBudget,
-                    "Budget exceeded status should mean tokens (\(task.tokensUsed)) exceeded budget (\(task.tokenBudget))")
+            if runtimeCase.expectsUsageStats {
+                #expect(task.tokensUsed > task.tokenBudget,
+                        "Budget exceeded status should mean tokens (\(task.tokensUsed)) exceeded budget (\(task.tokenBudget))")
+            }
         }
 
         // Summary
         print("\n=== Phase 3 Parallel Debate Swarm Results ===")
+        print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Workspace: \(workspace.name) -> \(workspace.primaryPath)")
         print("Status: \(task.status.rawValue)")
         print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")
@@ -159,13 +209,18 @@ struct Phase3FunctionalTest {
         print("=============================================\n")
     }
 
-    @Test("Budget exceeded kills swarm cleanly", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
+    @Test(
+        "Budget exceeded kills swarm cleanly",
+        .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
+        arguments: E2ETestSupport.runtimeCases
+    )
     @MainActor
-    func budgetExceededKillsSwarm() async throws {
+    func budgetExceededKillsSwarm(runtimeCase: E2ETestSupport.RuntimeCase) async throws {
         // 1. Create workspace
-        let testDir = "/tmp/phase3_budget_test_\(UUID().uuidString.prefix(8))"
+        let testDir = "/tmp/phase3_\(runtimeCase.directoryNameComponent)_budget_test_\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: testDir) }
+        defer { try? FileManager.default.removeItem(atPath: E2ETestSupport.copilotHomePath(forTemporaryRootPath: testDir)) }
 
         let container = try makeTestContainer()
         let context = container.mainContext
@@ -181,17 +236,22 @@ struct Phase3FunctionalTest {
             about a different programming language (Python, Rust, Go). Save each to a separate file.
             """,
             workspace: workspace,
-            tokenBudget: 5000,  // Deliberately low — should trigger budget exceeded
-            model: "claude-sonnet-4-6"
+            tokenBudget: 1,  // Deliberately low — should trigger the launch budget guardrail
+            model: runtimeCase.model
         )
-        task.useAgentTeam = true
-        task.teamSize = 3
+        task.runtimeID = runtimeCase.runtimeID.rawValue
+        task.useAgentTeam = runtimeCase.expectsTeamEvents
+        task.teamSize = runtimeCase.expectsTeamEvents ? 3 : 1
         context.insert(task)
         try context.save()
 
         // 3. Run
         let worker = AgentRuntimeWorker()
-        await worker.execute(task: task, modelContext: context) { _ in }
+        try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
+        worker.budgetEnforcementModeOverride = .hardStop
+        await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { _ in }
+        }
 
         // 4. Verify task reached a terminal state without crashing
         let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded
@@ -206,6 +266,7 @@ struct Phase3FunctionalTest {
         #expect(task.runs.first?.completedAt != nil, "Run should have completed")
 
         print("\n=== Phase 3 Budget Exceeded Test ===")
+        print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Status: \(task.status.rawValue)")
         print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")
         print("Events: \(task.events.count)")

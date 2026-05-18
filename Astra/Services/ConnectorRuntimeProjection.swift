@@ -1,0 +1,306 @@
+import Foundation
+import ASTRACore
+
+struct ConnectorRuntimeProjection {
+    struct Manifest: Codable, Equatable {
+        var connectors: [ManifestConnector]
+    }
+
+    struct ManifestConnector: Codable, Equatable {
+        var id: String
+        var alias: String
+        var envPrefix: String
+        var name: String
+        var serviceType: String
+        var baseURL: String
+        var authMethod: String
+        var env: [String: String]
+        var credentials: [String: String]
+        var config: [String: String]
+    }
+
+    enum BindingKind: String, Equatable {
+        case credential
+        case config
+    }
+
+    struct EnvironmentBinding: Equatable {
+        var connectorID: UUID
+        var alias: String
+        var logicalName: String
+        var originalKey: String
+        var envKey: String
+        var value: String
+        var kind: BindingKind
+    }
+
+    private let connectors: [Connector]
+    private let secretStore: SecretStore
+
+    init(connectors: [Connector], secretStore: SecretStore = KeychainSecretStore()) {
+        self.connectors = connectors
+        self.secretStore = secretStore
+    }
+
+    var aliasesByConnectorID: [UUID: String] {
+        Self.aliasesByConnectorID(for: connectors)
+    }
+
+    func environmentVariables(includeLegacySingleConnectorFallback: Bool = true) -> [String: String] {
+        guard !connectors.isEmpty else { return [:] }
+        let aliases = aliasesByConnectorID
+        let bindings = environmentBindings(aliases: aliases)
+        let serviceCounts = serviceCountsByType()
+        let legacyKeyCounts = bindings.reduce(into: [:]) { counts, binding in
+            counts[binding.originalKey, default: 0] += 1
+        }
+        var output: [String: String] = [:]
+
+        for binding in bindings {
+            output[binding.envKey] = binding.value
+            guard includeLegacySingleConnectorFallback,
+                  serviceCounts[normalizedServiceType(for: binding.connectorID)] == 1,
+                  legacyKeyCounts[binding.originalKey] == 1 else {
+                continue
+            }
+            output[binding.originalKey] = binding.value
+        }
+
+        output["ASTRA_CONNECTORS"] = manifestJSON(aliases: aliases)
+        return output
+    }
+
+    func manifest() -> Manifest {
+        let aliases = aliasesByConnectorID
+        return Manifest(connectors: connectors.map { connector in
+            manifestConnector(for: connector, alias: aliases[connector.id] ?? Self.alias(for: connector))
+        })
+    }
+
+    func manifestJSON() -> String {
+        manifestJSON(aliases: aliasesByConnectorID)
+    }
+
+    func environmentBindings() -> [EnvironmentBinding] {
+        environmentBindings(aliases: aliasesByConnectorID)
+    }
+
+    static func alias(for connector: Connector) -> String {
+        aliasBase(for: connector)
+    }
+
+    static func aliasesByConnectorID(for connectors: [Connector]) -> [UUID: String] {
+        var usedAliases = Set<String>()
+        var aliases: [UUID: String] = [:]
+
+        for connector in connectors {
+            let base = aliasBase(for: connector)
+            let alias: String
+            if usedAliases.insert(base).inserted {
+                alias = base
+            } else {
+                let fallback = "\(base)_\(shortID(connector.id))"
+                alias = uniqueAlias(startingWith: fallback, usedAliases: &usedAliases)
+            }
+            aliases[connector.id] = alias
+        }
+
+        return aliases
+    }
+
+    static func envPrefix(for connector: Connector, alias: String? = nil) -> String {
+        let service = envToken(connector.serviceType)
+        let aliasToken = envToken(alias ?? Self.alias(for: connector))
+        if service.isEmpty { return aliasToken.isEmpty ? "CONNECTOR" : aliasToken }
+        if aliasToken.isEmpty { return service }
+        return "\(service)_\(aliasToken)"
+    }
+
+    private func manifestJSON(aliases: [UUID: String]) -> String {
+        let manifest = Manifest(connectors: connectors.map { connector in
+            manifestConnector(for: connector, alias: aliases[connector.id] ?? Self.alias(for: connector))
+        })
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(manifest),
+              let json = String(data: data, encoding: .utf8) else {
+            return #"{"connectors":[]}"#
+        }
+        return json
+    }
+
+    private func manifestConnector(for connector: Connector, alias: String) -> ManifestConnector {
+        let bindings = environmentBindings(for: connector, alias: alias)
+        let env = Dictionary(
+            bindings.map { ($0.logicalName, $0.envKey) },
+            uniquingKeysWith: { _, last in last }
+        )
+        let credentials = Dictionary(
+            bindings.filter { $0.kind == .credential }.map { ($0.logicalName, $0.envKey) },
+            uniquingKeysWith: { _, last in last }
+        )
+        let config = Dictionary(
+            bindings.filter { $0.kind == .config }.map { ($0.logicalName, $0.envKey) },
+            uniquingKeysWith: { _, last in last }
+        )
+
+        return ManifestConnector(
+            id: connector.id.uuidString,
+            alias: alias,
+            envPrefix: Self.envPrefix(for: connector, alias: alias),
+            name: connector.name,
+            serviceType: connector.serviceType,
+            baseURL: connector.baseURL,
+            authMethod: connector.authMethod,
+            env: env,
+            credentials: credentials,
+            config: config
+        )
+    }
+
+    private func environmentBindings(aliases: [UUID: String]) -> [EnvironmentBinding] {
+        connectors.flatMap { connector in
+            environmentBindings(for: connector, alias: aliases[connector.id] ?? Self.alias(for: connector))
+        }
+    }
+
+    private func environmentBindings(for connector: Connector, alias: String) -> [EnvironmentBinding] {
+        var bindings: [EnvironmentBinding] = []
+        let prefix = Self.envPrefix(for: connector, alias: alias)
+
+        for (key, value) in connector.credentials(store: secretStore) {
+            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let suffix = Self.logicalEnvSuffix(for: key, connector: connector)
+            bindings.append(EnvironmentBinding(
+                connectorID: connector.id,
+                alias: alias,
+                logicalName: Self.manifestLogicalName(for: suffix),
+                originalKey: key,
+                envKey: "\(prefix)_\(suffix)",
+                value: value,
+                kind: .credential
+            ))
+        }
+
+        for (key, value) in connector.config {
+            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let suffix = Self.logicalEnvSuffix(for: key, connector: connector)
+            bindings.append(EnvironmentBinding(
+                connectorID: connector.id,
+                alias: alias,
+                logicalName: Self.manifestLogicalName(for: suffix),
+                originalKey: key,
+                envKey: "\(prefix)_\(suffix)",
+                value: value,
+                kind: .config
+            ))
+        }
+
+        return bindings
+    }
+
+    private func serviceCountsByType() -> [String: Int] {
+        connectors.reduce(into: [:]) { counts, connector in
+            counts[Self.normalizedServiceType(connector.serviceType), default: 0] += 1
+        }
+    }
+
+    private func normalizedServiceType(for connectorID: UUID) -> String {
+        guard let connector = connectors.first(where: { $0.id == connectorID }) else { return "" }
+        return Self.normalizedServiceType(connector.serviceType)
+    }
+
+    private static func normalizedServiceType(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func aliasBase(for connector: Connector) -> String {
+        let preferred = slug(connector.name)
+        let fallback = slug(connector.serviceType)
+        let alias = preferred.isEmpty ? fallback : preferred
+        let normalized = alias.isEmpty ? "connector" : alias
+        if normalized.first?.isLetter == true {
+            return String(normalized.prefix(48))
+        }
+        return String("c_\(normalized)".prefix(48))
+    }
+
+    private static func uniqueAlias(startingWith preferred: String, usedAliases: inout Set<String>) -> String {
+        if usedAliases.insert(preferred).inserted { return preferred }
+        var index = 2
+        while true {
+            let candidate = "\(preferred)_\(index)"
+            if usedAliases.insert(candidate).inserted { return candidate }
+            index += 1
+        }
+    }
+
+    private static func shortID(_ id: UUID) -> String {
+        id.uuidString.prefix(8).lowercased()
+    }
+
+    private static func slug(_ value: String) -> String {
+        var output = ""
+        var previousWasSeparator = false
+
+        for scalar in value.lowercased().unicodeScalars {
+            if isASCIIAlphanumeric(scalar) {
+                output.unicodeScalars.append(scalar)
+                previousWasSeparator = false
+            } else if !previousWasSeparator {
+                output.append("_")
+                previousWasSeparator = true
+            }
+        }
+
+        return output.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    }
+
+    private static func envToken(_ value: String) -> String {
+        let slugged = slug(value)
+        guard !slugged.isEmpty else { return "" }
+        return slugged.uppercased()
+    }
+
+    private static func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+        (48...57).contains(Int(scalar.value)) ||
+            (97...122).contains(Int(scalar.value))
+    }
+
+    private static func logicalEnvSuffix(for key: String, connector: Connector) -> String {
+        let rawKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let candidates = [
+            envToken(connector.serviceType),
+            envToken(connector.name)
+        ].filter { !$0.isEmpty }
+
+        for candidate in candidates where rawKey.hasPrefix(candidate + "_") {
+            let suffix = rawKey.dropFirst(candidate.count + 1)
+            if !suffix.isEmpty { return String(suffix) }
+        }
+
+        return rawKey
+    }
+
+    private static func manifestLogicalName(for suffix: String) -> String {
+        let parts = suffix
+            .split(separator: "_")
+            .map { String($0).lowercased() }
+            .filter { !$0.isEmpty }
+        guard let first = parts.first else { return "value" }
+        return parts.dropFirst().reduce(first) { partial, next in
+            partial + manifestWord(next)
+        }
+    }
+
+    private static func manifestWord(_ value: String) -> String {
+        switch value {
+        case "api": return "API"
+        case "id": return "ID"
+        case "url", "uri": return value.uppercased()
+        default:
+            guard let first = value.first else { return "" }
+            return first.uppercased() + String(value.dropFirst())
+        }
+    }
+}

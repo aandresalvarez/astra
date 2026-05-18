@@ -235,10 +235,8 @@ final class Skill {
     /// All environment variables: legacy env vars + connector env vars merged
     var resolvedAllEnvironmentVariables: [String: String] {
         var merged = environmentVariables
-        for connector in connectors {
-            for (k, v) in connector.allEnvironmentVariables {
-                merged[k] = v
-            }
+        for (key, value) in ConnectorRuntimeProjection(connectors: connectors).environmentVariables() {
+            merged[key] = value
         }
         return merged
     }

@@ -227,9 +227,20 @@ enum AgentPromptBuilder {
     }
 
     private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
-        let resolvedEnv = capabilityScope.resolver.resolvedEnvironmentVariables
+        let projection = ConnectorRuntimeProjection(connectors: capabilityScope.connectors)
+        let aliasesByID = projection.aliasesByConnectorID
+        let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
+
         let connectorDescriptions = capabilityScope.connectors.map { conn in
-            var desc = "[\(conn.name)] \(conn.serviceType) — \(conn.connectorDescription)"
+            let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
+            let bindings = bindingsByConnectorID[conn.id] ?? []
+            let credentialBindings = bindings.filter { $0.kind == .credential }
+            let configBindings = bindings.filter { $0.kind == .config }
+            let configuredCredentialKeys = Set(credentialBindings.map(\.originalKey))
+            let missingCredentialKeys = conn.credentialKeys.filter { !configuredCredentialKeys.contains($0) }
+
+            var desc = "[\(conn.name)] \(conn.serviceType) - \(conn.connectorDescription)"
+            desc += "\n  Alias: \(alias)"
             if !conn.baseURL.isEmpty { desc += "\n  Base URL: \(conn.baseURL)" }
             if !conn.configKeys.isEmpty {
                 let configs = zip(conn.configKeys, conn.configValues)
@@ -237,15 +248,29 @@ enum AgentPromptBuilder {
                     .joined(separator: ", ")
                 desc += "\n  Config: \(configs)"
             }
-            if !conn.credentialKeys.isEmpty {
-                let availableKeys = conn.credentialKeys.filter { resolvedEnv[$0] != nil }
-                let missingKeys = conn.credentialKeys.filter { resolvedEnv[$0] == nil }
-                if !availableKeys.isEmpty {
-                    desc += "\n  Credentials ALREADY SET in your environment: \(availableKeys.joined(separator: ", ")) — use os.environ[\"KEY\"] directly, do NOT ask the user for these"
-                }
-                if !missingKeys.isEmpty {
-                    desc += "\n  Credentials NOT configured (ask user to fill them in workspace settings): \(missingKeys.joined(separator: ", "))"
-                }
+            if !bindings.isEmpty {
+                let rendered = bindings
+                    .sorted { $0.envKey < $1.envKey }
+                    .map { "\($0.logicalName): $\($0.envKey)" }
+                    .joined(separator: ", ")
+                desc += "\n  Connector env vars: \(rendered)"
+            }
+            if !credentialBindings.isEmpty {
+                let rendered = credentialBindings
+                    .sorted { $0.envKey < $1.envKey }
+                    .map(\.envKey)
+                    .joined(separator: ", ")
+                desc += "\n  Credentials ALREADY SET in your environment: \(rendered) - use os.environ[\"KEY\"] directly, do NOT ask the user for these"
+            }
+            if !missingCredentialKeys.isEmpty {
+                desc += "\n  Credentials NOT configured (ask user to fill them in workspace settings): \(missingCredentialKeys.joined(separator: ", "))"
+            }
+            if !configBindings.isEmpty {
+                let rendered = configBindings
+                    .sorted { $0.envKey < $1.envKey }
+                    .map(\.envKey)
+                    .joined(separator: ", ")
+                desc += "\n  Config env vars: \(rendered)"
             }
             desc += "\n  Auth: \(conn.authMethod)"
             if !conn.notes.isEmpty { desc += "\n  Notes: \(conn.notes)" }
@@ -256,6 +281,8 @@ enum AgentPromptBuilder {
         parts.append("""
         Available Connectors (credentials are pre-loaded into your process environment — use them directly, never ask the user to provide them again):
         \(connectorDescriptions.joined(separator: "\n\n"))
+
+        The ASTRA_CONNECTORS environment variable contains a JSON manifest with connector aliases and env var names. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
         IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens — NOT WebFetch. \
         WebFetch cannot handle SSO, session cookies, or token-based auth headers. Example:

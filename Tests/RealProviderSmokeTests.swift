@@ -263,8 +263,10 @@ private final class RealProviderHarness {
 
     func execute(task: AgentTask, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        await worker.execute(task: task, modelContext: context) { event in
-            events.append(event)
+        await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { event in
+                events.append(event)
+            }
         }
         try? context.save()
         return events
@@ -272,8 +274,10 @@ private final class RealProviderHarness {
 
     func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        await worker.continueSession(task: task, message: message, modelContext: context) { event in
-            events.append(event)
+        await E2ETestSupport.withLiveProviderSlot {
+            await worker.continueSession(task: task, message: message, modelContext: context) { event in
+                events.append(event)
+            }
         }
         try? context.save()
         return events

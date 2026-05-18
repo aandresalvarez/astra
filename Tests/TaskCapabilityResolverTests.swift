@@ -157,6 +157,143 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Multiple same-service connectors project namespaced env vars without legacy collision")
+    func multipleSameServiceConnectorsProjectNamespacedEnvVarsWithoutLegacyCollision() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "REDCap Workspace", primaryPath: "/tmp/redcap-workspace")
+        context.insert(workspace)
+
+        let source = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        source.workspace = workspace
+        source.configKeys = ["REDCAP_API_URL"]
+        source.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(source)
+
+        let target = Connector(
+            name: "Study B Target",
+            serviceType: "redcap",
+            connectorDescription: "Target REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        target.workspace = workspace
+        target.configKeys = ["REDCAP_API_URL"]
+        target.configValues = ["https://redcap.example.edu/api/target"]
+        context.insert(target)
+
+        let task = AgentTask(
+            title: "Move REDCap data",
+            goal: "Copy records from Study A Source to Study B Target",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_STUDY_B_TARGET_API_URL"] == "https://redcap.example.edu/api/target")
+        #expect(env["REDCAP_API_URL"] == nil)
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""alias":"study_a_source""#) == true)
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""alias":"study_b_target""#) == true)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Alias: study_a_source"))
+        #expect(prompt.contains("Alias: study_b_target"))
+        #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
+        #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+    }
+
+    @Test("Single same-service connector keeps legacy env vars during deprecation window")
+    func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Single REDCap Workspace", primaryPath: "/tmp/redcap-single")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["REDCAP_API_URL"]
+        connector.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use REDCap",
+            goal: "Read Study A Source metadata",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_API_URL"] == "https://redcap.example.edu/api/source")
+    }
+
+    @Test("Projection namespaces duplicate connector credentials")
+    func projectionNamespacesDuplicateConnectorCredentials() throws {
+        let source = Connector(name: "Study A Source", serviceType: "redcap", authMethod: "api_key")
+        source.credentialKeys = ["REDCAP_API_TOKEN"]
+
+        let target = Connector(name: "Study B Target", serviceType: "redcap", authMethod: "api_key")
+        target.credentialKeys = ["REDCAP_API_TOKEN"]
+
+        let store = MockSecretStore()
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "source-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: source.id),
+            label: nil
+        )
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "target-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: target.id),
+            label: nil
+        )
+
+        let env = ConnectorRuntimeProjection(
+            connectors: [source, target],
+            secretStore: store
+        ).environmentVariables()
+
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_TOKEN"] == "source-token")
+        #expect(env["REDCAP_STUDY_B_TARGET_API_TOKEN"] == "target-token")
+        #expect(env["REDCAP_API_TOKEN"] == nil)
+    }
+
+    @Test("Projection does not emit legacy fallback when original keys collide")
+    func projectionDoesNotEmitLegacyFallbackWhenOriginalKeysCollide() throws {
+        let first = Connector(name: "First API", serviceType: "first")
+        first.configKeys = ["API_TOKEN"]
+        first.configValues = ["first-token"]
+
+        let second = Connector(name: "Second API", serviceType: "second")
+        second.configKeys = ["API_TOKEN"]
+        second.configValues = ["second-token"]
+
+        let env = ConnectorRuntimeProjection(connectors: [first, second]).environmentVariables()
+
+        #expect(env["FIRST_FIRST_API_API_TOKEN"] == "first-token")
+        #expect(env["SECOND_SECOND_API_API_TOKEN"] == "second-token")
+        #expect(env["API_TOKEN"] == nil)
+    }
+
     @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
     func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
         let container = try makeTaskCapabilityResolverContainer()
