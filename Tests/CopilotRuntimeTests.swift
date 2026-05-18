@@ -307,6 +307,24 @@ struct CopilotStreamEventParserTests {
             Issue.record("Expected one merged result event")
         }
     }
+
+    @Test("Session shutdown model metrics map to result stats")
+    func sessionShutdownModelMetrics() {
+        let line = #"{"type":"session.shutdown","data":{"totalApiDurationMs":31170,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":7,"cost":1},"usage":{"inputTokens":197185,"outputTokens":1532,"cacheReadTokens":180864,"cacheWriteTokens":16310,"reasoningTokens":0}}}}}"#
+        let events = CopilotStreamEventParser.parseAll(line: line)
+        #expect(events.count == 1)
+        if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = events.first {
+            #expect(text == nil)
+            #expect(cost == nil)
+            #expect(input == 394_359)
+            #expect(output == 1_532)
+            #expect(duration == 31_170)
+            #expect(turns == 7)
+            #expect(!isError)
+        } else {
+            Issue.record("Expected result stats from session shutdown")
+        }
+    }
 }
 
 @Suite("Agent Runtime Stream Telemetry")
@@ -782,7 +800,218 @@ struct CopilotWorkerExecutionTests {
         #expect(run.output == "Hello from Copilot")
         #expect(run.inputTokens == 4)
         #expect(run.outputTokens == 5)
-        #expect(task.events.contains { $0.type == "agent.response" && $0.payload == "Hello from Copilot" })
+        let responseText = task.events
+            .filter { $0.type == "agent.response" }
+            .sorted { $0.timestamp < $1.timestamp }
+            .map(\.payload)
+            .joined()
+        #expect(responseText == "Hello from Copilot")
+    }
+
+    @Test("Worker records Copilot session shutdown token metrics")
+    func fakeCopilotSessionShutdownMetricsRecordStats() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-shutdown-stats-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        let copilotHomeURL = root.appendingPathComponent("copilot-home", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Shutdown Stats", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Say hello", workspace: workspace, tokenBudget: 1000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"done"}}'
+        session_dir="$COPILOT_HOME/session-state/fake-session"
+        mkdir -p "$session_dir"
+        cat > "$session_dir/events.jsonl" <<'JSON'
+        {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
+        {"type":"session.shutdown","data":{"totalApiDurationMs":42,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":2,"cost":1},"usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":7,"cacheWriteTokens":3}}}}}
+        JSON
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = copilotHomeURL.path
+        worker.timeoutSeconds = 30
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .completed)
+        let run = try #require(task.runs.first)
+        #expect(run.inputTokens == 20)
+        #expect(run.outputTokens == 5)
+        #expect(run.tokensUsed == 25)
+        #expect(task.tokensUsed == 25)
+        #expect(task.events.contains { $0.type == "task.stats" && $0.payload.contains("tokens: 25") })
+    }
+
+    @Test("Copilot session shutdown metrics over warning budget record a visible warning")
+    func fakeCopilotSessionShutdownMetricsOverWarningBudgetRecordWarning() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-shutdown-warning-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        let copilotHomeURL = root.appendingPathComponent("copilot-home", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Shutdown Warning", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Say hello", workspace: workspace, tokenBudget: 5_000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"done without streamed usage"}}'
+        session_dir="$COPILOT_HOME/session-state/fake-warning-session"
+        mkdir -p "$session_dir"
+        cat > "$session_dir/events.jsonl" <<'JSON'
+        {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
+        {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
+        JSON
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = copilotHomeURL.path
+        worker.timeoutSeconds = 30
+        worker.budgetEnforcementModeOverride = .warning
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .completed)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .completed)
+        #expect(run.inputTokens == 7_000)
+        #expect(run.outputTokens == 500)
+        #expect(run.tokensUsed == 7_500)
+        #expect(task.tokensUsed == 7_500)
+        #expect(task.events.contains { $0.type == "task.stats" && $0.payload.contains("tokens: 7500") })
+        #expect(task.events.contains {
+            $0.type == "budget.warning" &&
+            $0.payload.contains("7500/5000") &&
+            $0.run?.id == run.id
+        })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Copilot session shutdown metrics over hard budget record budget exceeded")
+    func fakeCopilotSessionShutdownMetricsOverHardBudgetRecordBudgetExceeded() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-shutdown-hard-stop-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let binURL = root.appendingPathComponent("copilot")
+        let copilotHomeURL = root.appendingPathComponent("copilot-home", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Copilot Shutdown Hard Stop", primaryPath: workspaceURL.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "T", goal: "Say hello", workspace: workspace, tokenBudget: 5_000, model: "gpt-5")
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"done before final usage report"}}'
+        session_dir="$COPILOT_HOME/session-state/fake-hard-stop-session"
+        mkdir -p "$session_dir"
+        cat > "$session_dir/events.jsonl" <<'JSON'
+        {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
+        {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
+        JSON
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+
+        let worker = AgentRuntimeWorker()
+        worker.copilotPath = binURL.path
+        worker.copilotHome = copilotHomeURL.path
+        worker.timeoutSeconds = 30
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(task.status == .budgetExceeded)
+        let run = try #require(task.runs.first)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(run.exitCode == 0)
+        #expect(run.inputTokens == 7_000)
+        #expect(run.outputTokens == 500)
+        #expect(run.tokensUsed == 7_500)
+        #expect(task.tokensUsed == 7_500)
+        #expect(task.events.contains { $0.type == "task.stats" && $0.payload.contains("tokens: 7500") })
+        #expect(task.events.contains {
+            $0.type == "budget.exceeded" &&
+            $0.payload.contains("7500/5000") &&
+            $0.payload.contains("Provider reported usage above budget") &&
+            $0.run?.id == run.id
+        })
+        #expect(!task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
     @Test("Worker records Copilot edits to files that were already dirty")

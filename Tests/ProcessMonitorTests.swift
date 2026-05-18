@@ -611,7 +611,7 @@ struct ProcessMonitorTests {
         let shouldKill = monitor.processEvent(event, process: nil) // 3 — triggers
         #expect(shouldKill == true)
         #expect(monitor.repetitionKilled == true)
-        #expect(monitor.budgetExceeded == true) // repetition sets budgetExceeded too
+        #expect(monitor.budgetExceeded == false)
     }
 
     @Test("Different events reset repetition counter")
@@ -626,6 +626,21 @@ struct ProcessMonitorTests {
         let shouldKill = monitor.processEvent(.toolUse(name: "Read", id: "t1", input: nil), process: nil)
 
         #expect(shouldKill == false) // only 2 in a row, not 3
+        #expect(monitor.repetitionKilled == false)
+    }
+
+    @Test("Growing tool result output resets repetition counter")
+    func growingToolResultOutputResetsRepetitionCounter() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+
+        for index in 1...6 {
+            let shouldKill = monitor.processEvent(
+                .toolResult(toolId: "toolu_streaming", content: String(repeating: "x", count: index)),
+                process: nil
+            )
+            #expect(shouldKill == false)
+        }
+
         #expect(monitor.repetitionKilled == false)
     }
 
@@ -665,7 +680,7 @@ struct ProcessMonitorTests {
     func signatureTruncation() {
         let longText = String(repeating: "a", count: 200)
         let sig = AgentRuntimeWorker.ProcessMonitor.eventSignature(.text(text: longText))
-        #expect(sig.count <= 85) // "text:" prefix + 80 chars
+        #expect(sig.count <= 95) // "text:" prefix + length + 80 chars
     }
 
     // MARK: - ProcessResult
@@ -868,6 +883,63 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalRequired == true)
         #expect(monitor.policyApprovalMessage?.contains("Permission requested for tool: Bash") == true)
         #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(curl:*)") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Provider permission denial in restricted mode includes the recent command")
+    func providerPermissionDenialInRestrictedModeIncludesRecentCommand() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Bash"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        _ = monitor.processEvent(
+            .toolUse(name: "bash", id: "toolu_denied", input: ["command": "cat ~/.zsh_history"]),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(toolId: "toolu_denied", content: "Permission denied and could not request permission from user"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyApprovalMessage?.contains("cat ~/.zsh_history") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Provider permission denial in broad mode is terminal instead of another approval")
+    func providerPermissionDenialInBroadModeIsTerminal() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["*"],
+            allowedShellPatterns: ["*"],
+            permissionMode: PermissionPolicy.autonomous.rawValue,
+            providerID: .copilotCLI,
+            policyLevel: .autonomous,
+            usesBroadProviderPermissions: true
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        _ = monitor.processEvent(
+            .toolUse(name: "bash", id: "toolu_denied", input: ["summary": #"{"command":"cat ~/.zsh_history"}"#]),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(toolId: "toolu_denied", content: "Permission denied and could not request permission from user"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "provider_permission_denied_broad_permissions")
+        #expect(monitor.runtimeStopMessage?.contains("--allow-all-tools") == true)
+        #expect(monitor.runtimeStopMessage?.contains("cat ~/.zsh_history") == true)
+        #expect(monitor.policyApprovalRequired == false)
         #expect(monitor.policyViolation == false)
     }
 
@@ -1136,14 +1208,18 @@ private func runtimePolicyManifest(
     deniedShellPatterns: [String] = [],
     allowedURLPatterns: [String] = [],
     deniedURLPatterns: [String] = [],
-    workspacePath: String = "/tmp/astra-policy-guard"
+    workspacePath: String = "/tmp/astra-policy-guard",
+    permissionMode: String = PermissionPolicy.restricted.rawValue,
+    providerID: AgentRuntimeID = .claudeCode,
+    policyLevel: AgentPolicyLevel = .review,
+    usesBroadProviderPermissions: Bool = false
 ) -> RunPermissionManifest {
     let render = ProviderPolicyRender(
-        providerID: .claudeCode,
+        providerID: providerID,
         adapterVersion: 1,
-        policyLevel: .review,
+        policyLevel: policyLevel,
         configOwnership: .generated,
-        permissionMode: PermissionPolicy.restricted.rawValue,
+        permissionMode: permissionMode,
         allowedTools: allowedTools,
         askFirstTools: askFirstTools,
         deniedTools: deniedTools,
@@ -1157,17 +1233,17 @@ private func runtimePolicyManifest(
         generatedConfigPreview: "",
         enforcementTiers: [.providerNative, .astraBrokered],
         diagnostics: [],
-        usesBroadProviderPermissions: false
+        usesBroadProviderPermissions: usesBroadProviderPermissions
     )
     let taskID = UUID()
     return RunPermissionManifest(
         taskID: taskID,
         runID: UUID(),
         phase: "test",
-        providerID: .claudeCode,
+        providerID: providerID,
         providerVersion: nil,
         model: "test",
-        policyLevel: .review,
+        policyLevel: policyLevel,
         policyScope: .taskOverride,
         providerRender: render,
         workspacePath: workspacePath,

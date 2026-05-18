@@ -100,7 +100,7 @@ struct CapabilityActivationDisabler {
         let enabledIDs = Set(workspace.enabledCapabilityIDs).subtracting([package.id])
         let enabledCatalogPackages = availablePackages.filter { enabledIDs.contains($0.id) }
         let syntheticPackages = CapabilityCatalogInventory.configuredPackages(
-            catalogPackages: [],
+            catalogPackages: availablePackages,
             capabilities: capabilities,
             workspace: workspace
         )

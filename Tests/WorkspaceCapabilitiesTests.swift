@@ -587,6 +587,43 @@ struct WorkspaceCapabilitiesTests {
         ).isEnabled == false)
     }
 
+    @Test("disabling a catalog package removes matching shared skill activation")
+    @MainActor
+    func disablingCatalogPackageRemovesMatchingSharedSkillActivation() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared Package Match", primaryPath: "/tmp/shared-package-match")
+        context.insert(workspace)
+
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        context.insert(skill)
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+
+        var package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        package.sourceMetadata = .builtIn()
+
+        let capabilities = WorkspaceCapabilities(workspace: workspace, globalSkills: [skill])
+        #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
+
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: context,
+            availablePackages: [package]
+        )
+        try context.save()
+
+        #expect(result.disabledSkillIDs == [skill.id])
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill])
+        ).isEnabled == false)
+    }
+
     @Test("disabling one package keeps shared skill active when another enabled package claims it")
     @MainActor
     func disablingPackageKeepsSharedSkillClaimedByRemainingPackage() throws {

@@ -91,6 +91,11 @@ public enum CopilotStreamEventParser {
             return events(from: payload, raw: raw)
         }
 
+        if normalized == "session.shutdown",
+           let events = sessionShutdownEvents(from: object) {
+            return events
+        }
+
         if normalized.hasPrefix("session.") {
             return sessionEvent(from: object, type: type, raw: raw)
         }
@@ -313,6 +318,65 @@ public enum CopilotStreamEventParser {
             return [.started(sessionID: sessionID, model: model)]
         }
         return []
+    }
+
+    private static func sessionShutdownEvents(from object: [String: Any]) -> [AgentEvent]? {
+        guard let payload = payloadObject(in: object),
+              let modelMetrics = payload["modelMetrics"] as? [String: Any] else {
+            return nil
+        }
+
+        var input = 0
+        var output = 0
+        var turns = 0
+        var cost: Double?
+        for value in modelMetrics.values {
+            guard let entry = value as? [String: Any] else { continue }
+            let usage = entry["usage"] as? [String: Any]
+            input += tokenCount(
+                in: usage,
+                fallback: entry,
+                keys: ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]
+            )
+            input += tokenCount(
+                in: usage,
+                fallback: entry,
+                keys: ["cacheReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]
+            )
+            input += tokenCount(
+                in: usage,
+                fallback: entry,
+                keys: ["cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]
+            )
+            output += tokenCount(
+                in: usage,
+                fallback: entry,
+                keys: ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]
+            )
+            if cost == nil {
+                cost = usage.flatMap { doubleValue(in: $0, keys: ["costUSD", "cost_usd", "total_cost_usd"]) }
+                    ?? doubleValue(in: entry, keys: ["costUSD", "cost_usd", "total_cost_usd"])
+            }
+            if let requests = entry["requests"] as? [String: Any] {
+                turns += intValue(in: requests, keys: ["count"]) ?? 0
+            }
+        }
+
+        let duration = intValue(in: payload, keys: ["totalApiDurationMs", "durationMs", "duration_ms"])
+        guard input > 0 || output > 0 || cost != nil || duration != nil || turns > 0 else {
+            return nil
+        }
+        return [.stats(
+            inputTokens: input,
+            outputTokens: output,
+            costUSD: cost,
+            durationMs: duration,
+            turns: turns > 0 ? turns : nil
+        )]
+    }
+
+    private static func tokenCount(in primary: [String: Any]?, fallback: [String: Any], keys: [String]) -> Int {
+        primary.flatMap { intValue(in: $0, keys: keys) } ?? intValue(in: fallback, keys: keys) ?? 0
     }
 
     private static func nestedContentText(_ value: Any?) -> String? {
