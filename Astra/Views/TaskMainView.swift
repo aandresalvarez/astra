@@ -1863,12 +1863,21 @@ struct TaskMainView: View {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(Stanford.ui(10))
                         .frame(width: 12)
-                    Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
-                        .font(Stanford.ui(12))
+                    if run.status != .running {
+                        Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
+                            .font(Stanford.ui(12))
+                    }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(Stanford.chatSection())
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(title)
+                                .font(Stanford.chatSection())
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            if run.status == .running {
+                                runActivityLiveBadge(run: run, now: now)
+                                    .fixedSize()
+                            }
+                        }
                         if !parts.isEmpty {
                             Text(parts.joined(separator: " · "))
                                 .font(Stanford.chatMeta())
@@ -1878,9 +1887,6 @@ struct TaskMainView: View {
                         }
                     }
                     Spacer(minLength: 8)
-                    if run.status == .running {
-                        runActivityLiveBadge(run: run, now: now)
-                    }
                 }
                 .foregroundStyle(accent)
                 .contentShape(Rectangle())
@@ -2034,21 +2040,28 @@ struct TaskMainView: View {
 
     private func runActivityLiveBadge(run: TaskRunSnapshot, now: Date) -> some View {
         let elapsed = compactLiveDuration(Int(now.timeIntervalSince(run.startedAt)))
-        let pulsePhase = Int(now.timeIntervalSinceReferenceDate) % 2
-        let backgroundOpacity = pulsePhase == 0 ? 0.10 : 0.18
-        let strokeOpacity = pulsePhase == 0 ? 0.18 : 0.32
+        let pulse = (sin(now.timeIntervalSinceReferenceDate * (2 * Double.pi / 2.8)) + 1) / 2
+        let dotOpacity = 0.48 + (pulse * 0.22)
+        let dotScale = 0.92 + (pulse * 0.08)
 
-        return Text("Live · \(elapsed)")
-            .font(Stanford.chatMeta(10))
-            .foregroundStyle(Stanford.lagunita)
-            .monospacedDigit()
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(Stanford.lagunita.opacity(dotOpacity))
+                .frame(width: 4.5, height: 4.5)
+                .scaleEffect(dotScale)
+                .animation(.easeInOut(duration: 1.2), value: dotOpacity)
+            Text("Live · \(elapsed)")
+                .font(Stanford.chatMeta(10))
+                .foregroundStyle(Stanford.lagunita.opacity(0.9))
+                .monospacedDigit()
+        }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Stanford.lagunita.opacity(backgroundOpacity))
+            .background(Stanford.lagunita.opacity(0.08))
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(Stanford.lagunita.opacity(strokeOpacity), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
             )
     }
 
