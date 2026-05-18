@@ -231,6 +231,33 @@ struct BrowserControlSafetyTests {
         #expect(components.queryItems?.first(where: { $0.name == "q" })?.value == "Alvaro1 t")
     }
 
+    @Test("Click-control exact matching rejects unrelated Outlook controls")
+    @MainActor
+    func clickControlExactMatchingRejectsUnrelatedOutlookControls() {
+        let replyAll = [
+            "label": "Reply all",
+            "name": "Reply all",
+            "role": "button",
+            "selector": "button[aria-label='Reply all']"
+        ]
+
+        #expect(!ShelfBrowserSession.controlLabelStronglyMatches(replyAll, requestedLabel: "Other"))
+        #expect(ShelfBrowserSession.controlLabelStronglyMatches(replyAll, requestedLabel: "Reply all"))
+    }
+
+    @Test("Mail mutation controls require confirmation")
+    @MainActor
+    func mailMutationControlsRequireConfirmation() {
+        #expect(ShelfBrowserSession.mailMutationControlAction([
+            "label": "Reply all",
+            "role": "button"
+        ]) == "reply all")
+        #expect(ShelfBrowserSession.mailMutationControlAction([
+            "label": "Other",
+            "role": "tab"
+        ]) == nil)
+    }
+
     @Test("Run guard hard-stops after excessive bridge calls")
     func runGuardHardStopsAfterExcessiveBridgeCalls() {
         var guardrail = BrowserRunGuard(warningThreshold: 2, hardStopThreshold: 3)

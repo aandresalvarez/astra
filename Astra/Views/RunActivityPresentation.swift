@@ -237,6 +237,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
 
 struct RunActivityPresentation: Hashable, Sendable {
     let issues: [RunIssuePresentation]
+    let progressMessages: [TaskRunProgressMessage]
     let tools: [ToolActivityPresentation]
     let files: [StoredFileChange]
     let policy: PolicySummaryPresentation?
@@ -247,7 +248,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         run: TaskRunSnapshot,
         activity: TaskRunActivity,
         notices: [TaskRunNotice],
-        suppressedNoticeIDs: Set<UUID> = []
+        suppressedNoticeIDs: Set<UUID> = [],
+        progressMessages: [TaskRunProgressMessage] = []
     ) {
         var issueRows: [RunIssuePresentation] = []
         var technicalRows: [TechnicalOutputPresentation] = []
@@ -274,6 +276,7 @@ struct RunActivityPresentation: Hashable, Sendable {
         technicalRows.append(contentsOf: activity.toolResults.map(Self.technicalOutput))
 
         issues = issueRows
+        self.progressMessages = progressMessages
         tools = Self.groupToolCalls(activity.toolCalls)
         files = activity.fileChanges
         policy = PolicySummaryPresentation(
@@ -285,7 +288,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     }
 
     var hasVisibleDetails: Bool {
-        !issues.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+        !issues.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
     }
 
     private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {

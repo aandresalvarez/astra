@@ -555,7 +555,7 @@ struct AstraBrowserTool {
                 "usage": [
                 "astra-browser health",
                 "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
-                "ASTRA_BROWSER_DEBUG_CAPTURE=1 astra-browser click --role button --name Save  # capture rich evidence if this action fails, then inspect astra-browser trace",
+                "ASTRA_BROWSER_DEBUG_CAPTURE=0 astra-browser click --role button --name Save  # suppress rich failure evidence for this command",
                 "astra-browser trace",
                 "astra-browser benchmark",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",

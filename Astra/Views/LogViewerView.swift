@@ -23,7 +23,8 @@ struct LogViewerView: View {
     @State private var diagnosticsMessage: String? = nil
     @State private var diagnosticsReportURL: URL? = nil
     @AppStorage(AppStorageKeys.diagnosticsScope) private var diagnosticsScopeRawValue = LogDiagnosticsScope.sinceLastReport.rawValue
-    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = false
+    @AppStorage(AppStorageKeys.runtimeStreamDebugCapture) private var runtimeStreamDebugCapture = LoggingPreferences.defaultRuntimeStreamDebugCapture
+    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = LoggingPreferences.defaultBrowserDebugCapture
 
     private var hasActiveFilters: Bool {
         selectedLevel != nil ||
@@ -351,6 +352,14 @@ struct LogViewerView: View {
                     icon: "camera.metering.matrix",
                     tint: Stanford.poppy,
                     message: "Browser Debug Capture is on. Failed browser actions may write screenshot thumbnails and compact page evidence to browser-flight JSONL logs."
+                )
+            }
+
+            if runtimeStreamDebugCapture {
+                inlineNotice(
+                    icon: "waveform.path.ecg",
+                    tint: Stanford.sky,
+                    message: "Runtime Stream Debug Logging is on. Provider runs retain bounded raw-line samples, unknown JSON shapes, and stderr tails in task logs."
                 )
             }
 

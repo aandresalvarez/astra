@@ -16,7 +16,8 @@ enum BrowserFailureDebugCapture {
 
     static func policy(
         for request: BrowserBridgeRequest,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        defaults: UserDefaults = .standard
     ) -> Policy {
         if let headerValue = request.headerValue(headerName),
            let enabled = boolValue(headerValue) {
@@ -28,7 +29,14 @@ enum BrowserFailureDebugCapture {
             return Policy(isEnabled: enabled, source: "environment")
         }
 
-        return Policy(isEnabled: false, source: "default")
+        let source = defaults.object(forKey: AppStorageKeys.browserDebugCapture) == nil
+            ? "settings_default"
+            : "settings"
+        return Policy(isEnabled: isEnabledByDefault(in: defaults), source: source)
+    }
+
+    static func isEnabledByDefault(in defaults: UserDefaults = .standard) -> Bool {
+        LoggingPreferences.browserDebugCaptureEnabled(in: defaults)
     }
 
     static func shouldCapture(statusCode: Int, result: [String: Any]?) -> Bool {
@@ -52,8 +60,8 @@ enum BrowserFailureDebugCapture {
             "enabled": false,
             "scope": policy.scope,
             "source": policy.source,
-            "reason": "opt_in_required",
-            "hint": "Set \(environmentVariable)=1 for astra-browser to attach failure-only screenshots, compact trees, and console/navigation/network events.",
+            "reason": "debug_capture_disabled",
+            "hint": "Enable Browser Debug Capture in Settings or set \(environmentVariable)=1 for astra-browser to attach failure-only screenshots, compact trees, and console/navigation/network events.",
             "trigger": triggerObject(request: request, statusCode: statusCode, result: result),
             "page": page.jsonObject,
             "privacy": privacyObject()

@@ -1973,7 +1973,7 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.stopReason = reason
-        task.status = reason == "provider_permission_denied_broad_permissions" ? .failed : .pendingUser
+        task.status = Self.isTerminalRuntimeStop(reason) ? .failed : .pendingUser
 
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
@@ -1984,6 +1984,16 @@ final class AgentRuntimeWorker {
             "source": "runtime_stop"
         ], level: .error)
         return true
+    }
+
+    private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
+        switch reason {
+        case "provider_permission_denied_broad_permissions",
+             "provider_no_semantic_progress":
+            return true
+        default:
+            return false
+        }
     }
 
     @MainActor

@@ -958,7 +958,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     [
                         "method": "GET",
                         "path": "/trace",
-                        "description": "Return the most recent compact browser action trace and the retained per-task browser flight timeline for supervision. With ASTRA_BROWSER_DEBUG_CAPTURE=1, failed browser actions also retain a privacy-redacted screenshot thumbnail, compact tree, and console/navigation/network events."
+                        "description": "Return the most recent compact browser action trace and the retained per-task browser flight timeline for supervision. When Browser Debug Capture is enabled, failed browser actions also retain a privacy-redacted screenshot thumbnail, compact tree, and console/navigation/network events. Use ASTRA_BROWSER_DEBUG_CAPTURE=0 to suppress capture for one command."
                     ],
                     [
                         "method": "GET",
@@ -4348,12 +4348,45 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func clickControl(label: String, role: String?, allowDangerous: Bool) async throws -> [String: Any] {
         let matches = try await findControl(query: label, role: role, limit: 8)
         let controls = matches["controls"] as? [[String: Any]] ?? []
-        guard let control = controls.first else {
+        let strongMatches = controls.filter { Self.controlLabelStronglyMatches($0, requestedLabel: label) }
+        guard !controls.isEmpty else {
             return [
                 "ok": false,
                 "error": "control_not_found",
                 "label": label,
                 "role": role ?? ""
+            ]
+        }
+        guard !strongMatches.isEmpty else {
+            return [
+                "ok": false,
+                "error": "control_label_mismatch",
+                "requestedLabel": label,
+                "role": role ?? "",
+                "summary": "Best matching controls did not exactly match the requested label. Use analyze/controlID or a more specific selector.",
+                "candidates": controls.prefix(5).map(Self.compactControlCandidate)
+            ]
+        }
+        guard strongMatches.count == 1 else {
+            return [
+                "ok": false,
+                "error": "ambiguous_control_label",
+                "requestedLabel": label,
+                "role": role ?? "",
+                "summary": "Multiple controls exactly matched the requested label. Use analyze/controlID to choose one.",
+                "candidates": strongMatches.prefix(5).map(Self.compactControlCandidate)
+            ]
+        }
+        let control = strongMatches[0]
+        if let blockedAction = Self.mailMutationControlAction(control), !allowDangerous {
+            return [
+                "ok": false,
+                "error": "dangerous_confirmation_required",
+                "needsConfirmation": true,
+                "requestedLabel": label,
+                "blockedAction": blockedAction,
+                "summary": "This mail control can mutate the mailbox. Ask for explicit user confirmation before clicking it.",
+                "matchedControl": control
             ]
         }
         let selector = control["selector"] as? String
@@ -5822,6 +5855,76 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             controlMatchScore(left, query: normalizedLabel, role: normalizedRole) > controlMatchScore(right, query: normalizedLabel, role: normalizedRole)
         }
     }
+
+    static func controlLabelStronglyMatches(_ control: [String: Any], requestedLabel: String) -> Bool {
+        let query = normalizedControlLabel(requestedLabel)
+        guard !query.isEmpty else { return true }
+        return ["label", "name", "value", "placeholder", "testID"].contains { key in
+            normalizedControlLabel(control[key] as? String) == query
+        }
+    }
+
+    static func mailMutationControlAction(_ control: [String: Any]) -> String? {
+        let normalized = normalizedControlLabel([
+            control["label"] as? String ?? "",
+            control["name"] as? String ?? "",
+            control["value"] as? String ?? "",
+            control["placeholder"] as? String ?? "",
+            control["testID"] as? String ?? "",
+            control["selector"] as? String ?? "",
+            control["type"] as? String ?? ""
+        ].joined(separator: " "))
+        let padded = " \(normalized) "
+        for phrase in mailMutationControlPhrases where padded.contains(" \(phrase) ") {
+            return phrase
+        }
+        return nil
+    }
+
+    private static func normalizedControlLabel(_ value: String?) -> String {
+        (value ?? "")
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func compactControlCandidate(_ control: [String: Any]) -> [String: Any] {
+        var candidate: [String: Any] = [:]
+        for key in ["label", "name", "role", "tag", "type", "selector", "placeholder", "testID"] {
+            if let value = control[key] as? String, !value.isEmpty {
+                candidate[key] = value
+            }
+        }
+        if let bounds = control["bounds"] as? [String: Any] {
+            candidate["bounds"] = bounds
+        }
+        return candidate
+    }
+
+    private static let mailMutationControlPhrases = [
+        "reply all",
+        "reply",
+        "forward",
+        "send mail",
+        "send",
+        "delete",
+        "archive",
+        "move to",
+        "move",
+        "mark as read",
+        "mark read",
+        "mark as unread",
+        "mark unread",
+        "report junk",
+        "junk",
+        "report phishing",
+        "phishing",
+        "discard",
+        "sweep",
+        "block sender",
+        "ignore conversation"
+    ]
 
     private static func controlMatchScore(_ control: [String: Any], query: String, role: String?) -> Int {
         var score = 0

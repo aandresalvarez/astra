@@ -86,7 +86,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         if let accessToken, !accessToken.isEmpty {
             variables["ASTRA_BROWSER_TOKEN"] = accessToken
         }
-        if UserDefaults.standard.bool(forKey: AppStorageKeys.browserDebugCapture) {
+        if BrowserFailureDebugCapture.isEnabledByDefault() {
             variables[BrowserFailureDebugCapture.environmentVariable] = "1"
         }
         return variables
@@ -155,7 +155,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
         Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
-        - Inspect compact navigation/action diagnostics: `astra-browser trace`; when debugging browser control, enable Settings > Appearance > Privacy & Logging > Browser Debug Capture or prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=1`. Failed actions then retain a screenshot thumbnail, compact tree, and console/navigation/network events in the trace and per-task browser-flight JSONL log.
+        - Inspect compact navigation/action diagnostics: `astra-browser trace`; failed actions retain a screenshot thumbnail, compact tree, and console/navigation/network events when Browser Debug Capture is enabled in Settings > Appearance > Privacy & Logging. Prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=0` to suppress capture for that command.
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
@@ -175,7 +175,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Set a known field without click/selection steps: `astra-browser set-value --selector '#c7' --text '05/07/2026'`
         - Replace text in editable controls: `astra-browser replace-text --find '05/08/2027' --with '05/07/2026'`
         - Find a specific control without a broad snapshot: `astra-browser find-control --label 'Replace all'`
-        - Click a visible control by label: `astra-browser click-control --label 'Replace all'`
+        - Click a visible control by exact label: `astra-browser click-control --label 'Replace all'`; if labels are ambiguous or only loosely related, use `analyze` plus `controlID` instead.
         - Verify compact text conditions: `astra-browser verify-text '05/07/2026'` or `astra-browser verify-text --absent '05/08/2027'`
         - Wait for editor save state: `astra-browser wait-saved --timeout 8`
         - For Google Docs/Sheets/Slides text replacement: `astra-browser google-find-replace --find '05/08/2027' --with '05/07/2026'`
@@ -199,6 +199,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         - Use only this bridge for browser operation. Do not use osascript, System Events, AppleScript, macOS UI automation, or external browser automation as a fallback. If a needed browser action is missing, report the missing bridge capability.
         - Never ask the user for passwords, MFA codes, or OAuth secrets. Let the user enter those directly in the browser.
         - Do not send emails, submit tickets/forms, delete data, approve access, make purchases, or commit externally visible changes without explicit user confirmation in the chat.
+        - On mail pages, read-only tasks must not click Reply, Reply all, Forward, Send, Delete, Archive, Move, Mark read/unread, Junk, Report phishing, or Discard; these controls are blocked unless the user explicitly confirms the mailbox mutation.
         - For questions about what is on the current page, start with `astra-browser read-page --format markdown --limit 50000` and inspect `coverage`, `truncated`, `frames`, and `warnings`; for Google Docs read-only page summaries, prefer `astra-browser google-docs-read-visible-page --format markdown --limit 50000` and do not escalate to `google-docs-read-document` just because coverage is partial. When you need to select, click, or fill a control, start with `astra-browser analyze` and use returned control IDs.
         \(driveSafetyLine)
         - Prefer `analyze` before acting, then use `analysisID` + `controlID`. Use `locator` or `/snapshot` only when analysis is too broad or you need raw evidence.

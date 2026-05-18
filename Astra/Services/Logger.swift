@@ -312,7 +312,7 @@ enum AppLogger {
     static let sensitiveModeKey = "sensitiveMode"
     private static let maxLogFileSize: UInt64 = 5_000_000
     private static let maxRotatedGenerations = 2
-    private static let retentionDays: TimeInterval = 14
+    static let defaultRetentionDays = LoggingPreferences.defaultLogRetentionDays
 
     static var isSensitiveMode: Bool {
         if UserDefaults.standard.object(forKey: sensitiveModeKey) == nil {
@@ -490,6 +490,10 @@ enum AppLogger {
         cleanupOldLogs()
     }
 
+    static var configuredRetentionDays: Int {
+        LoggingPreferences.logRetentionDays()
+    }
+
     // MARK: - Internal
 
     /// Serial queue for all file I/O to prevent interleaved writes.
@@ -648,7 +652,8 @@ enum AppLogger {
             at: logDir,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
         ) else { return }
-        let cutoff = now.addingTimeInterval(-retentionDays * 24 * 60 * 60)
+        let retentionSeconds = TimeInterval(configuredRetentionDays) * 24 * 60 * 60
+        let cutoff = now.addingTimeInterval(-retentionSeconds)
         for file in files where ["log", "jsonl"].contains(file.pathExtension) {
             guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
                   values.isRegularFile == true,

@@ -16,7 +16,9 @@ struct SettingsView: View {
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workerPoolSize") private var workerPoolSize = 3
     @AppStorage(AppLogger.sensitiveModeKey) private var sensitiveMode = true
-    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = false
+    @AppStorage(AppStorageKeys.runtimeStreamDebugCapture) private var runtimeStreamDebugCapture = LoggingPreferences.defaultRuntimeStreamDebugCapture
+    @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = LoggingPreferences.defaultBrowserDebugCapture
+    @AppStorage(AppStorageKeys.logRetentionDays) private var logRetentionDays = LoggingPreferences.defaultLogRetentionDays
     @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
@@ -91,6 +93,9 @@ struct SettingsView: View {
         }
         .onChange(of: copilotAvailableModels) {
             alignDefaultModelsWithRuntime()
+        }
+        .onChange(of: logRetentionDays) {
+            AppLogger.rotateIfNeeded()
         }
     }
 
@@ -345,12 +350,26 @@ struct SettingsView: View {
 
             Section("Privacy & Logging") {
                 Toggle("Sensitive Mode", isOn: $sensitiveMode)
-                Text("When enabled, operational logs omit prompts, model output, full paths, commands, secret identifiers, and credential values. Task history remains available as product data for review.")
+                Text("When enabled, operational logs sanitize secrets, emails, token-like values, and local paths before they are written. Task history remains available as product data for review.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Runtime Stream Debug Logging", isOn: $runtimeStreamDebugCapture)
+                Text("When enabled, provider runs write bounded stream diagnostics, raw-line samples, unknown JSON shapes, and stderr tails to task logs. ASTRA_STREAM_DEBUG can still override this for one launch.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 
                 Toggle("Browser Debug Capture", isOn: $browserDebugCapture)
-                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail, which may include visible page content. Leave off unless actively debugging browser control.")
+                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail, which may include visible page content.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Keep Logs", selection: $logRetentionDays) {
+                    ForEach(LoggingPreferences.logRetentionDayOptions, id: \.self) { days in
+                        Text(days == 1 ? "1 day" : "\(days) days").tag(days)
+                    }
+                }
+                Text("ASTRA removes main, task, breadcrumb, and browser-flight log files older than this retention window during normal logging.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 

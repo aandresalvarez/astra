@@ -351,6 +351,100 @@ struct TaskRunNotice: Identifiable, Hashable, Sendable {
     let payload: String
 }
 
+struct TaskRunProgressMessage: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let text: String
+    let timestamp: Date
+}
+
+struct TaskRunOutputPresentation: Hashable, Sendable {
+    let displayText: String
+    let progressMessages: [TaskRunProgressMessage]
+    let rawText: String
+
+    static let empty = TaskRunOutputPresentation(displayText: "", progressMessages: [], rawText: "")
+
+    init(displayText: String, progressMessages: [TaskRunProgressMessage], rawText: String) {
+        self.displayText = displayText
+        self.progressMessages = progressMessages
+        self.rawText = rawText
+    }
+
+    var hasDisplayText: Bool {
+        !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    init(run: TaskRunSnapshot, events: [TaskEventSnapshot]) {
+        rawText = run.output
+
+        let responseEvents = events.filter { event in
+            event.type == "agent.response" &&
+                !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        if run.status == .running {
+            displayText = ""
+            progressMessages = Self.progressMessages(from: responseEvents)
+            return
+        }
+
+        guard let latestWorkIndex = events.lastIndex(where: Self.isOutputBoundaryEvent) else {
+            displayText = run.output
+            progressMessages = []
+            return
+        }
+
+        let finalResponseEvents = events
+            .dropFirst(latestWorkIndex + 1)
+            .filter { event in
+                event.type == "agent.response" &&
+                    !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+
+        guard !finalResponseEvents.isEmpty else {
+            displayText = run.output
+            progressMessages = []
+            return
+        }
+
+        let finalText = Self.joinResponsePayloads(finalResponseEvents)
+        guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            displayText = run.output
+            progressMessages = []
+            return
+        }
+
+        displayText = finalText
+        progressMessages = Self.progressMessages(from: responseEvents.filter { event in
+            !finalResponseEvents.contains(where: { $0.id == event.id })
+        })
+    }
+
+    private static func isOutputBoundaryEvent(_ event: TaskEventSnapshot) -> Bool {
+        switch event.type {
+        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func progressMessages(from events: [TaskEventSnapshot]) -> [TaskRunProgressMessage] {
+        events.map {
+            TaskRunProgressMessage(
+                id: $0.id,
+                text: $0.payload.trimmingCharacters(in: .whitespacesAndNewlines),
+                timestamp: $0.timestamp
+            )
+        }
+        .filter { !$0.text.isEmpty }
+    }
+
+    private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
+        events.map(\.payload).joined()
+    }
+}
+
 struct TaskRunActivity: Sendable {
     let tools: [TaskToolSummary]
     let toolCalls: [TaskToolCall]
@@ -400,6 +494,7 @@ struct TaskThreadSnapshot: Sendable {
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
+    private let outputPresentationByRunID: [UUID: TaskRunOutputPresentation]
 
     static let empty = TaskThreadSnapshot(
         goal: "",
@@ -483,10 +578,12 @@ struct TaskThreadSnapshot: Sendable {
         var noticesByRunID: [UUID: [TaskRunNotice]] = [:]
         var permissionManifestByRunID: [UUID: RunPermissionManifest] = [:]
         var protocolStatesByRunID: [UUID: TaskRunProtocolState] = [:]
+        var eventsByRunID: [UUID: [TaskEventSnapshot]] = [:]
         var latestPlanItems: [TaskProtocolTodoItem] = []
 
         for event in sortedEvents {
             if let runID = event.runID {
+                eventsByRunID[runID, default: []].append(event)
                 switch event.type {
                 case "tool.use":
                     toolsByRunID[runID, default: []].append(event)
@@ -551,6 +648,9 @@ struct TaskThreadSnapshot: Sendable {
         activityByRunID = activity
         protocolByRunID = protocolStatesByRunID
         latestAgentPlanItems = latestPlanItems
+        outputPresentationByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
+            result[run.id] = TaskRunOutputPresentation(run: run, events: eventsByRunID[run.id] ?? [])
+        }
 
         conversationItems = Self.makeConversationItems(
             goal: goal,
@@ -576,6 +676,10 @@ struct TaskThreadSnapshot: Sendable {
 
     func protocolState(for run: TaskRun) -> TaskRunProtocolState {
         protocolByRunID[run.id] ?? .empty
+    }
+
+    func outputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        outputPresentationByRunID[run.id] ?? .empty
     }
 
     private static func summarizeToolCalls(_ calls: [TaskToolCall]) -> [TaskToolSummary] {
