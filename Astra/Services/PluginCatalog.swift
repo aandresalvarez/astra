@@ -577,7 +577,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.1",
+            version: "2.1.2",
             setupGuide: """
             Connect your workspace to GitHub using the GitHub CLI. This \
             capability does not use a stored GitHub connector or token; it \
@@ -614,7 +614,8 @@ final class PluginCatalog {
                 • List issues: gh issue list --state open --limit 30
                 • View issue: gh issue view ISSUE_NUMBER --comments
                 • Create issue: gh issue create --title "..." --body "..." --label "bug"
-                • List PRs: gh pr list --state open --limit 30
+                • List recent PRs across repositories: gh search prs --author "@me" --state all --limit 30 --sort updated --order desc --json number,title,state,author,repository,url,createdAt,updatedAt
+                • List PRs in current repo: gh pr list --state open --limit 30
                 • View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url
                 • PR diff: gh pr diff PR_NUMBER
                 • Review checks: gh pr checks PR_NUMBER
@@ -629,7 +630,9 @@ final class PluginCatalog {
 
                 RULES
                 • Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows
-                • Prefer `--json` output for structured parsing when available
+                • Prefer `--json` with `--jq` for structured parsing when available
+                • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
+                • Prefer `gh search prs` for cross-repository PR searches. If REST search is required, call `gh api /search/issues` with a leading slash.
                 • Include links to issues/PRs in your responses
                 • Never ask the user to paste GitHub credentials when `gh auth login` is the right fix
                 """,

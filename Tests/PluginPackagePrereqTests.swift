@@ -137,6 +137,7 @@ struct PluginPackagePrereqTests {
     func builtInGitHubRequiresGhAndExposesBrowserAdapter() {
         let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
         #expect(github != nil)
+        #expect(github?.version == "2.1.2")
         #expect(github?.connectors.isEmpty == true)
         #expect(github?.browserAdapters == [BrowserSiteAdapterID.github])
         #expect(github?.localTools.map(\.command) == ["gh"])
@@ -144,6 +145,9 @@ struct PluginPackagePrereqTests {
         #expect(github?.prerequisites.map(\.binary) == ["gh", "gh"])
         #expect(github?.prerequisites.last?.livenessArgs == ["auth", "status", "--hostname", "github.com"])
         #expect(github?.skills.first?.behaviorInstructions.contains("gh auth login") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == true)
     }
 
     @Test("Built-in REDCap package has Stanford API connector")
