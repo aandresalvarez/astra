@@ -1356,6 +1356,143 @@ struct TaskThreadSnapshotTests {
         #expect(snapshot.activity(for: responseRun).tools == [TaskToolSummary(name: "Bash", count: 1)])
     }
 
+    @Test("Completed run separates progress narration from final answer")
+    func completedRunSeparatesProgressNarrationFromFinalAnswer() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Original goal", status: .completed)
+        task.createdAt = createdAt
+
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 110)
+        run.completedAt = Date(timeIntervalSince1970: 150)
+        run.status = .completed
+        run.output = [
+            "Reading the saved Spanish letter.",
+            "Translating the Spanish letter and saving the Portuguese version.",
+            "Traduzida e guardada.\n\nPortuguês (texto):\nQuerida Rosa"
+        ].joined()
+
+        let events = [
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Reading the saved Spanish letter.",
+                timestamp: Date(timeIntervalSince1970: 120),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: view",
+                timestamp: Date(timeIntervalSince1970: 121),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "File contents",
+                timestamp: Date(timeIntervalSince1970: 122),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Translating the Spanish letter and saving the Portuguese version.",
+                timestamp: Date(timeIntervalSince1970: 130),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: create",
+                timestamp: Date(timeIntervalSince1970: 131),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "Created file",
+                timestamp: Date(timeIntervalSince1970: 132),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Traduzida e guardada.\n\nPortuguês (texto):\nQuerida Rosa",
+                timestamp: Date(timeIntervalSince1970: 140),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText == "Traduzida e guardada.\n\nPortuguês (texto):\nQuerida Rosa")
+        #expect(output.rawText == run.output)
+        #expect(output.progressMessages.map(\.text) == [
+            "Reading the saved Spanish letter.",
+            "Translating the Spanish letter and saving the Portuguese version."
+        ])
+    }
+
+    @Test("Completed direct answer keeps raw output as final answer")
+    func completedDirectAnswerKeepsRawOutputAsFinalAnswer() {
+        let task = makeTask(goal: "Original goal", status: .completed)
+        let run = TaskRun(task: task)
+        run.completedAt = Date(timeIntervalSince1970: 120)
+        run.status = .completed
+        run.output = "Direct final answer"
+        let event = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Direct final answer",
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [event],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText == "Direct final answer")
+        #expect(output.progressMessages.isEmpty)
+    }
+
+    @Test("Running output is treated as progress until the run completes")
+    func runningOutputIsTreatedAsProgressUntilCompletion() {
+        let task = makeTask(goal: "Original goal", status: .running)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.output = "Reading the file before answering."
+        let event = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Reading the file before answering.",
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [event],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText.isEmpty)
+        #expect(output.progressMessages.map(\.text) == ["Reading the file before answering."])
+    }
+
     @Test("Latest agent plan derives from newest ARP todo.replace event")
     func latestAgentPlanDerivesFromProtocolEvents() {
         let task = makeTask()

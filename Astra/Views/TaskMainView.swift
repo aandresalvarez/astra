@@ -1582,22 +1582,24 @@ struct TaskMainView: View {
     private func chatAgentBubble(run: TaskRunSnapshot) -> some View {
         let activity = currentThreadSnapshot.activity(for: run)
         let protocolState = currentThreadSnapshot.protocolState(for: run)
+        let outputPresentation = currentThreadSnapshot.outputPresentation(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
         let runActivityPresentation = RunActivityPresentation(
             run: run,
             activity: activity,
             notices: displayNotices,
-            suppressedNoticeIDs: Set(actionableNotices.map(\.id))
+            suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
+            progressMessages: outputPresentation.progressMessages
         )
-        let hasUserFacingOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !run.hasVPNWarning
-        let copyText = run.output.isEmpty ? (protocolState.completionSummary ?? "") : run.output
+        let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
+        let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
 
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
                 if run.status == .running {
-                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(run.output)))
+                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText)))
                         .font(Stanford.chatBody())
                         .foregroundStyle(Stanford.readingText)
                         .textSelection(.enabled)
@@ -1605,7 +1607,7 @@ struct TaskMainView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     MarkdownTextView(
-                        text: run.output,
+                        text: outputPresentation.displayText,
                         maxContentWidth: Stanford.chatParagraphMaxWidth,
                         onSuggestedNextStep: pursueSuggestedNextStep
                     )
@@ -1614,8 +1616,8 @@ struct TaskMainView: View {
                 }
             }
 
-            // Generated files
-            if run.id == latestRun?.id && !threadViewModel.generatedFilePaths.isEmpty {
+            // Generated files belong with the finished turn, not the live progress row.
+            if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
                         Button {
@@ -1931,6 +1933,15 @@ struct TaskMainView: View {
                 }
             }
 
+            if !presentation.progressMessages.isEmpty {
+                runActivityDetailSection(
+                    title: presentation.progressMessages.count == 1 ? "Progress" : "Progress updates",
+                    systemImage: "text.bubble"
+                ) {
+                    progressMessageList(presentation.progressMessages)
+                }
+            }
+
             if !presentation.tools.isEmpty {
                 runActivityDetailSection(title: "Tool activity", systemImage: "wrench.and.screwdriver") {
                     toolActivityList(presentation.tools)
@@ -2007,11 +2018,15 @@ struct TaskMainView: View {
     ) -> [String] {
         var parts: [String] = []
         let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
+        let progressCount = presentation.progressMessages.count
         let warningCount = presentation.issues.filter { $0.severity == .warning }.count
         let issueCount = presentation.issues.filter { $0.severity == .error }.count
 
         if toolCallCount > 0 {
             parts.append("\(toolCallCount) tool \(toolCallCount == 1 ? "call" : "calls")")
+        }
+        if progressCount > 0 {
+            parts.append("\(progressCount) progress \(progressCount == 1 ? "update" : "updates")")
         }
         if warningCount > 0 {
             parts.append("\(warningCount) \(warningCount == 1 ? "warning" : "warnings")")
@@ -2260,6 +2275,26 @@ struct TaskMainView: View {
             }
         }
         .padding(.vertical, 1)
+    }
+
+    private func progressMessageList(_ messages: [TaskRunProgressMessage]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(messages) { message in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "text.bubble")
+                        .font(Stanford.ui(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .frame(width: 14)
+                    Text(message.text)
+                        .font(Stanford.chatSection())
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 1)
+            }
+        }
     }
 
     private func factList(_ facts: [RunFactPresentation]) -> some View {
