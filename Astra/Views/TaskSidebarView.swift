@@ -130,6 +130,7 @@ struct TaskSidebarView: View {
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var collapsedWorkspaceIDs: Set<UUID> = []
     @State private var isPinnedDropTargeted = false
+    @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesAddHovered = false
     @State private var isWorkspacesFilterHovered = false
@@ -344,14 +345,22 @@ struct TaskSidebarView: View {
                     isPinnedExpanded.toggle()
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Text("Pinned")
                         .font(Stanford.caption(14))
                         .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(Stanford.ui(9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isPinnedExpanded ? 90 : 0))
+                        .opacity(isPinnedHeaderHovered ? 1 : 0)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isPinnedExpanded)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPinnedHeaderHovered)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { isPinnedHeaderHovered = $0 }
 
             Spacer()
         }
