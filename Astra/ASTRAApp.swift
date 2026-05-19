@@ -7,6 +7,13 @@ private let aboutAstraWindowID = "about-astra"
 private let logsWindowID = "astra-logs"
 private let usageWindowID = "astra-usage"
 
+enum AppWindowLayout {
+    static let mainMinimumWidth: CGFloat = 900
+    static let mainMinimumHeight: CGFloat = 600
+    static let mainDefaultWidth: CGFloat = PanelLayoutGeometry.compactPanelMutualExclusionWidth + 80
+    static let mainDefaultHeight: CGFloat = 750
+}
+
 // MARK: - Window-scoped actions exposed to app menu commands
 //
 // @FocusedValue is SwiftUI's way for a view inside the focused window to
@@ -437,7 +444,7 @@ public struct ASTRAApp: App {
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName) {
             ContentView(appUpdateController: appUpdateController, runtime: runtime)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                 .tint(Stanford.cardinalRed)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .onOpenURL { url in
@@ -446,7 +453,7 @@ public struct ASTRAApp: App {
                 }
         }
         .modelContainer(modelContainer)
-        .defaultSize(width: 1200, height: 750)
+        .defaultSize(width: AppWindowLayout.mainDefaultWidth, height: AppWindowLayout.mainDefaultHeight)
         .commands {
             // Lives in the File menu (after "New ASTRA Window"). Manual
             // re-entry for the first-run wizard — the normal path is

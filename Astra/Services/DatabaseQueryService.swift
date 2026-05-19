@@ -260,7 +260,11 @@ enum DatabaseQueryError: LocalizedError {
         case .editOnly:
             "Choose a database connection before running SQL."
         case .missingExecutable(let executable):
-            "\(executable) is not installed or could not be found."
+            if executable == "bq" {
+                "BigQuery CLI (`bq`) was not found. Install the Google Cloud SDK, make sure `bq` is on PATH, then retry."
+            } else {
+                "\(executable) is not installed or could not be found."
+            }
         case .blockedMutation(let message):
             message
         case .commandFailed(let message):
@@ -277,21 +281,27 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
 
     private let runner: BinaryRunner
     private let inputRunner: StandardInputBinaryRunner?
-    private let bqPath: String
+    private let bqPathOverride: String?
+    private let executableResolver: @Sendable () -> String
 
     init(
         runner: BinaryRunner = ProcessBinaryRunner(),
-        bqPath: String = RuntimePathResolver.detectExecutablePath(named: "bq", fallback: "bq")
+        bqPath: String? = nil,
+        executableResolver: @escaping @Sendable () -> String = {
+            RuntimePathResolver.detectExecutablePath(named: "bq")
+        }
     ) {
         self.runner = runner
         self.inputRunner = runner as? StandardInputBinaryRunner
-        self.bqPath = bqPath
+        self.bqPathOverride = bqPath
+        self.executableResolver = executableResolver
     }
 
     func dryRun(_ request: QueryRequest) async throws -> QueryDryRunResult {
-        try validateExecutable()
+        let bqPath = try resolvedExecutablePath()
         let result = await runQuery(
             request,
+            bqPath: bqPath,
             args: baseArgs(for: request.connection) + [
                 "query",
                 "--use_legacy_sql=false",
@@ -312,10 +322,11 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
     }
 
     func run(_ request: QueryRequest) async throws -> QueryExecutionResult {
-        try validateExecutable()
+        let bqPath = try resolvedExecutablePath()
         let start = Date()
         let result = await runQuery(
             request,
+            bqPath: bqPath,
             args: baseArgs(for: request.connection) + [
                 "query",
                 "--use_legacy_sql=false",
@@ -341,11 +352,11 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
     }
 
     func schema(_ request: SchemaRequest) async throws -> SchemaCatalog {
-        try validateExecutable()
-        let datasetIDs = try await requestedDatasetIDs(request)
+        let bqPath = try resolvedExecutablePath()
+        let datasetIDs = try await requestedDatasetIDs(request, bqPath: bqPath)
         var datasets: [SchemaDataset] = []
         for datasetID in datasetIDs {
-            let tables = try await listTables(connection: request.connection, datasetID: datasetID)
+            let tables = try await listTables(connection: request.connection, datasetID: datasetID, bqPath: bqPath)
             datasets.append(SchemaDataset(
                 datasetID: datasetID,
                 displayName: datasetID,
@@ -356,7 +367,7 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
     }
 
     func tableSchema(_ request: SchemaTableRequest) async throws -> SchemaTable {
-        try validateExecutable()
+        let bqPath = try resolvedExecutablePath()
         let tableSpec = tableSpec(
             projectID: request.projectID ?? request.connection.projectID,
             datasetID: request.datasetID,
@@ -382,7 +393,7 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
         )
     }
 
-    private func runQuery(_ request: QueryRequest, args: [String], timeout: TimeInterval) async -> RunResult {
+    private func runQuery(_ request: QueryRequest, bqPath: String, args: [String], timeout: TimeInterval) async -> RunResult {
         if let inputRunner {
             return await inputRunner.run(
                 path: bqPath,
@@ -403,7 +414,7 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
     }
 
     func prepareRecovery(_ request: QueryRequest, classification: QueryClassification) async throws -> RecoveryPlan {
-        try validateExecutable()
+        let bqPath = try resolvedExecutablePath()
         if classification == .read {
             return RecoveryPlan(
                 title: "No recovery required",
@@ -469,10 +480,13 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
         )
     }
 
-    private func validateExecutable() throws {
-        guard FileManager.default.isExecutableFile(atPath: bqPath) else {
+    private func resolvedExecutablePath() throws -> String {
+        let candidate = bqPathOverride ?? executableResolver()
+        guard !candidate.isEmpty,
+              FileManager.default.isExecutableFile(atPath: candidate) else {
             throw DatabaseQueryError.missingExecutable("bq")
         }
+        return candidate
     }
 
     private func baseArgs(for connection: DatabaseConnection) -> [String] {
@@ -483,7 +497,7 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
         return []
     }
 
-    private func requestedDatasetIDs(_ request: SchemaRequest) async throws -> [String] {
+    private func requestedDatasetIDs(_ request: SchemaRequest, bqPath: String) async throws -> [String] {
         if let datasetID = request.datasetID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !datasetID.isEmpty {
             return [datasetID]
@@ -512,7 +526,7 @@ struct BigQueryCLIAdapter: DatabaseAdapter {
         return try parseDatasetIDs(from: result.stdout)
     }
 
-    private func listTables(connection: DatabaseConnection, datasetID: String) async throws -> [SchemaTable] {
+    private func listTables(connection: DatabaseConnection, datasetID: String, bqPath: String) async throws -> [SchemaTable] {
         let datasetSpec = datasetSpec(connection: connection, datasetID: datasetID)
         let result = await runner.run(
             path: bqPath,

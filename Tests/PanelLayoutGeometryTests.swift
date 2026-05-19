@@ -33,6 +33,15 @@ struct PanelLayoutGeometryTests {
         #expect(PanelLayoutGeometry.inspectorMaxColumnWidth == 460)
     }
 
+    @Test("Main window opens wide enough for sidebar and right panel")
+    func mainWindowDefaultSizeSupportsSidePanels() {
+        #expect(AppWindowLayout.mainMinimumWidth == 900)
+        #expect(AppWindowLayout.mainMinimumHeight == 600)
+        #expect(AppWindowLayout.mainDefaultWidth == PanelLayoutGeometry.compactPanelMutualExclusionWidth + 80)
+        #expect(AppWindowLayout.mainDefaultHeight == 750)
+        #expect(AppWindowLayout.mainDefaultWidth > PanelLayoutGeometry.compactPanelMutualExclusionWidth)
+    }
+
     // MARK: - isCompactPanelLayout
 
     @Test("isCompactPanelLayout is false for zero or negative widths (layout not measured yet)")

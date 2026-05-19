@@ -40,8 +40,10 @@ private func makeEvent(
 
 private actor QueryStubRunner: StandardInputBinaryRunner {
     var results: [RunResult]
+    private(set) var lastPath = ""
     private(set) var lastArgs: [String] = []
     private(set) var lastStandardInput = ""
+    private(set) var allPaths: [String] = []
     private(set) var allArgs: [[String]] = []
     private(set) var allStandardInputs: [String] = []
 
@@ -59,8 +61,10 @@ private actor QueryStubRunner: StandardInputBinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
+        lastPath = path
         lastArgs = args
         lastStandardInput = ""
+        allPaths.append(path)
         allArgs.append(args)
         allStandardInputs.append("")
         return nextResult()
@@ -73,8 +77,10 @@ private actor QueryStubRunner: StandardInputBinaryRunner {
         environment: [String: String]?,
         standardInput: String
     ) async -> RunResult {
+        lastPath = path
         lastArgs = args
         lastStandardInput = standardInput
+        allPaths.append(path)
         allArgs.append(args)
         allStandardInputs.append(standardInput)
         return nextResult()
@@ -2321,6 +2327,73 @@ struct TaskThreadSnapshotTests {
         #expect(result.message.contains("12,345 bytes"))
         #expect(await runner.lastStandardInput == "-- leading comment\nselect 1")
         #expect(!((await runner.lastArgs).contains { $0.contains("leading comment") }))
+    }
+
+    @Test("BigQuery adapter resolves CLI when operation starts")
+    func bigQueryAdapterResolvesCLIWhenOperationStarts() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-bq-lazy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let bq = directory.appendingPathComponent("bq")
+
+        let runner = QueryStubRunner(result: RunResult(
+            outcome: .exited(code: 0),
+            stdout: "",
+            stderr: "Query successfully validated. This query will process 9 bytes when run."
+        ))
+        let adapter = BigQueryCLIAdapter(
+            runner: runner,
+            executableResolver: { bq.path }
+        )
+
+        try "#!/bin/sh\nexit 0\n".write(to: bq, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bq.path)
+
+        let result = try await adapter.dryRun(QueryRequest(
+            sql: "SELECT 1",
+            connection: DatabaseConnection(
+                id: "bigquery-cli",
+                displayName: "BigQuery",
+                adapterID: "bigquery-cli",
+                dialect: .bigQueryStandard,
+                defaultNamespace: nil,
+                projectID: "demo"
+            ),
+            rowLimit: 100
+        ))
+
+        #expect(result.bytesProcessed == 9)
+        #expect(await runner.lastPath == bq.path)
+        #expect(await runner.lastStandardInput == "SELECT 1")
+    }
+
+    @Test("BigQuery missing executable message explains recovery")
+    func bigQueryMissingExecutableMessageExplainsRecovery() async {
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-missing-bq-\(UUID().uuidString)")
+        let runner = QueryStubRunner(result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: ""))
+        let adapter = BigQueryCLIAdapter(runner: runner, bqPath: missing.path)
+
+        do {
+            _ = try await adapter.dryRun(QueryRequest(
+                sql: "SELECT 1",
+                connection: DatabaseConnection(
+                    id: "bigquery-cli",
+                    displayName: "BigQuery",
+                    adapterID: "bigquery-cli",
+                    dialect: .bigQueryStandard,
+                    defaultNamespace: nil,
+                    projectID: nil
+                ),
+                rowLimit: 100
+            ))
+            Issue.record("Expected missing bq executable to fail")
+        } catch {
+            #expect(error.localizedDescription.contains("BigQuery CLI"))
+            #expect(error.localizedDescription.contains("PATH"))
+            #expect(error.localizedDescription.contains("retry"))
+        }
     }
 
     @Test("BigQuery run parses JSON preview rows")

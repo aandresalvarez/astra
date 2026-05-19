@@ -26,6 +26,14 @@ struct LogDiagnosticsNotice: Equatable, Identifiable {
     let lastSeenAt: Date
 }
 
+private struct PreviousDiagnosticsContext: Equatable {
+    let generatedAt: Date
+    let entryCount: Int
+    let errorCount: Int
+    let warningCount: Int
+    let issueCount: Int
+}
+
 private struct LogDiagnosticsTraceSummary: Equatable {
     let id: String
     let count: Int
@@ -146,6 +154,12 @@ enum LogDiagnosticsService {
             scope: scope,
             history: history
         )
+        let previousDiagnosticsContext = previousDiagnosticsContext(
+            from: entries,
+            generatedAt: generatedAt,
+            scope: scope,
+            previousGeneratedAt: history.lastGeneratedAt
+        )
         let issueGroups = buildIssueGroups(
             from: orderedEntries,
             generatedAt: generatedAt,
@@ -159,6 +173,7 @@ enum LogDiagnosticsService {
             generatedAt: generatedAt,
             scope: scope,
             previousGeneratedAt: history.lastGeneratedAt,
+            previousDiagnosticsContext: previousDiagnosticsContext,
             issues: visibleIssues,
             notices: notices,
             crashReports: crashReports,
@@ -624,6 +639,42 @@ enum LogDiagnosticsService {
         var analysis: String
     }
 
+    private static func previousDiagnosticsContext(
+        from entries: [LogEntry],
+        generatedAt: Date,
+        scope: LogDiagnosticsScope,
+        previousGeneratedAt: Date?
+    ) -> PreviousDiagnosticsContext? {
+        guard scope == .sinceLastReport,
+              let previousGeneratedAt else {
+            return nil
+        }
+
+        let lookback = previousGeneratedAt.addingTimeInterval(-5 * 60)
+        let candidates = entries.filter { entry in
+            let lower = entry.message.lowercased()
+            return lower.contains(AuditEvent.diagnosticsGenerated.rawValue)
+                && entry.timestamp >= lookback
+                && entry.timestamp <= previousGeneratedAt.addingTimeInterval(1)
+        }
+        return candidates.compactMap { previous -> PreviousDiagnosticsContext? in
+            let issueCount = intField("issues", in: previous.message)
+            let errorCount = intField("errors", in: previous.message)
+            let warningCount = intField("warnings", in: previous.message)
+            guard issueCount > 0 || errorCount > 0 || warningCount > 0 else {
+                return nil
+            }
+            return PreviousDiagnosticsContext(
+                generatedAt: previous.timestamp,
+                entryCount: intField("entries", in: previous.message),
+                errorCount: errorCount,
+                warningCount: warningCount,
+                issueCount: issueCount
+            )
+        }
+        .max { $0.generatedAt < $1.generatedAt }
+    }
+
     private static func buildIssueGroups(
         from entries: [LogEntry],
         generatedAt: Date,
@@ -643,7 +694,7 @@ enum LogDiagnosticsService {
             if isGenericRuntimeWarningCoveredBySpecificFailure(entry, entries: entries) {
                 continue
             }
-            if classifyNotice(entry) != nil {
+            if classifyNotice(entry, index: index, entries: entries) != nil {
                 continue
             }
             guard let classification = classifyConnectorCredentialRegression(
@@ -705,7 +756,7 @@ enum LogDiagnosticsService {
         var seenNoticeEvents: Set<String> = []
 
         for (index, entry) in entries.enumerated() {
-            guard let classification = classifyNotice(entry) else { continue }
+            guard let classification = classifyNotice(entry, index: index, entries: entries) else { continue }
             let signature = diagnosticEventSignature(for: entry, classificationKey: classification.key)
             guard seenNoticeEvents.insert(signature).inserted else { continue }
             var bucket = buckets[classification.key] ?? NoticeBucket(
@@ -838,6 +889,69 @@ enum LogDiagnosticsService {
             return "service:\(serviceType)"
         }
         return nil
+    }
+
+    private static func isResolvedCapabilityValidationFailure(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        let lower = entry.message.lowercased()
+        guard lower.contains("validation.failed"),
+              let packageID = field("package_id", in: entry.message),
+              entries.indices.contains(index) else {
+            return false
+        }
+
+        return entries[(index + 1)...].contains { candidate in
+            guard candidate.timestamp >= entry.timestamp,
+                  field("package_id", in: candidate.message) == packageID else {
+                return false
+            }
+            let candidateLower = candidate.message.lowercased()
+            return candidateLower.contains("validation.passed")
+                || candidateLower.contains(AuditEvent.capabilityEnabled.rawValue)
+        }
+    }
+
+    private static func isResolvedConnectorTestFailure(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        let lower = entry.message.lowercased()
+        guard lower.contains(AuditEvent.connectorTested.rawValue),
+              connectorTestFailureNeedsFollowUp(lower),
+              let evidenceKey = connectorEvidenceKey(for: entry),
+              entries.indices.contains(index) else {
+            return false
+        }
+
+        return entries[(index + 1)...].contains { candidate in
+            guard candidate.timestamp >= entry.timestamp,
+                  connectorEvidenceKey(for: candidate) == evidenceKey else {
+                return false
+            }
+            let candidateLower = candidate.message.lowercased()
+            guard candidateLower.contains(AuditEvent.connectorTested.rawValue) else {
+                return false
+            }
+            if candidateLower.contains("http_status=200") {
+                return true
+            }
+            guard let result = field("result", in: candidate.message) else {
+                return false
+            }
+            return connectorTestResultIsNonActionable(result)
+        }
+    }
+
+    private static func connectorTestFailureNeedsFollowUp(_ lower: String) -> Bool {
+        lower.contains("http_status=401")
+            || lower.contains("unauthorized")
+            || lower.contains("credential_state=rejected")
+            || lower.contains("result=auth_failed")
+            || lower.contains("result=preflight_failed")
     }
 
     private static func entriesForTasks(_ tasks: Set<String>, in entries: [LogEntry]) -> [LogEntry] {
@@ -1004,7 +1118,11 @@ enum LogDiagnosticsService {
         return field("step_id", in: entry.message) == stepID
     }
 
-    private static func classifyNotice(_ entry: LogEntry) -> (
+    private static func classifyNotice(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> (
         key: String,
         title: String,
         signal: String,
@@ -1012,6 +1130,26 @@ enum LogDiagnosticsService {
     )? {
         let message = entry.message
         let lower = message.lowercased()
+
+        if isResolvedCapabilityValidationFailure(entry, index: index, entries: entries) {
+            let package = field("package_name", in: message) ?? field("package_id", in: message) ?? "capability"
+            return (
+                key: "capability.validation.resolved.\(field("package_id", in: message) ?? package)",
+                title: "Capability setup failure was resolved",
+                signal: "validation.failed followed_by=validation.passed",
+                analysis: "\(package) validation failed earlier in the analyzed window, then passed later. Treat the earlier failure as setup churn unless a later task still reports missing resources."
+            )
+        }
+
+        if isResolvedConnectorTestFailure(entry, index: index, entries: entries) {
+            let service = field("service_type", in: message) ?? "connector"
+            return (
+                key: "connector.tested.auth_resolved.\(connectorEvidenceKey(for: entry) ?? service)",
+                title: "Connector authentication failure was resolved",
+                signal: "connector.tested failure followed_by=success",
+                analysis: "A \(service) connector test failed earlier in the analyzed window, then authenticated successfully later. Treat the earlier failure as resolved unless a newer task still reports connector preflight failures."
+            )
+        }
 
         if lower.contains(AuditEvent.taskInterrupted.rawValue),
            let source = field("source", in: message) {
@@ -1387,6 +1525,20 @@ enum LogDiagnosticsService {
             )
         }
 
+        if lower.contains("query shelf") &&
+            lower.contains("bigquery") &&
+            (lower.contains("bq is not installed") ||
+                lower.contains("bigquery cli (`bq`) was not found") ||
+                lower.contains("bigquery cli") && lower.contains("not found")) {
+            return (
+                key: "query_shelf.bigquery_cli_missing",
+                title: "Query Shelf could not find BigQuery CLI",
+                severity: .error,
+                signal: "query_shelf bq_missing",
+                analysis: "Query Shelf attempted to inspect or run BigQuery SQL, but `bq` was not executable at the time of the operation. Verify Google Cloud SDK installation and PATH, then retry the Query Shelf action."
+            )
+        }
+
         if lower.contains(AuditEvent.runtimeModelAvailability.rawValue),
            field("result", in: message) == "unavailable" {
             let runtime = field("runtime", in: message) ?? "runtime"
@@ -1574,6 +1726,7 @@ enum LogDiagnosticsService {
         generatedAt: Date,
         scope: LogDiagnosticsScope,
         previousGeneratedAt: Date?,
+        previousDiagnosticsContext: PreviousDiagnosticsContext?,
         issues: [LogDiagnosticsIssue],
         notices: [LogDiagnosticsNotice],
         crashReports: [CrashReportSummary],
@@ -1607,6 +1760,15 @@ enum LogDiagnosticsService {
             "Scope: \(scope.label)",
             "Previous diagnostics: \(previousGeneratedAt.map(displayTimestamp) ?? "none")",
             "Analyzed window: \(analysisWindow(entries: entries))",
+        ]
+        appendScopeNotes(
+            scope: scope,
+            previousGeneratedAt: previousGeneratedAt,
+            previousDiagnosticsContext: previousDiagnosticsContext,
+            entryCount: entries.count,
+            to: &lines
+        )
+        lines += [
             "",
             "## Summary",
             "",
@@ -1694,6 +1856,32 @@ enum LogDiagnosticsService {
         ]
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendScopeNotes(
+        scope: LogDiagnosticsScope,
+        previousGeneratedAt: Date?,
+        previousDiagnosticsContext: PreviousDiagnosticsContext?,
+        entryCount: Int,
+        to lines: inout [String]
+    ) {
+        guard scope == .sinceLastReport,
+              previousGeneratedAt != nil else {
+            return
+        }
+
+        if let previousDiagnosticsContext {
+            lines += [
+                "Scope note: A recent earlier diagnostics export at \(displayTimestamp(previousDiagnosticsContext.generatedAt)) reported \(previousDiagnosticsContext.issueCount) issue group\(previousDiagnosticsContext.issueCount == 1 ? "" : "s"), \(previousDiagnosticsContext.errorCount) error\(previousDiagnosticsContext.errorCount == 1 ? "" : "s"), and \(previousDiagnosticsContext.warningCount) warning\(previousDiagnosticsContext.warningCount == 1 ? "" : "s") across \(previousDiagnosticsContext.entryCount) entries. This report only covers logs since that export; choose Last 15 minutes or All retained logs to include earlier context."
+            ]
+            return
+        }
+
+        if entryCount <= 3 {
+            lines += [
+                "Scope note: This report only covers entries since the previous diagnostics export. Back-to-back exports can look clean even when the copied raw logs contain earlier issues; choose Last 15 minutes or All retained logs for broader context."
+            ]
+        }
     }
 
     private static func appendCrashReports(_ crashReports: [CrashReportSummary], to lines: inout [String]) {
