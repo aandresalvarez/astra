@@ -1726,7 +1726,7 @@ struct PluginInstallSheet: View {
 
     private var copySetupSourceSummary: String {
         let count = copyableSetupSourceWorkspaces.count
-        return count == 1 ? "1 workspace has this capability" : "\(count) workspaces have this capability"
+        return count == 1 ? "1 workspace has saved setup" : "\(count) workspaces have saved setup"
     }
 
     private var installConfigValues: [String: String] {
@@ -1747,6 +1747,9 @@ struct PluginInstallSheet: View {
             from: sourceWorkspace,
             globalConnectors: globalConnectors
         )
+        guard !inputs.credentialInputs.isEmpty || !inputs.configInputs.isEmpty || !inputs.baseURLOverrides.isEmpty else {
+            return
+        }
         credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
         configValues.merge(inputs.configInputs) { _, copied in copied }
         baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }

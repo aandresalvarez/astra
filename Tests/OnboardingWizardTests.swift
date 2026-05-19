@@ -309,6 +309,118 @@ struct OnboardingWizardTests {
         #expect(copiedConfiguration.redcapAPIToken == "redcap-token")
     }
 
+    @Test("Workspace capability setup copies legacy REDCap connector keys")
+    @MainActor
+    func workspaceCapabilitySetupCopiesLegacyREDCapConnectorKeys() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Legacy REDCap", primaryPath: "/tmp/legacy-redcap")
+        source.enabledCapabilityIDs = ["redcap-workflow"]
+        context.insert(source)
+
+        let redcap = Connector(
+            name: "Study REDCap",
+            serviceType: "redcap",
+            connectorDescription: "Legacy REDCap API",
+            authMethod: "api_key"
+        )
+        redcap.workspace = source
+        redcap.credentialKeys = ["API_TOKEN"]
+        redcap.credentialValues = ["legacy-token"]
+        redcap.configKeys = ["API_URL"]
+        redcap.configValues = ["https://redcap.legacy.edu/api/"]
+        context.insert(redcap)
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
+        let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
+            for: package,
+            from: source
+        )
+
+        #expect(inputs.credentialInputs["REDCAP_API_TOKEN"] == "legacy-token")
+        #expect(inputs.configInputs["REDCAP_API_URL"] == "https://redcap.legacy.edu/api/")
+    }
+
+    @Test("Workspace capability setup copies credentials from legacy AgentFlow Keychain namespace")
+    @MainActor
+    func workspaceCapabilitySetupCopiesLegacyAgentFlowKeychainCredentials() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Legacy Jira", primaryPath: "/tmp/legacy-jira")
+        context.insert(source)
+
+        let jira = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://legacy.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.isGlobal = true
+        jira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jira.credentialValues = ["", ""]
+        context.insert(jira)
+        source.enabledGlobalConnectorIDs = [jira.id.uuidString]
+
+        let store = MockSecretStore()
+        let legacyEntityID = "agentflow-\(jira.id.uuidString)"
+        store.save(
+            key: "JIRA_EMAIL",
+            value: "legacy@example.edu",
+            entityID: legacyEntityID,
+            label: nil
+        )
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "legacy-token",
+            entityID: legacyEntityID,
+            label: nil
+        )
+
+        let summary = CapabilitySetupCopier(secretStore: store).copySetup(
+            from: source,
+            globalConnectors: [jira]
+        )
+
+        #expect(summary.selectedPackageIDs == ["jira-workflow"])
+        #expect(summary.inputsByPackageID["jira-workflow"]?.configInputs["JIRA_BASE_URL"] == "https://legacy.atlassian.net")
+        #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_EMAIL"] == "legacy@example.edu")
+        #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "legacy-token")
+    }
+
+    @Test("Workspace capability setup ignores unchanged default base URLs")
+    @MainActor
+    func workspaceCapabilitySetupIgnoresUnchangedDefaultBaseURLs() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Empty REDCap", primaryPath: "/tmp/empty-redcap")
+        source.enabledCapabilityIDs = ["redcap-workflow"]
+        context.insert(source)
+
+        let redcap = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            connectorDescription: "Default REDCap API",
+            baseURL: OnboardingCapabilityConfiguration.defaultRedcapAPIURL,
+            authMethod: "api_key"
+        )
+        redcap.workspace = source
+        redcap.credentialKeys = ["REDCAP_API_TOKEN"]
+        redcap.credentialValues = [""]
+        context.insert(redcap)
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
+        let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
+            for: package,
+            from: source
+        )
+        let summary = CapabilitySetupCopier(secretStore: MockSecretStore()).copySetup(from: source)
+
+        #expect(inputs == OnboardingCapabilityInstallationInputs())
+        #expect(summary.selectedPackageIDs == ["redcap-workflow"])
+        #expect(summary.inputsByPackageID["redcap-workflow"] == nil)
+    }
+
     @Test("Workspace capability setup infers legacy global connector configuration")
     @MainActor
     func workspaceCapabilitySetupInfersLegacyGlobalConnectorConfiguration() throws {
