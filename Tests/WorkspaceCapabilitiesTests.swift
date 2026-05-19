@@ -288,6 +288,34 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.readiness.messages == ["Jira: missing JIRA_EMAIL, JIRA_API_TOKEN"])
     }
 
+    @Test("package state prefers origin metadata over name matches")
+    @MainActor
+    func packageStatePrefersOriginMetadata() {
+        let workspace = Workspace(name: "Origin State", primaryPath: "/tmp/origin-state")
+
+        let legacySkill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        legacySkill.isGlobal = true
+        let ownedSkill = Skill(name: "Renamed Jira Agent", allowedTools: ["Read"])
+        ownedSkill.isGlobal = true
+        ownedSkill.originPackageID = "jira-workflow"
+        ownedSkill.originComponentID = "skill:jira-agent"
+        ownedSkill.originComponentKind = "skill"
+
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledGlobalSkillIDs = [ownedSkill.id.uuidString]
+
+        let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [legacySkill, ownedSkill]
+        )
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+
+        #expect(state.linkedSkills.map(\.name) == ["Renamed Jira Agent"])
+        #expect(state.skillIDStrings == [ownedSkill.id.uuidString])
+        #expect(state.isEnabled)
+    }
+
     @Test("package state reports when only a matching skill is active without its connector")
     @MainActor
     func packageStateReportsMissingPackageConnector() {
@@ -622,6 +650,41 @@ struct WorkspaceCapabilitiesTests {
             workspace: workspace,
             capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill])
         ).isEnabled == false)
+    }
+
+    @Test("disabling package uses origin metadata before legacy name matching")
+    @MainActor
+    func disablingPackageUsesOriginMetadataBeforeLegacyNameMatching() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Disable Origin", primaryPath: "/tmp/disable-origin")
+        context.insert(workspace)
+
+        let legacySkill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        legacySkill.isGlobal = true
+        context.insert(legacySkill)
+
+        let ownedSkill = Skill(name: "Jira Agent Copy", allowedTools: ["Read"])
+        ownedSkill.isGlobal = true
+        ownedSkill.originPackageID = "jira-workflow"
+        ownedSkill.originComponentID = "skill:jira-agent"
+        ownedSkill.originComponentKind = "skill"
+        context.insert(ownedSkill)
+
+        let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        workspace.enabledCapabilityIDs = [package.id]
+        workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
+
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [legacySkill, ownedSkill]),
+            modelContext: context,
+            availablePackages: [package]
+        )
+
+        #expect(result.disabledSkillIDs == [ownedSkill.id])
+        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString])
     }
 
     @Test("disabling one package keeps shared skill active when another enabled package claims it")

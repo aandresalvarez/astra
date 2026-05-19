@@ -9,9 +9,11 @@ struct CapabilityRuntimeIntegrityIssue: Equatable, Identifiable {
     }
 
     enum ResourceKind: String {
+        case policy
         case skill
         case connector
         case localTool = "local_tool"
+        case mcpServer = "mcp_server"
         case browserAdapter = "browser_adapter"
         case credential
         case executable
@@ -33,7 +35,8 @@ enum CapabilityRuntimeIntegrityService {
     static func issues(
         for task: AgentTask,
         packages suppliedPackages: [PluginPackage]? = nil,
-        checkExecutables: Bool = true
+        checkExecutables: Bool = true,
+        policyContext: CapabilityCatalogPolicyContext? = nil
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
@@ -61,6 +64,19 @@ enum CapabilityRuntimeIntegrityService {
         var seenChecks = Set<String>()
         var issues: [CapabilityRuntimeIntegrityIssue] = []
         for (package, source) in checks where seenChecks.insert("\(source.rawValue):\(package.id)").inserted {
+            if source == .enabledPackage,
+               let policyContext {
+                let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
+                if !decision.canRun {
+                    issues.append(issue(
+                        package: package,
+                        source: source,
+                        kind: .policy,
+                        name: package.name,
+                        message: "catalog policy blocks runtime activation: \(decision.blockerMessages.joined(separator: "; "))"
+                    ))
+                }
+            }
             issues += resourceIssues(
                 package: package,
                 source: source,
@@ -187,6 +203,33 @@ enum CapabilityRuntimeIntegrityService {
                     kind: .executable,
                     name: pluginTool.command,
                     message: "local tool command \(pluginTool.command) is not installed or not executable"
+                ))
+            }
+        }
+
+        for server in package.mcpServers {
+            if checkExecutables,
+               server.transport == .stdio {
+                let command = (server.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if command.isEmpty || RuntimePathResolver.detectExecutablePath(named: command).isEmpty {
+                    issues.append(issue(
+                        package: package,
+                        source: source,
+                        kind: .mcpServer,
+                        name: server.displayName,
+                        message: "MCP server \(server.displayName) command \(command.isEmpty ? server.id : command) is not installed or not executable"
+                    ))
+                }
+            }
+
+            if server.transport != .stdio,
+               server.url == nil {
+                issues.append(issue(
+                    package: package,
+                    source: source,
+                    kind: .mcpServer,
+                    name: server.displayName,
+                    message: "MCP server \(server.displayName) is missing a remote URL"
                 ))
             }
         }

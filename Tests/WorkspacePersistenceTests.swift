@@ -30,6 +30,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     connector.credentialValues = ["plaintext-secret-should-not-export"]
     connector.configKeys = ["PROJECT"]
     connector.configValues = ["alpha"]
+    connector.originPackageID = "stanford.builder"
+    connector.originPackageVersion = "1.0.0"
+    connector.originComponentID = "connector:rest_api:shared-api"
+    connector.originComponentKind = "connector"
+    connector.originSourceKind = "local"
     connector.workspace = workspace
     context.insert(connector)
 
@@ -41,6 +46,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
         command: "swift",
         arguments: "build"
     )
+    tool.originPackageID = "stanford.builder"
+    tool.originPackageVersion = "1.0.0"
+    tool.originComponentID = "tool:cli:swift:build-tool"
+    tool.originComponentKind = "local_tool"
+    tool.originSourceKind = "local"
     tool.workspace = workspace
     context.insert(tool)
 
@@ -55,6 +65,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     )
     skill.environmentKeys = ["ENV"]
     skill.environmentValues = ["test"]
+    skill.originPackageID = "stanford.builder"
+    skill.originPackageVersion = "1.0.0"
+    skill.originComponentID = "skill:builder"
+    skill.originComponentKind = "skill"
+    skill.originSourceKind = "local"
     skill.workspace = workspace
     connector.skill = skill
     tool.skill = skill
@@ -67,6 +82,11 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
         icon: "rectangle.3.group",
         templateDescription: "Build task"
     )
+    template.originPackageID = "stanford.builder"
+    template.originPackageVersion = "1.0.0"
+    template.originComponentID = "template:build-template"
+    template.originComponentKind = "template"
+    template.originSourceKind = "local"
     context.insert(template)
 
     let task = AgentTask(
@@ -126,6 +146,10 @@ struct WorkspacePersistenceTests {
         #expect(config.connectors?.first?.id == workspace.connectors.first?.id.uuidString)
         #expect(config.localTools?.first?.id == workspace.localTools.first?.id.uuidString)
         #expect(config.templates?.first?.id == workspace.templates.first?.id.uuidString)
+        #expect(config.skills.first?.originPackageID == "stanford.builder")
+        #expect(config.connectors?.first?.originComponentKind == "connector")
+        #expect(config.localTools?.first?.originComponentKind == "local_tool")
+        #expect(config.templates?.first?.originComponentKind == "template")
         #expect(config.tasks?.first?.id == workspace.tasks.first?.id.uuidString)
         #expect(config.tasks?.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id.uuidString)
         #expect(config.tasks?.first?.events.first?.id == workspace.tasks.first?.events.first?.id.uuidString)
@@ -156,6 +180,10 @@ struct WorkspacePersistenceTests {
         #expect(imported.connectors.first?.id == workspace.connectors.first?.id)
         #expect(imported.connectors.first?.credentialKeys == ["API_TOKEN"])
         #expect(imported.connectors.first?.credentialValues == [""])
+        #expect(imported.skills.first?.originPackageID == "stanford.builder")
+        #expect(imported.connectors.first?.originPackageID == "stanford.builder")
+        #expect(imported.localTools.first?.originPackageID == "stanford.builder")
+        #expect(imported.templates.first?.originPackageID == "stanford.builder")
         #expect(imported.enabledCapabilityIDs == ["stanford.builder"])
         #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)

@@ -95,6 +95,11 @@ final class PluginCatalog {
             )
             skill.environmentKeys = ps.environmentKeys
             skill.environmentValues = ps.environmentValues
+            CapabilityResourceOrigin.stamp(
+                skill,
+                package: package,
+                componentID: CapabilityResourceOrigin.componentID(for: ps)
+            )
             skill.migrateSecretsToKeychain()
             skill.workspace = workspace
             modelContext.insert(skill)
@@ -114,6 +119,11 @@ final class PluginCatalog {
             )
             connector.notes = pc.notes
             connector.workspace = workspace
+            CapabilityResourceOrigin.stamp(
+                connector,
+                package: package,
+                componentID: CapabilityResourceOrigin.componentID(for: pc)
+            )
 
             // Credential keys — save provided values to Keychain
             connector.credentialKeys = pc.credentialHints.map(\.key)
@@ -148,6 +158,11 @@ final class PluginCatalog {
                 arguments: pt.arguments
             )
             tool.workspace = workspace
+            CapabilityResourceOrigin.stamp(
+                tool,
+                package: package,
+                componentID: CapabilityResourceOrigin.componentID(for: pt)
+            )
             if let firstSkill = createdSkills.values.first {
                 tool.skill = firstSkill
             }
@@ -172,18 +187,25 @@ final class PluginCatalog {
             template.variablesJSON = pt.variablesJSON
             template.passContextToMain = pt.passContextToMain
             template.passContextToAfter = pt.passContextToAfter
+            CapabilityResourceOrigin.stamp(
+                template,
+                package: package,
+                componentID: CapabilityResourceOrigin.componentID(for: pt)
+            )
             modelContext.insert(template)
         }
 
         workspace.recordInstalledPlugin(id: package.id, version: package.version)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.pluginInstalled, category: "PluginCatalog", fields: [
+        var auditFields = [
             "package_id": package.id,
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString,
             "skills_count": String(package.skills.count),
             "connectors_count": String(package.connectors.count)
-        ])
+        ]
+        auditFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
+        AppLogger.audit(.pluginInstalled, category: "PluginCatalog", fields: auditFields)
     }
 
     // MARK: - Version Checking
@@ -214,6 +236,11 @@ final class PluginCatalog {
                 existing.behaviorInstructions = ps.behaviorInstructions
                 existing.icon = ps.icon
                 existing.skillDescription = ps.description
+                CapabilityResourceOrigin.stamp(
+                    existing,
+                    package: package,
+                    componentID: CapabilityResourceOrigin.componentID(for: ps)
+                )
                 existing.updatedAt = Date()
             } else {
                 let skill = Skill(
@@ -227,6 +254,11 @@ final class PluginCatalog {
                 )
                 skill.environmentKeys = ps.environmentKeys
                 skill.environmentValues = ps.environmentValues
+                CapabilityResourceOrigin.stamp(
+                    skill,
+                    package: package,
+                    componentID: CapabilityResourceOrigin.componentID(for: ps)
+                )
                 skill.workspace = workspace
                 modelContext.insert(skill)
             }
@@ -243,6 +275,11 @@ final class PluginCatalog {
                 existing.variablesJSON = pt.variablesJSON
                 existing.passContextToMain = pt.passContextToMain
                 existing.passContextToAfter = pt.passContextToAfter
+                CapabilityResourceOrigin.stamp(
+                    existing,
+                    package: package,
+                    componentID: CapabilityResourceOrigin.componentID(for: pt)
+                )
                 existing.updatedAt = Date()
             }
         }
@@ -373,7 +410,13 @@ final class PluginCatalog {
                 """,
                 environmentKeys: [], environmentValues: []
             )],
-            connectors: [], localTools: [], templates: []
+            connectors: [], localTools: [], templates: [],
+            governance: .builtInApproved(
+                riskLevel: .medium,
+                dataAccess: [.workspaceFiles, .network],
+                externalEffects: [.readOnly],
+                policyNotes: "Read-only security review capability. It may inspect workspace files and run local audit commands, but package policy disallows file edits."
+            )
         ),
 
         // ────────────────────────────────────────────
@@ -459,7 +502,13 @@ final class PluginCatalog {
                 ],
                 notes: "Uses REST API v3. Auth: Basic (email:api_token base64-encoded)."
             )],
-            localTools: [], templates: []
+            localTools: [], templates: [],
+            governance: .builtInApproved(
+                riskLevel: .high,
+                dataAccess: [.connectorCredentials, .externalService, .network],
+                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation],
+                policyNotes: "Jira API access uses Keychain-backed connector credentials. Ticket creation, comments, transitions, and updates require explicit user confirmation at task time."
+            )
         ),
 
         // ────────────────────────────────────────────
@@ -562,7 +611,13 @@ final class PluginCatalog {
                     arguments: ""
                 )
             ],
-            templates: []
+            templates: [],
+            governance: .builtInApproved(
+                riskLevel: .restricted,
+                dataAccess: [.connectorCredentials, .clinicalData, .externalService, .network],
+                externalEffects: [.readOnly, .externalAPIWrite],
+                policyNotes: "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time."
+            )
         ),
 
         // ────────────────────────────────────────────
@@ -653,7 +708,13 @@ final class PluginCatalog {
             prerequisites: [
                 CommonCLIPrerequisites.githubCLI,
                 CommonCLIPrerequisites.githubAuth
-            ]
+            ],
+            governance: .builtInApproved(
+                riskLevel: .high,
+                dataAccess: [.workspaceFiles, .externalService, .network, .authenticatedBrowserContent],
+                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation, .browserNavigation],
+                policyNotes: "GitHub work uses the local gh CLI and may read repository state, issues, pull requests, Actions, and authenticated GitHub browser pages. External writes require user confirmation."
+            )
         ),
 
         // ────────────────────────────────────────────
@@ -769,7 +830,13 @@ final class PluginCatalog {
             prerequisites: [
                 CommonCLIPrerequisites.gcloud,
                 CommonCLIPrerequisites.gcloudAuth
-            ]
+            ],
+            governance: .builtInApproved(
+                riskLevel: .restricted,
+                dataAccess: [.externalService, .network, .workspaceFiles],
+                externalEffects: [.readOnly, .externalAPIWrite, .deploy, .delete],
+                policyNotes: "Google Cloud operations use local gcloud authentication and can affect cloud infrastructure. Deployments, IAM changes, and deletes require explicit user confirmation."
+            )
         ),
 
         PluginPackage(
@@ -794,7 +861,13 @@ final class PluginCatalog {
             connectors: [],
             localTools: [],
             templates: [],
-            browserAdapters: [BrowserSiteAdapterID.googleDrive]
+            browserAdapters: [BrowserSiteAdapterID.googleDrive],
+            governance: .builtInApproved(
+                riskLevel: .high,
+                dataAccess: [.authenticatedBrowserContent, .externalService],
+                externalEffects: [.browserNavigation],
+                policyNotes: "This package enables Google Drive-specific semantics on ASTRA's trusted Shelf browser bridge. It does not store Google credentials."
+            )
         ),
 
     ]

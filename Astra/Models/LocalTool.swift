@@ -11,6 +11,11 @@ final class LocalTool {
     var command: String   // path or command to run
     var arguments: String // default arguments
     var isGlobal: Bool = false
+    var originPackageID: String?
+    var originPackageVersion: String?
+    var originComponentID: String?
+    var originComponentKind: String?
+    var originSourceKind: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -32,6 +37,11 @@ final class LocalTool {
         self.toolType = toolType
         self.command = command
         self.arguments = arguments
+        self.originPackageID = nil
+        self.originPackageVersion = nil
+        self.originComponentID = nil
+        self.originComponentKind = nil
+        self.originSourceKind = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }

@@ -4,6 +4,30 @@
   "connectors": [],
   "description": "Read a Stanford Health Care @stanfordhealthcare.org mailbox through Microsoft Graph PowerShell browser auth",
   "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [
+
+    ],
+    "allowedWorkspaceTags": [
+
+    ],
+    "approvalStatus": "approved",
+    "approvedBy": "ASTRA",
+    "dataAccess": [
+      "email",
+      "clinicalData",
+      "externalService",
+      "network"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Uses local Graph PowerShell authentication to read Stanford Health Care email. Treat returned content as sensitive and potentially clinical.",
+    "requiresAdminApproval": false,
+    "requiresExplicitUserConsent": true,
+    "riskLevel": "restricted",
+    "visibility": "everyone"
+  },
   "icon": "envelope.badge.shield.half.filled",
   "id": "stanford-healthcare-graph-mail",
   "isTrusted": false,

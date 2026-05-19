@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum CapabilityAudit {
     static func packageFields(
@@ -10,9 +11,10 @@ enum CapabilityAudit {
         skillsCount: Int,
         connectorsCount: Int,
         toolsCount: Int,
-        templatesCount: Int = 0
+        templatesCount: Int = 0,
+        governance: CapabilityGovernance? = nil
     ) -> [String: String] {
-        [
+        var fields = [
             "source": source,
             "package_id": packageID,
             "package_name": packageName,
@@ -22,6 +24,20 @@ enum CapabilityAudit {
             "connectors_count": String(connectorsCount),
             "tools_count": String(toolsCount),
             "templates_count": String(templatesCount)
+        ]
+        if let governance {
+            fields.merge(governanceFields(governance), uniquingKeysWith: { _, new in new })
+        }
+        return fields
+    }
+
+    static func governanceFields(_ governance: CapabilityGovernance) -> [String: String] {
+        [
+            "approval_status": governance.approvalStatus.rawValue,
+            "risk_level": governance.riskLevel.rawValue,
+            "visibility": governance.visibility.rawValue,
+            "requires_admin_approval": String(governance.requiresAdminApproval),
+            "requires_explicit_user_consent": String(governance.requiresExplicitUserConsent)
         ]
     }
 

@@ -134,6 +134,67 @@ struct CapabilityInstallerTests {
         #expect(resolver.resolvedEnvironmentVariables["GCP_PROJECT"] == "astra-dev")
     }
 
+    @Test("install records exact origin metadata on package resources")
+    func installRecordsOriginMetadataOnResources() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Origin", primaryPath: "/tmp/capability-origin")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.version = "1.2.3"
+        package.templates = [
+            PluginTemplate(
+                name: "BQ Summary",
+                icon: "doc.text",
+                description: "Summarize BigQuery",
+                mainGoal: "Summarize BigQuery cost",
+                beforeGoal: "",
+                afterGoal: "",
+                mainBudget: 1000,
+                beforeBudget: 0,
+                afterBudget: 0,
+                variablesJSON: "[]",
+                passContextToMain: true,
+                passContextToAfter: false
+            )
+        ]
+
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
+        )).first)
+        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
+        )).first)
+        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "bq" }
+        )).first)
+        let template = try #require(workspace.templates.first { $0.name == "BQ Summary" })
+
+        #expect(skill.originPackageID == package.id)
+        #expect(skill.originPackageVersion == "1.2.3")
+        #expect(skill.originComponentID == "skill:bigquery-analyst")
+        #expect(skill.originComponentKind == "skill")
+        #expect(skill.originSourceKind == "local")
+
+        #expect(connector.originPackageID == package.id)
+        #expect(connector.originComponentID == "connector:google_cloud:google-cloud")
+        #expect(connector.originComponentKind == "connector")
+
+        #expect(tool.originPackageID == package.id)
+        #expect(tool.originComponentID == "tool:cli:bq:bq")
+        #expect(tool.originComponentKind == "local_tool")
+
+        #expect(template.originPackageID == package.id)
+        #expect(template.originComponentID == "template:bq-summary")
+        #expect(template.originComponentKind == "template")
+    }
+
     @Test("install stores configured source env values on the connector")
     func installStoresConfiguredSourceEnvValuesOnConnector() throws {
         let container = try makeCapabilityInstallerContainer()
@@ -297,6 +358,8 @@ struct CapabilityInstallerTests {
         #expect(firstResult.skillIDs == updatedResult.skillIDs)
         #expect(skills.first?.behaviorInstructions == "Use BigQuery carefully and explain cost.")
         #expect(tools.first?.arguments == "--format=json")
+        #expect(skills.first?.originPackageVersion == "1.1.0")
+        #expect(tools.first?.originPackageVersion == "1.1.0")
         #expect(library.installedVersion(of: package.id) == "1.1.0")
         #expect(workspace.enabledCapabilityIDs == [package.id])
     }
@@ -352,6 +415,40 @@ struct CapabilityInstallerTests {
             Issue.record("Install should have failed")
         } catch let error as CapabilityInstaller.InstallationError {
             #expect(error.localizedDescription.contains("missing-base"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
+    @Test("installer blocks packages denied by catalog policy context")
+    func installerBlocksPolicyDeniedPackages() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Policy Blocked", primaryPath: "/tmp/policy-blocked-capability")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.bigquery.draft"
+        package.governance = .localDraft()
+
+        let policyContext = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            currentAppVersion: SemanticVersion(1, 0, 0)
+        )
+
+        do {
+            try CapabilityInstaller(library: library).install(
+                package,
+                into: workspace,
+                modelContext: context,
+                policyContext: policyContext
+            )
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("draft review"))
             #expect(library.installedPackages().isEmpty)
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
@@ -457,6 +554,68 @@ struct CapabilityInstallerTests {
         }
     }
 
+    @Test("installer accepts safe MCP server declarations")
+    func installerAcceptsSafeMCPServerDeclarations() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Safe MCP", primaryPath: "/tmp/safe-mcp")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.safe.mcp"
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "github",
+                displayName: "GitHub MCP",
+                transport: .stdio,
+                command: "github-mcp-server",
+                arguments: ["stdio"],
+                allowedTools: ["issues.list"],
+                excludedTools: ["repo.delete"]
+            )
+        ]
+
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+
+        #expect(library.installedPackage(id: package.id)?.mcpServers.map(\.id) == ["github"])
+        #expect(workspace.enabledCapabilityIDs == [package.id])
+    }
+
+    @Test("installer blocks unsafe MCP server declarations")
+    func installerBlocksUnsafeMCPServerDeclarations() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Unsafe MCP", primaryPath: "/tmp/unsafe-mcp")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.unsafe.mcp"
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "unsafe",
+                displayName: "Unsafe MCP",
+                transport: .stdio,
+                command: "npx",
+                arguments: ["server", ";", "rm"]
+            )
+        ]
+
+        do {
+            try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("unsafe default arguments"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
     @Test("uninstall removes local package and owned shared resources")
     func uninstallRemovesLocalPackageAndOwnedSharedResources() throws {
         let container = try makeCapabilityInstallerContainer()
@@ -521,6 +680,33 @@ struct CapabilityInstallerTests {
         #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(!KeychainService.exists(key: "GCP_TOKEN", connectorID: connectorID))
+    }
+
+    @Test("uninstall prefers origin metadata before legacy name matching")
+    func uninstallPrefersOriginMetadataBeforeLegacyNameMatching() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Remove Origin", primaryPath: "/tmp/remove-origin")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = makeAnalystCapabilityPackage()
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+
+        let ownedSkill = try #require(try context.fetch(FetchDescriptor<Skill>(
+            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
+        )).first)
+        let legacySkill = Skill(name: "BigQuery Analyst", allowedTools: ["Read"])
+        legacySkill.isGlobal = true
+        context.insert(legacySkill)
+
+        let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+
+        #expect(result.removedSkillIDs == [ownedSkill.id])
+        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == legacySkill.id })
+        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == ownedSkill.id } == false)
     }
 
     @Test("uninstall rejects built-in packages")

@@ -4,6 +4,28 @@
   "connectors": [],
   "description": "Read a Stanford University @stanford.edu mailbox through the local Apple Mail app when Stanford Graph access is blocked",
   "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [
+
+    ],
+    "allowedWorkspaceTags": [
+
+    ],
+    "approvalStatus": "approved",
+    "approvedBy": "ASTRA",
+    "dataAccess": [
+      "email",
+      "appSupport"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Uses the local Apple Mail database through an ASTRA-vetted text-only helper for Stanford email reads. It does not grant message sending.",
+    "requiresAdminApproval": false,
+    "requiresExplicitUserConsent": true,
+    "riskLevel": "high",
+    "visibility": "everyone"
+  },
   "icon": "envelope.badge.shield.half.filled",
   "id": "stanford-apple-mail",
   "isTrusted": false,

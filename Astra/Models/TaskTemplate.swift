@@ -38,6 +38,11 @@ final class TaskTemplate {
 
     // Default skills to attach when creating tasks from this template
     var defaultSkillIDs: [String] = []
+    var originPackageID: String?
+    var originPackageVersion: String?
+    var originComponentID: String?
+    var originComponentKind: String?
+    var originSourceKind: String?
 
     var createdAt: Date
     var updatedAt: Date
@@ -68,6 +73,11 @@ final class TaskTemplate {
         self.passContextToMain = true
         self.passContextToAfter = true
         self.defaultSkillIDs = []
+        self.originPackageID = nil
+        self.originPackageVersion = nil
+        self.originComponentID = nil
+        self.originComponentKind = nil
+        self.originSourceKind = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }

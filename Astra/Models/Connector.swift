@@ -26,6 +26,11 @@ final class Connector {
     var isGlobal: Bool = false
     var testHTTPMethod: String = "GET"
     var notes: String
+    var originPackageID: String?
+    var originPackageVersion: String?
+    var originComponentID: String?
+    var originComponentKind: String?
+    var originSourceKind: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -52,6 +57,11 @@ final class Connector {
         self.configKeys = []
         self.configValues = []
         self.notes = ""
+        self.originPackageID = nil
+        self.originPackageVersion = nil
+        self.originComponentID = nil
+        self.originComponentKind = nil
+        self.originSourceKind = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }

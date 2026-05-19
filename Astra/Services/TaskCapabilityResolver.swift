@@ -119,6 +119,14 @@ struct TaskCapabilityResolver {
         )
     }
 
+    var enabledMCPServerManifests: [RunPermissionManifest.MCPServer] {
+        Self.enabledMCPServerManifests(
+            for: task.workspace,
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+    }
+
     private func enabledPackageSkills() -> [Skill] {
         let packages = enabledCapabilityPackages()
         let pluginSkills = packages.flatMap(\.skills)
@@ -227,6 +235,43 @@ struct TaskCapabilityResolver {
             }
         }
         return adapters
+    }
+
+    static func enabledMCPServerManifests(
+        for workspace: Workspace?,
+        packages: [PluginPackage],
+        approvalRecords: [CapabilityApprovalRecord] = []
+    ) -> [RunPermissionManifest.MCPServer] {
+        guard let workspace else { return [] }
+        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        guard !enabledPackageIDs.isEmpty else { return [] }
+        let context = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            approvalRecords: approvalRecords
+        )
+
+        return packages
+            .filter { enabledPackageIDs.contains($0.id) }
+            .filter { CapabilityCatalogPolicy.decision(for: $0, context: context).canRun }
+            .flatMap { package in
+                package.mcpServers.map { server in
+                    RunPermissionManifest.MCPServer(
+                        id: server.id,
+                        packageID: package.id,
+                        displayName: server.displayName,
+                        transport: server.transport.rawValue,
+                        allowedTools: server.allowedTools,
+                        excludedTools: server.excludedTools,
+                        resourcesEnabled: server.resourcesEnabled,
+                        promptsEnabled: server.promptsEnabled,
+                        trustLevel: server.trustLevel.rawValue
+                    )
+                }
+            }
+            .sorted {
+                if $0.packageID != $1.packageID { return $0.packageID < $1.packageID }
+                return $0.id < $1.id
+            }
     }
 
     func promptScope(contextText: String = "") -> TaskCapabilityPromptScope {

@@ -580,6 +580,40 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
 }
 
 public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable {
+    public struct MCPServer: Codable, Equatable, Sendable, Identifiable {
+        public var id: String
+        public var packageID: String
+        public var displayName: String
+        public var transport: String
+        public var allowedTools: [String]
+        public var excludedTools: [String]
+        public var resourcesEnabled: Bool
+        public var promptsEnabled: Bool
+        public var trustLevel: String
+
+        public init(
+            id: String,
+            packageID: String,
+            displayName: String,
+            transport: String,
+            allowedTools: [String] = [],
+            excludedTools: [String] = [],
+            resourcesEnabled: Bool = false,
+            promptsEnabled: Bool = false,
+            trustLevel: String
+        ) {
+            self.id = id
+            self.packageID = packageID
+            self.displayName = displayName
+            self.transport = transport
+            self.allowedTools = allowedTools
+            self.excludedTools = excludedTools
+            self.resourcesEnabled = resourcesEnabled
+            self.promptsEnabled = promptsEnabled
+            self.trustLevel = trustLevel
+        }
+    }
+
     public var id: UUID
     public var createdAt: Date
     public var taskID: UUID
@@ -595,10 +629,34 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var additionalPaths: [String]
     public var environmentKeyNames: [String]
     public var credentialLabels: [String]
+    public var mcpServers: [MCPServer]
     public var approvalsGranted: [String]
     public var observedToolUseCount: Int
     public var observedDeniedCount: Int
     public var observedFileChangeCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt
+        case taskID
+        case runID
+        case phase
+        case providerID
+        case providerVersion
+        case model
+        case policyLevel
+        case policyScope
+        case providerRender
+        case workspacePath
+        case additionalPaths
+        case environmentKeyNames
+        case credentialLabels
+        case mcpServers
+        case approvalsGranted
+        case observedToolUseCount
+        case observedDeniedCount
+        case observedFileChangeCount
+    }
 
     public init(
         id: UUID = UUID(),
@@ -616,6 +674,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         additionalPaths: [String],
         environmentKeyNames: [String],
         credentialLabels: [String],
+        mcpServers: [MCPServer] = [],
         approvalsGranted: [String],
         observedToolUseCount: Int = 0,
         observedDeniedCount: Int = 0,
@@ -636,9 +695,37 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.additionalPaths = Array(Set(additionalPaths)).sorted()
         self.environmentKeyNames = Array(Set(environmentKeyNames)).sorted()
         self.credentialLabels = Array(Set(credentialLabels)).sorted()
+        self.mcpServers = mcpServers.sorted {
+            if $0.packageID != $1.packageID { return $0.packageID < $1.packageID }
+            return $0.id < $1.id
+        }
         self.approvalsGranted = Array(Set(approvalsGranted)).sorted()
         self.observedToolUseCount = observedToolUseCount
         self.observedDeniedCount = observedDeniedCount
         self.observedFileChangeCount = observedFileChangeCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.taskID = try container.decode(UUID.self, forKey: .taskID)
+        self.runID = try container.decode(UUID.self, forKey: .runID)
+        self.phase = try container.decode(String.self, forKey: .phase)
+        self.providerID = try container.decode(AgentRuntimeID.self, forKey: .providerID)
+        self.providerVersion = try container.decodeIfPresent(String.self, forKey: .providerVersion)
+        self.model = try container.decode(String.self, forKey: .model)
+        self.policyLevel = try container.decode(AgentPolicyLevel.self, forKey: .policyLevel)
+        self.policyScope = try container.decode(AgentPolicyScope.self, forKey: .policyScope)
+        self.providerRender = try container.decode(ProviderPolicyRender.self, forKey: .providerRender)
+        self.workspacePath = try container.decode(String.self, forKey: .workspacePath)
+        self.additionalPaths = try container.decode([String].self, forKey: .additionalPaths)
+        self.environmentKeyNames = try container.decode([String].self, forKey: .environmentKeyNames)
+        self.credentialLabels = try container.decode([String].self, forKey: .credentialLabels)
+        self.mcpServers = try container.decodeIfPresent([MCPServer].self, forKey: .mcpServers) ?? []
+        self.approvalsGranted = try container.decode([String].self, forKey: .approvalsGranted)
+        self.observedToolUseCount = try container.decodeIfPresent(Int.self, forKey: .observedToolUseCount) ?? 0
+        self.observedDeniedCount = try container.decodeIfPresent(Int.self, forKey: .observedDeniedCount) ?? 0
+        self.observedFileChangeCount = try container.decodeIfPresent(Int.self, forKey: .observedFileChangeCount) ?? 0
     }
 }

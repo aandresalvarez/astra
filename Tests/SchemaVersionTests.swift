@@ -27,6 +27,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV4.models.count == 10)
     }
 
+    @Test("SchemaV5 declares all 10 model types")
+    func v5ModelCount() {
+        #expect(ASTRASchemaV5.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -47,14 +52,19 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV4")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 4)
+    @Test("SchemaV5 version identifier is 5.0.0")
+    func v5VersionIdentifier() {
+        #expect(ASTRASchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V4 lightweight stages")
+    @Test("Migration plan lists SchemaV1 through SchemaV5")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 5)
+    }
+
+    @Test("Migration plan has V1 to V5 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 3)
+        #expect(ASTRAMigrationPlan.stages.count == 4)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -97,6 +107,10 @@ struct SchemaVersionTests {
         tool.workspace = workspace
         context.insert(tool)
 
+        #expect(skill.originPackageID == nil)
+        #expect(connector.originPackageID == nil)
+        #expect(tool.originPackageID == nil)
+
         let task = AgentTask(title: "Test Task", goal: "Do something", workspace: workspace)
         task.skills = [skill]
         context.insert(task)
@@ -112,6 +126,7 @@ struct SchemaVersionTests {
 
         let template = TaskTemplate(name: "Build", mainGoal: "Build it", workspace: workspace)
         context.insert(template)
+        #expect(template.originPackageID == nil)
 
         let schedule = TaskSchedule(name: "Hourly", workspace: workspace)
         context.insert(schedule)
@@ -270,5 +285,60 @@ struct SchemaVersionTests {
         let workspaces = try context.fetch(FetchDescriptor<Workspace>())
         let migratedWorkspace = try #require(workspaces.first)
         #expect(migratedWorkspace.isStarred == false)
+    }
+
+    @MainActor
+    @Test("SchemaV4 store migrates to SchemaV5 origin fields")
+    func v4StoreMigratesToOriginFields() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v4-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV4.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV4.Workspace()
+        oldWorkspace.name = "Legacy V4"
+        oldWorkspace.primaryPath = "/tmp/legacy-v4"
+        oldContext.insert(oldWorkspace)
+
+        let oldSkill = ASTRASchemaV4.Skill()
+        oldSkill.name = "Legacy Skill"
+        oldSkill.workspace = oldWorkspace
+        oldContext.insert(oldSkill)
+
+        let oldConnector = ASTRASchemaV4.Connector()
+        oldConnector.name = "Legacy Connector"
+        oldConnector.workspace = oldWorkspace
+        oldContext.insert(oldConnector)
+
+        let oldTool = ASTRASchemaV4.LocalTool()
+        oldTool.name = "legacy-tool"
+        oldTool.workspace = oldWorkspace
+        oldContext.insert(oldTool)
+
+        let oldTemplate = ASTRASchemaV4.TaskTemplate()
+        oldTemplate.name = "Legacy Template"
+        oldTemplate.workspace = oldWorkspace
+        oldContext.insert(oldTemplate)
+
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        #expect(try context.fetch(FetchDescriptor<Skill>()).first?.originPackageID == nil)
+        #expect(try context.fetch(FetchDescriptor<Connector>()).first?.originPackageID == nil)
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).first?.originPackageID == nil)
+        #expect(try context.fetch(FetchDescriptor<TaskTemplate>()).first?.originPackageID == nil)
     }
 }

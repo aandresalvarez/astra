@@ -87,6 +87,14 @@ struct WorkspaceRightRailView: View {
         )
     }
 
+    private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+    }
+
     private var workspaceSkills: [Skill] {
         capabilities.workspaceSkills
     }
@@ -594,7 +602,8 @@ struct WorkspaceRightRailView: View {
 
     private var libraryCapabilityPackages: [PluginPackage] {
         CapabilityGalleryInventory.packages(
-            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
+            policyContext: catalogPolicyContext
         )
     }
 
@@ -718,7 +727,8 @@ struct WorkspaceRightRailView: View {
 
             let catalogPackages = CapabilityCatalogInventory.packages(
                 catalogPackages: approvedCapabilityPackages,
-                capabilities: currentCapabilities
+                capabilities: currentCapabilities,
+                policyContext: catalogPolicyContext
             )
 
             let items = catalogPackages
@@ -730,7 +740,8 @@ struct WorkspaceRightRailView: View {
                 .sorted(by: sortRailCapabilityItems)
 
             let libraryPackages = CapabilityGalleryInventory.packages(
-                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
+                policyContext: catalogPolicyContext
             )
             let availableToAddCount = libraryPackages.reduce(into: 0) { count, package in
                 if !state(for: package).isEnabled {
@@ -973,7 +984,13 @@ struct WorkspaceRightRailView: View {
                     "requirement_count": String(item.requirementNames.count)
                 ])
                 do {
-                    try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext, traceID: traceID)
+                    try CapabilityInstaller().install(
+                        package,
+                        into: workspace,
+                        modelContext: modelContext,
+                        policyContext: catalogPolicyContext,
+                        traceID: traceID
+                    )
                     refreshApprovedCapabilities()
                 } catch {
                     capabilityError = error.localizedDescription

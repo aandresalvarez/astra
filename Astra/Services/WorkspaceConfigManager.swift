@@ -65,6 +65,11 @@ enum WorkspaceConfigManager {
         var localToolIDs: [String]?
         var connectorNames: [String]?
         var localToolNames: [String]?
+        var originPackageID: String? = nil
+        var originPackageVersion: String? = nil
+        var originComponentID: String? = nil
+        var originComponentKind: String? = nil
+        var originSourceKind: String? = nil
         var createdAt: Date?
         var updatedAt: Date?
     }
@@ -82,6 +87,11 @@ enum WorkspaceConfigManager {
         var configValues: [String]
         var isGlobal: Bool?
         var notes: String
+        var originPackageID: String? = nil
+        var originPackageVersion: String? = nil
+        var originComponentID: String? = nil
+        var originComponentKind: String? = nil
+        var originSourceKind: String? = nil
         var createdAt: Date?
         var updatedAt: Date?
     }
@@ -95,6 +105,11 @@ enum WorkspaceConfigManager {
         var command: String
         var arguments: String
         var isGlobal: Bool?
+        var originPackageID: String? = nil
+        var originPackageVersion: String? = nil
+        var originComponentID: String? = nil
+        var originComponentKind: String? = nil
+        var originSourceKind: String? = nil
         var createdAt: Date?
         var updatedAt: Date?
     }
@@ -118,6 +133,11 @@ enum WorkspaceConfigManager {
         var passContextToMain: Bool
         var passContextToAfter: Bool
         var defaultSkillIDs: [String]?
+        var originPackageID: String? = nil
+        var originPackageVersion: String? = nil
+        var originComponentID: String? = nil
+        var originComponentKind: String? = nil
+        var originSourceKind: String? = nil
         var createdAt: Date?
         var updatedAt: Date?
     }
@@ -609,6 +629,11 @@ enum WorkspaceConfigManager {
             localToolIDs: skill.localTools.map { $0.id.uuidString },
             connectorNames: skill.connectors.map(\.name),
             localToolNames: skill.localTools.map(\.name),
+            originPackageID: skill.originPackageID,
+            originPackageVersion: skill.originPackageVersion,
+            originComponentID: skill.originComponentID,
+            originComponentKind: skill.originComponentKind,
+            originSourceKind: skill.originSourceKind,
             createdAt: skill.createdAt,
             updatedAt: skill.updatedAt
         )
@@ -630,6 +655,11 @@ enum WorkspaceConfigManager {
             configValues: connector.configValues,
             isGlobal: connector.isGlobal,
             notes: connector.notes,
+            originPackageID: connector.originPackageID,
+            originPackageVersion: connector.originPackageVersion,
+            originComponentID: connector.originComponentID,
+            originComponentKind: connector.originComponentKind,
+            originSourceKind: connector.originSourceKind,
             createdAt: connector.createdAt,
             updatedAt: connector.updatedAt
         )
@@ -647,6 +677,11 @@ enum WorkspaceConfigManager {
             command: tool.command,
             arguments: tool.arguments,
             isGlobal: tool.isGlobal,
+            originPackageID: tool.originPackageID,
+            originPackageVersion: tool.originPackageVersion,
+            originComponentID: tool.originComponentID,
+            originComponentKind: tool.originComponentKind,
+            originSourceKind: tool.originSourceKind,
             createdAt: tool.createdAt,
             updatedAt: tool.updatedAt
         )
@@ -672,6 +707,11 @@ enum WorkspaceConfigManager {
             passContextToMain: template.passContextToMain,
             passContextToAfter: template.passContextToAfter,
             defaultSkillIDs: template.defaultSkillIDs.isEmpty ? nil : template.defaultSkillIDs,
+            originPackageID: template.originPackageID,
+            originPackageVersion: template.originPackageVersion,
+            originComponentID: template.originComponentID,
+            originComponentKind: template.originComponentKind,
+            originSourceKind: template.originSourceKind,
             createdAt: template.createdAt,
             updatedAt: template.updatedAt
         )
@@ -834,6 +874,11 @@ enum WorkspaceConfigManager {
         connector.configValues = config.configValues
         connector.isGlobal = config.isGlobal ?? false
         connector.notes = config.notes
+        connector.originPackageID = config.originPackageID
+        connector.originPackageVersion = config.originPackageVersion
+        connector.originComponentID = config.originComponentID
+        connector.originComponentKind = config.originComponentKind
+        connector.originSourceKind = config.originSourceKind
         connector.createdAt = config.createdAt ?? connector.createdAt
         connector.updatedAt = config.updatedAt ?? connector.updatedAt
         return connector
@@ -886,6 +931,11 @@ enum WorkspaceConfigManager {
             tool.id = id
         }
         tool.isGlobal = config.isGlobal ?? false
+        tool.originPackageID = config.originPackageID
+        tool.originPackageVersion = config.originPackageVersion
+        tool.originComponentID = config.originComponentID
+        tool.originComponentKind = config.originComponentKind
+        tool.originSourceKind = config.originSourceKind
         tool.createdAt = config.createdAt ?? tool.createdAt
         tool.updatedAt = config.updatedAt ?? tool.updatedAt
         return tool
@@ -932,6 +982,11 @@ enum WorkspaceConfigManager {
         let builtIn = Skill.isBuiltInName(config.name)
         skill.isBuiltIn = builtIn
         skill.isGlobal = builtIn || (config.isGlobal ?? false)
+        skill.originPackageID = config.originPackageID
+        skill.originPackageVersion = config.originPackageVersion
+        skill.originComponentID = config.originComponentID
+        skill.originComponentKind = config.originComponentKind
+        skill.originSourceKind = config.originSourceKind
         skill.createdAt = config.createdAt ?? skill.createdAt
         skill.updatedAt = config.updatedAt ?? skill.updatedAt
         skill.migrateSecretsToKeychain()
@@ -990,6 +1045,11 @@ enum WorkspaceConfigManager {
         template.passContextToMain = config.passContextToMain
         template.passContextToAfter = config.passContextToAfter
         template.defaultSkillIDs = config.defaultSkillIDs ?? []
+        template.originPackageID = config.originPackageID
+        template.originPackageVersion = config.originPackageVersion
+        template.originComponentID = config.originComponentID
+        template.originComponentKind = config.originComponentKind
+        template.originSourceKind = config.originSourceKind
         template.createdAt = config.createdAt ?? template.createdAt
         template.updatedAt = config.updatedAt ?? template.updatedAt
         return template

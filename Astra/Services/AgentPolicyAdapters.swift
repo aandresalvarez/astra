@@ -367,14 +367,15 @@ enum AgentPolicyManifestService {
         let policy = executionPolicy.allowedToolsOverride
             .map { basePolicy.applyingOneRunAllowedTools($0) }
             ?? basePolicy
-        let envKeys = Array(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables.keys).sorted()
+        let taskCapabilityResolver = TaskCapabilityResolver(task: task)
+        let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
         let configOwnership = providerConfigOwnership(for: runtime, workspacePath: workspacePath)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
             workspacePath: workspacePath,
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
-            requestedAllowedTools: executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools),
+            requestedAllowedTools: executionPolicy.allowedTools(default: taskCapabilityResolver.resolver.resolvedProviderAllowedTools),
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
@@ -400,6 +401,7 @@ enum AgentPolicyManifestService {
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
+            mcpServers: taskCapabilityResolver.enabledMCPServerManifests,
             approvalsGranted: approvals
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)

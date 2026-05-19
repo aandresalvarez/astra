@@ -6,6 +6,28 @@
   ],
   "description" : "Vulnerability scanning with severity-rated findings",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "workspaceFiles",
+      "network"
+    ],
+    "externalEffects" : [
+      "readOnly"
+    ],
+    "policyNotes" : "Read-only security review capability. It may inspect workspace files and run local audit commands, but package policy disallows file edits.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "medium",
+    "visibility" : "everyone"
+  },
   "icon" : "lock.shield",
   "id" : "security-auditor",
   "isTrusted" : false,

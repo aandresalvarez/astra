@@ -70,6 +70,66 @@ enum CapabilityManagementPresentation {
     case embedded
 }
 
+private enum CatalogApprovalFilter: String, CaseIterable, Identifiable {
+    case all
+    case approved
+    case draft
+    case deprecated
+    case blocked
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: "Any approval"
+        case .approved: "Approved"
+        case .draft: "Draft"
+        case .deprecated: "Deprecated"
+        case .blocked: "Blocked"
+        }
+    }
+
+    var status: CapabilityApprovalStatus? {
+        switch self {
+        case .all: nil
+        case .approved: .approved
+        case .draft: .draft
+        case .deprecated: .deprecated
+        case .blocked: .blocked
+        }
+    }
+}
+
+private enum CatalogRiskFilter: String, CaseIterable, Identifiable {
+    case all
+    case low
+    case medium
+    case high
+    case restricted
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: "Any risk"
+        case .low: "Low risk"
+        case .medium: "Medium risk"
+        case .high: "High risk"
+        case .restricted: "Restricted"
+        }
+    }
+
+    var riskLevel: CapabilityRiskLevel? {
+        switch self {
+        case .all: nil
+        case .low: .low
+        case .medium: .medium
+        case .high: .high
+        case .restricted: .restricted
+        }
+    }
+}
+
 struct CapabilityGalleryLayout {
     static func columnCount(for presentation: CapabilityManagementPresentation) -> Int {
         1
@@ -132,10 +192,16 @@ struct PluginCatalogView: View {
 
     @State private var searchText = ""
     @State private var selectedCategory: String?
+    @State private var selectedApprovalFilter: CatalogApprovalFilter = .all
+    @State private var selectedRiskFilter: CatalogRiskFilter = .all
+    @State private var showNeedsAttentionOnly = false
+    @State private var showEnabledOnly = false
     @State private var installingPackage: PluginPackage?
     @State private var installError: String?
     @State private var removalCandidate: PluginPackage?
     @State private var removalError: String?
+    @State private var approvalError: String?
+    @State private var approvalRevision = 0
     @State private var showCreateWizard = false
     @State private var selectedPackageID: String?
 
@@ -148,6 +214,15 @@ struct PluginCatalogView: View {
         )
     }
 
+    private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        _ = approvalRevision
+        return CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+    }
+
     private var isEmbedded: Bool {
         if case .embedded = presentation { return true }
         return false
@@ -157,7 +232,8 @@ struct PluginCatalogView: View {
         CapabilityGalleryInventory.managementPackages(
             catalogPackages: catalog.packages + PluginCatalog.builtInPackages,
             capabilities: capabilities,
-            workspace: workspace
+            workspace: workspace,
+            policyContext: catalogPolicyContext
         )
     }
 
@@ -199,6 +275,25 @@ struct PluginCatalogView: View {
             var filtered = focused
             if let selectedCategory {
                 filtered = filtered.filter { $0.category == selectedCategory }
+            }
+            if let status = selectedApprovalFilter.status {
+                filtered = filtered.filter { package in
+                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.approvalStatus == status
+                }
+            }
+            if let riskLevel = selectedRiskFilter.riskLevel {
+                filtered = filtered.filter { package in
+                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.riskLevel == riskLevel
+                }
+            }
+            if showNeedsAttentionOnly {
+                filtered = filtered.filter { package in
+                    let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+                    return !decision.blockers.isEmpty || !decision.warnings.isEmpty || requiresSetupFlow(package)
+                }
+            }
+            if showEnabledOnly {
+                filtered = filtered.filter { packageState($0).isEnabled }
             }
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if !query.isEmpty {
@@ -256,6 +351,7 @@ struct PluginCatalogView: View {
                 }
                 searchAndActions
                 categoryStrip(state)
+                catalogFilterStrip
 
                 Divider()
 
@@ -313,6 +409,7 @@ struct PluginCatalogView: View {
             PluginInstallSheet(
                 package: package,
                 workspace: workspace,
+                policyContext: catalogPolicyContext,
                 onDismiss: { installingPackage = nil },
                 onInstalled: { pkg in
                     installingPackage = nil
@@ -349,6 +446,14 @@ struct PluginCatalogView: View {
             Button("OK", role: .cancel) { removalError = nil }
         } message: {
             Text(removalError ?? "")
+        }
+        .alert("Capability approval could not be saved", isPresented: Binding(
+            get: { approvalError != nil },
+            set: { if !$0 { approvalError = nil } }
+        )) {
+            Button("OK", role: .cancel) { approvalError = nil }
+        } message: {
+            Text(approvalError ?? "")
         }
     }
 
@@ -573,6 +678,46 @@ struct PluginCatalogView: View {
         .buttonStyle(.plain)
     }
 
+    private var catalogFilterStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Picker("Approval", selection: $selectedApprovalFilter) {
+                    ForEach(CatalogApprovalFilter.allCases) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 132)
+
+                Picker("Risk", selection: $selectedRiskFilter) {
+                    ForEach(CatalogRiskFilter.allCases) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 116)
+
+                Toggle(isOn: $showNeedsAttentionOnly) {
+                    Label("Needs attention", systemImage: "exclamationmark.triangle")
+                        .font(Stanford.caption(11).weight(.medium))
+                }
+                .toggleStyle(.button)
+                .controlSize(.small)
+
+                Toggle(isOn: $showEnabledOnly) {
+                    Label("Enabled", systemImage: "checkmark.circle")
+                        .font(Stanford.caption(11).weight(.medium))
+                }
+                .toggleStyle(.button)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 8)
+        }
+    }
+
     // MARK: - Package Card
 
     private func packageCard(_ package: PluginPackage) -> some View {
@@ -637,17 +782,19 @@ struct PluginCatalogView: View {
                     .background(Color.primary.opacity(0.04))
                     .clipShape(Capsule())
 
-                if needsSetup {
-                    Text("Setup required")
-                        .font(Stanford.caption(10).weight(.medium))
-                        .foregroundStyle(Stanford.poppy)
-                        .padding(.horizontal, 7)
+                        if needsSetup {
+                            Text("Setup required")
+                                .font(Stanford.caption(10).weight(.medium))
+                                .foregroundStyle(Stanford.poppy)
+                                .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(Stanford.poppy.opacity(0.08))
-                        .clipShape(Capsule())
-                }
+                                .background(Stanford.poppy.opacity(0.08))
+                                .clipShape(Capsule())
+                        }
 
-                Spacer(minLength: 0)
+                        governanceBadge(package)
+
+                        Spacer(minLength: 0)
 
                 if enabled {
                     HStack(spacing: 8) {
@@ -751,8 +898,14 @@ struct PluginCatalogView: View {
 
     private func installButton(for package: PluginPackage) -> some View {
         let needsSetup = requiresSetupFlow(package)
+        let policyDecision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+        let isBlocked = !policyDecision.canEnable
+        let helpText = isBlocked
+            ? policyDecision.blockerMessages.joined(separator: "\n")
+            : (needsSetup ? "Configure and validate \(package.name)" : "Enable \(package.name)")
 
         return Button {
+            guard !isBlocked else { return }
             if needsSetup {
                 AppLogger.breadcrumb(action: "open_capability_setup", category: "Capabilities", fields: [
                     "source": "configure",
@@ -772,14 +925,15 @@ struct PluginCatalogView: View {
                     .font(Stanford.caption(12))
                     .fontWeight(.semibold)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(isBlocked ? Color.secondary : Color.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Stanford.lagunita)
+            .background(isBlocked ? Color.primary.opacity(0.06) : Stanford.lagunita)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(needsSetup ? "Configure and validate \(package.name)" : "Enable \(package.name)")
+        .disabled(isBlocked)
+        .help(helpText)
     }
 
     private func installCapability(
@@ -806,6 +960,7 @@ struct PluginCatalogView: View {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                policyContext: catalogPolicyContext,
                 traceID: traceID
             )
             onInstall?(package)
@@ -839,6 +994,7 @@ struct PluginCatalogView: View {
                     package,
                     into: workspace,
                     modelContext: modelContext,
+                    policyContext: catalogPolicyContext,
                     traceID: traceID
                 )
                 onInstall?(package)
@@ -871,6 +1027,44 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             removalError = error.localizedDescription
+        }
+    }
+
+    private func saveApproval(_ package: PluginPackage, status: CapabilityApprovalStatus) {
+        let traceID = AuditTrace.make("capability-approval")
+        do {
+            let record = try CapabilityApprovalStore().save(
+                package: package,
+                status: status,
+                approvedBy: "ASTRA local admin",
+                reviewNotes: "Updated from the local catalog review controls."
+            )
+            approvalRevision += 1
+            catalog.loadApprovedCapabilities()
+            onCatalogChanged?()
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "catalog_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "status": record.status.rawValue,
+                "workspace_id": workspace.id.uuidString,
+                "digest_prefix": String(record.sourceDigest.prefix(12))
+            ])
+        } catch {
+            approvalError = error.localizedDescription
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "catalog_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "status": status.rawValue,
+                "workspace_id": workspace.id.uuidString,
+                "result": "failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
     }
 
@@ -912,6 +1106,9 @@ struct PluginCatalogView: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 12) {
+                policyStatusSection(package)
+                capabilityAdminReviewSection(package)
+
                 // Show local checks first when the package declares prerequisites.
                 if !package.prerequisites.isEmpty {
                     prerequisiteSection(package)
@@ -966,9 +1163,23 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityDetailOverview(_ package: PluginPackage) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let governance = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance
+
+        return HStack(alignment: .top, spacing: 10) {
             overviewPill(icon: "person.circle", title: "Source", value: package.author)
             overviewPill(icon: "tag", title: "Version", value: "v\(package.version)")
+            overviewPill(
+                icon: "checkmark.shield",
+                title: "Approval",
+                value: capabilityApprovalLabel(governance.approvalStatus),
+                color: approvalColor(governance.approvalStatus)
+            )
+            overviewPill(
+                icon: "gauge.medium",
+                title: "Risk",
+                value: capabilityRiskLabel(governance.riskLevel),
+                color: riskColor(governance.riskLevel)
+            )
 
             if requiresSetupFlow(package) {
                 overviewPill(
@@ -1023,6 +1234,7 @@ struct PluginCatalogView: View {
             countPhrase(package.skills.count, singular: "instruction", plural: "instructions"),
             countPhrase(package.connectors.count, singular: "connector", plural: "connectors"),
             countPhrase(package.localTools.count, singular: "tool", plural: "tools"),
+            countPhrase(package.mcpServers.count, singular: "MCP server", plural: "MCP servers"),
             countPhrase(package.browserAdapters.count, singular: "browser adapter", plural: "browser adapters"),
             countPhrase(package.templates.count, singular: "template", plural: "templates")
         ].filter { !$0.hasPrefix("0 ") }
@@ -1109,6 +1321,24 @@ struct PluginCatalogView: View {
             ))
         }
 
+        if !package.mcpServers.isEmpty {
+            sections.append(CapabilityDetailSection(
+                id: "mcp",
+                title: "MCP Servers",
+                subtitle: "Structured external tools and resources",
+                icon: "server.rack",
+                color: Stanford.plum,
+                items: package.mcpServers.enumerated().map { index, server in
+                    CapabilityDetailItem(
+                        id: "mcp-\(index)-\(server.id)",
+                        icon: "puzzlepiece.extension",
+                        title: server.displayName,
+                        detail: mcpServerDetailText(server)
+                    )
+                }
+            ))
+        }
+
         if !package.templates.isEmpty {
             sections.append(CapabilityDetailSection(
                 id: "templates",
@@ -1138,6 +1368,169 @@ struct PluginCatalogView: View {
             return auth.isEmpty ? baseURL : "\(auth) · \(baseURL)"
         }
         return auth.isEmpty ? connector.serviceType : auth
+    }
+
+    private func mcpServerDetailText(_ server: PluginMCPServer) -> String {
+        switch server.transport {
+        case .stdio:
+            let command = server.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return command.isEmpty ? "stdio" : "stdio · \(command)"
+        case .http, .sse:
+            return [server.transport.rawValue, server.url?.absoluteString ?? ""]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+        }
+    }
+
+    private func policyStatusSection(_ package: PluginPackage) -> some View {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                governanceBadge(package)
+                riskBadge(package)
+                if decision.requiresApproval {
+                    Text("Approval required")
+                        .font(Stanford.caption(10).weight(.medium))
+                        .foregroundStyle(Stanford.poppy)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Stanford.poppy.opacity(0.08))
+                        .clipShape(Capsule())
+                }
+                Spacer(minLength: 0)
+            }
+
+            let messages = decision.blockerMessages + decision.warnings.map(\.message)
+            if !messages.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(messages.prefix(4).enumerated()), id: \.offset) { _, message in
+                        HStack(alignment: .top, spacing: 5) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(Stanford.ui(8, weight: .semibold))
+                                .foregroundStyle(decision.blockers.isEmpty ? Stanford.poppy.opacity(0.75) : Stanford.poppy)
+                                .frame(width: 12)
+                            Text(message)
+                                .font(Stanford.caption(10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+        let record = CapabilityApprovalStore().record(for: package)
+        let shouldShow = catalogPolicyContext.isAdmin
+            && (record != nil || decision.requiresApproval || decision.governance.approvalStatus != .approved)
+
+        return Group {
+            if shouldShow {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.seal")
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                        Text("Catalog review")
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                        Spacer()
+                        Text(record == nil ? "No local record" : "Local record")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            saveApproval(package, status: .approved)
+                        } label: {
+                            Label("Approve", systemImage: "checkmark.circle")
+                        }
+                        .disabled(record?.status == .approved)
+
+                        Button {
+                            saveApproval(package, status: .deprecated)
+                        } label: {
+                            Label("Deprecate", systemImage: "clock.badge.exclamationmark")
+                        }
+                        .disabled(record?.status == .deprecated)
+
+                        Button(role: .destructive) {
+                            saveApproval(package, status: .blocked)
+                        } label: {
+                            Label("Block", systemImage: "xmark.octagon")
+                        }
+                        .disabled(record?.status == .blocked)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.primary.opacity(0.035))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private func governanceBadge(_ package: PluginPackage) -> some View {
+        let status = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.approvalStatus
+        return Text(capabilityApprovalLabel(status))
+            .font(Stanford.caption(10).weight(.medium))
+            .foregroundStyle(approvalColor(status))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(approvalColor(status).opacity(0.08))
+            .clipShape(Capsule())
+    }
+
+    private func riskBadge(_ package: PluginPackage) -> some View {
+        let risk = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.riskLevel
+        return Text("\(capabilityRiskLabel(risk)) risk")
+            .font(Stanford.caption(10).weight(.medium))
+            .foregroundStyle(riskColor(risk))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(riskColor(risk).opacity(0.08))
+            .clipShape(Capsule())
+    }
+
+    private func capabilityApprovalLabel(_ status: CapabilityApprovalStatus) -> String {
+        switch status {
+        case .approved: return "Approved"
+        case .draft: return "Draft"
+        case .deprecated: return "Deprecated"
+        case .blocked: return "Blocked"
+        }
+    }
+
+    private func capabilityRiskLabel(_ risk: CapabilityRiskLevel) -> String {
+        switch risk {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .restricted: return "Restricted"
+        }
+    }
+
+    private func approvalColor(_ status: CapabilityApprovalStatus) -> Color {
+        switch status {
+        case .approved: return Stanford.paloAltoGreen
+        case .draft: return Stanford.poppy
+        case .deprecated: return Stanford.driftwood
+        case .blocked: return Stanford.cardinalRed
+        }
+    }
+
+    private func riskColor(_ risk: CapabilityRiskLevel) -> Color {
+        switch risk {
+        case .low: return Stanford.paloAltoGreen
+        case .medium: return Stanford.coolGrey
+        case .high: return Stanford.poppy
+        case .restricted: return Stanford.cardinalRed
+        }
     }
 
     private func capabilityDetailSectionCard(_ section: CapabilityDetailSection) -> some View {
@@ -1434,6 +1827,7 @@ private struct PluginInstallValidationSecretStore: SecretStore {
 struct PluginInstallSheet: View {
     let package: PluginPackage
     let workspace: Workspace
+    let policyContext: CapabilityCatalogPolicyContext
     let onDismiss: () -> Void
     let onInstalled: (PluginPackage) -> Void
 
@@ -1628,6 +2022,7 @@ struct PluginInstallSheet: View {
                 credentialInputs: credentialValues,
                 configInputs: installConfigValues,
                 baseURLOverrides: baseURLValues,
+                policyContext: policyContext,
                 traceID: traceID
             )
             onInstalled(package)

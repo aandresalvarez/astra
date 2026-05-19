@@ -51,13 +51,31 @@ struct CapabilityUninstaller {
         let packageConnectorNames = Set(package.connectors.map(\.name))
         let packageTemplateNames = Set(package.templates.map(\.name))
 
-        let matchedGlobalSkills = globalSkills.filter { packageSkillNames.contains($0.name) }
-        let matchedGlobalConnectors = globalConnectors.filter { connector in
-            package.connectors.contains { matches(connector, pluginConnector: $0) }
-        }
-        let matchedGlobalTools = globalTools.filter { tool in
-            package.localTools.contains { matches(tool, pluginTool: $0) }
-        }
+        let matchedGlobalSkills = ownedOrLegacyMatches(
+            globalSkills,
+            packageID: package.id,
+            hasOrigin: CapabilityResourceOrigin.hasOrigin,
+            isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
+            legacyMatches: { packageSkillNames.contains($0.name) }
+        )
+        let matchedGlobalConnectors = ownedOrLegacyMatches(
+            globalConnectors,
+            packageID: package.id,
+            hasOrigin: CapabilityResourceOrigin.hasOrigin,
+            isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
+            legacyMatches: { connector in
+                package.connectors.contains { matches(connector, pluginConnector: $0) }
+            }
+        )
+        let matchedGlobalTools = ownedOrLegacyMatches(
+            globalTools,
+            packageID: package.id,
+            hasOrigin: CapabilityResourceOrigin.hasOrigin,
+            isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
+            legacyMatches: { tool in
+                package.localTools.contains { matches(tool, pluginTool: $0) }
+            }
+        )
 
         var result = RemovalResult(packageID: package.id)
 
@@ -89,8 +107,14 @@ struct CapabilityUninstaller {
             workspace.enabledGlobalToolIDs.removeAll { removableGlobalToolIDs.contains($0) }
             removeInstalledPackageRecord(package.id, from: workspace)
 
-            let workspaceConnectors = workspace.connectors.filter { connector in
-                packageConnectorNames.contains(connector.name) &&
+            let workspaceConnectors = ownedOrLegacyMatches(
+                workspace.connectors,
+                packageID: package.id,
+                hasOrigin: CapabilityResourceOrigin.hasOrigin,
+                isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
+                legacyMatches: { packageConnectorNames.contains($0.name) }
+            )
+            .filter { connector in
                 !remainingWorkspacePackages.contains(where: { claims(connector, package: $0) })
             }
             for connector in workspaceConnectors {
@@ -99,8 +123,14 @@ struct CapabilityUninstaller {
                 modelContext.delete(connector)
             }
 
-            let workspaceTemplates = workspace.templates.filter { template in
-                packageTemplateNames.contains(template.name) &&
+            let workspaceTemplates = ownedOrLegacyMatches(
+                workspace.templates,
+                packageID: package.id,
+                hasOrigin: CapabilityResourceOrigin.hasOrigin,
+                isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
+                legacyMatches: { packageTemplateNames.contains($0.name) }
+            )
+            .filter { template in
                 !remainingWorkspacePackages.contains(where: { claims(template, package: $0) })
             }
             for template in workspaceTemplates {
@@ -172,18 +202,44 @@ struct CapabilityUninstaller {
     }
 
     private func claims(_ skill: Skill, package: PluginPackage) -> Bool {
-        package.skills.contains { $0.name == skill.name }
+        if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id) {
+            return true
+        }
+        return package.skills.contains { $0.name == skill.name }
     }
 
     private func claims(_ connector: Connector, package: PluginPackage) -> Bool {
-        package.connectors.contains { matches(connector, pluginConnector: $0) }
+        if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id) {
+            return true
+        }
+        return package.connectors.contains { matches(connector, pluginConnector: $0) }
     }
 
     private func claims(_ tool: LocalTool, package: PluginPackage) -> Bool {
-        package.localTools.contains { matches(tool, pluginTool: $0) }
+        if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id) {
+            return true
+        }
+        return package.localTools.contains { matches(tool, pluginTool: $0) }
     }
 
     private func claims(_ template: TaskTemplate, package: PluginPackage) -> Bool {
-        package.templates.contains { $0.name == template.name }
+        if CapabilityResourceOrigin.isOwnedBy(template, packageID: package.id) {
+            return true
+        }
+        return package.templates.contains { $0.name == template.name }
+    }
+
+    private func ownedOrLegacyMatches<Resource>(
+        _ resources: [Resource],
+        packageID: String,
+        hasOrigin: (Resource) -> Bool,
+        isOwned: (Resource, String) -> Bool,
+        legacyMatches: (Resource) -> Bool
+    ) -> [Resource] {
+        let owned = resources.filter { isOwned($0, packageID) }
+        if !owned.isEmpty {
+            return owned
+        }
+        return resources.filter { !hasOrigin($0) && legacyMatches($0) }
     }
 }

@@ -16,6 +16,11 @@ final class Skill {
     // Non-secret values remain here. Secret values are migrated to Keychain and
     // their stored placeholders are kept blank for compatibility.
     var environmentValues: [String]
+    var originPackageID: String?
+    var originPackageVersion: String?
+    var originComponentID: String?
+    var originComponentKind: String?
+    var originSourceKind: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -72,6 +77,11 @@ final class Skill {
         self.behaviorInstructions = behaviorInstructions
         self.environmentKeys = Array(environmentVariables.keys)
         self.environmentValues = Array(environmentVariables.values)
+        self.originPackageID = nil
+        self.originPackageVersion = nil
+        self.originComponentID = nil
+        self.originComponentKind = nil
+        self.originSourceKind = nil
         self.createdAt = Date()
         self.updatedAt = Date()
         self.migrateSecretsToKeychain()

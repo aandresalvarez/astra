@@ -1061,6 +1061,89 @@ struct TaskCapabilityResolverTests {
         #expect(issues.isEmpty)
     }
 
+    @Test("Runtime integrity blocks enabled package denied by catalog policy")
+    func runtimeIntegrityBlocksPolicyDeniedEnabledPackage() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Policy Runtime", primaryPath: "/tmp/policy-runtime")
+        let package = PluginPackage(
+            id: "runtime-draft",
+            name: "Runtime Draft",
+            icon: "puzzlepiece.extension",
+            description: "Draft package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use draft", goal: "Run draft capability", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                workspace: workspace,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(issues.map(\.resourceKind) == [.policy])
+        #expect(issues.first?.message.contains("catalog policy blocks runtime activation") == true)
+    }
+
+    @Test("Runtime integrity checks MCP stdio command readiness")
+    func runtimeIntegrityChecksMCPStdioCommandReadiness() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "MCP Runtime", primaryPath: "/tmp/mcp-runtime")
+        var package = PluginPackage(
+            id: "runtime-mcp",
+            name: "Runtime MCP",
+            icon: "server.rack",
+            description: "MCP package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "missing",
+                displayName: "Missing MCP",
+                transport: .stdio,
+                command: "astra-test-missing-mcp-binary-\(UUID().uuidString)"
+            )
+        ]
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use MCP", goal: "Run MCP capability", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package]
+        )
+
+        #expect(issues.map(\.resourceKind) == [.mcpServer])
+        #expect(issues.first?.message.contains("not installed or not executable") == true)
+    }
+
     @Test("Browser task prompt prunes unrelated selected capabilities")
     func browserTaskPromptPrunesUnrelatedSelectedCapabilities() throws {
         let container = try makeTaskCapabilityResolverContainer()

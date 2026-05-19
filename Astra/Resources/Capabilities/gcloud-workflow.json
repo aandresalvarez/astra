@@ -29,6 +29,32 @@
   ],
   "description" : "Manage GCP resources, BigQuery, and deployments",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "externalService",
+      "network",
+      "workspaceFiles"
+    ],
+    "externalEffects" : [
+      "readOnly",
+      "externalAPIWrite",
+      "deploy",
+      "delete"
+    ],
+    "policyNotes" : "Google Cloud operations use local gcloud authentication and can affect cloud infrastructure. Deployments, IAM changes, and deletes require explicit user confirmation.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : true,
+    "riskLevel" : "restricted",
+    "visibility" : "everyone"
+  },
   "icon" : "cloud",
   "id" : "gcloud-workflow",
   "isTrusted" : false,

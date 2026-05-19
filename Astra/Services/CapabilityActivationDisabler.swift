@@ -38,9 +38,7 @@ struct CapabilityActivationDisabler {
 
         let removableGlobalSkillIDs = Set(state.linkedSkills
             .filter { skill in
-                skill.isGlobal && !remainingPackages.contains { remaining in
-                    claims(skill, package: remaining)
-                }
+                skill.isGlobal && !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingPackages)
             }
             .map { $0.id.uuidString })
         result.disabledSkillIDs = removableGlobalSkillIDs.compactMap(UUID.init(uuidString:))
@@ -50,9 +48,7 @@ struct CapabilityActivationDisabler {
 
         let removableGlobalConnectorIDs = Set(state.linkedConnectors
             .filter { connector in
-                connector.isGlobal && !remainingPackages.contains { remaining in
-                    claims(connector, package: remaining)
-                }
+                connector.isGlobal && !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages)
             }
             .map { $0.id.uuidString })
         result.disabledConnectorIDs = removableGlobalConnectorIDs.compactMap(UUID.init(uuidString:))
@@ -62,9 +58,7 @@ struct CapabilityActivationDisabler {
 
         let removableGlobalToolIDs = Set(state.linkedTools
             .filter { tool in
-                tool.isGlobal && !remainingPackages.contains { remaining in
-                    claims(tool, package: remaining)
-                }
+                tool.isGlobal && !isClaimedByRemainingPackages(tool, excluding: package, remainingPackages: remainingPackages)
             }
             .map { $0.id.uuidString })
         result.disabledToolIDs = removableGlobalToolIDs.compactMap(UUID.init(uuidString:))
@@ -73,7 +67,7 @@ struct CapabilityActivationDisabler {
         }
 
         for connector in state.linkedConnectors where !connector.isGlobal {
-            guard !remainingPackages.contains(where: { claims(connector, package: $0) }) else { continue }
+            guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
             connector.cleanupKeychain()
             result.removedWorkspaceConnectorIDs.append(connector.id)
             modelContext.delete(connector)
@@ -81,7 +75,7 @@ struct CapabilityActivationDisabler {
 
         let remainingExplicitPackages = remainingPackages.filter { !$0.isSyntheticWorkspaceSkillPackage }
         for skill in state.linkedSkills where !skill.isGlobal {
-            guard !remainingExplicitPackages.contains(where: { claims(skill, package: $0) }) else { continue }
+            guard !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingExplicitPackages) else { continue }
             skill.cleanupKeychain()
             result.removedWorkspaceSkillIDs.append(skill.id)
             modelContext.delete(skill)
@@ -109,20 +103,71 @@ struct CapabilityActivationDisabler {
     }
 
     private func claims(_ skill: Skill, package: PluginPackage) -> Bool {
-        package.skills.contains {
+        if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id) {
+            return true
+        }
+        return package.skills.contains {
             CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill)
         }
     }
 
     private func claims(_ connector: Connector, package: PluginPackage) -> Bool {
-        package.connectors.contains {
+        if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id) {
+            return true
+        }
+        return package.connectors.contains {
             CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
         }
     }
 
     private func claims(_ tool: LocalTool, package: PluginPackage) -> Bool {
-        package.localTools.contains {
+        if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id) {
+            return true
+        }
+        return package.localTools.contains {
             CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool)
+        }
+    }
+
+    private func isClaimedByRemainingPackages(
+        _ skill: Skill,
+        excluding package: PluginPackage,
+        remainingPackages: [PluginPackage]
+    ) -> Bool {
+        remainingPackages.contains { remaining in
+            if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id),
+               remaining.isSyntheticWorkspaceSkillPackage {
+                return false
+            }
+            return claims(skill, package: remaining)
+        }
+    }
+
+    private func isClaimedByRemainingPackages(
+        _ connector: Connector,
+        excluding package: PluginPackage,
+        remainingPackages: [PluginPackage]
+    ) -> Bool {
+        remainingPackages.contains { remaining in
+            if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id),
+               remaining.isSyntheticWorkspaceSkillPackage {
+                return false
+            }
+            return claims(connector, package: remaining)
+        }
+    }
+
+    private func isClaimedByRemainingPackages(
+        _ tool: LocalTool,
+        excluding package: PluginPackage,
+        remainingPackages: [PluginPackage]
+    ) -> Bool {
+        remainingPackages.contains { remaining in
+            if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id),
+               remaining.isSyntheticWorkspaceSkillPackage {
+                return false
+            }
+            return claims(tool, package: remaining)
         }
     }
 
@@ -134,6 +179,6 @@ struct CapabilityActivationDisabler {
 
 private extension PluginPackage {
     var isSyntheticWorkspaceSkillPackage: Bool {
-        id.hasPrefix("skill.") && sourceMetadata?.kind == "workspace"
+        id.hasPrefix("skill.") && (sourceMetadata?.kind == "workspace" || sourceMetadata?.kind == "shared")
     }
 }
