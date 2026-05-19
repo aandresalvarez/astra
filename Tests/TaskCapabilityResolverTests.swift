@@ -382,6 +382,35 @@ struct TaskCapabilityResolverTests {
         #expect(env["REDCAP_API_TOKEN"] == nil)
     }
 
+    @Test("Projection treats empty connector credentials as missing")
+    func projectionTreatsEmptyConnectorCredentialsAsMissing() throws {
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "basic")
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.edu", entityID: entityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "   ", entityID: entityID, label: nil)
+
+        let env = ConnectorRuntimeProjection(
+            connectors: [connector],
+            secretStore: store
+        ).environmentVariables()
+
+        #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_JIRA_API_TOKEN"] == nil)
+        #expect(env["JIRA_API_TOKEN"] == nil)
+
+        let manifestJSON = try #require(env["ASTRA_CONNECTORS"])
+        let manifestData = try #require(manifestJSON.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(ConnectorRuntimeProjection.Manifest.self, from: manifestData)
+        let manifestConnector = try #require(manifest.connectors.first)
+
+        #expect(manifestConnector.credentials["email"] == "JIRA_JIRA_EMAIL")
+        #expect(manifestConnector.credentials["apiToken"] == nil)
+    }
+
     @Test("Projection aliases duplicate connector names consistently across input order")
     func projectionAliasesDuplicateConnectorNamesConsistentlyAcrossInputOrder() throws {
         let first = Connector(name: "REDCap", serviceType: "redcap")

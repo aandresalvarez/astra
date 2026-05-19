@@ -50,7 +50,10 @@ struct ConnectorRuntimeProjection {
         guard !connectors.isEmpty else { return [:] }
         let aliases = aliasesByConnectorID
         let bindings = environmentBindings(aliases: aliases)
-        let serviceCounts = serviceCountsByType()
+        let serviceTypesByConnectorID = normalizedServiceTypesByConnectorID()
+        let serviceCounts = serviceTypesByConnectorID.values.reduce(into: [:]) { counts, serviceType in
+            counts[serviceType, default: 0] += 1
+        }
         let legacyKeyCounts = bindings.reduce(into: [:]) { counts, binding in
             counts[binding.originalKey, default: 0] += 1
         }
@@ -59,7 +62,7 @@ struct ConnectorRuntimeProjection {
         for binding in bindings {
             output[binding.envKey] = binding.value
             guard includeLegacySingleConnectorFallback,
-                  serviceCounts[normalizedServiceType(for: binding.connectorID)] == 1,
+                  serviceCounts[serviceTypesByConnectorID[binding.connectorID] ?? ""] == 1,
                   legacyKeyCounts[binding.originalKey] == 1 else {
                 continue
             }
@@ -171,7 +174,8 @@ struct ConnectorRuntimeProjection {
         for key in connector.credentialKeys {
             let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !originalKey.isEmpty,
-                  let value = credentials[key] ?? credentials[originalKey] else {
+                  let value = credentials[key] ?? credentials[originalKey],
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
             Self.appendBinding(
@@ -235,15 +239,10 @@ struct ConnectorRuntimeProjection {
         ))
     }
 
-    private func serviceCountsByType() -> [String: Int] {
+    private func normalizedServiceTypesByConnectorID() -> [UUID: String] {
         connectors.reduce(into: [:]) { counts, connector in
-            counts[Self.normalizedServiceType(connector.serviceType), default: 0] += 1
+            counts[connector.id] = Self.normalizedServiceType(connector.serviceType)
         }
-    }
-
-    private func normalizedServiceType(for connectorID: UUID) -> String {
-        guard let connector = connectors.first(where: { $0.id == connectorID }) else { return "" }
-        return Self.normalizedServiceType(connector.serviceType)
     }
 
     private static func normalizedServiceType(_ value: String) -> String {

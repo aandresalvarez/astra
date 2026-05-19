@@ -234,7 +234,9 @@ enum AgentPromptBuilder {
         let connectorDescriptions = capabilityScope.connectors.map { conn in
             let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
             let bindings = bindingsByConnectorID[conn.id] ?? []
-            let credentialBindings = bindings.filter { $0.kind == .credential }
+            let credentialBindings = bindings.filter {
+                $0.kind == .credential && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
             let configBindings = bindings.filter { $0.kind == .config }
             let configuredCredentialKeys = Set(credentialBindings.map(\.originalKey))
             let missingCredentialKeys = conn.credentialKeys.filter { !configuredCredentialKeys.contains($0) }
