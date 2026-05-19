@@ -92,16 +92,13 @@ struct ConnectorRuntimeProjection {
     static func aliasesByConnectorID(for connectors: [Connector]) -> [UUID: String] {
         var usedAliases = Set<String>()
         var aliases: [UUID: String] = [:]
+        let connectorsByBase = Dictionary(grouping: connectors, by: aliasBase(for:))
 
         for connector in connectors {
             let base = aliasBase(for: connector)
-            let alias: String
-            if usedAliases.insert(base).inserted {
-                alias = base
-            } else {
-                let fallback = "\(base)_\(shortID(connector.id))"
-                alias = uniqueAlias(startingWith: fallback, usedAliases: &usedAliases)
-            }
+            let hasDuplicateBase = (connectorsByBase[base]?.count ?? 0) > 1
+            let preferred = hasDuplicateBase ? "\(base)_\(shortID(connector.id))" : base
+            let alias = uniqueAlias(startingWith: preferred, usedAliases: &usedAliases)
             aliases[connector.id] = alias
         }
 

@@ -212,6 +212,58 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("ASTRA_CONNECTORS"))
     }
 
+    @Test("Follow-up prompt preserves namespaced connector manifest")
+    func followUpPromptPreservesNamespacedConnectorManifest() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "REDCap Follow Up Workspace", primaryPath: "/tmp/redcap-follow-up")
+        context.insert(workspace)
+
+        let source = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        source.workspace = workspace
+        source.configKeys = ["REDCAP_API_URL"]
+        source.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(source)
+
+        let target = Connector(
+            name: "Study B Target",
+            serviceType: "redcap",
+            connectorDescription: "Target REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        target.workspace = workspace
+        target.configKeys = ["REDCAP_API_URL"]
+        target.configValues = ["https://redcap.example.edu/api/target"]
+        context.insert(target)
+
+        let task = AgentTask(
+            title: "Move REDCap data",
+            goal: "Copy records from Study A Source to Study B Target",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "Continue copying records",
+            task: task
+        )
+
+        #expect(prompt.contains("Alias: study_a_source"))
+        #expect(prompt.contains("Alias: study_b_target"))
+        #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
+        #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+    }
+
     @Test("Single same-service connector keeps legacy env vars during deprecation window")
     func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -275,6 +327,23 @@ struct TaskCapabilityResolverTests {
         #expect(env["REDCAP_STUDY_A_SOURCE_API_TOKEN"] == "source-token")
         #expect(env["REDCAP_STUDY_B_TARGET_API_TOKEN"] == "target-token")
         #expect(env["REDCAP_API_TOKEN"] == nil)
+    }
+
+    @Test("Projection aliases duplicate connector names consistently across input order")
+    func projectionAliasesDuplicateConnectorNamesConsistentlyAcrossInputOrder() throws {
+        let first = Connector(name: "REDCap", serviceType: "redcap")
+        first.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+
+        let second = Connector(name: "REDCap", serviceType: "redcap")
+        second.id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+
+        let firstOrder = ConnectorRuntimeProjection.aliasesByConnectorID(for: [first, second])
+        let reversedOrder = ConnectorRuntimeProjection.aliasesByConnectorID(for: [second, first])
+
+        #expect(firstOrder[first.id] == "redcap_11111111")
+        #expect(firstOrder[second.id] == "redcap_22222222")
+        #expect(reversedOrder[first.id] == firstOrder[first.id])
+        #expect(reversedOrder[second.id] == firstOrder[second.id])
     }
 
     @Test("Projection does not emit legacy fallback when original keys collide")

@@ -396,19 +396,7 @@ enum AgentPromptBuilder {
             parts.append(String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]))
         }
 
-        let resolvedEnv = capabilityScope.resolver.resolvedEnvironmentVariables
-        let connectorDescs = capabilityScope.connectors.map { conn -> String in
-            var desc = "[\(conn.name)] \(conn.serviceType)"
-            if !conn.baseURL.isEmpty { desc += " — Base URL: \(conn.baseURL)" }
-            let availableKeys = conn.credentialKeys.filter { resolvedEnv[$0] != nil }
-            if !availableKeys.isEmpty {
-                desc += " — Credentials in env: \(availableKeys.joined(separator: ", "))"
-            }
-            return desc
-        }
-        if !connectorDescs.isEmpty {
-            parts.append("Available Connectors (use these URLs, NOT any URLs from prior conversation):\n" + connectorDescs.joined(separator: "\n") + "\n\nIMPORTANT: Use Bash with curl to call APIs using env var credentials. Do NOT use WebFetch for authenticated APIs.")
-        }
+        appendConnectorContext(from: capabilityScope, to: &parts)
 
         appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
 
