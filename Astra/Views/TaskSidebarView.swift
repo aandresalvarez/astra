@@ -313,7 +313,7 @@ struct TaskSidebarView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 10)
                 .padding(.bottom, 2)
                 .padding(.top, hasPinnedTasks ? 0 : 8)
             }
@@ -355,7 +355,7 @@ struct TaskSidebarView: View {
 
             Spacer()
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 10)
         .padding(.top, 20)
         .padding(.bottom, 4)
     }
@@ -493,7 +493,7 @@ struct TaskSidebarView: View {
                         unreadTaskRow(for: task)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 10)
                 .padding(.bottom, 2)
             }
             .padding(.bottom, 8)
@@ -515,7 +515,7 @@ struct TaskSidebarView: View {
 
             SidebarCountBadge(count: count)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 10)
         .padding(.top, 4)
         .padding(.bottom, 4)
     }
