@@ -428,6 +428,31 @@ struct TaskCapabilityResolverTests {
         #expect(reversedOrder[second.id] == firstOrder[second.id])
     }
 
+    @Test("Projection aliases are scoped by service type")
+    func projectionAliasesAreScopedByServiceType() throws {
+        let jira = Connector(name: "Eng", serviceType: "jira")
+        jira.configKeys = ["BASE_URL"]
+        jira.configValues = ["https://jira.example.edu"]
+
+        let github = Connector(name: "Eng", serviceType: "github")
+        github.configKeys = ["BASE_URL"]
+        github.configValues = ["https://github.example.edu"]
+
+        let aliases = ConnectorRuntimeProjection.aliasesByConnectorID(for: [jira, github])
+
+        #expect(aliases[jira.id] == "eng")
+        #expect(aliases[github.id] == "eng")
+
+        let projection = ConnectorRuntimeProjection(connectors: [jira, github])
+        let env = projection.environmentVariables()
+        #expect(env["JIRA_ENG_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["GITHUB_ENG_BASE_URL"] == "https://github.example.edu")
+
+        let manifest = projection.manifest()
+        #expect(manifest.connectors.map(\.alias) == ["eng", "eng"])
+        #expect(manifest.connectors.map(\.envPrefix) == ["JIRA_ENG", "GITHUB_ENG"])
+    }
+
     @Test("Projection does not emit legacy fallback when original keys collide")
     func projectionDoesNotEmitLegacyFallbackWhenOriginalKeysCollide() throws {
         let first = Connector(name: "First API", serviceType: "first")
@@ -466,6 +491,31 @@ struct TaskCapabilityResolverTests {
         #expect(manifestConnector.config["apiToken"] == "REDCAP_STUDY_API_TOKEN")
         #expect(manifestConnector.config["apiToken2"] == "REDCAP_STUDY_API_TOKEN_2")
         #expect(manifestConnector.config["apiURL"] == "REDCAP_STUDY_API_URL")
+    }
+
+    @Test("Projection skips empty and missing connector config values")
+    func projectionSkipsEmptyAndMissingConnectorConfigValues() throws {
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "basic")
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_REGION"]
+        connector.configValues = ["https://jira.example.edu", "   "]
+
+        let env = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
+
+        #expect(env["JIRA_JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_JIRA_PROJECTS"] == nil)
+        #expect(env["JIRA_PROJECTS"] == nil)
+        #expect(env["JIRA_JIRA_REGION"] == nil)
+        #expect(env["JIRA_REGION"] == nil)
+
+        let manifestJSON = try #require(env["ASTRA_CONNECTORS"])
+        let manifestData = try #require(manifestJSON.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(ConnectorRuntimeProjection.Manifest.self, from: manifestData)
+        let manifestConnector = try #require(manifest.connectors.first)
+
+        #expect(manifestConnector.config["baseURL"] == "JIRA_JIRA_BASE_URL")
+        #expect(manifestConnector.config["projects"] == nil)
+        #expect(manifestConnector.config["region"] == nil)
     }
 
     @Test("Built-in capability instructions defer env names to connector projection")

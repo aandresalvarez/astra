@@ -93,15 +93,21 @@ struct ConnectorRuntimeProjection {
     }
 
     static func aliasesByConnectorID(for connectors: [Connector]) -> [UUID: String] {
-        var usedAliases = Set<String>()
+        var usedAliasesByService: [String: Set<String>] = [:]
         var aliases: [UUID: String] = [:]
-        let connectorsByBase = Dictionary(grouping: connectors, by: aliasBase(for:))
+        let connectorsByServiceAndBase = Dictionary(grouping: connectors) { connector in
+            serviceAliasScope(for: connector) + "\u{0}" + aliasBase(for: connector)
+        }
 
         for connector in connectors {
+            let serviceScope = serviceAliasScope(for: connector)
             let base = aliasBase(for: connector)
-            let hasDuplicateBase = (connectorsByBase[base]?.count ?? 0) > 1
+            let groupKey = serviceScope + "\u{0}" + base
+            let hasDuplicateBase = (connectorsByServiceAndBase[groupKey]?.count ?? 0) > 1
             let preferred = hasDuplicateBase ? "\(base)_\(shortID(connector.id))" : base
+            var usedAliases = usedAliasesByService[serviceScope, default: []]
             let alias = uniqueAlias(startingWith: preferred, usedAliases: &usedAliases)
+            usedAliasesByService[serviceScope] = usedAliases
             aliases[connector.id] = alias
         }
 
@@ -191,10 +197,12 @@ struct ConnectorRuntimeProjection {
             )
         }
 
-        let configValues = Self.normalizedParallelArray(keys: connector.configKeys, values: connector.configValues)
-        for (key, value) in zip(connector.configKeys, configValues) {
+        for (key, value) in zip(connector.configKeys, connector.configValues) {
             let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !originalKey.isEmpty else { continue }
+            guard !originalKey.isEmpty,
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
             Self.appendBinding(
                 connector: connector,
                 alias: alias,
@@ -290,16 +298,6 @@ struct ConnectorRuntimeProjection {
         }
     }
 
-    private static func normalizedParallelArray(keys: [String], values: [String]) -> [String] {
-        if values.count == keys.count {
-            return values
-        } else if values.count > keys.count {
-            return Array(values.prefix(keys.count))
-        } else {
-            return values + Array(repeating: "", count: keys.count - values.count)
-        }
-    }
-
     private static func shortID(_ id: UUID) -> String {
         id.uuidString.prefix(8).lowercased()
     }
@@ -325,6 +323,11 @@ struct ConnectorRuntimeProjection {
         let slugged = slug(value)
         guard !slugged.isEmpty else { return "" }
         return slugged.uppercased()
+    }
+
+    private static func serviceAliasScope(for connector: Connector) -> String {
+        let service = envToken(connector.serviceType)
+        return service.isEmpty ? "CONNECTOR" : service
     }
 
     private static func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {

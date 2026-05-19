@@ -99,7 +99,9 @@ enum CapabilitySharing {
         let destinationEntityID = KeychainSecretStore.connectorEntityID(for: destination.id)
         for key in source.credentialKeys {
             guard let value = secretStore.load(key: key, entityID: sourceEntityID),
-                  !value.isEmpty else { continue }
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
             secretStore.save(
                 key: key,
                 value: value,
