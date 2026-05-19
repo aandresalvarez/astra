@@ -208,21 +208,6 @@ struct TaskSidebarView: View {
                 }
             }
 
-            pinnedDock(using: taskIndex)
-            unreadDock(using: taskIndex)
-
-            // Hairline split between the docks (Pinned / Unread) and the
-            // List below. A standard Divider() ships at NSColor.separator,
-            // which renders heavy under our soft sidebar background — the
-            // 0.5pt rule at strokeRest reads as a quiet boundary instead
-            // of a hard line.
-            Rectangle()
-                .fill(Color.primary.opacity(Stanford.strokeRest))
-                .frame(height: 0.5)
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
-
             // Was `List { ... }.listStyle(.sidebar)`. Switched to a
             // ScrollView + LazyVStack because List on macOS is backed by
             // NSTableView, which manages its own row insertion/removal
@@ -234,6 +219,8 @@ struct TaskSidebarView: View {
             // workspace row stays put while children animate.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    pinnedSection(using: taskIndex)
+                    unreadSection(using: taskIndex)
                     workspaceSection(using: taskIndex)
                     schedulesSection
                 }
@@ -303,7 +290,7 @@ struct TaskSidebarView: View {
 
     // MARK: - Pinned Section
 
-    private func pinnedDock(using taskIndex: SidebarTaskIndex) -> some View {
+    private func pinnedSection(using taskIndex: SidebarTaskIndex) -> some View {
         let hasPinnedTasks = !taskIndex.pinnedTasks.isEmpty
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -312,25 +299,22 @@ struct TaskSidebarView: View {
             }
 
             if isPinnedExpanded || !hasPinnedTasks {
-                ScrollView(.vertical, showsIndicators: taskIndex.pinnedTasks.count > 4) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if !hasPinnedTasks {
-                            pinnedEmptyDropTarget
-                        } else {
-                            ForEach(taskIndex.pinnedTasks) { task in
-                                pinnedTaskRow(for: task)
-                            }
+                VStack(alignment: .leading, spacing: 2) {
+                    if !hasPinnedTasks {
+                        pinnedEmptyDropTarget
+                    } else {
+                        ForEach(taskIndex.pinnedTasks) { task in
+                            pinnedTaskRow(for: task)
+                        }
 
-                            if isPinnedDropTargeted {
-                                pinnedInlineDropTarget
-                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                            }
+                        if isPinnedDropTargeted {
+                            pinnedInlineDropTarget
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 2)
                 }
-                .frame(height: pinnedContentHeight(using: taskIndex))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 2)
                 .padding(.top, hasPinnedTasks ? 0 : 8)
             }
         }
@@ -433,16 +417,6 @@ struct TaskSidebarView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
     }
 
-    private func pinnedContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
-        guard isPinnedExpanded else { return 0 }
-        if taskIndex.pinnedTasks.isEmpty { return 36 }
-
-        let rowHeight = Stanford.sidebarThreadRowHeight + 2
-        let taskHeight = CGFloat(taskIndex.pinnedTasks.count) * rowHeight
-        let dropTargetHeight: CGFloat = isPinnedDropTargeted ? 30 : 0
-        return min(taskHeight + dropTargetHeight + 2, 220)
-    }
-
     private func pinnedTaskRow(for task: AgentTask) -> some View {
         let isSelected = selectedTask?.id == task.id
         let isHovered = hoveredTaskID == task.id
@@ -509,21 +483,18 @@ struct TaskSidebarView: View {
     // MARK: - Unreads Section
 
     @ViewBuilder
-    private func unreadDock(using taskIndex: SidebarTaskIndex) -> some View {
+    private func unreadSection(using taskIndex: SidebarTaskIndex) -> some View {
         if !taskIndex.unreadTasks.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 unreadHeader(count: taskIndex.unreadTasks.count)
 
-                ScrollView(.vertical, showsIndicators: taskIndex.unreadTasks.count > 3) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(taskIndex.unreadTasks) { task in
-                            unreadTaskRow(for: task)
-                        }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(taskIndex.unreadTasks) { task in
+                        unreadTaskRow(for: task)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 2)
                 }
-                .frame(height: unreadContentHeight(using: taskIndex))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 2)
             }
             .padding(.bottom, 8)
         }
@@ -547,12 +518,6 @@ struct TaskSidebarView: View {
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 4)
-    }
-
-    private func unreadContentHeight(using taskIndex: SidebarTaskIndex) -> CGFloat {
-        let rowHeight = Stanford.sidebarThreadRowHeight + 2
-        let taskHeight = CGFloat(taskIndex.unreadTasks.count) * rowHeight
-        return min(taskHeight + 2, 156)
     }
 
     private func unreadTaskRow(for task: AgentTask) -> some View {
@@ -1815,8 +1780,8 @@ private struct SidebarThreadRow: View {
             if showsTimestamp {
                 HStack(spacing: 5) {
                     if task.isPinned && showsPinIndicator {
-                        // Tells the user "this row is also up top in the
-                        // Pinned dock" — pinned tasks render twice (once
+                        // Tells the user "this row also appears in the
+                        // Pinned section" — pinned tasks render twice (once
                         // in Pinned, once under their workspace), and
                         // without this glyph the workspace appearance
                         // looks like a duplicate.
