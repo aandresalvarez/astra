@@ -244,9 +244,10 @@ enum AgentPromptBuilder {
             var desc = "[\(conn.name)] \(conn.serviceType) - \(conn.connectorDescription)"
             desc += "\n  Alias: \(alias)"
             if !conn.baseURL.isEmpty { desc += "\n  Base URL: \(conn.baseURL)" }
-            if !conn.configKeys.isEmpty {
-                let configs = zip(conn.configKeys, conn.configValues)
-                    .map { "\($0): \($1)" }
+            if !configBindings.isEmpty {
+                let configs = configBindings
+                    .sorted { $0.envKey < $1.envKey }
+                    .map { "\($0.originalKey): \($0.value)" }
                     .joined(separator: ", ")
                 desc += "\n  Config: \(configs)"
             }

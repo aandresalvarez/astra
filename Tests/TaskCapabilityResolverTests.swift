@@ -512,6 +512,45 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("mypermissions?permissions=BROWSE_PROJECTS"))
     }
 
+    @Test("Prompt config summary only includes projected config values")
+    func promptConfigSummaryOnlyIncludesProjectedConfigValues() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Partial Config", primaryPath: "/tmp/partial-config")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://jira.example.edu",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_REGION"]
+        connector.configValues = ["https://jira.example.edu", "   "]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Check Jira configuration",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Config: JIRA_BASE_URL: https://jira.example.edu"))
+        #expect(!prompt.contains("Config: JIRA_PROJECTS"))
+        #expect(!prompt.contains("JIRA_PROJECTS:    "))
+        #expect(!prompt.contains("JIRA_REGION:"))
+        #expect(prompt.contains("Config env vars: JIRA_JIRA_BASE_URL"))
+        #expect(!prompt.contains("JIRA_JIRA_PROJECTS"))
+        #expect(!prompt.contains("JIRA_JIRA_REGION"))
+    }
+
     @Test("Projection does not emit legacy fallback when original keys collide")
     func projectionDoesNotEmitLegacyFallbackWhenOriginalKeysCollide() throws {
         let first = Connector(name: "First API", serviceType: "first")
