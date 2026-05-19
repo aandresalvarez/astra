@@ -164,36 +164,75 @@ struct ConnectorRuntimeProjection {
     private func environmentBindings(for connector: Connector, alias: String) -> [EnvironmentBinding] {
         var bindings: [EnvironmentBinding] = []
         let prefix = Self.envPrefix(for: connector, alias: alias)
+        var usedEnvKeys = Set<String>()
+        var usedLogicalNames = Set<String>()
+        let credentials = connector.credentials(store: secretStore)
 
-        for (key, value) in connector.credentials(store: secretStore) {
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let suffix = Self.logicalEnvSuffix(for: key, connector: connector)
-            bindings.append(EnvironmentBinding(
-                connectorID: connector.id,
+        for key in connector.credentialKeys {
+            let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !originalKey.isEmpty,
+                  let value = credentials[key] ?? credentials[originalKey] else {
+                continue
+            }
+            Self.appendBinding(
+                connector: connector,
                 alias: alias,
-                logicalName: Self.manifestLogicalName(for: suffix),
-                originalKey: key,
-                envKey: "\(prefix)_\(suffix)",
+                prefix: prefix,
+                originalKey: originalKey,
                 value: value,
-                kind: .credential
-            ))
+                kind: .credential,
+                usedEnvKeys: &usedEnvKeys,
+                usedLogicalNames: &usedLogicalNames,
+                to: &bindings
+            )
         }
 
-        for (key, value) in connector.config {
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let suffix = Self.logicalEnvSuffix(for: key, connector: connector)
-            bindings.append(EnvironmentBinding(
-                connectorID: connector.id,
+        let configValues = Self.normalizedParallelArray(keys: connector.configKeys, values: connector.configValues)
+        for (key, value) in zip(connector.configKeys, configValues) {
+            let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !originalKey.isEmpty else { continue }
+            Self.appendBinding(
+                connector: connector,
                 alias: alias,
-                logicalName: Self.manifestLogicalName(for: suffix),
-                originalKey: key,
-                envKey: "\(prefix)_\(suffix)",
+                prefix: prefix,
+                originalKey: originalKey,
                 value: value,
-                kind: .config
-            ))
+                kind: .config,
+                usedEnvKeys: &usedEnvKeys,
+                usedLogicalNames: &usedLogicalNames,
+                to: &bindings
+            )
         }
 
         return bindings
+    }
+
+    private static func appendBinding(
+        connector: Connector,
+        alias: String,
+        prefix: String,
+        originalKey: String,
+        value: String,
+        kind: BindingKind,
+        usedEnvKeys: inout Set<String>,
+        usedLogicalNames: inout Set<String>,
+        to bindings: inout [EnvironmentBinding]
+    ) {
+        let suffix = logicalEnvSuffix(for: originalKey, connector: connector)
+        let envKey = uniqueRuntimeName(startingWith: "\(prefix)_\(suffix)", usedNames: &usedEnvKeys)
+        let logicalName = uniqueManifestName(
+            startingWith: manifestLogicalName(for: suffix),
+            usedNames: &usedLogicalNames
+        )
+        bindings.append(EnvironmentBinding(
+            connectorID: connector.id,
+            alias: alias,
+            logicalName: logicalName,
+            originalKey: originalKey,
+            envKey: envKey,
+            value: value,
+            kind: kind
+        ))
     }
 
     private func serviceCountsByType() -> [String: Int] {
@@ -229,6 +268,36 @@ struct ConnectorRuntimeProjection {
             let candidate = "\(preferred)_\(index)"
             if usedAliases.insert(candidate).inserted { return candidate }
             index += 1
+        }
+    }
+
+    private static func uniqueRuntimeName(startingWith preferred: String, usedNames: inout Set<String>) -> String {
+        if usedNames.insert(preferred).inserted { return preferred }
+        var index = 2
+        while true {
+            let candidate = "\(preferred)_\(index)"
+            if usedNames.insert(candidate).inserted { return candidate }
+            index += 1
+        }
+    }
+
+    private static func uniqueManifestName(startingWith preferred: String, usedNames: inout Set<String>) -> String {
+        if usedNames.insert(preferred).inserted { return preferred }
+        var index = 2
+        while true {
+            let candidate = "\(preferred)\(index)"
+            if usedNames.insert(candidate).inserted { return candidate }
+            index += 1
+        }
+    }
+
+    private static func normalizedParallelArray(keys: [String], values: [String]) -> [String] {
+        if values.count == keys.count {
+            return values
+        } else if values.count > keys.count {
+            return Array(values.prefix(keys.count))
+        } else {
+            return values + Array(repeating: "", count: keys.count - values.count)
         }
     }
 

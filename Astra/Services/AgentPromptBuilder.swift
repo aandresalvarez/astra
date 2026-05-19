@@ -272,6 +272,9 @@ enum AgentPromptBuilder {
                     .joined(separator: ", ")
                 desc += "\n  Config env vars: \(rendered)"
             }
+            if let example = connectorRuntimeExample(for: conn, bindings: bindings) {
+                desc += "\n  Runtime example: \(example)"
+            }
             desc += "\n  Auth: \(conn.authMethod)"
             if !conn.notes.isEmpty { desc += "\n  Notes: \(conn.notes)" }
             return desc
@@ -282,13 +285,191 @@ enum AgentPromptBuilder {
         Available Connectors (credentials are pre-loaded into your process environment — use them directly, never ask the user to provide them again):
         \(connectorDescriptions.joined(separator: "\n\n"))
 
-        The ASTRA_CONNECTORS environment variable contains a JSON manifest with connector aliases and env var names. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If the user request is ambiguous, ask which connector to use before calling external APIs.
+        The connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative for this run. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If behavioral instructions mention bare legacy env names, use those names only when they are explicitly listed above or in ASTRA_CONNECTORS. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
         IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens — NOT WebFetch. \
-        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Example:
-          curl -X POST "$BASE_URL/api/" -d "token=$API_TOKEN&content=record&format=json"
-        Or in Python: os.environ["TOKEN_KEY"] to read the credential.
+        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] to read the credential.
         """)
+    }
+
+    private static func connectorRuntimeExample(
+        for connector: Connector,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+    ) -> String? {
+        let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch serviceType {
+        case "jira":
+            return jiraRuntimeExample(for: connector, bindings: bindings)
+        case "redcap":
+            return redcapRuntimeExample(for: connector, bindings: bindings)
+        case "gcloud", "google_cloud", "googlecloud", "gcp":
+            return gcloudRuntimeExample(bindings: bindings)
+        default:
+            return nil
+        }
+    }
+
+    private static func jiraRuntimeExample(
+        for connector: Connector,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+    ) -> String? {
+        guard let baseURL = runtimeURLBase(
+            bindings: bindings,
+            logicalNames: ["baseURL", "jiraBaseURL", "url"],
+            originalKeys: ["JIRA_BASE_URL", "BASE_URL", "URL"],
+            keyFragments: ["BASE_URL"],
+            fallback: connector.baseURL
+        ) else {
+            return nil
+        }
+        guard let email = runtimeEnvValue(
+            bindings: bindings,
+            logicalNames: ["email", "jiraEmail", "username"],
+            originalKeys: ["JIRA_EMAIL", "EMAIL", "USERNAME"],
+            keyFragments: ["EMAIL", "USERNAME"],
+            preferredKind: .credential
+        ),
+              let token = runtimeEnvValue(
+            bindings: bindings,
+            logicalNames: ["apiToken", "token", "jiraAPIToken"],
+            originalKeys: ["JIRA_API_TOKEN", "API_TOKEN", "TOKEN"],
+            keyFragments: ["API_TOKEN", "TOKEN"],
+            preferredKind: .credential
+        ) else {
+            return nil
+        }
+        let url = shellQuote("\(baseURL)/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS")
+        return #"curl -s -u "\#(email):\#(token)" -H "Content-Type: application/json" "\#(url)""#
+    }
+
+    private static func redcapRuntimeExample(
+        for connector: Connector,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+    ) -> String? {
+        guard let url = runtimeURLBase(
+            bindings: bindings,
+            logicalNames: ["apiURL", "baseURL", "url"],
+            originalKeys: ["REDCAP_API_URL", "API_URL", "BASE_URL", "URL"],
+            keyFragments: ["API_URL", "BASE_URL"],
+            fallback: connector.baseURL
+        ) else {
+            return nil
+        }
+        guard let token = runtimeEnvValue(
+            bindings: bindings,
+            logicalNames: ["apiToken", "token", "redcapAPIToken"],
+            originalKeys: ["REDCAP_API_TOKEN", "API_TOKEN", "TOKEN"],
+            keyFragments: ["API_TOKEN", "TOKEN"],
+            preferredKind: .credential
+        ) else {
+            return nil
+        }
+        let quotedURL = shellQuote(url)
+        return #"curl -sS -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -X POST --data-urlencode "token=\#(token)" --data-urlencode "content=project" --data-urlencode "format=json" --data-urlencode "returnFormat=json" "\#(quotedURL)""#
+    }
+
+    private static func gcloudRuntimeExample(
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+    ) -> String? {
+        let project = runtimeEnvValue(
+            bindings: bindings,
+            logicalNames: ["project", "gcpProject", "projectID"],
+            originalKeys: ["GCP_PROJECT", "PROJECT", "PROJECT_ID"],
+            keyFragments: ["PROJECT"],
+            preferredKind: .config
+        )
+        let region = runtimeEnvValue(
+            bindings: bindings,
+            logicalNames: ["region", "gcpRegion"],
+            originalKeys: ["GCP_REGION", "REGION"],
+            keyFragments: ["REGION"],
+            preferredKind: .config
+        )
+
+        if let project, let region {
+            return #"gcloud run services list --project "\#(project)" --region "\#(region)" --format=json"#
+        } else if let project {
+            return #"gcloud projects describe "\#(project)" --format=json"#
+        } else if let region {
+            return #"gcloud run services list --region "\#(region)" --format=json"#
+        }
+        return nil
+    }
+
+    private static func runtimeEnvValue(
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        logicalNames: Set<String>,
+        originalKeys: Set<String>,
+        keyFragments: [String],
+        preferredKind: ConnectorRuntimeProjection.BindingKind
+    ) -> String? {
+        guard let binding = matchingBinding(
+            in: bindings,
+            logicalNames: logicalNames,
+            originalKeys: originalKeys,
+            keyFragments: keyFragments,
+            preferredKind: preferredKind
+        ) else {
+            return nil
+        }
+        return "$\(binding.envKey)"
+    }
+
+    private static func runtimeURLBase(
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        logicalNames: Set<String>,
+        originalKeys: Set<String>,
+        keyFragments: [String],
+        fallback: String
+    ) -> String? {
+        if let binding = matchingBinding(
+            in: bindings,
+            logicalNames: logicalNames,
+            originalKeys: originalKeys,
+            keyFragments: keyFragments,
+            preferredKind: .config
+        ) {
+            return "${\(binding.envKey)}"
+        }
+        let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func matchingBinding(
+        in bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        logicalNames: Set<String>,
+        originalKeys: Set<String>,
+        keyFragments: [String],
+        preferredKind: ConnectorRuntimeProjection.BindingKind
+    ) -> ConnectorRuntimeProjection.EnvironmentBinding? {
+        let preferred = bindings.filter { $0.kind == preferredKind }
+        return firstMatchingBinding(in: preferred, logicalNames: logicalNames, originalKeys: originalKeys, keyFragments: keyFragments)
+            ?? firstMatchingBinding(in: bindings, logicalNames: logicalNames, originalKeys: originalKeys, keyFragments: keyFragments)
+    }
+
+    private static func firstMatchingBinding(
+        in bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        logicalNames: Set<String>,
+        originalKeys: Set<String>,
+        keyFragments: [String]
+    ) -> ConnectorRuntimeProjection.EnvironmentBinding? {
+        let normalizedLogicalNames = Set(logicalNames.map { $0.lowercased() })
+        let normalizedOriginalKeys = Set(originalKeys.map { $0.uppercased() })
+        let normalizedFragments = keyFragments.map { $0.uppercased() }
+        return bindings
+            .sorted { $0.envKey < $1.envKey }
+            .first { binding in
+                let logicalName = binding.logicalName.lowercased()
+                let originalKey = binding.originalKey.uppercased()
+                return normalizedLogicalNames.contains(logicalName)
+                    || normalizedOriginalKeys.contains(originalKey)
+                    || normalizedFragments.contains { originalKey.contains($0) }
+            }
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {

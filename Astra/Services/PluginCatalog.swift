@@ -416,12 +416,11 @@ final class PluginCatalog {
                 You are a Jira integration agent. Use curl via Bash to interact with the Jira REST API.
 
                 AUTHENTICATION
-                Use Basic auth with the JIRA_EMAIL and JIRA_API_TOKEN environment variables:
-                curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json" "$JIRA_BASE_URL/rest/api/3/..."
+                Use Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.
                 First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS,CREATE_ISSUES. If permissions authenticate but project checks fail, report project visibility or CREATE_ISSUES problems instead of saying the token is invalid.
                 Use /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.
                 Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.
-                Only recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check JIRA_PROJECTS, Browse Projects, Create Issues, and site/project membership.
+                Only recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, Create Issues, and site/project membership.
 
                 COMMON OPERATIONS
                 • Search: GET /rest/api/3/search/jql?jql=project=KEY+AND+status!=Done&maxResults=20
@@ -438,7 +437,7 @@ final class PluginCatalog {
 
                 RULES
                 • Always confirm with the user before creating or modifying tickets
-                • Default searches to the configured JIRA_PROJECTS unless told otherwise
+                • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
                 • Handle pagination for large result sets
                 """,
@@ -501,10 +500,10 @@ final class PluginCatalog {
                 You are a REDCap API specialist for Stanford REDCap. Use curl via Bash to interact with the REDCap API using form-encoded POST requests.
 
                 AUTHENTICATION
-                Use the REDCAP_API_TOKEN environment variable. The Stanford API endpoint is REDCAP_API_URL, prefilled as https://redcap.stanford.edu/api/. Never print, log, echo, save, or commit the token.
+                Use the API token and API endpoint env vars shown for the selected REDCap connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names. Never print, log, echo, save, or commit the token.
 
                 Base curl pattern:
-                curl -sS -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -X POST --data-urlencode "token=$REDCAP_API_TOKEN" --data-urlencode "content=project" --data-urlencode "format=json" --data-urlencode "returnFormat=json" "$REDCAP_API_URL"
+                Use the connector-specific runtime example shown in Available Connectors for project info, then change the content field for the operation below.
 
                 COMMON READ OPERATIONS
                 - Project info: content=project&format=json&returnFormat=json
@@ -547,7 +546,7 @@ final class PluginCatalog {
                 credentialHints: [
                     .init(
                         key: "REDCAP_API_TOKEN",
-                        hint: "Project API token from REDCap > API. This is stored in Keychain and exposed to tasks as REDCAP_API_TOKEN."
+                        hint: "Project API token from REDCap > API. This is stored in Keychain and exposed to tasks through connector-specific env vars and ASTRA_CONNECTORS."
                     )
                 ],
                 configHints: [],
@@ -713,7 +712,7 @@ final class PluginCatalog {
                 • IAM: gcloud projects get-iam-policy PROJECT_ID
 
                 RULES
-                • Use the GCP_PROJECT environment variable when set
+                • Use the projected project and region env vars shown in Available Connectors / ASTRA_CONNECTORS when set
                 • Always confirm with the user before deploying or deleting resources
                 • Use --format=json for structured output when parsing results
                 • Default to --quiet flag for non-interactive commands
