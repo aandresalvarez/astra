@@ -388,6 +388,57 @@ struct OnboardingWizardTests {
         #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "legacy-token")
     }
 
+    @Test("Workspace capability setup copies stale global connector credentials")
+    @MainActor
+    func workspaceCapabilitySetupCopiesStaleGlobalConnectorCredentials() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Jira Coral Sprints", primaryPath: "/tmp/jira-coral")
+        context.insert(source)
+
+        let staleCredentialConnectorID = UUID()
+        let jiraWithURL = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraWithURL.isGlobal = true
+        jiraWithURL.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        jiraWithURL.credentialValues = ["", ""]
+        context.insert(jiraWithURL)
+        source.enabledGlobalConnectorIDs = [
+            staleCredentialConnectorID.uuidString,
+            jiraWithURL.id.uuidString
+        ]
+
+        let store = MockSecretStore()
+        let staleEntityID = "agentflow-\(staleCredentialConnectorID.uuidString)"
+        store.save(
+            key: "JIRA_EMAIL",
+            value: "coral@example.edu",
+            entityID: staleEntityID,
+            label: nil
+        )
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "coral-token",
+            entityID: staleEntityID,
+            label: nil
+        )
+
+        let summary = CapabilitySetupCopier(secretStore: store).copySetup(
+            from: source,
+            globalConnectors: [jiraWithURL]
+        )
+
+        #expect(summary.selectedPackageIDs == ["jira-workflow"])
+        #expect(summary.inputsByPackageID["jira-workflow"]?.configInputs["JIRA_BASE_URL"] == "https://stanfordmed.atlassian.net")
+        #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_EMAIL"] == "coral@example.edu")
+        #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "coral-token")
+    }
+
     @Test("Workspace capability setup ignores unchanged default base URLs")
     @MainActor
     func workspaceCapabilitySetupIgnoresUnchangedDefaultBaseURLs() throws {

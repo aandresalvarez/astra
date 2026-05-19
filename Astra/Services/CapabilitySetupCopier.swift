@@ -67,38 +67,48 @@ struct CapabilitySetupCopier {
         let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
 
         for pluginConnector in package.connectors {
-            guard let connector = matchingConnector(
+            let connectors = matchingConnectors(
                 for: pluginConnector,
                 in: workspace,
                 globalConnectors: globalConnectors
-            ) else {
-                continue
-            }
+            )
 
-            let baseURL = connector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !baseURL.isEmpty,
-               baseURL != pluginConnector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) {
-                inputs.baseURLOverrides[pluginConnector.name] = baseURL
-                for key in packageEnvironmentKeys where Self.shouldMapBaseURL(baseURL, toEnvironmentKey: key, connector: pluginConnector) {
-                    inputs.configInputs[key] = baseURL
+            for connector in connectors {
+                let baseURL = connector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !baseURL.isEmpty,
+                   baseURL != pluginConnector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    inputs.baseURLOverrides[pluginConnector.name] = baseURL
+                    for key in packageEnvironmentKeys where Self.shouldMapBaseURL(baseURL, toEnvironmentKey: key, connector: pluginConnector) {
+                        inputs.configInputs[key] = baseURL
+                    }
+                }
+
+                let connectorConfig = connector.config
+                for hint in pluginConnector.configHints where inputs.configInputs[hint.key] == nil {
+                    if let value = connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
+                        inputs.configInputs[hint.key] = value
+                    }
+                }
+                for key in packageEnvironmentKeys where inputs.configInputs[key] == nil {
+                    if let value = connectorValue(for: key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
+                        inputs.configInputs[key] = value
+                    }
+                }
+
+                for hint in pluginConnector.credentialHints where inputs.credentialInputs[hint.key] == nil {
+                    if let value = credentialValue(for: hint.key, in: connector, serviceType: pluginConnector.serviceType)
+                        ?? connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
+                        inputs.credentialInputs[hint.key] = value
+                    }
                 }
             }
 
-            let connectorConfig = connector.config
-            for hint in pluginConnector.configHints {
-                if let value = connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
-                    inputs.configInputs[hint.key] = value
-                }
-            }
-            for key in packageEnvironmentKeys {
-                if let value = connectorValue(for: key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
-                    inputs.configInputs[key] = value
-                }
-            }
-
-            for hint in pluginConnector.credentialHints {
-                if let value = credentialValue(for: hint.key, in: connector, serviceType: pluginConnector.serviceType)
-                    ?? connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
+            for hint in pluginConnector.credentialHints where inputs.credentialInputs[hint.key] == nil {
+                if let value = legacyGlobalCredentialValue(
+                    for: hint.key,
+                    workspace: workspace,
+                    serviceType: pluginConnector.serviceType
+                ) {
                     inputs.credentialInputs[hint.key] = value
                 }
             }
@@ -127,17 +137,17 @@ struct CapabilitySetupCopier {
         return !name.isEmpty && normalizedKey.contains(name)
     }
 
-    private func matchingConnector(
+    private func matchingConnectors(
         for pluginConnector: PluginConnector,
         in workspace: Workspace,
         globalConnectors: [Connector]
-    ) -> Connector? {
-        let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs)
+    ) -> [Connector] {
+        let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
-            enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+            enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
         let candidates = workspace.connectors + enabledGlobalConnectors
-        return candidates.first { connector in
+        return candidates.filter { connector in
             CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: connector)
         }
     }
@@ -168,6 +178,29 @@ struct CapabilitySetupCopier {
             }
         }
 
+        return nil
+    }
+
+    private func legacyGlobalCredentialValue(
+        for key: String,
+        workspace: Workspace,
+        serviceType: String
+    ) -> String? {
+        let keyCandidates = Self.copyKeyCandidates(
+            requestedKey: key,
+            sourceKeys: Self.legacyCredentialKeyAliases(for: key, serviceType: serviceType),
+            serviceType: serviceType
+        )
+        for rawID in workspace.enabledGlobalConnectorIDs {
+            guard let connectorID = UUID(uuidString: rawID) else { continue }
+            for entityID in Self.copySourceEntityIDs(for: connectorID) {
+                for candidate in keyCandidates {
+                    if let value = nonEmpty(secretStore.load(key: candidate, entityID: entityID)) {
+                        return value
+                    }
+                }
+            }
+        }
         return nil
     }
 
@@ -205,10 +238,29 @@ struct CapabilitySetupCopier {
         serviceType: String
     ) -> [String] {
         var candidates: [String] = [requestedKey, requestedKey.uppercased(), requestedKey.lowercased()]
+        candidates += legacyCredentialKeyAliases(for: requestedKey, serviceType: serviceType)
         candidates += sourceKeys.filter { keysMatch($0, requestedKey, serviceType: serviceType) }
 
         var seen = Set<String>()
         return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func legacyCredentialKeyAliases(for key: String, serviceType: String) -> [String] {
+        let normalizedKey = normalizedToken(key)
+        let servicePrefix = normalizedToken(serviceType)
+        var aliases: [String] = []
+
+        if !servicePrefix.isEmpty, normalizedKey.hasPrefix(servicePrefix) {
+            let suffix = String(normalizedKey.dropFirst(servicePrefix.count))
+            if suffix == "email" {
+                aliases += ["EMAIL", "USERNAME"]
+            }
+            if suffix == "apitoken" || suffix == "token" || suffix == "apikey" || suffix == "key" {
+                aliases += ["API_TOKEN", "TOKEN", "\(serviceType.uppercased())_TOKEN"]
+            }
+        }
+
+        return aliases
     }
 
     private static func keysMatch(_ sourceKey: String, _ requestedKey: String, serviceType: String) -> Bool {
@@ -228,6 +280,10 @@ struct CapabilitySetupCopier {
 
     private static func normalizedToken(_ value: String) -> String {
         String(value.lowercased().filter { $0.isLetter || $0.isNumber })
+    }
+
+    private static func normalizedID(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 }
 
