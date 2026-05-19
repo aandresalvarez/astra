@@ -713,12 +713,25 @@ struct WorkspaceCapabilitiesTests {
         let workspace = Workspace(name: "Duplicate Connector", primaryPath: "/tmp/duplicate-connector")
         let connector = Connector(name: "Shared Jira", serviceType: "jira", connectorDescription: "Shared")
         connector.isGlobal = true
-        connector.credentialKeys = ["JIRA_TOKEN"]
+        connector.credentialKeys = ["JIRA_TOKEN", "BLANK_TOKEN"]
         connector.configKeys = ["JIRA_PROJECT"]
         connector.configValues = ["ASTRA"]
         workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+        let store = MockSecretStore()
+        store.save(
+            key: "JIRA_TOKEN",
+            value: "shared-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+        store.save(
+            key: "BLANK_TOKEN",
+            value: "   ",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
 
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
+        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace, secretStore: store)
 
         #expect(connector.isGlobal)
         #expect(connector.workspace == nil)
@@ -726,8 +739,17 @@ struct WorkspaceCapabilitiesTests {
         #expect(copy.workspace === workspace)
         #expect(!copy.isGlobal)
         #expect(copy.id != connector.id)
-        #expect(copy.credentialKeys == ["JIRA_TOKEN"])
+        #expect(copy.name == "Shared Jira Copy")
+        #expect(copy.credentialKeys == ["JIRA_TOKEN", "BLANK_TOKEN"])
         #expect(copy.config == ["JIRA_PROJECT": "ASTRA"])
+        #expect(store.load(
+            key: "JIRA_TOKEN",
+            entityID: KeychainSecretStore.connectorEntityID(for: copy.id)
+        ) == "shared-token")
+        #expect(store.load(
+            key: "BLANK_TOKEN",
+            entityID: KeychainSecretStore.connectorEntityID(for: copy.id)
+        ) == nil)
     }
 
     @Test("duplicating a shared tool creates a local copy without removing the shared definition")

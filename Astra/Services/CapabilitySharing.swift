@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 @MainActor
 enum CapabilitySharing {
@@ -22,9 +23,13 @@ enum CapabilitySharing {
         workspace.updatedAt = Date()
     }
 
-    static func duplicateForWorkspace(_ connector: Connector, in workspace: Workspace) -> Connector {
+    static func duplicateForWorkspace(
+        _ connector: Connector,
+        in workspace: Workspace,
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> Connector {
         let copy = Connector(
-            name: connector.name,
+            name: duplicatedName(for: connector, in: workspace),
             serviceType: connector.serviceType,
             icon: connector.icon,
             connectorDescription: connector.connectorDescription,
@@ -39,6 +44,7 @@ enum CapabilitySharing {
         copy.notes = connector.notes
         copy.workspace = workspace
         copy.isGlobal = false
+        copyCredentials(from: connector, to: copy, secretStore: secretStore)
         disableShared(connector, in: workspace)
         return copy
     }
@@ -81,6 +87,47 @@ enum CapabilitySharing {
     private static func appendUnique(_ value: String, to values: inout [String]) {
         if !values.contains(value) {
             values.append(value)
+        }
+    }
+
+    private static func copyCredentials(
+        from source: Connector,
+        to destination: Connector,
+        secretStore: SecretStore
+    ) {
+        let sourceEntityID = KeychainSecretStore.connectorEntityID(for: source.id)
+        let destinationEntityID = KeychainSecretStore.connectorEntityID(for: destination.id)
+        for key in source.credentialKeys {
+            guard let value = secretStore.load(key: key, entityID: sourceEntityID),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            secretStore.save(
+                key: key,
+                value: value,
+                entityID: destinationEntityID,
+                label: "Astra: \(destination.name)"
+            )
+        }
+    }
+
+    private static func duplicatedName(for connector: Connector, in workspace: Workspace) -> String {
+        let baseName = connector.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Connector"
+            : connector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingNames = Set(workspace.connectors.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let firstCandidate = "\(baseName) Copy"
+        if !existingNames.contains(firstCandidate.lowercased()) {
+            return firstCandidate
+        }
+
+        var index = 2
+        while true {
+            let candidate = "\(baseName) Copy \(index)"
+            if !existingNames.contains(candidate.lowercased()) {
+                return candidate
+            }
+            index += 1
         }
     }
 }

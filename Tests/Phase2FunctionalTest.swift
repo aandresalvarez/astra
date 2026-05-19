@@ -45,13 +45,18 @@ private func workspaceFileListing(at workspacePath: String) -> String {
 @Suite("Phase 2 Functional — Maker & Checker Team", .tags(.integration))
 struct Phase2FunctionalTest {
 
-    @Test("Team task with 2 agents: Developer + QA Tester", .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call Claude CLI"))
+    @Test(
+        "Team task with 2 agents: Developer + QA Tester",
+        .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
+        arguments: E2ETestSupport.runtimeCases
+    )
     @MainActor
-    func makerCheckerTeam() async throws {
+    func makerCheckerTeam(runtimeCase: E2ETestSupport.RuntimeCase) async throws {
         // 1. Create workspace directory
-        let testDir = "/tmp/phase2_team_test_\(UUID().uuidString.prefix(8))"
+        let testDir = "/tmp/phase2_\(runtimeCase.directoryNameComponent)_team_test_\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: testDir) }
+        defer { try? FileManager.default.removeItem(atPath: E2ETestSupport.copilotHomePath(forTemporaryRootPath: testDir)) }
 
         // 2. Create SwiftData container and workspace
         let container = try makeTestContainer()
@@ -69,35 +74,42 @@ struct Phase2FunctionalTest {
             - ./regex.js: exports a function that extracts all email addresses from a string.
             - ./test.js: tests simple emails, subdomains, plus signs, and invalid strings.
             - ./test_results.txt: the captured result from running `node test.js`.
-            Run the tests, fix any bug found, and verify all three files exist before your final response.
+            Run the tests, fix any bug found, verify all three files exist, then immediately finish.
             """,
             workspace: workspace,
             tokenBudget: 350000,
-            model: "claude-sonnet-4-6"
+            model: runtimeCase.model
         )
+        task.runtimeID = runtimeCase.runtimeID.rawValue
         task.status = .queued
-        task.useAgentTeam = true
-        task.teamSize = 2
+        task.useAgentTeam = runtimeCase.expectsTeamEvents
+        task.teamSize = runtimeCase.expectsTeamEvents ? 2 : 1
         task.teamInstructions = """
         Spawn two teammates:
         1. A 'Developer' who writes the regex.js email extractor function.
         2. A 'QA Tester' who writes test.js to find edge cases and validates the implementation.
         The QA Tester should wait for the Developer to finish before testing. \
-        If bugs are found, communicate to fix them. The lead agent remains responsible for ensuring \
-        regex.js, test.js, and test_results.txt exist in the current working directory before finishing.
+        Use at most one pass from each teammate. If bugs are found, communicate to fix them. \
+        The lead agent remains responsible for ensuring regex.js, test.js, and test_results.txt \
+        exist in the current working directory before finishing. Once those files exist and tests \
+        have run, finish immediately.
         """
+        task.maxTurns = 8
         context.insert(task)
         try context.save()
 
-        #expect(task.useAgentTeam == true, "Task should have teams enabled")
-        #expect(task.teamSize == 2, "Team size should be 2")
+        #expect(task.useAgentTeam == runtimeCase.expectsTeamEvents, "Task team mode should match runtime support")
+        #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 2 : 1), "Team size should match runtime support")
 
         // 4. Run through AgentRuntimeWorker
         let worker = AgentRuntimeWorker()
+        try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
-        await worker.execute(task: task, modelContext: context) { event in
-            receivedEvents.append(event)
+        try await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { event in
+                receivedEvents.append(event)
+            }
         }
 
         // 5. Verify task lifecycle
@@ -105,14 +117,23 @@ struct Phase2FunctionalTest {
         let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded
         #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
         #expect(task.status != .failed, "Task should not have failed, status: \(task.status.rawValue)")
-        #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
-        #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
-        #expect(task.sessionId != nil, "Session ID should be captured")
+        if runtimeCase.expectsUsageStats {
+            #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
+        }
+        if runtimeCase.expectsCostUSD {
+            #expect(task.costUSD > 0, "Cost: \(task.costUSD)")
+        }
+        if runtimeCase.expectsSessionID {
+            #expect(task.sessionId != nil, "Session ID should be captured")
+        }
 
         // 6. Verify TaskRun
         #expect(task.runs.count >= 1, "Should have at least 1 run")
         let run = task.runs.first!
-        #expect(run.tokensUsed > 0)
+        #expect(run.runtimeID == runtimeCase.runtimeID.rawValue)
+        if runtimeCase.expectsUsageStats {
+            #expect(run.tokensUsed > 0)
+        }
         #expect(run.completedAt != nil)
 
         // 7. Verify core events exist
@@ -122,14 +143,18 @@ struct Phase2FunctionalTest {
         #expect(eventTypes.contains("task.started"), "Missing task.started")
         #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
         #expect(eventTypes.contains("tool.use"), "Missing tool.use")
-        #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        if runtimeCase.expectsUsageStats {
+            #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        }
 
         // 8. Verify Agent Teams events — spawning teammates
         // The Lead should spawn agents (team.agent.started events or Agent tool uses)
         let teamStartEvents = allEvents.filter { $0.type == "team.agent.started" }
         let agentToolUses = allEvents.filter { $0.type == "tool.use" && $0.payload.contains("Agent") }
         let hasTeamActivity = !teamStartEvents.isEmpty || !agentToolUses.isEmpty
-        #expect(hasTeamActivity, "Should have team agent spawning events (team.agent.started or Agent tool uses)")
+        if runtimeCase.expectsTeamEvents {
+            #expect(hasTeamActivity, "Should have team agent spawning events (team.agent.started or Agent tool uses)")
+        }
 
         // 9. Verify files on disk
         let fm = FileManager.default
@@ -157,6 +182,7 @@ struct Phase2FunctionalTest {
 
         // Check for test results
         let hasTestResults = findOutputFile(named: "test_results.txt", workspacePath: testDir, task: task) != nil
+        #expect(hasTestResults, "test_results.txt should exist")
 
         // 10. Verify callback events include team-related events
         let parsedTeamEvents = receivedEvents.filter {
@@ -169,6 +195,7 @@ struct Phase2FunctionalTest {
 
         // Summary
         print("\n=== Phase 2 Maker & Checker E2E Results ===")
+        print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Workspace: \(workspace.name) -> \(workspace.primaryPath)")
         print("Status: \(task.status.rawValue)")
         print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")

@@ -854,6 +854,7 @@ final class AgentRuntimeWorker {
             runtime: .claudeCode,
             budgetEnforcementMode: budgetEnforcementMode
         ) else {
+            isRunning = false
             return
         }
         Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "resume")
@@ -1264,6 +1265,7 @@ final class AgentRuntimeWorker {
             runtime: .copilotCLI,
             budgetEnforcementMode: budgetEnforcementMode
         ) else {
+            isRunning = false
             return
         }
         Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
@@ -2051,6 +2053,9 @@ final class AgentRuntimeWorker {
         for task: AgentTask,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> PermissionPolicy {
+        if skipPermissions {
+            return .autonomous
+        }
         let resolution = TaskPolicyStore.resolve(
             for: task,
             globalDefaultLevel: AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw),

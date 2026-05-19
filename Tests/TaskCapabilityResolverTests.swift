@@ -157,6 +157,479 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Multiple same-service connectors project namespaced env vars without legacy collision")
+    func multipleSameServiceConnectorsProjectNamespacedEnvVarsWithoutLegacyCollision() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "REDCap Workspace", primaryPath: "/tmp/redcap-workspace")
+        context.insert(workspace)
+
+        let source = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        source.workspace = workspace
+        source.configKeys = ["REDCAP_API_URL"]
+        source.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(source)
+
+        let target = Connector(
+            name: "Study B Target",
+            serviceType: "redcap",
+            connectorDescription: "Target REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        target.workspace = workspace
+        target.configKeys = ["REDCAP_API_URL"]
+        target.configValues = ["https://redcap.example.edu/api/target"]
+        context.insert(target)
+
+        let task = AgentTask(
+            title: "Move REDCap data",
+            goal: "Copy records from Study A Source to Study B Target",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_STUDY_B_TARGET_API_URL"] == "https://redcap.example.edu/api/target")
+        #expect(env["REDCAP_API_URL"] == nil)
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""alias":"study_a_source""#) == true)
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""alias":"study_b_target""#) == true)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Alias: study_a_source"))
+        #expect(prompt.contains("Alias: study_b_target"))
+        #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
+        #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+        #expect(prompt.contains("connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative"))
+    }
+
+    @Test("Multiple Jira connectors prompt uses projected env names")
+    func multipleJiraConnectorsPromptUsesProjectedEnvNames() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira Workspace", primaryPath: "/tmp/jira-multi-workspace")
+        context.insert(workspace)
+
+        let eng = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        eng.workspace = workspace
+        eng.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        eng.configValues = ["https://eng.example.atlassian.net", "ENG", "eng@example.edu", "eng-token"]
+        context.insert(eng)
+
+        let ops = Connector(
+            name: "Ops Jira",
+            serviceType: "jira",
+            connectorDescription: "Operations Jira",
+            baseURL: "https://ops.example.atlassian.net",
+            authMethod: "basic"
+        )
+        ops.workspace = workspace
+        ops.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        ops.configValues = ["https://ops.example.atlassian.net", "OPS", "ops@example.edu", "ops-token"]
+        context.insert(ops)
+
+        let task = AgentTask(
+            title: "Compare Jira tickets",
+            goal: "Compare ENG and OPS Jira work queues",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Alias: eng_jira"))
+        #expect(prompt.contains("Alias: ops_jira"))
+        #expect(prompt.contains("baseURL: $JIRA_ENG_JIRA_BASE_URL"))
+        #expect(prompt.contains("projects: $JIRA_OPS_JIRA_PROJECTS"))
+        #expect(prompt.contains(#""$JIRA_ENG_JIRA_EMAIL:$JIRA_ENG_JIRA_API_TOKEN""#))
+        #expect(prompt.contains(#""${JIRA_ENG_JIRA_BASE_URL}/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS""#))
+        #expect(prompt.contains(#""${JIRA_OPS_JIRA_BASE_URL}/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS""#))
+        #expect(prompt.contains("connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative"))
+        #expect(!prompt.contains(#""$JIRA_BASE_URL/rest/api/3/...""#))
+    }
+
+    @Test("Follow-up prompt preserves namespaced connector manifest")
+    func followUpPromptPreservesNamespacedConnectorManifest() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "REDCap Follow Up Workspace", primaryPath: "/tmp/redcap-follow-up")
+        context.insert(workspace)
+
+        let source = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        source.workspace = workspace
+        source.configKeys = ["REDCAP_API_URL"]
+        source.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(source)
+
+        let target = Connector(
+            name: "Study B Target",
+            serviceType: "redcap",
+            connectorDescription: "Target REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        target.workspace = workspace
+        target.configKeys = ["REDCAP_API_URL"]
+        target.configValues = ["https://redcap.example.edu/api/target"]
+        context.insert(target)
+
+        let task = AgentTask(
+            title: "Move REDCap data",
+            goal: "Copy records from Study A Source to Study B Target",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "Continue copying records",
+            task: task
+        )
+
+        #expect(prompt.contains("Alias: study_a_source"))
+        #expect(prompt.contains("Alias: study_b_target"))
+        #expect(prompt.contains("REDCAP_STUDY_A_SOURCE_API_URL"))
+        #expect(prompt.contains("REDCAP_STUDY_B_TARGET_API_URL"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+    }
+
+    @Test("Single same-service connector keeps legacy env vars during deprecation window")
+    func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Single REDCap Workspace", primaryPath: "/tmp/redcap-single")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Study A Source",
+            serviceType: "redcap",
+            connectorDescription: "Source REDCap project",
+            baseURL: "https://redcap.example.edu/api/",
+            authMethod: "api_key"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["REDCAP_API_URL"]
+        connector.configValues = ["https://redcap.example.edu/api/source"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use REDCap",
+            goal: "Read Study A Source metadata",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_API_URL"] == "https://redcap.example.edu/api/source")
+    }
+
+    @Test("Projection namespaces duplicate connector credentials")
+    func projectionNamespacesDuplicateConnectorCredentials() throws {
+        let source = Connector(name: "Study A Source", serviceType: "redcap", authMethod: "api_key")
+        source.credentialKeys = ["REDCAP_API_TOKEN"]
+
+        let target = Connector(name: "Study B Target", serviceType: "redcap", authMethod: "api_key")
+        target.credentialKeys = ["REDCAP_API_TOKEN"]
+
+        let store = MockSecretStore()
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "source-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: source.id),
+            label: nil
+        )
+        store.save(
+            key: "REDCAP_API_TOKEN",
+            value: "target-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: target.id),
+            label: nil
+        )
+
+        let env = ConnectorRuntimeProjection(
+            connectors: [source, target],
+            secretStore: store
+        ).environmentVariables()
+
+        #expect(env["REDCAP_STUDY_A_SOURCE_API_TOKEN"] == "source-token")
+        #expect(env["REDCAP_STUDY_B_TARGET_API_TOKEN"] == "target-token")
+        #expect(env["REDCAP_API_TOKEN"] == nil)
+    }
+
+    @Test("Projection treats empty connector credentials as missing")
+    func projectionTreatsEmptyConnectorCredentialsAsMissing() throws {
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "basic")
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.edu", entityID: entityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "   ", entityID: entityID, label: nil)
+
+        let env = ConnectorRuntimeProjection(
+            connectors: [connector],
+            secretStore: store
+        ).environmentVariables()
+
+        #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_JIRA_API_TOKEN"] == nil)
+        #expect(env["JIRA_API_TOKEN"] == nil)
+
+        let manifestJSON = try #require(env["ASTRA_CONNECTORS"])
+        let manifestData = try #require(manifestJSON.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(ConnectorRuntimeProjection.Manifest.self, from: manifestData)
+        let manifestConnector = try #require(manifest.connectors.first)
+
+        #expect(manifestConnector.credentials["email"] == "JIRA_JIRA_EMAIL")
+        #expect(manifestConnector.credentials["apiToken"] == nil)
+    }
+
+    @Test("Projection aliases duplicate connector names consistently across input order")
+    func projectionAliasesDuplicateConnectorNamesConsistentlyAcrossInputOrder() throws {
+        let first = Connector(name: "REDCap", serviceType: "redcap")
+        first.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+
+        let second = Connector(name: "REDCap", serviceType: "redcap")
+        second.id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+
+        let firstOrder = ConnectorRuntimeProjection.aliasesByConnectorID(for: [first, second])
+        let reversedOrder = ConnectorRuntimeProjection.aliasesByConnectorID(for: [second, first])
+
+        #expect(firstOrder[first.id] == "redcap_11111111")
+        #expect(firstOrder[second.id] == "redcap_22222222")
+        #expect(reversedOrder[first.id] == firstOrder[first.id])
+        #expect(reversedOrder[second.id] == firstOrder[second.id])
+    }
+
+    @Test("Projection resolves preferred alias collisions consistently across input order")
+    func projectionResolvesPreferredAliasCollisionsConsistentlyAcrossInputOrder() throws {
+        let duplicateFirst = Connector(name: "API", serviceType: "jira")
+        duplicateFirst.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+
+        let duplicateSecond = Connector(name: "API", serviceType: "jira")
+        duplicateSecond.id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+
+        let directCollision = Connector(name: "API 11111111", serviceType: "jira")
+        directCollision.id = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+
+        let firstOrder = ConnectorRuntimeProjection.aliasesByConnectorID(
+            for: [duplicateFirst, duplicateSecond, directCollision]
+        )
+        let reversedOrder = ConnectorRuntimeProjection.aliasesByConnectorID(
+            for: [directCollision, duplicateSecond, duplicateFirst]
+        )
+
+        #expect(firstOrder == reversedOrder)
+        #expect(firstOrder[directCollision.id] == "api_11111111")
+        #expect(firstOrder[duplicateFirst.id] == "api_11111111_2")
+        #expect(firstOrder[duplicateSecond.id] == "api_22222222")
+    }
+
+    @Test("Projection aliases are scoped by service type")
+    func projectionAliasesAreScopedByServiceType() throws {
+        let jira = Connector(name: "Eng", serviceType: "jira")
+        jira.configKeys = ["BASE_URL"]
+        jira.configValues = ["https://jira.example.edu"]
+
+        let github = Connector(name: "Eng", serviceType: "github")
+        github.configKeys = ["BASE_URL"]
+        github.configValues = ["https://github.example.edu"]
+
+        let aliases = ConnectorRuntimeProjection.aliasesByConnectorID(for: [jira, github])
+
+        #expect(aliases[jira.id] == "eng")
+        #expect(aliases[github.id] == "eng")
+
+        let projection = ConnectorRuntimeProjection(connectors: [jira, github])
+        let env = projection.environmentVariables()
+        #expect(env["JIRA_ENG_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["GITHUB_ENG_BASE_URL"] == "https://github.example.edu")
+
+        let manifest = projection.manifest()
+        #expect(manifest.connectors.map(\.alias) == ["eng", "eng"])
+        #expect(manifest.connectors.map(\.envPrefix) == ["JIRA_ENG", "GITHUB_ENG"])
+    }
+
+    @Test("Runtime examples do not embed raw connector base URLs")
+    func runtimeExamplesDoNotEmbedRawConnectorBaseURLs() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Unsafe Base URL", primaryPath: "/tmp/unsafe-base-url")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: #"https://example.atlassian.net/$(touch /tmp/astra-prompt-pwn)"#,
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.configValues = ["person@example.edu", "token"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Check Jira permissions",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Base URL: https://example.atlassian.net/$(touch /tmp/astra-prompt-pwn)"))
+        #expect(!prompt.contains("Runtime example: curl"))
+        #expect(!prompt.contains("mypermissions?permissions=BROWSE_PROJECTS"))
+    }
+
+    @Test("Prompt config summary only includes projected config values")
+    func promptConfigSummaryOnlyIncludesProjectedConfigValues() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Partial Config", primaryPath: "/tmp/partial-config")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://jira.example.edu",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_REGION"]
+        connector.configValues = ["https://jira.example.edu", "   "]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Check Jira configuration",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Config: JIRA_BASE_URL: https://jira.example.edu"))
+        #expect(!prompt.contains("Config: JIRA_PROJECTS"))
+        #expect(!prompt.contains("JIRA_PROJECTS:    "))
+        #expect(!prompt.contains("JIRA_REGION:"))
+        #expect(prompt.contains("Config env vars: JIRA_JIRA_BASE_URL"))
+        #expect(!prompt.contains("JIRA_JIRA_PROJECTS"))
+        #expect(!prompt.contains("JIRA_JIRA_REGION"))
+    }
+
+    @Test("Projection does not emit legacy fallback when original keys collide")
+    func projectionDoesNotEmitLegacyFallbackWhenOriginalKeysCollide() throws {
+        let first = Connector(name: "First API", serviceType: "first")
+        first.configKeys = ["API_TOKEN"]
+        first.configValues = ["first-token"]
+
+        let second = Connector(name: "Second API", serviceType: "second")
+        second.configKeys = ["API_TOKEN"]
+        second.configValues = ["second-token"]
+
+        let env = ConnectorRuntimeProjection(connectors: [first, second]).environmentVariables()
+
+        #expect(env["FIRST_FIRST_API_API_TOKEN"] == "first-token")
+        #expect(env["SECOND_SECOND_API_API_TOKEN"] == "second-token")
+        #expect(env["API_TOKEN"] == nil)
+    }
+
+    @Test("Projection disambiguates normalized key collisions within one connector")
+    func projectionDisambiguatesNormalizedKeyCollisionsWithinOneConnector() throws {
+        let connector = Connector(name: "Study", serviceType: "redcap", authMethod: "api_key")
+        connector.configKeys = ["REDCAP_API_TOKEN", "API_TOKEN", "REDCAP_API_URL"]
+        connector.configValues = ["prefixed-token", "plain-token", "https://redcap.example.edu/api/"]
+
+        let projection = ConnectorRuntimeProjection(connectors: [connector])
+        let env = projection.environmentVariables()
+
+        #expect(env["REDCAP_STUDY_API_TOKEN"] == "prefixed-token")
+        #expect(env["REDCAP_STUDY_API_TOKEN_2"] == "plain-token")
+        #expect(env["REDCAP_STUDY_API_URL"] == "https://redcap.example.edu/api/")
+
+        let manifestJSON = try #require(env["ASTRA_CONNECTORS"])
+        let manifestData = try #require(manifestJSON.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(ConnectorRuntimeProjection.Manifest.self, from: manifestData)
+        let manifestConnector = try #require(manifest.connectors.first)
+
+        #expect(manifestConnector.config["apiToken"] == "REDCAP_STUDY_API_TOKEN")
+        #expect(manifestConnector.config["apiToken2"] == "REDCAP_STUDY_API_TOKEN_2")
+        #expect(manifestConnector.config["apiURL"] == "REDCAP_STUDY_API_URL")
+    }
+
+    @Test("Projection skips empty and missing connector config values")
+    func projectionSkipsEmptyAndMissingConnectorConfigValues() throws {
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "basic")
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS", "JIRA_REGION"]
+        connector.configValues = ["https://jira.example.edu", "   "]
+
+        let env = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
+
+        #expect(env["JIRA_JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_JIRA_PROJECTS"] == nil)
+        #expect(env["JIRA_PROJECTS"] == nil)
+        #expect(env["JIRA_JIRA_REGION"] == nil)
+        #expect(env["JIRA_REGION"] == nil)
+
+        let manifestJSON = try #require(env["ASTRA_CONNECTORS"])
+        let manifestData = try #require(manifestJSON.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(ConnectorRuntimeProjection.Manifest.self, from: manifestData)
+        let manifestConnector = try #require(manifest.connectors.first)
+
+        #expect(manifestConnector.config["baseURL"] == "JIRA_JIRA_BASE_URL")
+        #expect(manifestConnector.config["projects"] == nil)
+        #expect(manifestConnector.config["region"] == nil)
+    }
+
+    @Test("Built-in capability instructions defer env names to connector projection")
+    func builtInCapabilityInstructionsDeferEnvNamesToConnectorProjection() throws {
+        let packages = PluginCatalog.builtInPackages
+        let jiraInstructions = try #require(packages.first { $0.id == "jira-workflow" }?.skills.first?.behaviorInstructions)
+        let redcapInstructions = try #require(packages.first { $0.id == "redcap-workflow" }?.skills.first?.behaviorInstructions)
+        let gcloudInstructions = try #require(packages.first { $0.id == "gcloud-workflow" }?.skills.first?.behaviorInstructions)
+
+        #expect(!jiraInstructions.contains("Use Basic auth with the JIRA_EMAIL and JIRA_API_TOKEN environment variables"))
+        #expect(!jiraInstructions.contains(#""$JIRA_BASE_URL/rest/api/3/...""#))
+        #expect(!redcapInstructions.contains("Use the REDCAP_API_TOKEN environment variable"))
+        #expect(!redcapInstructions.contains(#""token=$REDCAP_API_TOKEN""#))
+        #expect(!gcloudInstructions.contains("Use the GCP_PROJECT environment variable when set"))
+    }
+
     @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
     func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
         let container = try makeTaskCapabilityResolverContainer()

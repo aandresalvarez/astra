@@ -56,7 +56,7 @@ struct RealProviderSmokeTests {
             model: claudeModel
         )
 
-        _ = await harness.execute(task: task, worker: worker)
+        _ = try await harness.execute(task: task, worker: worker)
         let firstRun = try #require(task.runs.first)
         Self.printRunSummary(label: "real claude initial", task: task, run: firstRun)
 
@@ -66,7 +66,7 @@ struct RealProviderSmokeTests {
 
         task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
         task.model = copilotModel
-        _ = await harness.continueTask(
+        _ = try await harness.continueTask(
             task: task,
             message: "Now reply with exactly this text and nothing else: ASTRA_REAL_COPILOT_OK",
             worker: worker
@@ -105,7 +105,7 @@ struct RealProviderSmokeTests {
             model: copilotModel
         )
 
-        _ = await harness.execute(task: task, worker: worker)
+        _ = try await harness.execute(task: task, worker: worker)
         let firstRun = try #require(task.runs.first)
         Self.printRunSummary(label: "real copilot initial", task: task, run: firstRun)
 
@@ -115,7 +115,7 @@ struct RealProviderSmokeTests {
 
         task.runtimeID = AgentRuntimeID.claudeCode.rawValue
         task.model = claudeModel
-        _ = await harness.continueTask(
+        _ = try await harness.continueTask(
             task: task,
             message: "Now reply with exactly this text and nothing else: ASTRA_REAL_CLAUDE_SECOND_OK",
             worker: worker
@@ -261,19 +261,23 @@ private final class RealProviderHarness {
         return worker
     }
 
-    func execute(task: AgentTask, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
+    func execute(task: AgentTask, worker: AgentRuntimeWorker) async throws -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        await worker.execute(task: task, modelContext: context) { event in
-            events.append(event)
+        try await E2ETestSupport.withLiveProviderSlot {
+            await worker.execute(task: task, modelContext: context) { event in
+                events.append(event)
+            }
         }
         try? context.save()
         return events
     }
 
-    func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
+    func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async throws -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        await worker.continueSession(task: task, message: message, modelContext: context) { event in
-            events.append(event)
+        try await E2ETestSupport.withLiveProviderSlot {
+            await worker.continueSession(task: task, message: message, modelContext: context) { event in
+                events.append(event)
+            }
         }
         try? context.save()
         return events
