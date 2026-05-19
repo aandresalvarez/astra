@@ -3972,7 +3972,7 @@ struct WorkspaceSetupForm: View {
 
     private func copyCapabilitySetup(from workspace: Workspace) {
         let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
-        guard !summary.selectedPackageIDs.isEmpty else { return }
+        guard !summary.selectedPackageIDs.isEmpty, !summary.inputsByPackageID.isEmpty else { return }
 
         draft.selectedCapabilityIDs = summary.selectedPackageIDs
         draft.capabilityConfiguration = OnboardingCapabilityConfiguration()
