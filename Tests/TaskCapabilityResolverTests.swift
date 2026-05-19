@@ -1274,12 +1274,13 @@ struct TaskCapabilityResolverTests {
                     version: "1.0.0",
                     skills: [],
                     connectors: [],
-                    localTools: [],
-                    templates: [],
-                    browserAdapters: [BrowserSiteAdapterID.googleDrive]
-                )
-            ]
-        )
+	                localTools: [],
+	                templates: [],
+	                browserAdapters: [BrowserSiteAdapterID.googleDrive],
+	                governance: .builtInApproved(riskLevel: .high)
+	            )
+	        ]
+	    )
         #expect(adapters == [BrowserSiteAdapterID.googleDrive])
 
         ShelfBrowserBridgeRegistry.shared.update(
@@ -1296,6 +1297,95 @@ struct TaskCapabilityResolverTests {
         let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
         #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
+    }
+
+    @Test("Browser adapters require runnable catalog policy")
+    func browserAdaptersRequireRunnableCatalogPolicy() throws {
+        let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
+        workspace.enabledCapabilityIDs = ["draft-drive-browser"]
+        var draftPackage = PluginPackage(
+            id: "draft-drive-browser",
+            name: "Draft Drive Browser",
+            icon: "folder",
+            description: "Draft Drive browser adapter",
+            author: "Tests",
+            category: "Browser",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive],
+            governance: .localDraft()
+        )
+
+        let blocked = TaskCapabilityResolver.enabledBrowserAdapters(
+            for: workspace,
+            packages: [draftPackage]
+        )
+        #expect(blocked.isEmpty)
+
+        let approval = CapabilityApprovalRecord(
+            packageID: draftPackage.id,
+            packageVersion: draftPackage.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: draftPackage)
+        )
+        let approved = TaskCapabilityResolver.enabledBrowserAdapters(
+            for: workspace,
+            packages: [draftPackage],
+            approvalRecords: [approval]
+        )
+        #expect(approved == [BrowserSiteAdapterID.googleDrive])
+
+        draftPackage.governance.approvalStatus = .blocked
+        let explicitlyBlocked = TaskCapabilityResolver.enabledBrowserAdapters(
+            for: workspace,
+            packages: [draftPackage]
+        )
+        #expect(explicitlyBlocked.isEmpty)
+    }
+
+    @Test("Runtime integrity reports unknown browser adapter IDs")
+    func runtimeIntegrityReportsUnknownBrowserAdapterIDs() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Unknown Adapter", primaryPath: "/tmp/unknown-adapter")
+        let package = PluginPackage(
+            id: "unknown-browser-package",
+            name: "Unknown Browser Package",
+            icon: "safari",
+            description: "Unknown browser adapter",
+            author: "Tests",
+            category: "Browser",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: ["unknownAdapter"],
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use browser", goal: "Use unknown adapter", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false
+        )
+
+        #expect(issues.map(\.resourceKind) == [.browserAdapter])
+        #expect(issues.first?.resourceName == "unknownAdapter")
+        #expect(issues.first?.message.contains("not known to ASTRA") == true)
     }
 
     @Test("Browser task prompt keeps capability referenced by the user goal")

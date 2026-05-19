@@ -1462,7 +1462,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         if policyGuard?.usesBroadProviderPermissions == true {
             let message = """
-            \(providerName) denied a tool request even though ASTRA launched it with broad provider permissions (`--allow-all-tools`). This is a provider-side, account, organization, or CLI policy denial, not an ASTRA permission that another approval can expand.
+            \(providerName) denied a tool request even though ASTRA launched it with broad provider permissions (`--allow-all` / `--allow-all-tools`). This is a provider-side, account, organization, or CLI policy denial, not an ASTRA permission that another approval can expand.
             Tool: \(toolName).\(requestText)
             Provider detail: \(providerDetail)
             """

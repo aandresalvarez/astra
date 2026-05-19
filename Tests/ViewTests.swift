@@ -1075,6 +1075,70 @@ struct TaskThreadSnapshotTests {
         #expect(facts.contains(RunFactPresentation(title: "Env keys", value: "GCP_PROJECT, GCP_REGION", isMonospaced: true)))
     }
 
+    @Test("Permission summary presentation includes MCP server facts")
+    func permissionSummaryPresentationIncludesMCPServerFacts() {
+        let render = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: UUID(),
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .taskOverride,
+            providerRender: render,
+            workspacePath: "/tmp/mcp-summary",
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            mcpServers: [
+                .init(
+                    id: "github",
+                    packageID: "github-workflow",
+                    displayName: "GitHub MCP",
+                    transport: "stdio",
+                    allowedTools: ["issues.list"],
+                    excludedTools: ["repo.delete"],
+                    resourcesEnabled: true,
+                    promptsEnabled: false,
+                    trustLevel: "high"
+                )
+            ],
+            approvalsGranted: []
+        )
+
+        let summary = PolicySummaryPresentation(
+            manifest: manifest,
+            permissionSummaryPayload: nil
+        )
+
+        #expect(summary?.facts.contains(RunFactPresentation(
+            title: "MCP servers",
+            value: "github-workflow/github stdio tools:1"
+        )) == true)
+    }
+
     @Test("Run activity presentation suppresses duplicated actionable notices")
     func runActivityPresentationSuppressesActionableNotices() {
         let task = makeTask(status: .failed)

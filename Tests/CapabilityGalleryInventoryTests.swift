@@ -146,6 +146,50 @@ struct CapabilityGalleryInventoryTests {
         #expect(Set(adminPackages.map(\.id)) == ["approved", "blocked", "draft"])
     }
 
+    @Test("gallery applies role and workspace tag policy context")
+    func galleryAppliesRoleAndWorkspaceTagPolicyContext() {
+        let researcher = makeGalleryPackage(
+            id: "researcher-only",
+            name: "Researcher",
+            category: "A",
+            governance: .builtInApproved(
+                riskLevel: .medium,
+                allowedRoles: ["researcher"],
+                visibility: .roleScoped
+            )
+        )
+        let clinical = makeGalleryPackage(
+            id: "clinical-only",
+            name: "Clinical",
+            category: "A",
+            governance: .builtInApproved(
+                riskLevel: .medium,
+                allowedWorkspaceTags: ["clinical-research"],
+                visibility: .workspaceScoped
+            )
+        )
+
+        let denied = CapabilityGalleryInventory.packages(
+            catalogPackages: [researcher, clinical],
+            policyContext: CapabilityCatalogPolicyContext(
+                userRoleIDs: ["engineer"],
+                workspaceTags: ["engineering"],
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+        let allowed = CapabilityGalleryInventory.packages(
+            catalogPackages: [researcher, clinical],
+            policyContext: CapabilityCatalogPolicyContext(
+                userRoleIDs: ["Researcher"],
+                workspaceTags: ["Clinical-Research"],
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(denied.isEmpty)
+        #expect(allowed.map(\.id) == ["clinical-only", "researcher-only"])
+    }
+
     @Test("gallery uses one column in every presentation")
     func galleryUsesOneColumn() {
         #expect(CapabilityGalleryLayout.columnCount(for: .embedded) == 1)

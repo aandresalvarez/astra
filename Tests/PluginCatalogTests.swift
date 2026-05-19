@@ -46,7 +46,8 @@ private let testPackage = PluginPackage(
     )],
     connectors: [],
     localTools: [],
-    templates: []
+    templates: [],
+    governance: .builtInApproved(riskLevel: .medium)
 )
 
 // MARK: - Load Catalog
@@ -283,7 +284,7 @@ struct PluginCatalogInstallTests {
         try ctx.save()
 
         let catalog = PluginCatalog()
-        catalog.install(testPackage, into: ws, modelContext: ctx)
+        try catalog.install(testPackage, into: ws, modelContext: ctx)
 
         #expect(ws.skills.count == 1)
         #expect(ws.skills[0].name == "Test Skill")
@@ -301,7 +302,7 @@ struct PluginCatalogInstallTests {
         try ctx.save()
 
         let catalog = PluginCatalog()
-        catalog.install(testPackage, into: ws, modelContext: ctx)
+        try catalog.install(testPackage, into: ws, modelContext: ctx)
 
         #expect(ws.installedVersion(of: "test-plugin") == "1.0.0")
     }
@@ -315,8 +316,8 @@ struct PluginCatalogInstallTests {
         try ctx.save()
 
         let catalog = PluginCatalog()
-        catalog.install(testPackage, into: ws, modelContext: ctx)
-        catalog.install(testPackage, into: ws, modelContext: ctx)
+        try catalog.install(testPackage, into: ws, modelContext: ctx)
+        try catalog.install(testPackage, into: ws, modelContext: ctx)
 
         #expect(ws.skills.count == 1)
     }
@@ -346,11 +347,35 @@ struct PluginCatalogInstallTests {
         )]
 
         let catalog = PluginCatalog()
-        catalog.install(pkgWithTemplate, into: ws, modelContext: ctx)
+        try catalog.install(pkgWithTemplate, into: ws, modelContext: ctx)
 
         #expect(ws.templates.count == 1)
         #expect(ws.templates[0].name == "Review Template")
         #expect(ws.templates[0].mainGoal == "Review {{file}}")
+    }
+
+    @Test("Install blocks draft package through legacy catalog path")
+    func installBlocksDraftPackageThroughLegacyCatalogPath() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/install-draft")
+        ctx.insert(ws)
+        try ctx.save()
+
+        var draft = testPackage
+        draft.id = "draft-plugin"
+        draft.governance = .localDraft()
+
+        let catalog = PluginCatalog()
+        do {
+            try catalog.install(draft, into: ws, modelContext: ctx)
+            Issue.record("Draft capability should not install through legacy catalog path")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("draft review"))
+        }
+
+        #expect(ws.skills.isEmpty)
+        #expect(ws.installedPluginIDs.isEmpty)
     }
 }
 
@@ -432,7 +457,7 @@ struct PluginCatalogUpdateTests {
         try ctx.save()
 
         let catalog = PluginCatalog()
-        catalog.install(testPackage, into: ws, modelContext: ctx)
+        try catalog.install(testPackage, into: ws, modelContext: ctx)
         #expect(ws.skills[0].behaviorInstructions == "Be careful.")
 
         var v2 = testPackage

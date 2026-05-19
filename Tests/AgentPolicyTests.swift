@@ -188,7 +188,10 @@ struct AgentPolicyTests {
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
     func copilotAutonomousRenderUsesAllowAllWhenSupported() {
         let capabilities = CopilotCLICapabilities(helpText: """
+        --allow-all
         --allow-all-tools
+        --allow-all-paths
+        --allow-all-urls
         --output-format
         --stream
         --no-ask-user
@@ -202,7 +205,7 @@ struct AgentPolicyTests {
 
         #expect(render.providerID == .copilotCLI)
         #expect(render.policyLevel == .autonomous)
-        #expect(render.cliArgumentsSummary.contains("--allow-all-tools"))
+        #expect(render.cliArgumentsSummary.contains("--allow-all"))
         #expect(render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "copilot_cli.autonomous-broad-permissions" })
     }
@@ -516,5 +519,70 @@ struct RunPermissionManifestTests {
 
         #expect(manifest.policyLevel == .build)
         #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser:*)"))
+    }
+
+    @Test("Preflight manifest includes catalog-approved MCP servers")
+    func preflightManifestIncludesCatalogApprovedMCPServers() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "MCP Policy", primaryPath: "/tmp/mcp-policy-workspace")
+        let package = PluginPackage(
+            id: "mcp-policy-package",
+            name: "MCP Policy Package",
+            icon: "server.rack",
+            description: "MCP manifest package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            mcpServers: [
+                PluginMCPServer(
+                    id: "github",
+                    displayName: "GitHub MCP",
+                    transport: .stdio,
+                    command: "github-mcp-server",
+                    arguments: ["stdio"],
+                    allowedTools: ["issues.list"],
+                    excludedTools: ["repo.delete"],
+                    resourcesEnabled: true,
+                    promptsEnabled: true,
+                    trustLevel: .high
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        workspace.enabledCapabilityIDs = [package.id]
+        let task = AgentTask(title: "MCP", goal: "Use MCP", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            capabilityPackages: [package],
+            modelContext: context
+        )
+
+        #expect(manifest.mcpServers.count == 1)
+        #expect(manifest.mcpServers.first?.packageID == package.id)
+        #expect(manifest.mcpServers.first?.id == "github")
+        #expect(manifest.mcpServers.first?.allowedTools == ["issues.list"])
+        #expect(manifest.mcpServers.first?.excludedTools == ["repo.delete"])
+        #expect(manifest.mcpServers.first?.resourcesEnabled == true)
+        #expect(manifest.mcpServers.first?.promptsEnabled == true)
+        #expect(manifest.mcpServers.first?.trustLevel == "high")
     }
 }

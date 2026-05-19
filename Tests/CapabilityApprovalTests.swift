@@ -38,6 +38,62 @@ struct CapabilityApprovalTests {
         #expect(try CapabilityApprovalDigest.digest(for: package) != CapabilityApprovalDigest.digest(for: changed))
     }
 
+    @Test("approval digest changes for connector browser adapter and MCP edits")
+    func approvalDigestChangesForRuntimeSurfaceEdits() throws {
+        let package = makeApprovalPackage()
+        let original = try CapabilityApprovalDigest.digest(for: package)
+
+        var connectorChanged = package
+        connectorChanged.connectors = [
+            PluginConnector(
+                name: "Jira",
+                serviceType: "jira",
+                icon: "list.clipboard",
+                description: "Jira connector",
+                baseURL: "https://jira.example.com",
+                authMethod: "bearer",
+                credentialHints: [.init(key: "JIRA_TOKEN", hint: "Jira token")],
+                configHints: [],
+                notes: ""
+            )
+        ]
+
+        var browserChanged = package
+        browserChanged.browserAdapters = [BrowserSiteAdapterID.github]
+
+        var mcpChanged = package
+        mcpChanged.mcpServers = [
+            PluginMCPServer(
+                id: "github",
+                displayName: "GitHub MCP",
+                transport: .stdio,
+                command: "github-mcp-server",
+                arguments: ["stdio"],
+                allowedTools: ["issues.list"]
+            )
+        ]
+
+        #expect(try CapabilityApprovalDigest.digest(for: connectorChanged) != original)
+        #expect(try CapabilityApprovalDigest.digest(for: browserChanged) != original)
+        #expect(try CapabilityApprovalDigest.digest(for: mcpChanged) != original)
+    }
+
+    @Test("approval digest ignores source last refreshed timestamp")
+    func approvalDigestIgnoresSourceLastRefreshedTimestamp() throws {
+        var first = makeApprovalPackage()
+        first.sourceMetadata = CapabilitySourceMetadata(
+            id: "catalog",
+            displayName: "Catalog",
+            kind: "local",
+            trustLevel: "local",
+            lastRefreshedAt: Date(timeIntervalSince1970: 100)
+        )
+        var second = first
+        second.sourceMetadata?.lastRefreshedAt = Date(timeIntervalSince1970: 200)
+
+        #expect(try CapabilityApprovalDigest.digest(for: first) == CapabilityApprovalDigest.digest(for: second))
+    }
+
     @Test("approval store default directories are channel-specific")
     func approvalStoreDirectoriesAreChannelSpecific() {
         let dev = CapabilityApprovalStore.approvalsDirectory(for: .development).path

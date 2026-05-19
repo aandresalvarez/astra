@@ -235,8 +235,17 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         for adapter in package.browserAdapters {
-            guard let normalized = BrowserSiteAdapterID.normalized(adapter),
-                  !enabledBrowserAdapters.contains(normalized) else { continue }
+            guard let normalized = BrowserSiteAdapterID.normalized(adapter) else {
+                issues.append(issue(
+                    package: package,
+                    source: source,
+                    kind: .browserAdapter,
+                    name: adapter,
+                    message: "browser adapter \(adapter) is not known to ASTRA"
+                ))
+                continue
+            }
+            guard !enabledBrowserAdapters.contains(normalized) else { continue }
             issues.append(issue(
                 package: package,
                 source: source,

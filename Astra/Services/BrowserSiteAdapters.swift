@@ -18,7 +18,7 @@ enum BrowserSiteAdapterID {
         case "github", "githubbrowser", "githubworkflow", "gh":
             return github
         default:
-            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return nil
         }
     }
 

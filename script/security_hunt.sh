@@ -11,6 +11,7 @@ run() {
 
 run swift test --filter SecurityTests
 run swift test --filter AgentPolicyTests
+run swift test --filter RunPermissionManifestTests
 run swift test --filter IsolationTests
 run swift test --filter RuntimeReadinessServiceTests
 run swift test --filter AppUpdateTests

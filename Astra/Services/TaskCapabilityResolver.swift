@@ -115,7 +115,8 @@ struct TaskCapabilityResolver {
     var enabledBrowserAdapters: [String] {
         Self.enabledBrowserAdapters(
             for: task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions()
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            approvalRecords: CapabilityApprovalStore().records()
         )
     }
 
@@ -219,15 +220,22 @@ struct TaskCapabilityResolver {
 
     static func enabledBrowserAdapters(
         for workspace: Workspace?,
-        packages: [PluginPackage]
+        packages: [PluginPackage],
+        approvalRecords: [CapabilityApprovalRecord] = []
     ) -> [String] {
         guard let workspace else { return [] }
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
+        let context = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            approvalRecords: approvalRecords
+        )
 
         var seen = Set<String>()
         var adapters: [String] = []
-        for package in packages where enabledPackageIDs.contains(package.id) {
+        for package in packages
+            where enabledPackageIDs.contains(package.id)
+                && CapabilityCatalogPolicy.decision(for: package, context: context).canRun {
             for adapter in package.browserAdapters {
                 guard let normalized = BrowserSiteAdapterID.normalized(adapter),
                       seen.insert(normalized).inserted else { continue }

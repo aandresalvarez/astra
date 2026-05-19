@@ -77,8 +77,18 @@ final class PluginCatalog {
         modelContext: ModelContext,
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
-        baseURLOverrides: [String: String] = [:]
-    ) {
+        baseURLOverrides: [String: String] = [:],
+        policyContext: CapabilityCatalogPolicyContext? = nil
+    ) throws {
+        let effectivePolicyContext = policyContext ?? CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+        let policyDecision = CapabilityCatalogPolicy.decision(for: package, context: effectivePolicyContext)
+        guard policyDecision.canEnable else {
+            throw CapabilityInstaller.InstallationError.blocked(policyDecision.blockerMessages)
+        }
+
         var createdSkills: [String: Skill] = [:]
 
         // Create skills

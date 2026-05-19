@@ -45,8 +45,9 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> InstallationResult {
+        let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
         let blockers = uniqueMessages(
-            policyBlockerMessages(for: package, context: policyContext)
+            policyBlockerMessages(for: package, context: effectivePolicyContext)
                 + installBlockerMessages(for: package, in: workspace, baseURLOverrides: baseURLOverrides)
         )
         guard blockers.isEmpty else {
@@ -74,7 +75,7 @@ struct CapabilityInstaller {
             credentialInputs: credentialInputs,
             configInputs: configInputs,
             baseURLOverrides: baseURLOverrides,
-            policyContext: policyContext,
+            policyContext: effectivePolicyContext,
             auditSource: "install",
             traceID: traceID
         )
@@ -109,7 +110,8 @@ struct CapabilityInstaller {
         startFields["base_url_override_count"] = String(baseURLOverrides.count)
         AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: startFields)
 
-        let blockers = uniqueMessages(policyBlockerMessages(for: package, context: policyContext))
+        let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
+        let blockers = uniqueMessages(policyBlockerMessages(for: package, context: effectivePolicyContext))
         guard blockers.isEmpty else {
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
@@ -639,12 +641,19 @@ struct CapabilityInstaller {
 
     private func policyBlockerMessages(
         for package: PluginPackage,
-        context: CapabilityCatalogPolicyContext?
+        context: CapabilityCatalogPolicyContext
     ) -> [String] {
-        guard let context else { return [] }
         let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
         guard !decision.canEnable else { return [] }
         return decision.blockerMessages
+    }
+
+    private func defaultPolicyContext(for workspace: Workspace) -> CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            currentAppVersion: appVersion,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
     }
 
     private func unsafeLocalToolMessages(for package: PluginPackage) -> [String] {

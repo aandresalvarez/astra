@@ -66,7 +66,8 @@ private func makeAnalystCapabilityPackage() -> PluginPackage {
                 arguments: ""
             )
         ],
-        templates: []
+        templates: [],
+        governance: .builtInApproved(riskLevel: .medium)
     )
 }
 
@@ -452,6 +453,92 @@ struct CapabilityInstallerTests {
             #expect(library.installedPackages().isEmpty)
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
+    }
+
+    @Test("installer applies default workspace policy when context is omitted")
+    func installerAppliesDefaultPolicyWhenContextIsOmitted() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Default Policy Blocked", primaryPath: "/tmp/default-policy-blocked")
+        context.insert(workspace)
+
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.bigquery.default-draft"
+        package.governance = .localDraft()
+
+        do {
+            try CapabilityInstaller(library: library).install(
+                package,
+                into: workspace,
+                modelContext: context
+            )
+            Issue.record("Install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("draft review"))
+            #expect(library.installedPackages().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
+
+    @Test("installer enforces role scoped policy contexts")
+    func installerEnforcesRoleScopedPolicyContexts() throws {
+        let deniedContainer = try makeCapabilityInstallerContainer()
+        let deniedContext = deniedContainer.mainContext
+        let deniedWorkspace = Workspace(name: "Denied Role", primaryPath: "/tmp/denied-role")
+        deniedContext.insert(deniedWorkspace)
+
+        let (deniedLibrary, deniedRoot) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: deniedRoot) }
+
+        var package = makeAnalystCapabilityPackage()
+        package.id = "stanford.bigquery.researcher"
+        package.governance = .builtInApproved(
+            riskLevel: .medium,
+            allowedRoles: ["researcher"],
+            visibility: .roleScoped
+        )
+
+        let deniedPolicy = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: deniedWorkspace,
+            userRoleIDs: ["engineer"],
+            currentAppVersion: SemanticVersion(1, 0, 0)
+        )
+        do {
+            try CapabilityInstaller(library: deniedLibrary).install(
+                package,
+                into: deniedWorkspace,
+                modelContext: deniedContext,
+                policyContext: deniedPolicy
+            )
+            Issue.record("Role-scoped install should have failed")
+        } catch let error as CapabilityInstaller.InstallationError {
+            #expect(error.localizedDescription.contains("researcher"))
+            #expect(deniedWorkspace.enabledCapabilityIDs.isEmpty)
+        }
+
+        let allowedContainer = try makeCapabilityInstallerContainer()
+        let allowedContext = allowedContainer.mainContext
+        let allowedWorkspace = Workspace(name: "Allowed Role", primaryPath: "/tmp/allowed-role")
+        allowedContext.insert(allowedWorkspace)
+        let (allowedLibrary, allowedRoot) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: allowedRoot) }
+
+        let allowedPolicy = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: allowedWorkspace,
+            userRoleIDs: ["Researcher"],
+            currentAppVersion: SemanticVersion(1, 0, 0)
+        )
+        try CapabilityInstaller(library: allowedLibrary).install(
+            package,
+            into: allowedWorkspace,
+            modelContext: allowedContext,
+            policyContext: allowedPolicy
+        )
+
+        #expect(allowedWorkspace.enabledCapabilityIDs == [package.id])
     }
 
     @Test("installer blocks local tool commands that embed shell syntax")

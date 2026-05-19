@@ -7,7 +7,10 @@ struct CopilotCLICapabilities: Equatable {
     var supportsNoAskUser: Bool
     var supportsSilent: Bool
     var supportsSecretEnvVars: Bool
+    var supportsAllowAll: Bool
     var supportsAllowAllTools: Bool
+    var supportsAllowAllPaths: Bool
+    var supportsAllowAllURLs: Bool
     var requiresAllowAllToolsForPrompt: Bool
 
     static let conservative = CopilotCLICapabilities(
@@ -16,17 +19,23 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoAskUser: false,
         supportsSilent: false,
         supportsSecretEnvVars: false,
+        supportsAllowAll: false,
         supportsAllowAllTools: false,
+        supportsAllowAllPaths: false,
+        supportsAllowAllURLs: false,
         requiresAllowAllToolsForPrompt: true
     )
 
     init(helpText: String) {
-        supportsOutputFormatJSON = helpText.contains("--output-format")
-        supportsStreamingFlag = helpText.contains("--stream")
-        supportsNoAskUser = helpText.contains("--no-ask-user")
-        supportsSilent = helpText.contains("--silent") || helpText.contains("-s,")
-        supportsSecretEnvVars = helpText.contains("--secret-env-vars")
-        supportsAllowAllTools = helpText.contains("--allow-all-tools")
+        supportsOutputFormatJSON = Self.hasOption("--output-format", in: helpText)
+        supportsStreamingFlag = Self.hasOption("--stream", in: helpText)
+        supportsNoAskUser = Self.hasOption("--no-ask-user", in: helpText)
+        supportsSilent = Self.hasOption("--silent", in: helpText) || helpText.contains("-s,")
+        supportsSecretEnvVars = Self.hasOption("--secret-env-vars", in: helpText)
+        supportsAllowAll = Self.hasOption("--allow-all", in: helpText)
+        supportsAllowAllTools = Self.hasOption("--allow-all-tools", in: helpText)
+        supportsAllowAllPaths = Self.hasOption("--allow-all-paths", in: helpText)
+        supportsAllowAllURLs = Self.hasOption("--allow-all-urls", in: helpText)
         requiresAllowAllToolsForPrompt = helpText.contains("required for\n                                      non-interactive mode")
             || helpText.contains("required for non-interactive mode")
     }
@@ -37,7 +46,10 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoAskUser: Bool,
         supportsSilent: Bool,
         supportsSecretEnvVars: Bool,
+        supportsAllowAll: Bool,
         supportsAllowAllTools: Bool,
+        supportsAllowAllPaths: Bool,
+        supportsAllowAllURLs: Bool,
         requiresAllowAllToolsForPrompt: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
@@ -45,8 +57,22 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsNoAskUser = supportsNoAskUser
         self.supportsSilent = supportsSilent
         self.supportsSecretEnvVars = supportsSecretEnvVars
+        self.supportsAllowAll = supportsAllowAll
         self.supportsAllowAllTools = supportsAllowAllTools
+        self.supportsAllowAllPaths = supportsAllowAllPaths
+        self.supportsAllowAllURLs = supportsAllowAllURLs
         self.requiresAllowAllToolsForPrompt = requiresAllowAllToolsForPrompt
+    }
+
+    private static func hasOption(_ option: String, in helpText: String) -> Bool {
+        helpText
+            .split(whereSeparator: { $0.isWhitespace })
+            .contains { rawToken in
+                let token = rawToken.trimmingCharacters(in: CharacterSet(charactersIn: ",;:"))
+                return token == option
+                    || token.hasPrefix("\(option)=")
+                    || token.hasPrefix("\(option)[")
+            }
     }
 }
 
@@ -148,20 +174,19 @@ enum CopilotCLIRuntime {
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
+            supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
+            supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
         args += permissionArgs
 
         if capabilities.supportsSecretEnvVars {
-            let secretKeys = Array(Set(Array(taskEnvironment.keys) + [
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "COPILOT_PROVIDER_API_KEY",
-                "GITHUB_TOKEN",
-                "GH_TOKEN",
-                "COPILOT_GITHUB_TOKEN"
-            ])).sorted()
+            let secretKeys = copilotSecretEnvironmentKeys(
+                taskEnvironment: taskEnvironment,
+                providerEnvironment: providerEnvironment
+            )
             if !secretKeys.isEmpty {
                 args += ["--secret-env-vars", secretKeys.joined(separator: ",")]
             }
@@ -205,7 +230,10 @@ enum CopilotCLIRuntime {
         policy: PermissionPolicy,
         allowedTools: [String],
         localToolCommands: [String] = [],
+        supportsAllowAll: Bool = false,
         supportsAllowAllTools: Bool = false,
+        supportsAllowAllPaths: Bool = false,
+        supportsAllowAllURLs: Bool = false,
         requiresAllowAllToolsForPrompt: Bool
     ) -> [String] {
         let localToolPermissions = shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
@@ -213,8 +241,18 @@ enum CopilotCLIRuntime {
             : []
         switch policy {
         case .autonomous:
+            if supportsAllowAll {
+                return ["--allow-all"]
+            }
             if supportsAllowAllTools || requiresAllowAllToolsForPrompt {
-                return ["--allow-all-tools"]
+                var args = ["--allow-all-tools"]
+                if supportsAllowAllPaths {
+                    args.append("--allow-all-paths")
+                }
+                if supportsAllowAllURLs {
+                    args.append("--allow-all-urls")
+                }
+                return args
             }
             return [
                 "--allow-tool",
@@ -234,6 +272,30 @@ enum CopilotCLIRuntime {
         case .interactive:
             return []
         }
+    }
+
+    static func copilotSecretEnvironmentKeys(
+        taskEnvironment: [String: String],
+        providerEnvironment: [String: String] = [:],
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String] {
+        let taskKeys = Set(taskEnvironment.keys)
+        let providerSecretKeys: Set<String> = [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "COPILOT_PROVIDER_API_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "COPILOT_GITHUB_TOKEN"
+        ]
+        let candidates = providerSecretKeys.union(providerEnvironment.keys)
+        return candidates
+            .filter { !taskKeys.contains($0) }
+            .filter { key in
+                let value = providerEnvironment[key] ?? processEnvironment[key] ?? ""
+                return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .sorted()
     }
 
     private static func shouldAddLocalToolPermissions(policy: PermissionPolicy, allowedTools: [String]) -> Bool {
