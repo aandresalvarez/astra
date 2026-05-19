@@ -292,6 +292,87 @@ struct LogDiagnosticsTests {
         #expect(!report.markdown.contains("[redacted-[redacted-secret-key]-key]"))
     }
 
+    @Test("Query Shelf BigQuery CLI failures are classified specifically")
+    func queryShelfBigQueryCLIFailureIsSpecific() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .error,
+                category: "QueryShelf",
+                message: "Query shelf schema failed connection=BigQuery - demo error=BigQuery CLI (`bq`) was not found. Install the Google Cloud SDK, make sure `bq` is on PATH, then retry."
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.first?.title == "Query Shelf could not find BigQuery CLI")
+        #expect(report.issues.first?.signal == "query_shelf bq_missing")
+        #expect(report.markdown.contains("Verify Google Cloud SDK installation and PATH"))
+    }
+
+    @Test("Resolved setup failures are reported as non-actionable")
+    func resolvedSetupFailuresBecomeNotices() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Capabilities",
+                message: "validation.failed check_count=2 failed_count=2 package_id=gcloud-workflow package_name=GoogleCloud result=failed source=setup_sheet",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Capabilities",
+                message: "validation.passed check_count=2 failed_count=0 package_id=gcloud-workflow package_name=GoogleCloud result=passed source=setup_sheet",
+                timestamp: Date(timeIntervalSince1970: 1_010)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Keychain",
+                message: "connector.tested connector_id=JIRA-1 http_status=401 result=invalid_credentials service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_020)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Keychain",
+                message: "connector.tested connector_id=JIRA-1 http_status=200 result=success service_type=jira",
+                timestamp: Date(timeIntervalSince1970: 1_030)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(!report.issues.contains { $0.title == "Application warning" })
+        #expect(!report.issues.contains { $0.title == "Connector credentials were rejected" })
+        #expect(report.notices.contains { $0.title == "Capability setup failure was resolved" })
+        #expect(report.notices.contains { $0.title == "Connector authentication failure was resolved" })
+        #expect(report.markdown.contains("## Resolved / Non-Actionable Events"))
+    }
+
+    @Test("Since last report notes previous diagnostics with issues")
+    func sinceLastReportNotesPreviousDiagnosticsWithIssues() {
+        let previous = Date(timeIntervalSince1970: 1_000)
+        let report = LogDiagnosticsService.makeReport(
+            entries: [
+                LogEntry(
+                    level: .info,
+                    category: "Diagnostics",
+                    message: "diagnostics.generated crash_reports=0 delivery=file entries=1116 errors=8 issues=7 notices=13 previous_report=none scope=sinceLastReport warnings=27",
+                    timestamp: previous.addingTimeInterval(-0.1)
+                ),
+                LogEntry(
+                    level: .info,
+                    category: "Diagnostics",
+                    message: "diagnostics.generated crash_reports=0 delivery=file entries=1 errors=0 issues=0 notices=0 previous_report=1000 scope=sinceLastReport warnings=0",
+                    timestamp: previous.addingTimeInterval(1)
+                )
+            ],
+            generatedAt: previous.addingTimeInterval(2),
+            scope: .sinceLastReport,
+            history: LogDiagnosticsHistory(lastGeneratedAt: previous, knownIssueFingerprints: [])
+        )
+
+        #expect(report.entryCount == 1)
+        #expect(report.markdown.contains("Scope note: A recent earlier diagnostics export"))
+        #expect(report.markdown.contains("7 issue groups"))
+        #expect(report.markdown.contains("8 errors"))
+        #expect(report.markdown.contains("Last 15 minutes or All retained logs"))
+    }
+
     @Test("Jira connector diagnostics do not collapse permission failures into invalid token")
     func jiraConnectorPermissionDiagnosticsAreSpecific() {
         let report = LogDiagnosticsService.makeReport(entries: [
