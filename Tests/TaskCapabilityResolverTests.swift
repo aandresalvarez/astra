@@ -428,6 +428,30 @@ struct TaskCapabilityResolverTests {
         #expect(reversedOrder[second.id] == firstOrder[second.id])
     }
 
+    @Test("Projection resolves preferred alias collisions consistently across input order")
+    func projectionResolvesPreferredAliasCollisionsConsistentlyAcrossInputOrder() throws {
+        let duplicateFirst = Connector(name: "API", serviceType: "jira")
+        duplicateFirst.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+
+        let duplicateSecond = Connector(name: "API", serviceType: "jira")
+        duplicateSecond.id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+
+        let directCollision = Connector(name: "API 11111111", serviceType: "jira")
+        directCollision.id = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+
+        let firstOrder = ConnectorRuntimeProjection.aliasesByConnectorID(
+            for: [duplicateFirst, duplicateSecond, directCollision]
+        )
+        let reversedOrder = ConnectorRuntimeProjection.aliasesByConnectorID(
+            for: [directCollision, duplicateSecond, duplicateFirst]
+        )
+
+        #expect(firstOrder == reversedOrder)
+        #expect(firstOrder[directCollision.id] == "api_11111111")
+        #expect(firstOrder[duplicateFirst.id] == "api_11111111_2")
+        #expect(firstOrder[duplicateSecond.id] == "api_22222222")
+    }
+
     @Test("Projection aliases are scoped by service type")
     func projectionAliasesAreScopedByServiceType() throws {
         let jira = Connector(name: "Eng", serviceType: "jira")
@@ -451,6 +475,41 @@ struct TaskCapabilityResolverTests {
         let manifest = projection.manifest()
         #expect(manifest.connectors.map(\.alias) == ["eng", "eng"])
         #expect(manifest.connectors.map(\.envPrefix) == ["JIRA_ENG", "GITHUB_ENG"])
+    }
+
+    @Test("Runtime examples do not embed raw connector base URLs")
+    func runtimeExamplesDoNotEmbedRawConnectorBaseURLs() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Unsafe Base URL", primaryPath: "/tmp/unsafe-base-url")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: #"https://example.atlassian.net/$(touch /tmp/astra-prompt-pwn)"#,
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.configValues = ["person@example.edu", "token"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Check Jira permissions",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Base URL: https://example.atlassian.net/$(touch /tmp/astra-prompt-pwn)"))
+        #expect(!prompt.contains("Runtime example: curl"))
+        #expect(!prompt.contains("mypermissions?permissions=BROWSE_PROJECTS"))
     }
 
     @Test("Projection does not emit legacy fallback when original keys collide")

@@ -319,8 +319,7 @@ enum AgentPromptBuilder {
             bindings: bindings,
             logicalNames: ["baseURL", "jiraBaseURL", "url"],
             originalKeys: ["JIRA_BASE_URL", "BASE_URL", "URL"],
-            keyFragments: ["BASE_URL"],
-            fallback: connector.baseURL
+            keyFragments: ["BASE_URL"]
         ) else {
             return nil
         }
@@ -352,8 +351,7 @@ enum AgentPromptBuilder {
             bindings: bindings,
             logicalNames: ["apiURL", "baseURL", "url"],
             originalKeys: ["REDCAP_API_URL", "API_URL", "BASE_URL", "URL"],
-            keyFragments: ["API_URL", "BASE_URL"],
-            fallback: connector.baseURL
+            keyFragments: ["API_URL", "BASE_URL"]
         ) else {
             return nil
         }
@@ -421,8 +419,7 @@ enum AgentPromptBuilder {
         bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
         logicalNames: Set<String>,
         originalKeys: Set<String>,
-        keyFragments: [String],
-        fallback: String
+        keyFragments: [String]
     ) -> String? {
         if let binding = matchingBinding(
             in: bindings,
@@ -433,8 +430,7 @@ enum AgentPromptBuilder {
         ) {
             return "${\(binding.envKey)}"
         }
-        let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return nil
     }
 
     private static func matchingBinding(

@@ -93,22 +93,35 @@ struct ConnectorRuntimeProjection {
     }
 
     static func aliasesByConnectorID(for connectors: [Connector]) -> [UUID: String] {
-        var usedAliasesByService: [String: Set<String>] = [:]
         var aliases: [UUID: String] = [:]
-        let connectorsByServiceAndBase = Dictionary(grouping: connectors) { connector in
-            serviceAliasScope(for: connector) + "\u{0}" + aliasBase(for: connector)
-        }
+        let connectorsByService = Dictionary(grouping: connectors, by: serviceAliasScope(for:))
 
-        for connector in connectors {
-            let serviceScope = serviceAliasScope(for: connector)
-            let base = aliasBase(for: connector)
-            let groupKey = serviceScope + "\u{0}" + base
-            let hasDuplicateBase = (connectorsByServiceAndBase[groupKey]?.count ?? 0) > 1
-            let preferred = hasDuplicateBase ? "\(base)_\(shortID(connector.id))" : base
-            var usedAliases = usedAliasesByService[serviceScope, default: []]
-            let alias = uniqueAlias(startingWith: preferred, usedAliases: &usedAliases)
-            usedAliasesByService[serviceScope] = usedAliases
-            aliases[connector.id] = alias
+        for scopedConnectors in connectorsByService.values {
+            var usedAliases = Set<String>()
+            let connectorsByBase = Dictionary(grouping: scopedConnectors, by: aliasBase(for:))
+            let preferences = scopedConnectors.map { connector in
+                let base = aliasBase(for: connector)
+                let hasDuplicateBase = (connectorsByBase[base]?.count ?? 0) > 1
+                return AliasPreference(
+                    connector: connector,
+                    preferred: hasDuplicateBase ? "\(base)_\(shortID(connector.id))" : base,
+                    generatedForDuplicateBase: hasDuplicateBase
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.preferred != rhs.preferred { return lhs.preferred < rhs.preferred }
+                if lhs.generatedForDuplicateBase != rhs.generatedForDuplicateBase {
+                    return !lhs.generatedForDuplicateBase
+                }
+                return stableID(lhs.connector.id) < stableID(rhs.connector.id)
+            }
+
+            for preference in preferences {
+                aliases[preference.connector.id] = uniqueAlias(
+                    startingWith: preference.preferred,
+                    usedAliases: &usedAliases
+                )
+            }
         }
 
         return aliases
@@ -300,6 +313,16 @@ struct ConnectorRuntimeProjection {
 
     private static func shortID(_ id: UUID) -> String {
         id.uuidString.prefix(8).lowercased()
+    }
+
+    private static func stableID(_ id: UUID) -> String {
+        id.uuidString.lowercased()
+    }
+
+    private struct AliasPreference {
+        var connector: Connector
+        var preferred: String
+        var generatedForDuplicateBase: Bool
     }
 
     private static func slug(_ value: String) -> String {

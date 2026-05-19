@@ -106,7 +106,7 @@ struct Phase2FunctionalTest {
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
-        await E2ETestSupport.withLiveProviderSlot {
+        try await E2ETestSupport.withLiveProviderSlot {
             await worker.execute(task: task, modelContext: context) { event in
                 receivedEvents.append(event)
             }
