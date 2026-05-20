@@ -168,12 +168,6 @@ struct WorkspaceRightRailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.secondary.opacity(0.22))
-                .frame(width: 2)
-                .allowsHitTesting(false)
-        }
     }
 
     private var showsTopRailScrollShadow: Bool {
