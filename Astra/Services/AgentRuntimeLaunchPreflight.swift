@@ -117,7 +117,16 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: String
     ) -> Bool {
-        let issues = CapabilityRuntimeIntegrityService.issues(for: task)
+        let policyContext = task.workspace.map {
+            CapabilityCatalogPolicyContext.workspaceUser(
+                workspace: $0,
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+        }
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            policyContext: policyContext
+        )
         var fields = CapabilityAudit.taskContextFields(source: "capability_runtime_integrity", task: task)
         fields["phase"] = phase
         fields["result"] = issues.isEmpty ? "passed" : "missing_resources"

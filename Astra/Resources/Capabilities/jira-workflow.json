@@ -31,6 +31,31 @@
   ],
   "description" : "Query, create, and update Jira tickets",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "connectorCredentials",
+      "externalService",
+      "network"
+    ],
+    "externalEffects" : [
+      "readOnly",
+      "externalAPIWrite",
+      "ticketMutation"
+    ],
+    "policyNotes" : "Jira API access uses Keychain-backed connector credentials. Ticket creation, comments, transitions, and updates require explicit user confirmation at task time.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "high",
+    "visibility" : "everyone"
+  },
   "icon" : "list.bullet.clipboard",
   "id" : "jira-workflow",
   "isTrusted" : false,

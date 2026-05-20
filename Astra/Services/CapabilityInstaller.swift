@@ -42,9 +42,14 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> InstallationResult {
-        let blockers = installBlockerMessages(for: package, in: workspace, baseURLOverrides: baseURLOverrides)
+        let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
+        let blockers = uniqueMessages(
+            policyBlockerMessages(for: package, context: effectivePolicyContext)
+                + installBlockerMessages(for: package, in: workspace, baseURLOverrides: baseURLOverrides)
+        )
         guard blockers.isEmpty else {
             var fields = capabilityFields(for: package, workspace: workspace, source: "install")
             if let traceID { fields["trace_id"] = traceID }
@@ -63,13 +68,14 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
             throw error
         }
-        let result = enable(
+        let result = try enable(
             package,
             in: workspace,
             modelContext: modelContext,
             credentialInputs: credentialInputs,
             configInputs: configInputs,
             baseURLOverrides: baseURLOverrides,
+            policyContext: effectivePolicyContext,
             auditSource: "install",
             traceID: traceID
         )
@@ -79,6 +85,7 @@ struct CapabilityInstaller {
             "package_version": package.version,
             "workspace_id": workspace.id.uuidString
         ]
+        installedFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
         if let traceID { installedFields["trace_id"] = traceID }
         AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: installedFields)
         return result
@@ -92,15 +99,27 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil
-    ) -> InstallationResult {
+    ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
         startFields["credential_input_count"] = String(credentialInputs.count)
         startFields["config_input_count"] = String(configInputs.count)
         startFields["base_url_override_count"] = String(baseURLOverrides.count)
         AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: startFields)
+
+        let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
+        let blockers = uniqueMessages(policyBlockerMessages(for: package, context: effectivePolicyContext))
+        guard blockers.isEmpty else {
+            var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
+            if let traceID { fields["trace_id"] = traceID }
+            fields["result"] = "enable_blocked"
+            fields["blocker_count"] = String(blockers.count)
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
+            throw InstallationError.blocked(blockers)
+        }
 
         var skillIDs: [UUID] = []
         var connectorIDs: [UUID] = []
@@ -114,6 +133,7 @@ struct CapabilityInstaller {
         for pluginSkill in package.skills {
             let skill = upsertGlobalSkill(
                 pluginSkill,
+                package: package,
                 modelContext: modelContext,
                 configInputs: skillConfigInputs
             )
@@ -141,6 +161,7 @@ struct CapabilityInstaller {
             ) {
                 connector = upsertWorkspaceConnector(
                     pluginConnector,
+                    package: package,
                     workspace: workspace,
                     modelContext: modelContext,
                     credentialInputs: credentialInputs,
@@ -156,6 +177,7 @@ struct CapabilityInstaller {
             } else {
                 connector = upsertGlobalConnector(
                     pluginConnector,
+                    package: package,
                     modelContext: modelContext,
                     credentialInputs: credentialInputs,
                     configInputs: configInputs,
@@ -171,7 +193,7 @@ struct CapabilityInstaller {
         }
 
         for pluginTool in package.localTools {
-            let tool = upsertGlobalTool(pluginTool, modelContext: modelContext)
+            let tool = upsertGlobalTool(pluginTool, package: package, modelContext: modelContext)
             if let primarySkill, tool.skill == nil {
                 tool.skill = primarySkill
             }
@@ -182,7 +204,7 @@ struct CapabilityInstaller {
         }
 
         for pluginTemplate in package.templates {
-            let template = upsertWorkspaceTemplate(pluginTemplate, workspace: workspace, modelContext: modelContext)
+            let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
             appendUnique(template.id, to: &templateIDs)
         }
 
@@ -200,6 +222,7 @@ struct CapabilityInstaller {
             "templates_count": String(templateIDs.count),
             "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
         ]
+        enabledFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
         if let traceID { enabledFields["trace_id"] = traceID }
         AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: enabledFields)
 
@@ -226,12 +249,14 @@ struct CapabilityInstaller {
             skillsCount: package.skills.count,
             connectorsCount: package.connectors.count,
             toolsCount: package.localTools.count,
-            templatesCount: package.templates.count
+            templatesCount: package.templates.count,
+            governance: package.governance
         )
     }
 
     private func upsertGlobalSkill(
         _ pluginSkill: PluginSkill,
+        package: PluginPackage,
         modelContext: ModelContext,
         configInputs: [String: String]
     ) -> Skill {
@@ -258,6 +283,11 @@ struct CapabilityInstaller {
         skill.environmentValues = environmentValues(for: pluginSkill, configInputs: configInputs)
         skill.isGlobal = true
         skill.workspace = nil
+        CapabilityResourceOrigin.stamp(
+            skill,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginSkill)
+        )
         skill.updatedAt = Date()
         skill.migrateSecretsToKeychain()
         return skill
@@ -278,6 +308,7 @@ struct CapabilityInstaller {
 
     private func upsertGlobalConnector(
         _ pluginConnector: PluginConnector,
+        package: PluginPackage,
         modelContext: ModelContext,
         credentialInputs: [String: String],
         configInputs: [String: String],
@@ -317,6 +348,11 @@ struct CapabilityInstaller {
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
         connector.isGlobal = true
         connector.workspace = nil
+        CapabilityResourceOrigin.stamp(
+            connector,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginConnector)
+        )
         connector.updatedAt = Date()
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
@@ -331,6 +367,7 @@ struct CapabilityInstaller {
 
     private func upsertWorkspaceConnector(
         _ pluginConnector: PluginConnector,
+        package: PluginPackage,
         workspace: Workspace,
         modelContext: ModelContext,
         credentialInputs: [String: String],
@@ -371,6 +408,11 @@ struct CapabilityInstaller {
         connector.isGlobal = false
         connector.workspace = workspace
         connector.skill = nil
+        CapabilityResourceOrigin.stamp(
+            connector,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginConnector)
+        )
         connector.updatedAt = Date()
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
@@ -435,7 +477,11 @@ struct CapabilityInstaller {
         workspace.enabledGlobalConnectorIDs.removeAll { matchingIDs.contains($0) }
     }
 
-    private func upsertGlobalTool(_ pluginTool: PluginLocalTool, modelContext: ModelContext) -> LocalTool {
+    private func upsertGlobalTool(
+        _ pluginTool: PluginLocalTool,
+        package: PluginPackage,
+        modelContext: ModelContext
+    ) -> LocalTool {
         let tool = existingGlobalTool(
             name: pluginTool.name,
             toolType: pluginTool.toolType,
@@ -460,12 +506,18 @@ struct CapabilityInstaller {
         tool.arguments = pluginTool.arguments
         tool.isGlobal = true
         tool.workspace = nil
+        CapabilityResourceOrigin.stamp(
+            tool,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginTool)
+        )
         tool.updatedAt = Date()
         return tool
     }
 
     private func upsertWorkspaceTemplate(
         _ pluginTemplate: PluginTemplate,
+        package: PluginPackage,
         workspace: Workspace,
         modelContext: ModelContext
     ) -> TaskTemplate {
@@ -490,6 +542,11 @@ struct CapabilityInstaller {
         template.variablesJSON = pluginTemplate.variablesJSON
         template.passContextToMain = pluginTemplate.passContextToMain
         template.passContextToAfter = pluginTemplate.passContextToAfter
+        CapabilityResourceOrigin.stamp(
+            template,
+            package: package,
+            componentID: CapabilityResourceOrigin.componentID(for: pluginTemplate)
+        )
         template.updatedAt = Date()
         return template
     }
@@ -579,6 +636,24 @@ struct CapabilityInstaller {
         return dependencyMessages
             + unsafeLocalToolMessages(for: package)
             + unsafeConnectorMessages(for: package, baseURLOverrides: baseURLOverrides)
+            + unsafeMCPServerMessages(for: package)
+    }
+
+    private func policyBlockerMessages(
+        for package: PluginPackage,
+        context: CapabilityCatalogPolicyContext
+    ) -> [String] {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
+        guard !decision.canEnable else { return [] }
+        return decision.blockerMessages
+    }
+
+    private func defaultPolicyContext(for workspace: Workspace) -> CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            currentAppVersion: appVersion,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
     }
 
     private func unsafeLocalToolMessages(for package: PluginPackage) -> [String] {
@@ -609,5 +684,46 @@ struct CapabilityInstaller {
             }
             return "\(package.name) defines connector \(connector.name) with an unsafe credential transport. \(violation)"
         }
+    }
+
+    private func unsafeMCPServerMessages(for package: PluginPackage) -> [String] {
+        package.mcpServers.compactMap { server in
+            switch server.transport {
+            case .stdio:
+                let command = (server.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
+                    return "\(package.name) defines MCP server \(server.displayName) with an unsafe command: \(reason)."
+                }
+                if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(server.arguments.joined(separator: " ")) {
+                    return "\(package.name) defines MCP server \(server.displayName) with unsafe default arguments: \(reason)."
+                }
+            case .http, .sse:
+                guard let url = server.url,
+                      let scheme = url.scheme?.lowercased() else {
+                    return "\(package.name) defines MCP server \(server.displayName) with a missing or invalid remote URL."
+                }
+                if scheme == "https" || (scheme == "http" && isLoopbackHost(url.host)) {
+                    return nil
+                }
+                return "\(package.name) defines MCP server \(server.displayName) with an unsafe remote URL. Remote MCP URLs must use HTTPS, except loopback HTTP for local development."
+            }
+            return nil
+        }
+    }
+
+    private func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host = host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !host.isEmpty else {
+            return false
+        }
+        return host == "localhost"
+            || host.hasSuffix(".localhost")
+            || host == "127.0.0.1"
+            || host == "::1"
+    }
+
+    private func uniqueMessages(_ messages: [String]) -> [String] {
+        var seen = Set<String>()
+        return messages.filter { seen.insert($0).inserted }
     }
 }

@@ -2,22 +2,34 @@ import Foundation
 import ASTRACore
 
 struct CapabilityGalleryInventory {
-    static func packages(catalogPackages: [PluginPackage]) -> [PluginPackage] {
+    static func packages(
+        catalogPackages: [PluginPackage],
+        policyContext: CapabilityCatalogPolicyContext? = nil
+    ) -> [PluginPackage] {
         uniquePackages(catalogPackages)
             .filter { !$0.isProjectedResourceCapability }
+            .filter { package in
+                guard let policyContext else { return true }
+                return CapabilityCatalogPolicy.decision(for: package, context: policyContext).isVisible
+            }
             .sorted(by: sortPackages)
     }
 
     static func managementPackages(
         catalogPackages: [PluginPackage],
         capabilities: WorkspaceCapabilities,
-        workspace: Workspace
+        workspace: Workspace,
+        policyContext: CapabilityCatalogPolicyContext? = nil
     ) -> [PluginPackage] {
-        let libraryPackages = packages(catalogPackages: catalogPackages)
+        let libraryPackages = packages(
+            catalogPackages: catalogPackages,
+            policyContext: policyContext
+        )
         let activeWorkspacePackages = CapabilityCatalogInventory.configuredPackages(
             catalogPackages: libraryPackages,
             capabilities: capabilities,
-            workspace: workspace
+            workspace: workspace,
+            policyContext: policyContext
         )
         .filter(\.isProjectedResourceCapability)
 

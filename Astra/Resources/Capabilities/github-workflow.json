@@ -9,6 +9,33 @@
   ],
   "description" : "Manage issues, PRs, and CI from your workspace",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "workspaceFiles",
+      "externalService",
+      "network",
+      "authenticatedBrowserContent"
+    ],
+    "externalEffects" : [
+      "readOnly",
+      "externalAPIWrite",
+      "ticketMutation",
+      "browserNavigation"
+    ],
+    "policyNotes" : "GitHub work uses the local gh CLI and may read repository state, issues, pull requests, Actions, and authenticated GitHub browser pages. External writes require user confirmation.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "high",
+    "visibility" : "everyone"
+  },
   "icon" : "chevron.left.forwardslash.chevron.right",
   "id" : "github-workflow",
   "isTrusted" : false,

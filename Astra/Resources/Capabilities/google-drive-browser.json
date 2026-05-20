@@ -9,6 +9,28 @@
   ],
   "description" : "Adds Google Drive-specific browser open semantics to the Shelf browser",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "authenticatedBrowserContent",
+      "externalService"
+    ],
+    "externalEffects" : [
+      "browserNavigation"
+    ],
+    "policyNotes" : "This package enables Google Drive-specific semantics on ASTRA's trusted Shelf browser bridge. It does not store Google credentials.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "high",
+    "visibility" : "everyone"
+  },
   "icon" : "folder.badge.gearshape",
   "id" : "google-drive-browser",
   "isTrusted" : false,

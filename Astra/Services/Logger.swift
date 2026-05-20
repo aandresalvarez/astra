@@ -131,6 +131,7 @@ enum AuditEvent: String, CaseIterable {
     case capabilityEnableStarted = "capability.enable_started"
     case capabilityEnableFailed = "capability.enable_failed"
     case capabilityEnabled = "capability.enabled"
+    case capabilityApprovalChanged = "capability.approval_changed"
     case capabilityDisableStarted = "capability.disable_started"
     case capabilityDisabled = "capability.disabled"
     case capabilityChatContext = "capability.chat_context"

@@ -1967,6 +1967,11 @@ struct ContentView: View {
         guard !packages.isEmpty else { return }
 
         let installer = CapabilityInstaller()
+        let policyContext = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
         for package in packages {
             let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
             let traceID = AuditTrace.make("workspace-capability")
@@ -1987,6 +1992,7 @@ struct ContentView: View {
                     credentialInputs: inputs.credentialInputs,
                     configInputs: inputs.configInputs,
                     baseURLOverrides: inputs.baseURLOverrides,
+                    policyContext: policyContext,
                     traceID: traceID
                 )
             } catch {
@@ -3966,7 +3972,7 @@ struct WorkspaceSetupForm: View {
 
     private func copyCapabilitySetup(from workspace: Workspace) {
         let summary = CapabilitySetupCopier().copySetup(from: workspace, globalConnectors: globalConnectors)
-        guard !summary.selectedPackageIDs.isEmpty else { return }
+        guard !summary.selectedPackageIDs.isEmpty, !summary.inputsByPackageID.isEmpty else { return }
 
         draft.selectedCapabilityIDs = summary.selectedPackageIDs
         draft.capabilityConfiguration = OnboardingCapabilityConfiguration()

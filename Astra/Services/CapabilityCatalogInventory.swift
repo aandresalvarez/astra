@@ -4,7 +4,8 @@ import ASTRACore
 struct CapabilityCatalogInventory {
     static func packages(
         catalogPackages: [PluginPackage],
-        capabilities: WorkspaceCapabilities
+        capabilities: WorkspaceCapabilities,
+        policyContext: CapabilityCatalogPolicyContext? = nil
     ) -> [PluginPackage] {
         let packagedSkillNames = Set(catalogPackages.flatMap { package in
             package.skills.map { normalizedName($0.name) } + [normalizedName(package.name)]
@@ -15,6 +16,10 @@ struct CapabilityCatalogInventory {
             .map(makePackage)
 
         return uniquePackages(catalogPackages + standaloneSkillPackages)
+            .filter { package in
+                guard let policyContext else { return true }
+                return CapabilityCatalogPolicy.decision(for: package, context: policyContext).isVisible
+            }
             .sorted { lhs, rhs in
                 if lhs.category != rhs.category { return lhs.category < rhs.category }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
@@ -24,9 +29,14 @@ struct CapabilityCatalogInventory {
     static func configuredPackages(
         catalogPackages: [PluginPackage],
         capabilities: WorkspaceCapabilities,
-        workspace: Workspace
+        workspace: Workspace,
+        policyContext: CapabilityCatalogPolicyContext? = nil
     ) -> [PluginPackage] {
-        packages(catalogPackages: catalogPackages, capabilities: capabilities)
+        packages(
+            catalogPackages: catalogPackages,
+            capabilities: capabilities,
+            policyContext: policyContext
+        )
             .filter { package in
                 CapabilityPackageState(
                     package: package,

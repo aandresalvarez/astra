@@ -99,27 +99,51 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedSkills: [Skill] {
+        let candidates = capabilities.workspaceSkills + capabilities.availableGlobalSkills
+        let originMatches = candidates.filter {
+            CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
+        }
+        if !originMatches.isEmpty {
+            return uniqueSkills(originMatches)
+        }
+
         let packageSkillNames = Set(
             package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) }
                 + [CapabilityRuntimeResourceMatcher.normalizedName(package.name)]
         )
-        return uniqueSkills((capabilities.workspaceSkills + capabilities.availableGlobalSkills).filter { skill in
+        return uniqueSkills(candidates.filter { skill in
             packageSkillNames.contains(CapabilityRuntimeResourceMatcher.normalizedName(skill.name))
         })
     }
 
     private var directlyLinkedConnectors: [Connector] {
+        let candidates = capabilities.workspaceConnectors + capabilities.availableGlobalConnectors
+        let originMatches = candidates.filter {
+            CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
+        }
+        if !originMatches.isEmpty {
+            return uniqueConnectors(originMatches)
+        }
+
         let packageConnectorSpecs = package.connectors
         guard !packageConnectorSpecs.isEmpty else { return [] }
-        return uniqueConnectors((capabilities.workspaceConnectors + capabilities.availableGlobalConnectors).filter { connector in
+        return uniqueConnectors(candidates.filter { connector in
             packageConnectorSpecs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
         })
     }
 
     private var directlyLinkedTools: [LocalTool] {
+        let candidates = capabilities.workspaceTools + capabilities.availableGlobalTools
+        let originMatches = candidates.filter {
+            CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
+        }
+        if !originMatches.isEmpty {
+            return uniqueTools(originMatches)
+        }
+
         let packageToolSpecs = package.localTools
         guard !packageToolSpecs.isEmpty else { return [] }
-        return uniqueTools((capabilities.workspaceTools + capabilities.availableGlobalTools).filter { tool in
+        return uniqueTools(candidates.filter { tool in
             packageToolSpecs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
         })
     }

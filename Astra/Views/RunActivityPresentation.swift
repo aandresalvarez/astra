@@ -207,6 +207,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             .init(title: "Paths", value: compactList([manifest.workspacePath] + manifest.additionalPaths, empty: "None"), isMonospaced: true),
             .init(title: "Environment keys", value: compactList(manifest.environmentKeyNames, empty: "None"), isMonospaced: true),
             .init(title: "Credential labels", value: compactList(manifest.credentialLabels, empty: "None")),
+            .init(title: "MCP servers", value: compactList(mcpServerSummaries(manifest.mcpServers), empty: "None")),
             .init(title: "Approvals", value: compactList(manifest.approvalsGranted, empty: "None"))
         ]
 
@@ -220,6 +221,15 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             facts.append(.init(title: "Diagnostics", value: diagnostics))
         }
         return facts
+    }
+
+    private static func mcpServerSummaries(_ servers: [RunPermissionManifest.MCPServer]) -> [String] {
+        servers.map { server in
+            let toolPolicy = server.allowedTools.isEmpty
+                ? "tools:any"
+                : "tools:\(server.allowedTools.count)"
+            return "\(server.packageID)/\(server.id) \(server.transport) \(toolPolicy)"
+        }
     }
 
     private static func uniqueFacts(_ facts: [RunFactPresentation]) -> [RunFactPresentation] {

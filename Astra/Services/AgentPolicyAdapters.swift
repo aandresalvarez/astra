@@ -124,7 +124,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             supportsInteractiveCallbacks: capabilities.supportsNoAskUser,
             supportsManagedSettings: false,
             supportsMachineReadableEvents: capabilities.supportsOutputFormatJSON,
-            supportsBroadAllowAll: capabilities.supportsAllowAllTools
+            supportsBroadAllowAll: capabilities.supportsAllowAll || capabilities.supportsAllowAllTools
         )
     }
 
@@ -145,7 +145,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 remediation: "Keep the policy at Review or Locked when strict denial must be guaranteed."
             ))
         }
-        if policy.level == .autonomous, !capabilities.supportsAllowAllTools {
+        if policy.level == .autonomous, !capabilities.supportsAllowAll && !capabilities.supportsAllowAllTools {
             diagnostics.append(PolicyDiagnostic(
                 id: "copilot.allow-all-unsupported",
                 severity: .warning,
@@ -159,7 +159,10 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
+            supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
+            supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
         let providerAllowedTools = copilotAllowedTools(from: args, fallback: allowedTools)
@@ -183,7 +186,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             generatedConfigPreview: args.joined(separator: " "),
             enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
             diagnostics: diagnostics,
-            usesBroadProviderPermissions: args.contains("--allow-all-tools")
+            usesBroadProviderPermissions: copilotUsesBroadProviderPermissions(args)
         )
     }
 }
@@ -354,6 +357,8 @@ enum AgentPolicyManifestService {
         defaultPolicyLevelRaw: String,
         providerVersion: String? = nil,
         copilotCapabilities: CopilotCLICapabilities = .conservative,
+        capabilityPackages: [PluginPackage]? = nil,
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyLevel.normalized(defaultPolicyLevelRaw)
@@ -367,14 +372,15 @@ enum AgentPolicyManifestService {
         let policy = executionPolicy.allowedToolsOverride
             .map { basePolicy.applyingOneRunAllowedTools($0) }
             ?? basePolicy
-        let envKeys = Array(TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables.keys).sorted()
+        let taskCapabilityResolver = TaskCapabilityResolver(task: task)
+        let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
         let configOwnership = providerConfigOwnership(for: runtime, workspacePath: workspacePath)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
             workspacePath: workspacePath,
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
-            requestedAllowedTools: executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools),
+            requestedAllowedTools: executionPolicy.allowedTools(default: taskCapabilityResolver.resolver.resolvedProviderAllowedTools),
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
@@ -400,6 +406,13 @@ enum AgentPolicyManifestService {
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
+            mcpServers: capabilityPackages.map {
+                TaskCapabilityResolver.enabledMCPServerManifests(
+                    for: task.workspace,
+                    packages: $0,
+                    approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
+                )
+            } ?? taskCapabilityResolver.enabledMCPServerManifests,
             approvalsGranted: approvals
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
@@ -687,11 +700,15 @@ private func summarizeCopilotArguments(_ args: [String]) -> [String] {
 
 private func copilotAllowedTools(from args: [String], fallback: [String]) -> [String] {
     guard let allowIndex = args.firstIndex(of: "--allow-tool") else {
-        return args.contains("--allow-all-tools") ? ["*"] : fallback
+        return copilotUsesBroadProviderPermissions(args) ? ["*"] : fallback
     }
     let start = args.index(after: allowIndex)
     guard start < args.endIndex else { return fallback }
     let values = args[start...].prefix { !$0.hasPrefix("--") }
     let rendered = Array(Set(values)).sorted()
     return rendered.isEmpty ? fallback : rendered
+}
+
+private func copilotUsesBroadProviderPermissions(_ args: [String]) -> Bool {
+    args.contains("--allow-all") || args.contains("--allow-all-tools")
 }

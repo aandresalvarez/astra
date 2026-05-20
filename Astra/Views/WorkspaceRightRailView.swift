@@ -87,6 +87,14 @@ struct WorkspaceRightRailView: View {
         )
     }
 
+    private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+    }
+
     private var workspaceSkills: [Skill] {
         capabilities.workspaceSkills
     }
@@ -160,12 +168,6 @@ struct WorkspaceRightRailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // No background — system inspector material extends behind toolbar; custom fill creates a visible seam.
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.secondary.opacity(0.22))
-                .frame(width: 2)
-                .allowsHitTesting(false)
-        }
     }
 
     private var showsTopRailScrollShadow: Bool {
@@ -178,6 +180,10 @@ struct WorkspaceRightRailView: View {
 
     private var contentListSpacing: CGFloat {
         isCompact ? 4 : Stanford.railListSpacing
+    }
+
+    private var capabilityGroupSpacing: CGFloat {
+        isCompact ? 8 : 10
     }
 
     private var panelSpacing: CGFloat {
@@ -315,7 +321,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: contentListSpacing) {
+        VStack(alignment: .leading, spacing: capabilityGroupSpacing) {
             if snapshot.items.isEmpty {
                 EmptyRailState(
                     title: "No active capabilities",
@@ -323,43 +329,30 @@ struct WorkspaceRightRailView: View {
                 )
             } else {
                 if !snapshot.attentionItems.isEmpty {
-                    capabilityGroupHeader(
+                    capabilityGroup(
                         "Needs attention",
                         count: snapshot.attentionItems.count,
-                        style: .attention
+                        style: .attention,
+                        items: snapshot.attentionItems
                     )
-
-                    ForEach(snapshot.attentionItems) { item in
-                        capabilityCard(item)
-                    }
                 }
 
                 if !snapshot.readyItems.isEmpty {
-                    if !snapshot.attentionItems.isEmpty || !snapshot.draftItems.isEmpty {
-                        capabilityGroupHeader(
-                            "Ready",
-                            count: snapshot.readyItems.count,
-                            style: .ready
-                        )
-                        .padding(.top, 10)
-                    }
-
-                    ForEach(snapshot.readyItems) { item in
-                        capabilityCard(item)
-                    }
+                    capabilityGroup(
+                        "Ready",
+                        count: snapshot.readyItems.count,
+                        style: .ready,
+                        items: snapshot.readyItems
+                    )
                 }
 
                 if !snapshot.draftItems.isEmpty {
-                    capabilityGroupHeader(
+                    capabilityGroup(
                         "Drafts",
                         count: snapshot.draftItems.count,
-                        style: .draft
+                        style: .draft,
+                        items: snapshot.draftItems
                     )
-                    .padding(.top, 10)
-
-                    ForEach(snapshot.draftItems) { item in
-                        capabilityCard(item)
-                    }
                 }
             }
         }
@@ -540,6 +533,42 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private func capabilityGroup(
+        _ title: String,
+        count: Int,
+        style: CapabilityRailGroupStyle,
+        items: [RailCapabilityItem]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: isCompact ? 4 : 5) {
+            capabilityGroupHeader(title, count: count, style: style)
+            capabilityRows(items, style: style)
+        }
+    }
+
+    private func capabilityRows(_ items: [RailCapabilityItem], style: CapabilityRailGroupStyle) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                capabilityRow(item)
+
+                if index < items.count - 1 {
+                    Divider()
+                        .opacity(0.34)
+                        .padding(.leading, isCompact ? 34 : 38)
+                        .padding(.trailing, isCompact ? 8 : 10)
+                }
+            }
+        }
+        .background {
+            shape.fill(capabilityGroupFill(style))
+        }
+        .overlay {
+            shape.stroke(capabilityGroupStroke(style), lineWidth: 1)
+        }
+        .clipShape(shape)
+    }
+
     private func capabilityGroupTint(_ style: CapabilityRailGroupStyle) -> Color {
         switch style {
         case .attention:
@@ -551,27 +580,43 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private func capabilityCard(_ item: RailCapabilityItem) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            CapabilityRailRow(
-                icon: item.icon,
-                title: capabilityDisplayName(item.name),
-                subtitle: capabilityListSubtitle(for: item),
-                color: item.color,
-                readiness: item.readiness,
-                statusLabel: capabilityBadgeTitle(for: item),
-                statusColor: capabilityBadgeColor(for: item),
-                isEnabled: item.isEnabled,
-                isCompact: isCompact,
-                onOpen: { openCapabilityConfiguration(item) }
-            )
+    private func capabilityGroupFill(_ style: CapabilityRailGroupStyle) -> Color {
+        switch style {
+        case .attention:
+            return Stanford.poppy.opacity(0.045)
+        case .ready:
+            return Color(nsColor: .windowBackgroundColor).opacity(0.82)
+        case .draft:
+            return Stanford.driftwood.opacity(0.04)
         }
-        .padding(Stanford.railInlineCardPadding)
-        .railCard(
-            cornerRadius: Stanford.railCompactCardCornerRadius,
-            fill: Color.primary.opacity(0.03),
-            strokeOpacity: 0.04
+    }
+
+    private func capabilityGroupStroke(_ style: CapabilityRailGroupStyle) -> Color {
+        switch style {
+        case .attention:
+            return Stanford.poppy.opacity(0.16)
+        case .ready:
+            return Color.primary.opacity(0.055)
+        case .draft:
+            return Stanford.driftwood.opacity(0.13)
+        }
+    }
+
+    private func capabilityRow(_ item: RailCapabilityItem) -> some View {
+        CapabilityRailRow(
+            icon: item.icon,
+            title: capabilityDisplayName(item.name),
+            subtitle: capabilityListSubtitle(for: item),
+            color: item.color,
+            readiness: item.readiness,
+            statusLabel: capabilityBadgeTitle(for: item),
+            statusColor: capabilityBadgeColor(for: item),
+            isEnabled: item.isEnabled,
+            isCompact: isCompact,
+            onOpen: { openCapabilityConfiguration(item) }
         )
+        .padding(.horizontal, isCompact ? 8 : 10)
+        .padding(.vertical, isCompact ? 2 : 3)
     }
 
     private var enabledPackageCount: Int {
@@ -594,7 +639,8 @@ struct WorkspaceRightRailView: View {
 
     private var libraryCapabilityPackages: [PluginPackage] {
         CapabilityGalleryInventory.packages(
-            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
+            policyContext: catalogPolicyContext
         )
     }
 
@@ -718,7 +764,8 @@ struct WorkspaceRightRailView: View {
 
             let catalogPackages = CapabilityCatalogInventory.packages(
                 catalogPackages: approvedCapabilityPackages,
-                capabilities: currentCapabilities
+                capabilities: currentCapabilities,
+                policyContext: catalogPolicyContext
             )
 
             let items = catalogPackages
@@ -730,7 +777,8 @@ struct WorkspaceRightRailView: View {
                 .sorted(by: sortRailCapabilityItems)
 
             let libraryPackages = CapabilityGalleryInventory.packages(
-                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
+                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
+                policyContext: catalogPolicyContext
             )
             let availableToAddCount = libraryPackages.reduce(into: 0) { count, package in
                 if !state(for: package).isEnabled {
@@ -973,7 +1021,13 @@ struct WorkspaceRightRailView: View {
                     "requirement_count": String(item.requirementNames.count)
                 ])
                 do {
-                    try CapabilityInstaller().install(package, into: workspace, modelContext: modelContext, traceID: traceID)
+                    try CapabilityInstaller().install(
+                        package,
+                        into: workspace,
+                        modelContext: modelContext,
+                        policyContext: catalogPolicyContext,
+                        traceID: traceID
+                    )
                     refreshApprovedCapabilities()
                 } catch {
                     capabilityError = error.localizedDescription

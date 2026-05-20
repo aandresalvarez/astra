@@ -59,6 +59,166 @@ public struct CapabilitySourceMetadata: Codable, Sendable, Equatable {
     }
 }
 
+public enum CapabilityApprovalStatus: String, Codable, Sendable, Equatable, CaseIterable {
+    case draft
+    case approved
+    case deprecated
+    case blocked
+}
+
+public enum CapabilityRiskLevel: String, Codable, Sendable, Equatable, CaseIterable, Comparable {
+    case low
+    case medium
+    case high
+    case restricted
+
+    public static func < (lhs: CapabilityRiskLevel, rhs: CapabilityRiskLevel) -> Bool {
+        order(lhs) < order(rhs)
+    }
+
+    private static func order(_ value: CapabilityRiskLevel) -> Int {
+        switch value {
+        case .low: 0
+        case .medium: 1
+        case .high: 2
+        case .restricted: 3
+        }
+    }
+}
+
+public enum CapabilityVisibility: String, Codable, Sendable, Equatable, CaseIterable {
+    case everyone
+    case roleScoped
+    case workspaceScoped
+    case adminOnly
+    case hidden
+}
+
+public enum CapabilityDataAccessKind: String, Codable, Sendable, Equatable, CaseIterable {
+    case workspaceFiles
+    case appSupport
+    case connectorCredentials
+    case keychainReference
+    case network
+    case externalService
+    case authenticatedBrowserContent
+    case email
+    case clinicalData
+    case logs
+}
+
+public enum CapabilityExternalEffectKind: String, Codable, Sendable, Equatable, CaseIterable {
+    case readOnly
+    case localFileWrite
+    case externalAPIWrite
+    case browserNavigation
+    case browserEdit
+    case messageSend
+    case ticketMutation
+    case deploy
+    case delete
+}
+
+public struct CapabilityGovernance: Codable, Sendable, Equatable {
+    public var approvalStatus: CapabilityApprovalStatus
+    public var riskLevel: CapabilityRiskLevel
+    public var visibility: CapabilityVisibility
+    public var allowedRoles: [String]
+    public var allowedWorkspaceTags: [String]
+    public var requiresAdminApproval: Bool
+    public var requiresExplicitUserConsent: Bool
+    public var dataAccess: [CapabilityDataAccessKind]
+    public var externalEffects: [CapabilityExternalEffectKind]
+    public var approvedBy: String?
+    public var approvedAt: Date?
+    public var reviewTicketURL: URL?
+    public var policyNotes: String
+
+    public init(
+        approvalStatus: CapabilityApprovalStatus = .draft,
+        riskLevel: CapabilityRiskLevel = .medium,
+        visibility: CapabilityVisibility = .adminOnly,
+        allowedRoles: [String] = [],
+        allowedWorkspaceTags: [String] = [],
+        requiresAdminApproval: Bool = true,
+        requiresExplicitUserConsent: Bool = true,
+        dataAccess: [CapabilityDataAccessKind] = [],
+        externalEffects: [CapabilityExternalEffectKind] = [],
+        approvedBy: String? = nil,
+        approvedAt: Date? = nil,
+        reviewTicketURL: URL? = nil,
+        policyNotes: String = ""
+    ) {
+        self.approvalStatus = approvalStatus
+        self.riskLevel = riskLevel
+        self.visibility = visibility
+        self.allowedRoles = allowedRoles
+        self.allowedWorkspaceTags = allowedWorkspaceTags
+        self.requiresAdminApproval = requiresAdminApproval
+        self.requiresExplicitUserConsent = requiresExplicitUserConsent
+        self.dataAccess = dataAccess
+        self.externalEffects = externalEffects
+        self.approvedBy = approvedBy
+        self.approvedAt = approvedAt
+        self.reviewTicketURL = reviewTicketURL
+        self.policyNotes = policyNotes
+    }
+
+    public static func builtInApproved(
+        riskLevel: CapabilityRiskLevel = .medium,
+        dataAccess: [CapabilityDataAccessKind] = [],
+        externalEffects: [CapabilityExternalEffectKind] = [.readOnly],
+        allowedRoles: [String] = [],
+        allowedWorkspaceTags: [String] = [],
+        visibility: CapabilityVisibility = .everyone,
+        policyNotes: String = ""
+    ) -> CapabilityGovernance {
+        CapabilityGovernance(
+            approvalStatus: .approved,
+            riskLevel: riskLevel,
+            visibility: visibility,
+            allowedRoles: allowedRoles,
+            allowedWorkspaceTags: allowedWorkspaceTags,
+            requiresAdminApproval: false,
+            requiresExplicitUserConsent: false,
+            dataAccess: dataAccess,
+            externalEffects: externalEffects,
+            approvedBy: "ASTRA",
+            reviewTicketURL: nil,
+            policyNotes: policyNotes
+        )
+    }
+
+    public static func localDraft() -> CapabilityGovernance {
+        CapabilityGovernance(
+            approvalStatus: .draft,
+            riskLevel: .medium,
+            visibility: .adminOnly,
+            allowedRoles: [],
+            allowedWorkspaceTags: [],
+            requiresAdminApproval: true,
+            requiresExplicitUserConsent: true,
+            dataAccess: [],
+            externalEffects: [],
+            approvedBy: nil,
+            approvedAt: nil,
+            reviewTicketURL: nil,
+            policyNotes: "Local capability packages require review before broad workspace use."
+        )
+    }
+
+    public static func defaultGovernance(for sourceMetadata: CapabilitySourceMetadata?) -> CapabilityGovernance {
+        switch sourceMetadata?.kind {
+        case "built-in":
+            return .builtInApproved()
+        case "remote":
+            return sourceMetadata?.trustLevel == "remote-approved" ? .builtInApproved() : .localDraft()
+        default:
+            return .localDraft()
+        }
+    }
+}
+
 public struct PluginPackage: Codable, Identifiable {
     public var formatVersion: Int
     public var id: String
@@ -73,6 +233,7 @@ public struct PluginPackage: Codable, Identifiable {
     public var skills: [PluginSkill]
     public var connectors: [PluginConnector]
     public var localTools: [PluginLocalTool]
+    public var mcpServers: [PluginMCPServer]
     public var templates: [PluginTemplate]
     /// Site-specific browser automation adapters this capability enables.
     /// Keep generic browser controls outside this list; these IDs are for
@@ -84,6 +245,7 @@ public struct PluginPackage: Codable, Identifiable {
     public var signature: String?
     public var isTrusted: Bool = false
     public var sourceMetadata: CapabilitySourceMetadata?
+    public var governance: CapabilityGovernance
     /// External CLI tools this package needs in order to actually work.
     /// The catalog renders these as preflight badges so users see
     /// "gcloud required ✓ found" before they install.
@@ -106,10 +268,12 @@ public struct PluginPackage: Codable, Identifiable {
         skills: [PluginSkill],
         connectors: [PluginConnector],
         localTools: [PluginLocalTool],
+        mcpServers: [PluginMCPServer] = [],
         templates: [PluginTemplate],
         browserAdapters: [String] = [],
         prerequisites: [CLIPrerequisite] = [],
-        sourceMetadata: CapabilitySourceMetadata? = nil
+        sourceMetadata: CapabilitySourceMetadata? = nil,
+        governance: CapabilityGovernance? = nil
     ) {
         self.formatVersion = formatVersion
         self.id = id
@@ -124,10 +288,12 @@ public struct PluginPackage: Codable, Identifiable {
         self.skills = skills
         self.connectors = connectors
         self.localTools = localTools
+        self.mcpServers = mcpServers
         self.templates = templates
         self.browserAdapters = browserAdapters
         self.prerequisites = prerequisites
         self.sourceMetadata = sourceMetadata
+        self.governance = governance ?? CapabilityGovernance.defaultGovernance(for: sourceMetadata)
     }
 
     public init(from decoder: Decoder) throws {
@@ -145,6 +311,7 @@ public struct PluginPackage: Codable, Identifiable {
         skills = try c.decode([PluginSkill].self, forKey: .skills)
         connectors = try c.decode([PluginConnector].self, forKey: .connectors)
         localTools = try c.decode([PluginLocalTool].self, forKey: .localTools)
+        mcpServers = try c.decodeIfPresent([PluginMCPServer].self, forKey: .mcpServers) ?? []
         templates = try c.decode([PluginTemplate].self, forKey: .templates)
         browserAdapters = try c.decodeIfPresent([String].self, forKey: .browserAdapters) ?? []
         minAppVersion = try c.decodeIfPresent(String.self, forKey: .minAppVersion)
@@ -152,6 +319,8 @@ public struct PluginPackage: Codable, Identifiable {
         conflicts = try c.decodeIfPresent([String].self, forKey: .conflicts)
         signature = try c.decodeIfPresent(String.self, forKey: .signature)
         sourceMetadata = try c.decodeIfPresent(CapabilitySourceMetadata.self, forKey: .sourceMetadata)
+        governance = try c.decodeIfPresent(CapabilityGovernance.self, forKey: .governance)
+            ?? CapabilityGovernance.defaultGovernance(for: sourceMetadata)
         // Legacy fixtures pre-date `prerequisites`. Default to empty so
         // every pre-existing catalog JSON still decodes cleanly.
         prerequisites = try c.decodeIfPresent([CLIPrerequisite].self, forKey: .prerequisites) ?? []
@@ -200,6 +369,7 @@ public struct PluginPackage: Codable, Identifiable {
         if !skills.isEmpty { parts.append("\(skills.count) skill\(skills.count == 1 ? "" : "s")") }
         if !connectors.isEmpty { parts.append("\(connectors.count) connector\(connectors.count == 1 ? "" : "s")") }
         if !localTools.isEmpty { parts.append("\(localTools.count) tool\(localTools.count == 1 ? "" : "s")") }
+        if !mcpServers.isEmpty { parts.append("\(mcpServers.count) MCP server\(mcpServers.count == 1 ? "" : "s")") }
         if !templates.isEmpty { parts.append("\(templates.count) template\(templates.count == 1 ? "" : "s")") }
         if !browserAdapters.isEmpty { parts.append("\(browserAdapters.count) browser adapter\(browserAdapters.count == 1 ? "" : "s")") }
         return parts
@@ -296,6 +466,65 @@ public struct PluginLocalTool: Codable {
         self.toolType = toolType
         self.command = command
         self.arguments = arguments
+    }
+}
+
+public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
+    public enum Transport: String, Codable, Sendable, Equatable, CaseIterable {
+        case stdio
+        case http
+        case sse
+    }
+
+    public enum TrustLevel: String, Codable, Sendable, Equatable, CaseIterable {
+        case low
+        case medium
+        case high
+        case restricted
+    }
+
+    public var id: String
+    public var displayName: String
+    public var transport: Transport
+    public var command: String?
+    public var arguments: [String]
+    public var url: URL?
+    public var environmentKeys: [String]
+    public var connectorBindings: [String]
+    public var allowedTools: [String]
+    public var excludedTools: [String]
+    public var resourcesEnabled: Bool
+    public var promptsEnabled: Bool
+    public var trustLevel: TrustLevel
+
+    public init(
+        id: String,
+        displayName: String,
+        transport: Transport,
+        command: String? = nil,
+        arguments: [String] = [],
+        url: URL? = nil,
+        environmentKeys: [String] = [],
+        connectorBindings: [String] = [],
+        allowedTools: [String] = [],
+        excludedTools: [String] = [],
+        resourcesEnabled: Bool = false,
+        promptsEnabled: Bool = false,
+        trustLevel: TrustLevel = .medium
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.transport = transport
+        self.command = command
+        self.arguments = arguments
+        self.url = url
+        self.environmentKeys = environmentKeys
+        self.connectorBindings = connectorBindings
+        self.allowedTools = allowedTools
+        self.excludedTools = excludedTools
+        self.resourcesEnabled = resourcesEnabled
+        self.promptsEnabled = promptsEnabled
+        self.trustLevel = trustLevel
     }
 }
 

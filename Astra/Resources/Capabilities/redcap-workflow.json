@@ -23,6 +23,31 @@
   ],
   "description" : "Query and manage Stanford REDCap projects through the API",
   "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "connectorCredentials",
+      "clinicalData",
+      "externalService",
+      "network"
+    ],
+    "externalEffects" : [
+      "readOnly",
+      "externalAPIWrite"
+    ],
+    "policyNotes" : "REDCap access can expose sensitive research data and potential PHI. Writes, imports, uploads, and destructive actions require explicit user confirmation at task time.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : true,
+    "riskLevel" : "restricted",
+    "visibility" : "everyone"
+  },
   "icon" : "tablecells",
   "id" : "redcap-workflow",
   "isTrusted" : false,

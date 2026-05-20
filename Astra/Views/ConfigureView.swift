@@ -68,6 +68,14 @@ struct ConfigureView: View {
         )
     }
 
+    private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+    }
+
     private var enabledCapabilityCount: Int {
         var activeIDs = Set(workspace.enabledCapabilityIDs)
         for package in configureCapabilityPackages where packageState(package).isEnabled {
@@ -80,7 +88,8 @@ struct ConfigureView: View {
         CapabilityGalleryInventory.managementPackages(
             catalogPackages: libraryCapabilityPackages + PluginCatalog.builtInPackages,
             capabilities: capabilities,
-            workspace: workspace
+            workspace: workspace,
+            policyContext: catalogPolicyContext
         )
     }
 

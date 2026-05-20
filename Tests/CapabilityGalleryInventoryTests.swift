@@ -103,6 +103,93 @@ struct CapabilityGalleryInventoryTests {
         #expect(packages.map(\.name) == ["Security Auditor"])
     }
 
+    @Test("gallery filters packages through policy context")
+    func galleryFiltersPackagesThroughPolicyContext() {
+        let approved = makeGalleryPackage(
+            id: "approved",
+            name: "Approved",
+            category: "A",
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        let draft = makeGalleryPackage(
+            id: "draft",
+            name: "Draft",
+            category: "A",
+            governance: .localDraft()
+        )
+        let blocked = makeGalleryPackage(
+            id: "blocked",
+            name: "Blocked",
+            category: "A",
+            governance: CapabilityGovernance(
+                approvalStatus: .blocked,
+                riskLevel: .high,
+                visibility: .everyone,
+                requiresAdminApproval: false,
+                requiresExplicitUserConsent: false
+            )
+        )
+
+        let userPackages = CapabilityGalleryInventory.packages(
+            catalogPackages: [draft, approved, blocked],
+            policyContext: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+        let adminPackages = CapabilityGalleryInventory.packages(
+            catalogPackages: [draft, approved, blocked],
+            policyContext: CapabilityCatalogPolicyContext(
+                isAdmin: true,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(userPackages.map(\.id) == ["approved"])
+        #expect(Set(adminPackages.map(\.id)) == ["approved", "blocked", "draft"])
+    }
+
+    @Test("gallery applies role and workspace tag policy context")
+    func galleryAppliesRoleAndWorkspaceTagPolicyContext() {
+        let researcher = makeGalleryPackage(
+            id: "researcher-only",
+            name: "Researcher",
+            category: "A",
+            governance: .builtInApproved(
+                riskLevel: .medium,
+                allowedRoles: ["researcher"],
+                visibility: .roleScoped
+            )
+        )
+        let clinical = makeGalleryPackage(
+            id: "clinical-only",
+            name: "Clinical",
+            category: "A",
+            governance: .builtInApproved(
+                riskLevel: .medium,
+                allowedWorkspaceTags: ["clinical-research"],
+                visibility: .workspaceScoped
+            )
+        )
+
+        let denied = CapabilityGalleryInventory.packages(
+            catalogPackages: [researcher, clinical],
+            policyContext: CapabilityCatalogPolicyContext(
+                userRoleIDs: ["engineer"],
+                workspaceTags: ["engineering"],
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+        let allowed = CapabilityGalleryInventory.packages(
+            catalogPackages: [researcher, clinical],
+            policyContext: CapabilityCatalogPolicyContext(
+                userRoleIDs: ["Researcher"],
+                workspaceTags: ["Clinical-Research"],
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(denied.isEmpty)
+        #expect(allowed.map(\.id) == ["clinical-only", "researcher-only"])
+    }
+
     @Test("gallery uses one column in every presentation")
     func galleryUsesOneColumn() {
         #expect(CapabilityGalleryLayout.columnCount(for: .embedded) == 1)
@@ -110,7 +197,12 @@ struct CapabilityGalleryInventoryTests {
     }
 }
 
-private func makeGalleryPackage(id: String, name: String, category: String) -> PluginPackage {
+private func makeGalleryPackage(
+    id: String,
+    name: String,
+    category: String,
+    governance: CapabilityGovernance = .builtInApproved(riskLevel: .medium)
+) -> PluginPackage {
     PluginPackage(
         id: id,
         name: name,
@@ -135,6 +227,7 @@ private func makeGalleryPackage(id: String, name: String, category: String) -> P
         ],
         connectors: [],
         localTools: [],
-        templates: []
+        templates: [],
+        governance: governance
     )
 }

@@ -290,8 +290,11 @@ final class AgentRuntimeProcessRunner {
                 "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
                 "supports_no_ask_user": String(capabilities.supportsNoAskUser),
                 "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
+                "supports_allow_all": String(capabilities.supportsAllowAll),
                 "supports_silent": String(capabilities.supportsSilent),
                 "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
+                "supports_allow_all_paths": String(capabilities.supportsAllowAllPaths),
+                "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(allowed.count),
@@ -304,7 +307,10 @@ final class AgentRuntimeProcessRunner {
                 "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
                 "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
                 "uses_silent": String(plan.arguments.contains("--silent")),
+                "uses_allow_all": String(plan.arguments.contains("--allow-all")),
                 "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
+                "uses_allow_all_paths": String(plan.arguments.contains("--allow-all-paths")),
+                "uses_allow_all_urls": String(plan.arguments.contains("--allow-all-urls")),
                 "uses_allow_tool": String(plan.arguments.contains("--allow-tool"))
             ], level: .debug)
 

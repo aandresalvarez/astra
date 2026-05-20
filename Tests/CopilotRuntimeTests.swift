@@ -534,6 +534,36 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.environment["TOKEN"] == "secret")
     }
 
+    @Test("Task connector env vars stay available to Copilot Bash")
+    func taskEnvironmentVarsAreNotSecretStrippedFromBash() throws {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Call Jira",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Bash"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: ["JIRA_EMAIL": "user@example.edu", "JIRA_API_TOKEN": "jira-token"],
+            copilotHome: "/tmp/copilot-home",
+            providerEnvironment: ["OPENAI_API_KEY": "provider-secret"]
+        )
+
+        #expect(plan.environment["JIRA_EMAIL"] == "user@example.edu")
+        #expect(plan.environment["JIRA_API_TOKEN"] == "jira-token")
+        #expect(plan.arguments.contains("--secret-env-vars"))
+
+        let secretIndex = try #require(plan.arguments.firstIndex(of: "--secret-env-vars"))
+        let secretKeys = plan.arguments[plan.arguments.index(after: secretIndex)]
+        #expect(secretKeys.contains("OPENAI_API_KEY"))
+        #expect(!secretKeys.contains("JIRA_EMAIL"))
+        #expect(!secretKeys.contains("JIRA_API_TOKEN"))
+    }
+
     @Test("Browser tool shim path is prepended before shared ASTRA tools")
     func browserShimPathPrefix() throws {
         let help = "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
@@ -586,9 +616,32 @@ struct CopilotCLICommandPlanningTests {
         #expect(!plan.arguments.contains("--output-format=json"))
     }
 
-    @Test("Autonomous mode uses allow-all when the CLI supports it")
-    func autonomousUsesAllowAllWhenSupported() {
-        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all-tools"
+    @Test("Autonomous mode uses full allow-all when the CLI supports it")
+    func autonomousUsesFullAllowAllWhenSupported() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all --allow-all-tools --allow-all-paths --allow-all-urls"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Do work",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home"
+        )
+
+        #expect(plan.arguments.contains("--allow-all"))
+        #expect(!plan.arguments.contains("--allow-all-tools"))
+        #expect(!plan.arguments.contains("--allow-tool"))
+    }
+
+    @Test("Autonomous mode adds path and URL allow flags when aggregate allow-all is unavailable")
+    func autonomousExpandsBroadPermissionsWithoutAggregateAllowAll() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all-tools --allow-all-paths --allow-all-urls"
         let capabilities = CopilotCLICapabilities(helpText: help)
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: "/bin/copilot",
@@ -605,7 +658,9 @@ struct CopilotCLICommandPlanningTests {
         )
 
         #expect(plan.arguments.contains("--allow-all-tools"))
-        #expect(!plan.arguments.contains("--allow-tool"))
+        #expect(plan.arguments.contains("--allow-all-paths"))
+        #expect(plan.arguments.contains("--allow-all-urls"))
+        #expect(!plan.arguments.contains("--allow-all"))
     }
 
     @Test("Restricted permissions map common Claude tools")
