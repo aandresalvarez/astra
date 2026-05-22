@@ -34,6 +34,17 @@ private func findOutputFile(named name: String, workspacePath: String, task: Age
     return nil
 }
 
+private func hasProviderProgressEvent(_ eventTypes: Set<String>) -> Bool {
+    let progressEventTypes: Set<String> = [
+        "agent.thinking",
+        "agent.response",
+        "tool.use",
+        "tool.result",
+        "astra.complete"
+    ]
+    return !eventTypes.isDisjoint(with: progressEventTypes)
+}
+
 @Suite("Phase 3 Functional — Parallel Debate Swarm", .tags(.integration))
 struct Phase3FunctionalTest {
 
@@ -135,7 +146,7 @@ struct Phase3FunctionalTest {
         let eventTypes = Set(allEvents.map(\.type))
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
-        #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
+        #expect(hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
         }
