@@ -3640,7 +3640,7 @@ struct TaskMainView: View {
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
                     isPlanMode: $isPlanMode,
-                    planModeHelp: "Plan and refine before resuming this thread",
+                    planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
                     onPolicyLevelChange: { level in
                         TaskPolicyStore.recordSelection(
                             level: level,
@@ -4288,7 +4288,7 @@ struct TaskMainView: View {
                     let errorEvent = TaskEvent(
                         task: task,
                         type: TaskPlanConversationEventTypes.assistantMessage,
-                        payload: "Plan mode failed: \(error.localizedDescription)"
+                        payload: "Goal mode failed: \(error.localizedDescription)"
                     )
                     modelContext.insert(errorEvent)
                 }

@@ -565,12 +565,42 @@ struct ChatPanelView: View {
         Self.newTaskPrompts[newTaskPromptIndex % Self.newTaskPrompts.count]
     }
 
+    private var hasGoalModeSurface: Bool {
+        isPlanMode || pendingPlan != nil || approvedDraftPlan != nil
+    }
+
+    private var goalModeBinding: Binding<Bool> {
+        Binding(
+            get: { isPlanMode },
+            set: { enabled in
+                if enabled {
+                    isPlanMode = true
+                } else {
+                    disableGoalModeFromUserToggle()
+                }
+            }
+        )
+    }
+
     private var isPlanModeActive: Bool {
-        hasConversation || isPlanMode || isSlashCommandInput
+        hasGoalModeSurface || isSlashCommandInput
+    }
+
+    private var goalModeHelpText: String {
+        if pendingPlan != nil {
+            return "Goal Mode is on. Turn it off to discard the candidate goal."
+        }
+        if isPlanMode {
+            return "Goal Mode is on. Turn it off to run the next message directly."
+        }
+        return "Turn on Goal Mode to define and approve a goal before execution"
     }
 
     private var submitButtonTitle: String {
-        if isPlanModeActive {
+        if isSlashCommandInput {
+            return "Send"
+        }
+        if hasGoalModeSurface {
             return hasConversation ? "Send" : "Plan"
         }
         return "Run"
@@ -675,8 +705,8 @@ struct ChatPanelView: View {
                 }
             }
 
-            // Action bar (when conversation has content)
-            if (hasConversation || approvedDraftPlan != nil) && !showSpecCard {
+            // Goal controls are opt-in and only appear after the user enables Goal Mode or a plan exists.
+            if hasGoalModeSurface && (hasConversation || pendingPlan != nil || approvedDraftPlan != nil) && !showSpecCard {
                 actionBar
             }
 
@@ -750,7 +780,7 @@ struct ChatPanelView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "switch.2")
                         .font(Stanford.ui(13))
-                    Text("Enable Plan mode to refine first")
+                    Text("Enable Goal mode to refine first")
                         .font(Stanford.body(15))
                 }
                 .foregroundStyle(Color.primary.opacity(0.65))
@@ -1135,9 +1165,9 @@ struct ChatPanelView: View {
                     policyLevelRaw: $composerPolicyLevelRaw,
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
-                    isPlanMode: $isPlanMode,
-                    isPlanModeDisabled: hasConversation || isSlashCommandInput,
-                    planModeHelp: hasConversation ? "Already in Plan mode. Use Start Over to leave planning." : "Plan and refine before creating a runnable task",
+                    isPlanMode: goalModeBinding,
+                    isPlanModeDisabled: isSlashCommandInput,
+                    planModeHelp: goalModeHelpText,
                     onPolicyLevelChange: { level in
                         if let draftTask {
                             recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
@@ -1277,7 +1307,6 @@ struct ChatPanelView: View {
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
-        isPlanMode = true
 
         // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()
@@ -1326,12 +1355,13 @@ struct ChatPanelView: View {
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
             ? buildRecapContext()
             : nil
+        let shouldUseGoalMode = isPlanMode && activeSlashContext == nil && recapContext == nil
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
         let planningDraft = saveDraft()
         isThinking = true
-        let traceID = AuditTrace.make(isPlanModeActive ? "new-task-plan-chat" : "new-task-chat")
+        let traceID = AuditTrace.make(shouldUseGoalMode ? "new-task-plan-chat" : "new-task-chat")
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
         let ws = resolvedWorkspace
@@ -1347,19 +1377,19 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "RECAP COMMAND:\n" + recapCtx
         }
 
-        if activeSlashContext == nil, recapContext == nil {
+        if shouldUseGoalMode {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
 
         AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
-            "source": isPlanModeActive ? "new_task_plan_chat" : "new_task_chat",
+            "source": shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat",
             "runtime": defaultRuntimeID,
             "model": defaultModel,
             "workspace_id": workspace?.id.uuidString ?? "none",
             "selected_skill_count": String(selectedSkills.count),
             "message_length": String(input.count)
         ])
-        logChatCapabilityContext(source: isPlanModeActive ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
+        logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
@@ -1372,12 +1402,11 @@ struct ChatPanelView: View {
                 isThinking = false
                 switch result {
                 case .success(let response):
-                    let visibleResponse = activeSlashContext == nil && recapContext == nil
+                    let visibleResponse = shouldUseGoalMode
                         ? TaskPlanService.userVisiblePlanningText(from: response)
                         : response
                     messages.append(ChatMessage(role: "assistant", content: visibleResponse))
-                    if activeSlashContext == nil,
-                       recapContext == nil,
+                    if shouldUseGoalMode,
                        let draft = planningDraft ?? draftTask {
                         preparePendingPlan(from: response, fallbackGoal: input, on: draft)
                     }
@@ -1510,6 +1539,18 @@ struct ChatPanelView: View {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
+    }
+
+    private func disableGoalModeFromUserToggle() {
+        isPlanMode = false
+        if pendingPlan != nil {
+            pendingPlan = nil
+            isApprovedPlanHistoryExpanded = false
+            if let task = draftTask {
+                task.updatedAt = Date()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+        }
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload) {
