@@ -1047,8 +1047,12 @@ struct TaskMainView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Stanford.fog.opacity(0.45))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(0.025))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Task status. \(summary)")
             .transition(chatStatusBlockTransition)
@@ -1440,7 +1444,7 @@ struct TaskMainView: View {
                     .lineSpacing(Stanford.chatBodyLineSpacing)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(Stanford.sky.opacity(0.055))
+                    .background(Color.primary.opacity(0.028))
                     .foregroundStyle(Stanford.readingText)
                     .tint(Stanford.link)
                     .clipShape(UnevenRoundedRectangle(
@@ -1456,7 +1460,7 @@ struct TaskMainView: View {
                             bottomTrailingRadius: 4,
                             topTrailingRadius: 16
                         )
-                        .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
                     .textSelection(.enabled)
             }
@@ -1536,12 +1540,18 @@ struct TaskMainView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.paloAltoGreen.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.primary.opacity(0.024))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.paloAltoGreen.opacity(0.3), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
             )
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Stanford.paloAltoGreen.opacity(0.72))
+                    .frame(width: 3)
+                    .padding(.vertical, 9)
+            }
 
             Spacer(minLength: 40)
         }
@@ -1566,12 +1576,18 @@ struct TaskMainView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.lagunita.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.primary.opacity(0.024))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.25), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
             )
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Stanford.lagunita.opacity(0.72))
+                    .frame(width: 3)
+                    .padding(.vertical, 9)
+            }
 
             Spacer(minLength: 40)
         }
@@ -1902,8 +1918,12 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Stanford.fog.opacity(0.24))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title). \(parts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
@@ -2015,8 +2035,12 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(Stanford.cardBackground.opacity(0.36))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(0.052), lineWidth: 1)
+        )
     }
 
     private func runActivitySummaryParts(
@@ -2394,8 +2418,8 @@ struct TaskMainView: View {
         let isCollapsible = prominence == .actionable
         let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
         let rawDetail = isExpanded ? runNoticeRawDetail(for: notice, body: body) : nil
-        let backgroundOpacity = prominence == .actionable ? 0.04 : 0.045
-        let strokeOpacity = prominence == .actionable ? 0.14 : 0.14
+        let backgroundOpacity = prominence == .actionable ? 0.026 : 0.022
+        let strokeOpacity = prominence == .actionable ? 0.12 : 0.08
 
         return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
             if isCollapsible {
@@ -2431,12 +2455,19 @@ struct TaskMainView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, isExpanded ? 8 : 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(presentation.color.opacity(backgroundOpacity))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(backgroundOpacity))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(presentation.color.opacity(strokeOpacity), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(presentation.color.opacity(prominence == .actionable ? 0.72 : 0.46))
+                .frame(width: 3)
+                .padding(.vertical, 8)
+                .padding(.leading, 1)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(runNoticeAccessibilityLabel(
             title: presentation.title,
@@ -3432,12 +3463,19 @@ struct TaskMainView: View {
             }
         }
         .padding(12)
-        .background(Stanford.poppy.opacity(0.055))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color.primary.opacity(0.026))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.poppy.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Stanford.poppy.opacity(0.14), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(Stanford.poppy.opacity(0.76))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .padding(.leading, 1)
+        }
     }
 
     private func approveSimilarRuntimePermissionForTask() {
@@ -3508,12 +3546,19 @@ struct TaskMainView: View {
             .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
         }
         .padding(12)
-        .background((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.primary.opacity(0.026))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.14), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.76))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .padding(.leading, 1)
+        }
     }
 
     private var composerView: some View {
@@ -3687,11 +3732,11 @@ struct TaskMainView: View {
                     sshConnections: sshConnections
                 )
             }
-            .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .background(Stanford.cardBackground.opacity(0.92))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(isDragOver ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.3), lineWidth: isDragOver ? 2 : 1)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isDragOver ? Stanford.cardinalRed.opacity(0.75) : Color.primary.opacity(0.10), lineWidth: isDragOver ? 1.5 : 1)
             )
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !visibleSlashOptions.isEmpty {
