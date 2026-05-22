@@ -133,7 +133,7 @@ struct WorkspaceRightRailView: View {
 
             GeometryReader { viewport in
                 ScrollView {
-                    AdaptiveGlassContainer(spacing: contentListSpacing) {
+                    VStack(alignment: .leading, spacing: contentListSpacing) {
                         configurePanel
                             .padding(.horizontal, contentPadding)
                             .padding(.top, isCompact ? 10 : 12)
@@ -220,17 +220,17 @@ struct WorkspaceRightRailView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: "sidebar.right")
-                .font(Stanford.ui(16, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 24, height: 24)
+                .font(Stanford.ui(14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Workspace Context")
-                    .font(Stanford.heading(15))
+                    .font(Stanford.ui(13, weight: .semibold))
                     .lineLimit(1)
                 Text(workspace.name)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.tertiary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
@@ -249,9 +249,9 @@ struct WorkspaceRightRailView: View {
                 .accessibilityLabel("Close Workspace Context")
             }
         }
-        .padding(.top, isCompact ? 10 : 12)
+        .padding(.top, isCompact ? 9 : 10)
         .padding(.horizontal, isCompact ? 12 : 14)
-        .padding(.bottom, isCompact ? 7 : 8)
+        .padding(.bottom, isCompact ? 8 : 9)
     }
 
     // MARK: - Unified Configure Panel
@@ -275,7 +275,7 @@ struct WorkspaceRightRailView: View {
                             } else {
                                 Label("Manage", systemImage: "slider.horizontal.3")
                                     .font(Stanford.caption(11).weight(.medium))
-                                    .foregroundStyle(Stanford.lagunita)
+                                    .foregroundStyle(.secondary)
                                     .labelStyle(.titleAndIcon)
                             }
                         }
@@ -507,30 +507,19 @@ struct WorkspaceRightRailView: View {
             if style == .attention {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(tint)
             }
 
             Text(title)
-                .font(Stanford.ui(9, weight: style == .attention ? .bold : .semibold))
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(style == .attention ? tint : .secondary)
 
-            Text("\(count)")
-                .font(Stanford.ui(9, weight: .semibold))
-                .monospacedDigit()
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(tint.opacity(style == .attention ? 0.16 : 0.08))
-                .clipShape(Capsule())
+            RailCountBadge(count: count)
 
             Spacer(minLength: 0)
         }
-        .foregroundStyle(tint)
-        .padding(.horizontal, style == .attention ? 8 : 2)
-        .padding(.vertical, style == .attention ? 5 : 2)
-        .background {
-            if style == .attention {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(tint.opacity(0.10))
-            }
-        }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
     }
 
     private func capabilityGroup(
@@ -574,20 +563,20 @@ struct WorkspaceRightRailView: View {
         case .attention:
             return Stanford.poppy
         case .ready:
-            return Stanford.lagunita.opacity(0.78)
+            return .secondary
         case .draft:
-            return Stanford.driftwood
+            return .secondary
         }
     }
 
     private func capabilityGroupFill(_ style: CapabilityRailGroupStyle) -> Color {
         switch style {
         case .attention:
-            return Stanford.poppy.opacity(0.045)
+            return Stanford.poppy.opacity(0.035)
         case .ready:
-            return Color(nsColor: .windowBackgroundColor).opacity(0.82)
+            return Color.primary.opacity(0.018)
         case .draft:
-            return Stanford.driftwood.opacity(0.04)
+            return Color.primary.opacity(0.018)
         }
     }
 
@@ -598,7 +587,7 @@ struct WorkspaceRightRailView: View {
         case .ready:
             return Color.primary.opacity(0.055)
         case .draft:
-            return Stanford.driftwood.opacity(0.13)
+            return Color.primary.opacity(0.055)
         }
     }
 
@@ -616,7 +605,7 @@ struct WorkspaceRightRailView: View {
             onOpen: { openCapabilityConfiguration(item) }
         )
         .padding(.horizontal, isCompact ? 8 : 10)
-        .padding(.vertical, isCompact ? 2 : 3)
+        .padding(.vertical, isCompact ? 1 : 2)
     }
 
     private var enabledPackageCount: Int {
@@ -1788,28 +1777,21 @@ struct WorkspaceRightRailView: View {
                         .font(Stanford.ui(10, weight: .semibold))
                         .foregroundStyle(.tertiary)
                     Text(title)
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(.secondary)
                     if let summary {
                         Text(summary)
                             .font(Stanford.caption(10).weight(.medium))
-                            .foregroundStyle(isCollapsed.wrappedValue ? .secondary : Stanford.lagunita)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background((isCollapsed.wrappedValue ? Color.primary : Stanford.lagunita).opacity(0.06))
+                            .background(Color.primary.opacity(0.05))
                             .clipShape(Capsule())
                     }
                     Spacer()
                 }
-                .padding(.horizontal, isCollapsed.wrappedValue ? 0 : 6)
-                .padding(.vertical, isCollapsed.wrappedValue ? 0 : 4)
-                .background {
-                    if !isCollapsed.wrappedValue {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.primary.opacity(0.035))
-                    }
-                }
+                .padding(.vertical, 2)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1838,9 +1820,10 @@ struct WorkspaceRightRailView: View {
                             .font(Stanford.ui(10, weight: .semibold))
                             .foregroundStyle(.tertiary)
                         Text(title)
-                            .font(Stanford.ui(10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, 2)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2529,14 +2512,14 @@ private struct CapabilityRailRow: View {
         Button(action: onOpen) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(Stanford.ui(13, weight: .medium))
+                    .font(Stanford.ui(12, weight: .medium))
                     .foregroundStyle(isEnabled ? color : .secondary)
-                    .frame(width: 18)
+                    .frame(width: 17)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
                         Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.caption(12).weight(.semibold))
+                            .font(Stanford.caption(12).weight(.medium))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .layoutPriority(1)
@@ -2551,7 +2534,7 @@ private struct CapabilityRailRow: View {
                     }
 
                     Text(subtitle.isEmpty ? "No details" : subtitle)
-                        .font(Stanford.caption(10))
+                        .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -2564,7 +2547,7 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
-            .frame(height: isCompact ? 36 : 40, alignment: .leading)
+            .frame(height: isCompact ? 34 : 37, alignment: .leading)
         }
         .buttonStyle(.plain)
         .help(subtitle.isEmpty ? "Open details" : subtitle)
@@ -2583,7 +2566,7 @@ private struct CapabilityStatusBadge: View {
             .minimumScaleFactor(0.75)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(color.opacity(0.1))
+            .background(color.opacity(0.07))
             .clipShape(Capsule())
     }
 }
