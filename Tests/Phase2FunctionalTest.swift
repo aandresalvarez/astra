@@ -42,17 +42,6 @@ private func workspaceFileListing(at workspacePath: String) -> String {
     return files.isEmpty ? "<empty>" : files.joined(separator: ", ")
 }
 
-private func hasProviderProgressEvent(_ eventTypes: Set<String>) -> Bool {
-    let progressEventTypes: Set<String> = [
-        "agent.thinking",
-        "agent.response",
-        "tool.use",
-        "tool.result",
-        "astra.complete"
-    ]
-    return !eventTypes.isDisjoint(with: progressEventTypes)
-}
-
 @Suite("Phase 2 Functional — Maker & Checker Team", .tags(.integration))
 struct Phase2FunctionalTest {
 
@@ -152,7 +141,7 @@ struct Phase2FunctionalTest {
         let eventTypes = Set(allEvents.map(\.type))
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
-        #expect(hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
+        #expect(E2ETestSupport.hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
         #expect(eventTypes.contains("tool.use"), "Missing tool.use")
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")

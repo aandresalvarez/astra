@@ -960,6 +960,96 @@ struct HeadlessChatScenarioTests {
         #expect(!args.contains("--dangerously-skip-permissions"))
     }
 
+    @Test("UI approval replays only latest runtime permission request")
+    func uiApprovalReplaysOnlyLatestRuntimePermissionRequest() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-latest-approval-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(curl *redcap.stanford.edu*)' \\
+                  && ! printf '%s\\n' "$@" | grep -Fxq -- 'Bash(gh search prs *)'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-latest-approval","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Latest approval completed"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Latest approval completed","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"result","subtype":"error","is_error":true,"duration_ms":12,"num_turns":1,"result":"Stale grant was replayed","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Continue after the latest permission request",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+
+        let oldRun = TaskRun(task: task)
+        oldRun.status = .failed
+        oldRun.stopReason = "permission_approval_required"
+        harness.context.insert(oldRun)
+        let oldEvent = TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: .shell(command: "gh search prs --author @me --state open", toolName: "Bash"),
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: [.shellCommand(executable: "gh", pattern: "search prs *")]
+            ),
+            run: oldRun
+        )
+        oldEvent.timestamp = Date(timeIntervalSince1970: 1)
+        harness.context.insert(oldEvent)
+
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+        let latestEvent = TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: .shell(command: "curl https://redcap.stanford.edu/api/", toolName: "Bash"),
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: [.shellCommand(executable: "curl", pattern: "*redcap.stanford.edu*")]
+            ),
+            run: blockedRun
+        )
+        latestEvent.timestamp = Date(timeIntervalSince1970: 2)
+        harness.context.insert(latestEvent)
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(completed)
+        #expect(args.contains("Bash(curl *redcap.stanford.edu*)"))
+        #expect(!args.contains("Bash(gh search prs *)"))
+        #expect(!args.contains("--dangerously-skip-permissions"))
+    }
+
     @Test("Claude hidden permission prompt pauses for user approval and can continue")
     func claudeHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
         let harness = try HeadlessChatHarness()

@@ -1183,6 +1183,24 @@ struct TaskThreadSnapshotTests {
         #expect(!presentation.summary.contains("shell(gh"))
     }
 
+    @Test("Runtime permission approval copy treats provider file write aliases as file changes")
+    func runtimePermissionApprovalCopyTreatsProviderFileWriteAliasesAsFileChanges() {
+        for toolName in ["create", "multi_edit"] {
+            let payload = PermissionBroker.approvalPayloadString(
+                providerID: .copilotCLI,
+                request: .fileWrite(path: ".astra/tasks/123/index.html", toolName: toolName),
+                reason: "The file change requires user approval by the effective ASTRA policy.",
+                grants: [.filePath(path: ".astra/tasks/123/index.html", access: "write")]
+            )
+
+            let presentation = RuntimePermissionApprovalText(payload: payload)
+
+            #expect(presentation.decisionTitle == "File change needs permission")
+            #expect(presentation.decisionSummary.contains("ASTRA wants to change"))
+            #expect(presentation.noticeBody.contains("Check: allow only if the provider should change that path"))
+        }
+    }
+
     @Test("Run activity presentation suppresses duplicated actionable notices")
     func runActivityPresentationSuppressesActionableNotices() {
         let task = makeTask(status: .failed)

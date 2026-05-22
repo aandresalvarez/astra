@@ -569,6 +569,8 @@ struct AgentPolicyTests {
             ("docker ps", .read, true, .shellCommand(executable: "docker", pattern: "ps *")),
             ("docker run alpine", .mutation, false, .shellCommand(executable: "docker", pattern: "run alpine *")),
             ("curl https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            ("curl -f https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
             ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
             ("ls -la", .fileRead, false, .shellCommand(executable: "ls", pattern: "*")),
             ("cat ~/.zsh_history", .credential, false, .shellCommand(executable: "cat", pattern: "~/.zsh_history *")),

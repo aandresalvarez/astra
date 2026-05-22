@@ -274,25 +274,7 @@ final class TaskLifecycleCoordinator {
     }
 
     private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        let events = permissionRequestEvents(for: task)
-
-        let structuredGrants = events
-            .flatMap { PermissionBroker.structuredApprovalGrants(from: $0.payload) }
-        if !structuredGrants.isEmpty {
-            return structuredGrants
-        }
-
-        let legacyGrants = events
-            .flatMap { PermissionBroker.legacyApprovalGrants(from: $0.payload) }
-        if !legacyGrants.isEmpty {
-            return legacyGrants
-        }
-
-        if let requestedTool = latestRequestedPermissionTool(for: task),
-           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
-            return [grant]
-        }
-        return []
+        latestRuntimePermissionGrants(for: task)
     }
 
     private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {

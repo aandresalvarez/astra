@@ -767,12 +767,12 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
     }
 
     private var accessKind: AccessKind {
-        switch toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch normalizedToolName {
         case "bash", "shell":
             return .shell
-        case "read":
+        case "read", "view":
             return .fileRead
-        case "write", "edit", "multiedit":
+        case "write", "create", "edit", "multiedit", "multi_edit":
             return .fileWrite
         case "webfetch", "websearch":
             return .network
@@ -804,12 +804,12 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         guard let toolName, !toolName.isEmpty else {
             return "provider access"
         }
-        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch normalizedToolName {
         case "bash", "shell":
             return "Bash command"
-        case "read":
+        case "read", "view":
             return "file read"
-        case "write", "edit", "multiedit":
+        case "write", "create", "edit", "multiedit", "multi_edit":
             return "file change"
         case "webfetch", "websearch":
             return "web access"
@@ -819,7 +819,7 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
     }
 
     private var decisionGuidance: String {
-        let normalizedTool = toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let normalizedTool = normalizedToolName
         let root = Self.shellCommandRoot(actionDetail)?.lowercased()
         if normalizedTool == "bash" || normalizedTool == "shell" {
             switch root {
@@ -835,15 +835,19 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         }
 
         switch normalizedTool {
-        case "read":
+        case "read", "view":
             return "allow only if the provider should read that path for this task."
-        case "write", "edit", "multiedit":
+        case "write", "create", "edit", "multiedit", "multi_edit":
             return "allow only if the provider should change that path for this task."
         case "webfetch", "websearch":
             return "allow only if that web or network access is expected for this task."
         default:
             return "allow only if this action matches the task and the requested access is expected."
         }
+    }
+
+    private var normalizedToolName: String {
+        toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     }
 
     private static let fieldStopMarkers = [
@@ -898,7 +902,7 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "bash", "shell":
             return "Bash command: \(detail)"
-        case "read", "write", "edit", "multiedit":
+        case "read", "view", "write", "create", "edit", "multiedit", "multi_edit":
             return "\(toolName) path: \(detail)"
         case "webfetch", "websearch":
             return "\(toolName) destination: \(detail)"

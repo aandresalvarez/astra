@@ -72,7 +72,7 @@ enum ShellCommandRiskClassifier {
     }
 
     private static func riskForCommand(executable: String, args: [String]) -> Risk {
-        let args = args.map(normalizedArgument)
+        let args = args.map(comparableCommandArgument)
         if credentialRoots.contains(executable) {
             return .credential
         }
@@ -334,7 +334,18 @@ enum ShellCommandRiskClassifier {
     }
 
     private static func normalizedArgument(_ value: String) -> String {
-        value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")).lowercased()
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func comparableCommandArgument(_ value: String) -> String {
+        let token = normalizedArgument(value)
+        if token.hasPrefix("--") {
+            return token.lowercased()
+        }
+        if token.hasPrefix("-") {
+            return token
+        }
+        return token.lowercased()
     }
 
     private static func normalizedPatternToken(_ value: String) -> String {
@@ -386,10 +397,18 @@ enum ShellCommandRiskClassifier {
 
     private static func isNetworkMutationFlag(_ token: String) -> Bool {
         let normalized = normalizedArgument(token)
-        return [
-            "-d", "--data", "--data-raw", "--data-binary", "--form", "-f",
-            "-x", "--request", "-t", "--upload-file", "--post-file", "-o", "--output"
-        ].contains(normalized)
+        let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
+        if ["-d", "-F", "-X", "-T", "-o", "-O"].contains(optionName) {
+            return true
+        }
+        if optionName.hasPrefix("--") {
+            return [
+                "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                "--form", "--form-string", "--request", "--upload-file",
+                "--post-file", "--post-data", "--output"
+            ].contains(optionName.lowercased())
+        }
+        return false
     }
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {

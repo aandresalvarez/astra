@@ -90,6 +90,17 @@ enum E2ETestSupport {
         "\(path)-copilot-home"
     }
 
+    static func hasProviderProgressEvent(_ eventTypes: Set<String>) -> Bool {
+        let progressEventTypes: Set<String> = [
+            "agent.thinking",
+            "agent.response",
+            "tool.use",
+            "tool.result",
+            "astra.complete"
+        ]
+        return !eventTypes.isDisjoint(with: progressEventTypes)
+    }
+
     static func withLiveProviderSlot<T>(_ operation: () async throws -> T) async throws -> T {
         try await E2ELiveProviderGate.shared.acquire()
         do {
