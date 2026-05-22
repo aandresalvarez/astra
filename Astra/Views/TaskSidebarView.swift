@@ -1753,7 +1753,7 @@ private struct SidebarThreadRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(displayTitle)
-                        .font(Stanford.ui(14, weight: titleWeight))
+                        .font(Stanford.ui(13, weight: titleWeight))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1765,7 +1765,7 @@ private struct SidebarThreadRow: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.primary.opacity(0.055))
+                            .background(Color.primary.opacity(0.04))
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                             .fixedSize()
                     }
@@ -1796,7 +1796,7 @@ private struct SidebarThreadRow: View {
                         // looks like a duplicate.
                         Image(systemName: "pin.fill")
                             .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(Stanford.lagunita.opacity(0.55))
+                            .foregroundStyle(.secondary.opacity(0.58))
                             .help("Pinned")
                             .accessibilityLabel("Pinned")
                     }
@@ -1816,7 +1816,7 @@ private struct SidebarThreadRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -1837,13 +1837,13 @@ private struct SidebarThreadRow: View {
 
     private var rowFill: Color {
         if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.09) }
+        if isHovered { return Color.primary.opacity(0.052) }
         return .clear
     }
 
     private var rowStroke: Color {
-        if isSelected { return Color.primary.opacity(0.14) }
-        if isHovered { return Color.primary.opacity(0.12) }
+        if isSelected { return Color.primary.opacity(0.10) }
+        if isHovered { return Color.primary.opacity(0.055) }
         return .clear
     }
 

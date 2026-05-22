@@ -924,23 +924,22 @@ struct KanbanColumnView: View {
 
     @ViewBuilder
     private var columnSurface: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        let baseFill = Color(nsColor: .controlBackgroundColor)
-            .opacity(isPersistentDropColumn ? 0.86 : 0.80)
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+        let baseFill = Color.primary.opacity(isPersistentDropColumn ? 0.024 : 0.018)
 
         shape
             .fill(baseFill)
             .overlay {
                 shape.stroke(
-                    Color.primary.opacity(isActiveDropTarget ? 0.12 : 0.08),
+                    Color.primary.opacity(isActiveDropTarget ? 0.14 : 0.055),
                     lineWidth: 1
                 )
             }
             .shadow(
-                color: Color.black.opacity(isActiveDropTarget ? 0.05 : 0.025),
-                radius: isActiveDropTarget ? 14 : 10,
+                color: category.color.opacity(isActiveDropTarget ? 0.10 : 0),
+                radius: isActiveDropTarget ? 12 : 0,
                 x: 0,
-                y: isActiveDropTarget ? 8 : 4
+                y: isActiveDropTarget ? 6 : 0
             )
     }
 
@@ -1103,13 +1102,13 @@ struct KanbanColumnView: View {
         }
         .background(columnSurface)
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(category.color.opacity(isActiveDropTarget ? 0.03 : 0))
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .fill(category.color.opacity(isActiveDropTarget ? 0.025 : 0))
                 .allowsHitTesting(false)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(isActiveDropTarget ? category.color.opacity(0.30) : .clear, lineWidth: 1.4)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(isActiveDropTarget ? category.color.opacity(0.28) : .clear, lineWidth: 1.2)
                 .allowsHitTesting(false)
         }
         .overlay(alignment: .top) {
@@ -1123,8 +1122,8 @@ struct KanbanColumnView: View {
                     .allowsHitTesting(false)
             }
         }
-        .scaleEffect(isActiveDropTarget ? 1.012 : 1, anchor: .top)
-        .shadow(color: category.color.opacity(isActiveDropTarget ? 0.18 : 0), radius: isActiveDropTarget ? 18 : 0, x: 0, y: isActiveDropTarget ? 10 : 0)
+        .scaleEffect(isActiveDropTarget ? 1.006 : 1, anchor: .top)
+        .shadow(color: category.color.opacity(isActiveDropTarget ? 0.10 : 0), radius: isActiveDropTarget ? 12 : 0, x: 0, y: isActiveDropTarget ? 6 : 0)
         .animation(reduceMotion ? .easeInOut(duration: 0.1) : .spring(response: 0.28, dampingFraction: 0.78), value: isActiveDropTarget)
         .onDrop(of: acceptedDropTypes, isTargeted: $isDropTargeted) { providers in
             onDrop(providers)
@@ -1258,10 +1257,10 @@ struct KanbanColumnView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
 
             Rectangle()
-                .fill(Color.primary.opacity(0.08))
+                .fill(Color.primary.opacity(0.055))
                 .frame(height: 1)
         }
         .contentShape(Rectangle())
@@ -1292,9 +1291,12 @@ struct KanbanColumnView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .frame(maxWidth: min(density.columnWidth(for: category) - 28, 260))
-        .liquidSurface(cornerRadius: 12, interactive: true, fallbackFill: Color(nsColor: .windowBackgroundColor).opacity(0.92), fallbackStrokeOpacity: 0.12)
+        .background(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.94))
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(category.color.opacity(0.24), lineWidth: 1)
         )
     }
@@ -1321,13 +1323,13 @@ struct KanbanColumnView: View {
         .frame(height: emptyPlaceholderHeight)
         .padding(isPersistentDropColumn ? 12 : 8)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isActiveDropTarget ? category.color.opacity(0.10) : Color.primary.opacity(isPersistentDropColumn ? 0.02 : 0.025))
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .fill(isActiveDropTarget ? category.color.opacity(0.07) : Color.primary.opacity(isPersistentDropColumn ? 0.016 : 0.02))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(
-                    isActiveDropTarget ? category.color.opacity(0.50) : Color.primary.opacity(isPersistentDropColumn ? 0.07 : 0.08),
+                    isActiveDropTarget ? category.color.opacity(0.36) : Color.primary.opacity(isPersistentDropColumn ? 0.055 : 0.065),
                     style: StrokeStyle(lineWidth: isActiveDropTarget ? 1.5 : 1, dash: isPersistentDropColumn ? [] : [5, 4])
                 )
         )
@@ -1348,8 +1350,8 @@ private struct KanbanCountBadge: View {
             .foregroundStyle(count == 0 ? .secondary : tint)
             .padding(.horizontal, Stanford.sidebarBadgeHorizontalPadding)
             .frame(minWidth: Stanford.sidebarBadgeMinWidth, minHeight: Stanford.sidebarBadgeHeight)
-            .background(tint.opacity(count == 0 ? 0.06 : 0.12))
-            .clipShape(RoundedRectangle(cornerRadius: Stanford.sidebarBadgeCornerRadius, style: .continuous))
+        .background(tint.opacity(count == 0 ? 0.06 : 0.12))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.sidebarBadgeCornerRadius, style: .continuous))
             .accessibilityLabel("\(count) \(count == 1 ? "task" : "tasks")")
     }
 }
@@ -1362,25 +1364,18 @@ private struct KanbanColumnHeaderChip: View {
         HStack(spacing: 6) {
             Circle()
                 .fill(category.color)
-                .frame(width: 7, height: 7)
+                .frame(width: 6, height: 6)
 
             Text(category.rawValue)
-                .font(Stanford.caption(13).weight(.semibold))
+                .font(Stanford.caption(12).weight(.semibold))
                 .foregroundStyle(.primary)
 
             Text("\(count)")
                 .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(count == 0 ? .secondary : category.color)
+                .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(category.color.opacity(0.08))
-        .clipShape(Capsule(style: .continuous))
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(category.color.opacity(0.16), lineWidth: 1)
-        )
+        .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(category.rawValue), \(count) \(count == 1 ? "task" : "tasks")")
     }
@@ -1641,7 +1636,7 @@ struct KanbanTaskCardView: View {
 
     @ViewBuilder
     private var cardSurface: some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
 
         if isDragPreview {
             shape
@@ -1651,19 +1646,13 @@ struct KanbanTaskCardView: View {
                 }
         } else {
             shape
-                .fill(Color.primary.opacity(isHovered ? 0.045 : 0.03))
+                .fill(Color.primary.opacity(isHovered ? 0.04 : 0.024))
                 .overlay {
                     shape.stroke(
-                        Color.primary.opacity(isHovered ? 0.12 : 0.06),
+                        Color.primary.opacity(isHovered ? 0.11 : 0.055),
                         lineWidth: 1
                     )
                 }
-                .shadow(
-                    color: Color.black.opacity(isHovered ? 0.04 : 0.015),
-                    radius: isHovered ? 10 : 4,
-                    x: 0,
-                    y: isHovered ? 5 : 2
-                )
         }
     }
 
@@ -1753,7 +1742,7 @@ struct KanbanTaskCardView: View {
     /// reinforce that those cards are archived.
     private var titleFontSize: CGFloat {
         switch category {
-        case .review: return 16
+        case .review: return 14
         case .done: return 13
         default: return 14
         }
