@@ -310,14 +310,15 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var stepList: some View {
-        VStack(spacing: 6) {
-            let steps = currentDraft?.steps ?? []
-            let expandedID = effectiveExpandedStepID(for: steps)
+        let steps = currentDraft?.steps ?? []
+        let expandedID = effectiveExpandedStepID(for: steps)
+
+        return VStack(spacing: 6) {
             ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                 planStepRow(index: index, step: step, isExpanded: step.id == expandedID)
             }
         }
-        .animation(.snappy(duration: 0.18), value: effectiveExpandedStepID(for: currentDraft?.steps ?? []))
+        .animation(.snappy(duration: 0.18), value: expandedID)
     }
 
     private func planStepRow(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
