@@ -320,6 +320,7 @@ enum TaskPlanService {
         modelContext.insert(event)
         task.updatedAt = Date()
         auditStepProgress(payload, task: task, run: run)
+        TaskContextStateManager.refresh(task: task)
         return event
     }
 }
@@ -542,6 +543,7 @@ extension TaskPlanService {
         modelContext.insert(event)
         task.updatedAt = Date()
         auditPlanLifecycle(type: type, planID: plan.planID, task: task, stepCount: plan.steps.count)
+        TaskContextStateManager.refresh(task: task)
         return event
     }
 
@@ -566,6 +568,7 @@ extension TaskPlanService {
             skippedCount: state.plan?.steps.filter { $0.status == .skipped }.count ?? 0,
             run: run
         )
+        TaskContextStateManager.refresh(task: task)
         return event
     }
 

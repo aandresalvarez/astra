@@ -186,6 +186,7 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        logContextPromptDiagnostics(for: task, prompt: prompt, phase: "run")
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
@@ -847,6 +848,7 @@ final class AgentRuntimeWorker {
         // Build a fresh prompt with session history instead of --resume (which resends full conversation).
         // This cuts input tokens by ~90% on follow-ups.
         let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        logContextPromptDiagnostics(for: task, prompt: followUpPrompt, phase: "resume")
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: followUpPrompt,
@@ -1261,6 +1263,7 @@ final class AgentRuntimeWorker {
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
@@ -1649,6 +1652,21 @@ final class AgentRuntimeWorker {
         task.status = .completed
         let event = TaskEvent(task: task, type: "task.completed", payload: successPayload, run: run)
         modelContext.insert(event)
+    }
+
+    @MainActor
+    private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: String) {
+        AppLogger.audit(
+            .contextPromptDiagnostics,
+            category: "Worker",
+            taskID: task.id,
+            fields: TaskContextStateManager.promptDiagnosticsFields(
+                task: task,
+                prompt: prompt,
+                phase: phase
+            ),
+            level: .debug
+        )
     }
 
     private func utilityRuntimeConfiguration(

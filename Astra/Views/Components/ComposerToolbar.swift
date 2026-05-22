@@ -45,7 +45,7 @@ struct ComposerToolbar: View {
     @Binding var teamSize: Int
     @Binding var isPlanMode: Bool
     var isPlanModeDisabled: Bool = false
-    var planModeHelp: String = "Plan and refine before creating a runnable task"
+    var planModeHelp: String = "Turn on Goal Mode to define and approve a goal before execution"
     var onPolicyLevelChange: ((AgentPolicyLevel) -> Void)?
 
     // MARK: - Submit button style
@@ -117,7 +117,7 @@ struct ComposerToolbar: View {
                 Divider()
 
                 Toggle(isOn: $isPlanMode) {
-                    Label(isPlanMode ? "Plan mode on" : "Plan mode off", systemImage: "text.badge.checkmark")
+                    Label(isPlanMode ? "Goal mode on" : "Goal mode off", systemImage: "target")
                 }
                 .disabled(isPlanModeDisabled)
 
@@ -506,10 +506,10 @@ struct ComposerToolbar: View {
     private func planModeToggle(compact: Bool) -> some View {
         Toggle(isOn: $isPlanMode) {
             HStack(spacing: 4) {
-                Image(systemName: "text.badge.checkmark")
+                Image(systemName: "target")
                     .font(Stanford.ui(11))
                 if !compact {
-                    Text("Plan mode")
+                    Text("Goal mode")
                         .font(Stanford.chatMeta(13))
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -520,7 +520,7 @@ struct ComposerToolbar: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .disabled(isPlanModeDisabled)
-        .help(compact ? "Plan mode — \(planModeHelp.lowercased())" : planModeHelp)
+        .help(compact ? "Goal mode - \(planModeHelp.lowercased())" : planModeHelp)
         .accessibilityIdentifier("PlanModeToggle")
     }
 
