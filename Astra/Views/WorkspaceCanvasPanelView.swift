@@ -12,6 +12,7 @@ struct WorkspaceCanvasPanelView: View {
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanInputSignature = ""
     @State private var pendingPlanRefreshTask: Task<Void, Never>?
+    @State private var expandedStepID: String?
 
     private let knownTools = ["Read", "Grep", "Write", "Edit", "Bash"]
 
@@ -163,9 +164,9 @@ struct WorkspaceCanvasPanelView: View {
                 .padding(.bottom, 14)
             }
 
-            // Footer only appears in edit mode where Cancel/Discard/Save are real
-            // primary actions. Read-only states inline their status text under the
-            // plan header chips so the bottom bar isn't just informational chrome.
+            // Footer only appears in edit mode where local edit actions are useful.
+            // Read-only states inline their status text under the plan header chips
+            // so the bottom bar isn't just informational chrome.
             if canEditPlan {
                 Divider()
                 footer(sourcePlan)
@@ -182,18 +183,11 @@ struct WorkspaceCanvasPanelView: View {
                     .font(Stanford.heading(18))
                     .lineLimit(2)
 
-                TextEditor(text: planGoalBinding)
+                TextField("Plan summary", text: planGoalBinding, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .frame(minHeight: 42, maxHeight: 64)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 4)
-                    .background(Stanford.cardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                            .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-                    )
+                    .lineLimit(1...2)
             } else if let draft = currentDraft {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(draft.title)
@@ -316,145 +310,147 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var stepList: some View {
-        VStack(spacing: 10) {
-            ForEach(Array((currentDraft?.steps ?? []).enumerated()), id: \.element.id) { index, step in
+        VStack(spacing: 6) {
+            let steps = currentDraft?.steps ?? []
+            let expandedID = effectiveExpandedStepID(for: steps)
+            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                planStepRow(index: index, step: step, isExpanded: step.id == expandedID)
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: effectiveExpandedStepID(for: currentDraft?.steps ?? []))
+    }
+
+    private func planStepRow(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
+        VStack(alignment: .leading, spacing: isExpanded ? 10 : 0) {
+            if isExpanded, isStepEditable(step) {
+                expandedEditableStepHeader(index: index, step: step)
+            } else {
+                compactStepHeader(index: index, step: step, isExpanded: isExpanded)
+            }
+
+            if isExpanded {
                 if isStepEditable(step) {
-                    editableStepCard(index: index, step: step)
+                    expandedEditableStepBody(index: index, step: step)
                 } else {
-                    lockedStepCard(index: index, step: step)
-                }
-            }
-        }
-    }
-
-    private func lockedStepCard(index: Int, step: TaskPlanStep) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: icon(for: step.status))
-                    .font(Stanford.ui(14, weight: .semibold))
-                    .foregroundStyle(color(for: step.status))
-                    .frame(width: 20, height: 20)
-                Text("\(index + 1). \(step.title)")
-                    .font(Stanford.caption(13).weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                if step.status == .running {
-                    canvasChip("Running", color: color(for: step.status))
-                }
-            }
-
-            if !step.detail.isEmpty {
-                Text(step.detail)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.primary.opacity(0.78))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 28)
-            }
-
-            if !step.doneSignal.isEmpty {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: step.status == .done ? "checkmark.circle.fill" : "arrow.turn.down.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(step.status == .done ? Stanford.statusHealthy : .secondary)
-                        .frame(width: 14)
-                    Text(step.doneSignal)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.leading, 22)
-            }
-
-            stepMetadataRow(step)
-                .padding(.top, 2)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusMedium,
-            fallbackFill: color(for: step.status).opacity(0.07),
-            fallbackStrokeOpacity: 0
-        )
-        .overlay(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous).stroke(color(for: step.status).opacity(Stanford.strokeActive), lineWidth: 1))
-    }
-
-    private func editableStepCard(index: Int, step: TaskPlanStep) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill(color(for: step.status).opacity(0.14))
-                    Text("\(index + 1)")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(color(for: step.status))
-                }
-                .frame(width: 22, height: 22)
-
-                TextField("Step title", text: stepTitleBinding(index))
-                    .textFieldStyle(.plain)
-                    .font(Stanford.caption(13).weight(.semibold))
-                    .lineLimit(2)
-
-                Spacer(minLength: 8)
-
-                if step.status == .blocked {
-                    canvasChip("Blocked", color: Stanford.poppy)
-                }
-
-                moveButton(systemImage: "arrow.up", isDisabled: !canMoveStepUp(index)) {
-                    moveStep(index, by: -1)
-                }
-                moveButton(systemImage: "arrow.down", isDisabled: !canMoveStepDown(index)) {
-                    moveStep(index, by: 1)
-                }
-                moveButton(systemImage: "trash", isDisabled: !canDeleteStep(index), role: .destructive) {
-                    deleteStep(index)
-                }
-            }
-
-            placeholderEditor(
-                icon: "text.alignleft",
-                placeholder: "What this step does…",
-                text: stepDetailBinding(index)
-            )
-            placeholderField(
-                icon: "checkmark.circle",
-                placeholder: "Done when…",
-                text: stepDoneSignalBinding(index)
-            )
-
-            HStack(alignment: .center, spacing: 10) {
-                Picker("Risk", selection: stepRiskBinding(index)) {
-                    ForEach(TaskPlanRisk.allCases, id: \.self) { risk in
-                        Text(risk.rawValue.capitalized).tag(risk)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 168)
-                .labelsHidden()
-                .help("Risk level")
-
-                FlowLayout(spacing: 5) {
-                    ForEach(knownTools, id: \.self) { tool in
-                        toolChip(tool, isSelected: step.likelyTools.contains(tool)) {
-                            toggleTool(tool, at: index)
-                        }
-                    }
+                    expandedLockedStepBody(step)
                 }
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, isExpanded ? 10 : 8)
         .liquidSurface(
             cornerRadius: Stanford.radiusMedium,
-            interactive: true,
-            fallbackFill: Stanford.cardBackground,
+            interactive: isStepEditable(step),
+            fallbackFill: stepRowFill(for: step, isExpanded: isExpanded),
             fallbackStrokeOpacity: 0
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(step.status == .blocked ? Stanford.poppy.opacity(Stanford.strokeActive) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                .stroke(stepRowStroke(for: step, isExpanded: isExpanded), lineWidth: 1)
         )
+    }
+
+    private func compactStepHeader(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Button {
+                expandedStepID = step.id
+            } label: {
+                HStack(alignment: .center, spacing: 9) {
+                    stepNumberBadge(index: index, step: step, isExpanded: isExpanded)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(step.title)
+                                .font(Stanford.caption(13).weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            statusBadge(for: step.status)
+                        }
+
+                        HStack(spacing: 5) {
+                            Text(permissionSummary(for: step))
+                                .foregroundStyle(.secondary)
+                            if let detail = compactDetail(for: step) {
+                                Text("·")
+                                    .foregroundStyle(.secondary.opacity(0.5))
+                                Text(detail)
+                                    .foregroundStyle(step.status == .blocked ? Stanford.poppy : .secondary)
+                            }
+                        }
+                        .font(Stanford.caption(11))
+                        .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isStepEditable(step) {
+                stepActionsMenu(index: index, step: step)
+            }
+        }
+    }
+
+    private func expandedEditableStepHeader(index: Int, step: TaskPlanStep) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            stepNumberBadge(index: index, step: step, isExpanded: true)
+
+            TextField("Step title", text: stepTitleBinding(index))
+                .textFieldStyle(.plain)
+                .font(Stanford.caption(13).weight(.semibold))
+                .lineLimit(2)
+
+            Spacer(minLength: 8)
+            statusBadge(for: step.status)
+            stepActionsMenu(index: index, step: step)
+        }
+    }
+
+    private func expandedEditableStepBody(index: Int, step: TaskPlanStep) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if step.status == .blocked, !step.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blockedCallout(step.detail)
+            }
+
+            labeledEditor(
+                label: step.status == .blocked ? "Blocker / Instructions" : "Instructions",
+                placeholder: "What this step does",
+                text: stepDetailBinding(index)
+            )
+
+            labeledField(
+                label: "Acceptance",
+                placeholder: "Done when",
+                text: stepDoneSignalBinding(index)
+            )
+
+            stepSettingsRow(index: index, step: step)
+        }
+        .padding(.leading, 31)
+    }
+
+    private func expandedLockedStepBody(_ step: TaskPlanStep) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if step.status == .blocked, !step.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blockedCallout(step.detail)
+            } else if !step.detail.isEmpty {
+                stepReadOnlyBlock(label: "Instructions", text: step.detail)
+            }
+
+            if !step.doneSignal.isEmpty {
+                stepReadOnlyBlock(label: step.status == .done ? "Completed" : "Acceptance", text: step.doneSignal)
+            }
+
+            HStack(spacing: 8) {
+                Text(permissionSummary(for: step))
+                Text("Risk: \(step.risk.rawValue.capitalized)")
+            }
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 31)
     }
 
     private var addStepButton: some View {
@@ -483,21 +479,16 @@ struct WorkspaceCanvasPanelView: View {
 
     private func footer(_ sourcePlan: TaskPlan) -> some View {
         HStack(spacing: 10) {
-            Button("Cancel plan") {
-                cancelPlan(sourcePlan)
-            }
-            .buttonStyle(StanfordButtonStyle(isPrimary: false))
-            .foregroundStyle(Stanford.cardinalRed)
-            .help("Cancel this plan and stop using it for the task.")
+            footerOverflowMenu(sourcePlan)
 
             Spacer(minLength: 8)
 
-            Button("Discard") {
+            Button("Cancel") {
                 syncDraftIfNeeded(force: true)
+                isPresented = false
             }
             .buttonStyle(StanfordButtonStyle(isPrimary: false))
-            .disabled(currentDraft == sourcePlan)
-            .help(currentDraft == sourcePlan ? "There are no local plan edits to discard." : "Discard local plan edits.")
+            .help("Close the plan panel without saving local edits.")
 
             Button("Save changes") {
                 saveDraft()
@@ -592,33 +583,87 @@ struct WorkspaceCanvasPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func placeholderField(icon: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 14, alignment: .center)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.plain)
-                .font(Stanford.caption(12))
+    private func effectiveExpandedStepID(for steps: [TaskPlanStep]) -> String? {
+        if let expandedStepID, steps.contains(where: { $0.id == expandedStepID }) {
+            return expandedStepID
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-        )
+
+        if let running = steps.first(where: { $0.status == .running }) {
+            return running.id
+        }
+
+        if let blocked = steps.first(where: { $0.status == .blocked }) {
+            return blocked.id
+        }
+
+        if canEditPlan, let editable = steps.first(where: TaskPlanService.isEditablePlanStep) {
+            return editable.id
+        }
+
+        if let pending = steps.first(where: { $0.status == .pending }) {
+            return pending.id
+        }
+
+        return steps.first?.id
     }
 
-    private func placeholderEditor(icon: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 14, alignment: .center)
-                .padding(.top, 6)
+    private func compactDetail(for step: TaskPlanStep) -> String? {
+        let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !detail.isEmpty { return detail }
+
+        let doneSignal = step.doneSignal.trimmingCharacters(in: .whitespacesAndNewlines)
+        return doneSignal.isEmpty ? nil : doneSignal
+    }
+
+    private func permissionSummary(for step: TaskPlanStep) -> String {
+        guard !step.likelyTools.isEmpty else { return "Needs: none" }
+        return "Needs: \(step.likelyTools.joined(separator: ", "))"
+    }
+
+    private func stepRowFill(for step: TaskPlanStep, isExpanded: Bool) -> Color {
+        if step.status == .blocked {
+            return Stanford.poppy.opacity(isExpanded ? 0.10 : 0.06)
+        }
+        return isExpanded ? Stanford.cardBackground.opacity(0.92) : Stanford.cardBackground.opacity(0.46)
+    }
+
+    private func stepRowStroke(for step: TaskPlanStep, isExpanded: Bool) -> Color {
+        if step.status == .blocked {
+            return Stanford.poppy.opacity(isExpanded ? Stanford.strokeFocus : Stanford.strokeActive)
+        }
+        return Color.primary.opacity(isExpanded ? Stanford.strokeActive : Stanford.strokeRest)
+    }
+
+    private func stepNumberBadge(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(color(for: step.status).opacity(isExpanded ? 0.18 : 0.12))
+            Text("\(index + 1)")
+                .font(Stanford.caption(10).weight(.bold))
+                .foregroundStyle(color(for: step.status))
+        }
+        .frame(width: 22, height: 22)
+    }
+
+    @ViewBuilder
+    private func statusBadge(for status: TaskPlanStepStatus) -> some View {
+        switch status {
+        case .pending:
+            EmptyView()
+        case .running:
+            canvasChip("Running", color: color(for: status))
+        case .blocked:
+            canvasChip("Blocked", color: color(for: status))
+        case .done:
+            canvasChip("Done", color: color(for: status))
+        case .skipped:
+            canvasChip("Skipped", color: color(for: status))
+        }
+    }
+
+    private func labeledEditor(label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel(label)
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty {
                     Text(placeholder)
@@ -630,54 +675,185 @@ struct WorkspaceCanvasPanelView: View {
                 }
                 TextEditor(text: text)
                     .font(Stanford.caption(12))
-                    .frame(minHeight: 44)
+                    .frame(minHeight: 46)
                     .scrollContentBackground(.hidden)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Stanford.fog.opacity(0.42))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-        )
     }
 
-    private func stepMetadataRow(_ step: TaskPlanStep) -> some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(riskColor(step.risk))
-                .frame(width: 5, height: 5)
-            Text(step.risk.rawValue.capitalized)
+    private func labeledField(label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel(label)
+            TextField(placeholder, text: text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(Stanford.caption(12))
+                .lineLimit(1...3)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(Stanford.fog.opacity(0.42))
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func blockedCallout(_ reason: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(Stanford.poppy)
+                .frame(width: 16)
+                .padding(.top, 1)
+
+            Text(reason)
+                .font(Stanford.caption(12).weight(.semibold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(Stanford.poppy.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+    }
+
+    private func stepReadOnlyBlock(label: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            fieldLabel(label)
+            Text(text)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.primary.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func stepSettingsRow(index: Int, step: TaskPlanStep) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Label(permissionSummary(for: step), systemImage: "key.horizontal")
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Menu {
+                Picker("Risk", selection: stepRiskBinding(index)) {
+                    ForEach(TaskPlanRisk.allCases, id: \.self) { risk in
+                        Text(risk.rawValue.capitalized).tag(risk)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(riskColor(step.risk))
+                        .frame(width: 6, height: 6)
+                    Text(step.risk.rawValue.capitalized)
+                }
+                .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(riskColor(step.risk))
-            if !step.likelyTools.isEmpty {
-                Text("·")
-                    .foregroundStyle(.secondary.opacity(0.5))
-                Text(step.likelyTools.joined(separator: " · "))
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(riskColor(step.risk).opacity(0.10))
+                .clipShape(Capsule())
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Set step risk.")
+
+            Menu {
+                ForEach(knownTools, id: \.self) { tool in
+                    Button {
+                        toggleTool(tool, at: index)
+                    } label: {
+                        if step.likelyTools.contains(tool) {
+                            Label(tool, systemImage: "checkmark")
+                        } else {
+                            Text(tool)
+                        }
+                    }
+                }
+            } label: {
+                Label("Permissions", systemImage: "slider.horizontal.3")
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Edit likely tools for this step.")
         }
-        .font(Stanford.caption(10).weight(.semibold))
-        .padding(.leading, 28)
     }
 
-    private func moveButton(
-        systemImage: String,
-        isDisabled: Bool,
-        role: ButtonRole? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(role: role, action: action) {
-            Image(systemName: systemImage)
-                .font(Stanford.ui(11, weight: .semibold))
+    private func stepActionsMenu(index: Int, step: TaskPlanStep) -> some View {
+        Menu {
+            Button {
+                expandedStepID = step.id
+            } label: {
+                Label("Focus step", systemImage: "rectangle.expand.vertical")
+            }
+
+            Divider()
+
+            Button {
+                moveStep(index, by: -1)
+            } label: {
+                Label("Move up", systemImage: "arrow.up")
+            }
+            .disabled(!canMoveStepUp(index))
+
+            Button {
+                moveStep(index, by: 1)
+            } label: {
+                Label("Move down", systemImage: "arrow.down")
+            }
+            .disabled(!canMoveStepDown(index))
+
+            Divider()
+
+            Button(role: .destructive) {
+                deleteStep(index)
+            } label: {
+                Label("Delete step", systemImage: "trash")
+            }
+            .disabled(!canDeleteStep(index))
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
+                .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(role == .destructive ? Stanford.cardinalRed : .secondary)
-        .background(Stanford.cardBackground.opacity(isDisabled ? 0 : 1))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-        .disabled(isDisabled)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Step actions")
+    }
+
+    private func footerOverflowMenu(_ sourcePlan: TaskPlan) -> some View {
+        Menu {
+            Button("Discard edits") {
+                syncDraftIfNeeded(force: true)
+            }
+            .disabled(currentDraft == sourcePlan)
+
+            Divider()
+
+            Button("Cancel plan", role: .destructive) {
+                cancelPlan(sourcePlan)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(Stanford.ui(14, weight: .semibold))
+                .frame(width: 28, height: 28)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("More plan actions")
     }
 
     private func canvasChip(_ text: String, color: Color = Stanford.coolGrey) -> some View {
@@ -688,23 +864,6 @@ struct WorkspaceCanvasPanelView: View {
             .background(color.opacity(0.12))
             .foregroundStyle(color)
             .clipShape(Capsule())
-    }
-
-    private func toolChip(_ tool: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(tool)
-                .font(Stanford.caption(10).weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(isSelected ? Stanford.lagunita.opacity(0.14) : Stanford.cardBackground)
-                .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .stroke(isSelected ? Stanford.lagunita.opacity(Stanford.strokeActive) : Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
     }
 
     private func syncDraftIfNeeded(force: Bool = false) {
@@ -833,8 +992,9 @@ struct WorkspaceCanvasPanelView: View {
     private func addStep() {
         guard canEditPlan, var plan = currentDraft else { return }
         let title = "New step"
+        let stepID = TaskPlanService.makeUniqueStepID(in: plan, preferredTitle: title)
         plan.steps.append(TaskPlanStep(
-            id: TaskPlanService.makeUniqueStepID(in: plan, preferredTitle: title),
+            id: stepID,
             title: title,
             detail: "",
             status: .pending,
@@ -843,6 +1003,7 @@ struct WorkspaceCanvasPanelView: View {
             doneSignal: ""
         ))
         draftPlan = plan
+        expandedStepID = stepID
     }
 
     private func toggleTool(_ tool: String, at index: Int) {
