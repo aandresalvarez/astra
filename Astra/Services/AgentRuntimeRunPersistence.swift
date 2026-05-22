@@ -22,6 +22,7 @@ enum AgentRuntimeRunPersistence {
             redactions: AgentSensitiveRedactions.values(for: task),
             durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
         )
+        TaskContextStateManager.recordTurn(task: task, run: run, message: message)
     }
 
     static func finalizeAndPersist(

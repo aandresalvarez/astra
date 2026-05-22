@@ -16,6 +16,7 @@ enum AgentPromptBuilder {
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
 
         parts.append(currentTaskBlock(for: task))
+        appendThreadIntentContext(for: task, to: &parts)
 
         if let instructions = task.workspace?.instructions,
            !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -532,8 +533,9 @@ enum AgentPromptBuilder {
         var parts: [String] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
 
-        parts.append("You are continuing work on a task. Here is the original goal:")
+        parts.append("You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.")
         parts.append("Goal: \(task.goal)")
+        appendThreadIntentContext(for: task, to: &parts)
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
@@ -605,6 +607,11 @@ enum AgentPromptBuilder {
         if task.resolvedRuntimeID.supportsAstraRunProtocol {
             appendAstraRunProtocolInstructions(to: &parts)
         }
+
+        parts.append("""
+        History Lookup Rule:
+        If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
+        """)
 
         parts.append("User's follow-up request:\n\(message)")
 
@@ -773,10 +780,20 @@ enum AgentPromptBuilder {
             let rel = url.path.replacingOccurrences(of: folder + "/", with: "")
             if rel.hasPrefix("outputs/") { continue }
             if rel == "session_history.md" { continue }
+            if rel == TaskContextStateManager.jsonFileName { continue }
+            if rel == TaskContextStateManager.markdownFileName { continue }
             files.append("- \(rel) (\(url.path))")
             if files.count >= 30 { break }
         }
         return files
+    }
+
+    private static func appendThreadIntentContext(for task: AgentTask, to parts: inout [String]) {
+        guard let context = TaskContextStateManager.promptContext(for: task),
+              !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        parts.append(context)
     }
 
     private static func appendAstraRunProtocolInstructions(to parts: inout [String]) {

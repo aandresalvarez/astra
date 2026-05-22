@@ -3640,7 +3640,7 @@ struct TaskMainView: View {
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
                     isPlanMode: $isPlanMode,
-                    planModeHelp: "Plan and refine before resuming this thread",
+                    planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
                     onPolicyLevelChange: { level in
                         TaskPolicyStore.recordSelection(
                             level: level,
@@ -3859,8 +3859,8 @@ struct TaskMainView: View {
 
         Read the conversation above and produce a recap in this exact format. OMIT any section that would be empty — don't write "(none)" or placeholders.
 
-        ## Goal
-        One sentence describing what "done" looks like for this task.
+        ## Intent
+        One sentence describing the current exploration, candidate goal, or what "done" looks like if a goal exists.
 
         ## Progress
         - Bullets: what was done, plus the non-obvious *why* behind any decision (decisions rot fastest from memory).
@@ -4288,7 +4288,7 @@ struct TaskMainView: View {
                     let errorEvent = TaskEvent(
                         task: task,
                         type: TaskPlanConversationEventTypes.assistantMessage,
-                        payload: "Plan mode failed: \(error.localizedDescription)"
+                        payload: "Goal mode failed: \(error.localizedDescription)"
                     )
                     modelContext.insert(errorEvent)
                 }
@@ -4371,9 +4371,9 @@ struct TaskMainView: View {
 
     private func planModeSkillContext() -> String {
         var context = """
-        PLAN MODE:
-        You are planning a follow-up for an existing ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Use the visible conversation context to propose a safe execution plan.
-        The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Plan Mode.
+        GOAL MODE:
+        You are helping the user refine or revise the approved goal and plan for an existing ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Use the visible conversation context to propose a safe execution plan.
+        The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Goal Mode.
 
         Return concise planning prose, then include exactly one structured plan line using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}

@@ -565,12 +565,42 @@ struct ChatPanelView: View {
         Self.newTaskPrompts[newTaskPromptIndex % Self.newTaskPrompts.count]
     }
 
+    private var hasGoalModeSurface: Bool {
+        isPlanMode || pendingPlan != nil || approvedDraftPlan != nil
+    }
+
+    private var goalModeBinding: Binding<Bool> {
+        Binding(
+            get: { isPlanMode },
+            set: { enabled in
+                if enabled {
+                    isPlanMode = true
+                } else {
+                    disableGoalModeFromUserToggle()
+                }
+            }
+        )
+    }
+
     private var isPlanModeActive: Bool {
-        hasConversation || isPlanMode || isSlashCommandInput
+        hasGoalModeSurface || isSlashCommandInput
+    }
+
+    private var goalModeHelpText: String {
+        if pendingPlan != nil {
+            return "Goal Mode is on. Turn it off to discard the candidate goal."
+        }
+        if isPlanMode {
+            return "Goal Mode is on. Turn it off to run the next message directly."
+        }
+        return "Turn on Goal Mode to define and approve a goal before execution"
     }
 
     private var submitButtonTitle: String {
-        if isPlanModeActive {
+        if isSlashCommandInput {
+            return "Send"
+        }
+        if hasGoalModeSurface {
             return hasConversation ? "Send" : "Plan"
         }
         return "Run"
@@ -675,8 +705,8 @@ struct ChatPanelView: View {
                 }
             }
 
-            // Action bar (when conversation has content)
-            if (hasConversation || approvedDraftPlan != nil) && !showSpecCard {
+            // Goal controls are opt-in and only appear after the user enables Goal Mode or a plan exists.
+            if hasGoalModeSurface && (hasConversation || pendingPlan != nil || approvedDraftPlan != nil) && !showSpecCard {
                 actionBar
             }
 
@@ -750,7 +780,7 @@ struct ChatPanelView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "switch.2")
                         .font(Stanford.ui(13))
-                    Text("Enable Plan mode to refine first")
+                    Text("Enable Goal mode to refine first")
                         .font(Stanford.body(15))
                 }
                 .foregroundStyle(Color.primary.opacity(0.65))
@@ -902,6 +932,15 @@ struct ChatPanelView: View {
 
     private var actionBar: some View {
         HStack(spacing: 12) {
+            Label(goalModeStatusTitle, systemImage: "target")
+                .font(Stanford.caption(13).weight(.semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Stanford.lagunita.opacity(0.08))
+                .clipShape(Capsule())
+                .help("Goal Mode keeps exploration separate from approved execution.")
+
             Button {
                 if let approvedPlan = approvedDraftPlan {
                     runApprovedPlan(approvedPlan)
@@ -977,6 +1016,16 @@ struct ChatPanelView: View {
         .background(Stanford.fog.opacity(0.5))
     }
 
+    private var goalModeStatusTitle: String {
+        if approvedDraftPlan != nil {
+            return "Goal Approved"
+        }
+        if pendingPlan != nil {
+            return "Candidate Goal"
+        }
+        return "Goal Mode"
+    }
+
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
             return skipPermissions ? "Run Full Plan" : "Approve Next Step"
@@ -984,7 +1033,7 @@ struct ChatPanelView: View {
         if pendingPlan != nil {
             return "Approve Plan"
         }
-        return "Generate Plan"
+        return "Define Goal"
     }
 
     private var actionBarPrimaryIcon: String {
@@ -1116,9 +1165,9 @@ struct ChatPanelView: View {
                     policyLevelRaw: $composerPolicyLevelRaw,
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
-                    isPlanMode: $isPlanMode,
-                    isPlanModeDisabled: hasConversation || isSlashCommandInput,
-                    planModeHelp: hasConversation ? "Already in Plan mode. Use Start Over to leave planning." : "Plan and refine before creating a runnable task",
+                    isPlanMode: goalModeBinding,
+                    isPlanModeDisabled: isSlashCommandInput,
+                    planModeHelp: goalModeHelpText,
                     onPolicyLevelChange: { level in
                         if let draftTask {
                             recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
@@ -1258,7 +1307,6 @@ struct ChatPanelView: View {
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
-        isPlanMode = true
 
         // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()
@@ -1307,12 +1355,13 @@ struct ChatPanelView: View {
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
             ? buildRecapContext()
             : nil
+        let shouldUseGoalMode = isPlanMode && activeSlashContext == nil && recapContext == nil
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
         let planningDraft = saveDraft()
         isThinking = true
-        let traceID = AuditTrace.make(isPlanModeActive ? "new-task-plan-chat" : "new-task-chat")
+        let traceID = AuditTrace.make(shouldUseGoalMode ? "new-task-plan-chat" : "new-task-chat")
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
         let ws = resolvedWorkspace
@@ -1328,19 +1377,19 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "RECAP COMMAND:\n" + recapCtx
         }
 
-        if activeSlashContext == nil, recapContext == nil {
+        if shouldUseGoalMode {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
 
         AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
-            "source": isPlanModeActive ? "new_task_plan_chat" : "new_task_chat",
+            "source": shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat",
             "runtime": defaultRuntimeID,
             "model": defaultModel,
             "workspace_id": workspace?.id.uuidString ?? "none",
             "selected_skill_count": String(selectedSkills.count),
             "message_length": String(input.count)
         ])
-        logChatCapabilityContext(source: isPlanModeActive ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
+        logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
         Task {
             let result = await SpecEngine.chat(
@@ -1353,12 +1402,11 @@ struct ChatPanelView: View {
                 isThinking = false
                 switch result {
                 case .success(let response):
-                    let visibleResponse = activeSlashContext == nil && recapContext == nil
+                    let visibleResponse = shouldUseGoalMode
                         ? TaskPlanService.userVisiblePlanningText(from: response)
                         : response
                     messages.append(ChatMessage(role: "assistant", content: visibleResponse))
-                    if activeSlashContext == nil,
-                       recapContext == nil,
+                    if shouldUseGoalMode,
                        let draft = planningDraft ?? draftTask {
                         preparePendingPlan(from: response, fallbackGoal: input, on: draft)
                     }
@@ -1439,7 +1487,7 @@ struct ChatPanelView: View {
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) } + [
             (
                 role: "user",
-                content: "Generate the final execution plan now. Include exactly one ASTRA_PLAN structured plan line first for ASTRA to parse. After that, add any short clarification questions or assumptions the user may want to refine before approval."
+                content: "Define the executable goal and final execution plan now. Include exactly one ASTRA_PLAN structured plan line first for ASTRA to parse. After that, add any short clarification questions or assumptions the user may want to refine before approval."
             )
         ]
         let ws = resolvedWorkspace
@@ -1491,6 +1539,18 @@ struct ChatPanelView: View {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
+    }
+
+    private func disableGoalModeFromUserToggle() {
+        isPlanMode = false
+        if pendingPlan != nil {
+            pendingPlan = nil
+            isApprovedPlanHistoryExpanded = false
+            if let task = draftTask {
+                task.updatedAt = Date()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+        }
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload) {
@@ -2087,8 +2147,8 @@ struct ChatPanelView: View {
 
         Read the conversation above and produce a recap in this exact format. OMIT any section that would be empty — don't write "(none)" or placeholders.
 
-        ## Goal
-        One sentence describing what "done" looks like for this task.
+        ## Intent
+        One sentence describing the current exploration, candidate goal, or what "done" looks like if a goal exists.
 
         ## Progress
         - Bullets: what was done, plus the non-obvious *why* behind any decision (decisions rot fastest from memory).
@@ -2405,14 +2465,14 @@ struct ChatPanelView: View {
 
     private func newTaskPlanInstructions() -> String {
         """
-        PLAN MODE:
-        You are planning a new ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Help the user refine the work before execution.
-        The user's confirmation button is named "Approve Plan". Do not tell the user to click "Create Task" in Plan Mode; when the draft is acceptable, tell them to click "Approve Plan".
+        GOAL MODE:
+        You are helping the user move from exploration to an approved executable goal and plan. Do not execute tools, shell commands, writes, or external mutations.
+        The visible primary action is "Define Goal" while exploring. The user's confirmation button is named "Approve Plan" once a candidate goal exists. Do not tell the user to click "Create Task" in Goal Mode; when the draft is acceptable, tell them to click "Approve Plan".
 
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if you truly cannot propose a useful starting plan.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
         """
     }
 
