@@ -314,7 +314,7 @@ enum SpecEngine {
         Ask clarifying questions if the request is vague. Help them think through constraints, \
         acceptance criteria, and edge cases. Be concise and conversational. \
         When the user seems ready, refer to ASTRA's visible primary action. In normal task-spec \
-        conversations this is "Create Task"; in Plan Mode this is "Approve Plan". Do not invent \
+        conversations this is "Create Task"; in Goal/Plan Mode this is "Approve Plan". Do not invent \
         or rename the visible button label. \
         Working directory: \(workspacePath)
         """

@@ -902,6 +902,15 @@ struct ChatPanelView: View {
 
     private var actionBar: some View {
         HStack(spacing: 12) {
+            Label(goalModeStatusTitle, systemImage: "target")
+                .font(Stanford.caption(13).weight(.semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Stanford.lagunita.opacity(0.08))
+                .clipShape(Capsule())
+                .help("Goal Mode keeps exploration separate from approved execution.")
+
             Button {
                 if let approvedPlan = approvedDraftPlan {
                     runApprovedPlan(approvedPlan)
@@ -977,6 +986,16 @@ struct ChatPanelView: View {
         .background(Stanford.fog.opacity(0.5))
     }
 
+    private var goalModeStatusTitle: String {
+        if approvedDraftPlan != nil {
+            return "Goal Approved"
+        }
+        if pendingPlan != nil {
+            return "Candidate Goal"
+        }
+        return "Goal Mode"
+    }
+
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
             return skipPermissions ? "Run Full Plan" : "Approve Next Step"
@@ -984,7 +1003,7 @@ struct ChatPanelView: View {
         if pendingPlan != nil {
             return "Approve Plan"
         }
-        return "Generate Plan"
+        return "Define Goal"
     }
 
     private var actionBarPrimaryIcon: String {
@@ -1439,7 +1458,7 @@ struct ChatPanelView: View {
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) } + [
             (
                 role: "user",
-                content: "Generate the final execution plan now. Include exactly one ASTRA_PLAN structured plan line first for ASTRA to parse. After that, add any short clarification questions or assumptions the user may want to refine before approval."
+                content: "Define the executable goal and final execution plan now. Include exactly one ASTRA_PLAN structured plan line first for ASTRA to parse. After that, add any short clarification questions or assumptions the user may want to refine before approval."
             )
         ]
         let ws = resolvedWorkspace
@@ -2087,8 +2106,8 @@ struct ChatPanelView: View {
 
         Read the conversation above and produce a recap in this exact format. OMIT any section that would be empty — don't write "(none)" or placeholders.
 
-        ## Goal
-        One sentence describing what "done" looks like for this task.
+        ## Intent
+        One sentence describing the current exploration, candidate goal, or what "done" looks like if a goal exists.
 
         ## Progress
         - Bullets: what was done, plus the non-obvious *why* behind any decision (decisions rot fastest from memory).
@@ -2405,14 +2424,14 @@ struct ChatPanelView: View {
 
     private func newTaskPlanInstructions() -> String {
         """
-        PLAN MODE:
-        You are planning a new ASTRA task. Do not execute tools, shell commands, writes, or external mutations. Help the user refine the work before execution.
-        The user's confirmation button is named "Approve Plan". Do not tell the user to click "Create Task" in Plan Mode; when the draft is acceptable, tell them to click "Approve Plan".
+        GOAL MODE:
+        You are helping the user move from exploration to an approved executable goal and plan. Do not execute tools, shell commands, writes, or external mutations.
+        The visible primary action is "Define Goal" while exploring. The user's confirmation button is named "Approve Plan" once a candidate goal exists. Do not tell the user to click "Create Task" in Goal Mode; when the draft is acceptable, tell them to click "Approve Plan".
 
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
         ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if you truly cannot propose a useful starting plan.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
         """
     }
 
