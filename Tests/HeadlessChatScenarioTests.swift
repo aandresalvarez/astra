@@ -824,6 +824,14 @@ struct HeadlessChatScenarioTests {
         #expect(runs.count == 2)
         #expect(args.contains("Bash(curl *redcap.stanford.edu*)"))
         #expect(!args.contains("--dangerously-skip-permissions"))
+        let settingsURL = harness.workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let settingsData = try Data(contentsOf: settingsURL)
+        let settingsJSON = try #require(JSONSerialization.jsonObject(with: settingsData) as? [String: Any])
+        let permissions = try #require(settingsJSON["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Bash(curl *redcap.stanford.edu*)"))
         #expect(runs.last?.output == "Approved curl completed")
     }
 

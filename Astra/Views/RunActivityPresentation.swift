@@ -742,7 +742,7 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "Review the policy request to continue this run."
         }
 
-        var parts = ["ASTRA paused before continuing because review policy requires approval."]
+        var parts = ["ASTRA paused before continuing because the current policy requires approval."]
         if let action = actionPreview, !action.isEmpty {
             parts.append("Requested: \(action)")
         }

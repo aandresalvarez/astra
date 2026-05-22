@@ -68,7 +68,7 @@ final class AgentRuntimeProcessRunner {
             let model = Self.model(task.model, for: .claudeCode)
             var args = ["-p", prompt, "--model", Self.translatedModelForProvider(model), "--output-format", "stream-json", "--verbose"]
             args += effectivePermissionPolicy.cliArguments
-            Self.ensureSubAgentPermissions(at: workspacePath, policy: effectivePermissionPolicy, allowedTools: allowed)
+            Self.ensureSubAgentPermissions(at: workspacePath, policy: effectivePermissionPolicy, allowedTools: providerAllowed)
             if task.maxTurns > 0 {
                 args += ["--max-turns", String(task.maxTurns)]
             }
