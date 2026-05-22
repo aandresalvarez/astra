@@ -101,6 +101,94 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == "task.approved" })
     }
 
+    @Test("Coordinator approval completes generic failed pending tasks")
+    func coordinatorApprovalCompletesGenericFailedPendingTasks() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Review result", goal: "Summarize the repository")
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "failed"
+        context.insert(run)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .completed)
+        #expect(task.isDone == false)
+        #expect(task.completedAt != nil)
+        #expect(task.events.contains { $0.type == "task.approved" })
+        #expect(!task.events.contains { $0.type == "task.dismissed" })
+    }
+
+    @Test("Coordinator approval completes pending tasks without runs")
+    func coordinatorApprovalCompletesPendingTasksWithoutRuns() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Manual review", goal: "Review notes")
+        task.status = .pendingUser
+        context.insert(task)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .completed)
+        #expect(task.completedAt != nil)
+        #expect(task.events.contains { $0.type == "task.approved" })
+        #expect(!task.events.contains { $0.type == "task.dismissed" })
+    }
+
+    @Test("Coordinator dismisses policy-blocked pending result without completing task")
+    func coordinatorDismissesPolicyBlockedPendingResultWithoutCompletingTask() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy block", goal: "List protected resource")
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "policy_violation"
+        context.insert(run)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .pendingUser)
+        #expect(task.isDone == true)
+        #expect(task.completedAt == nil)
+        #expect(task.events.contains { $0.type == "task.dismissed" })
+        #expect(!task.events.contains { $0.type == "task.approved" })
+    }
+
+    @Test("Pending task review policy dismisses completed artifact tasks missing files")
+    func pendingTaskReviewPolicyDismissesCompletedArtifactTasksMissingFiles() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "pending-artifact-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Artifact Review", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create page", goal: "create an html web page", workspace: workspace)
+        task.status = .pendingUser
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == .missingRequiredArtifact)
+    }
+
     @Test("Startup recovery cancels orphaned running task and run")
     func startupRecoveryCancelsOrphanedRunningTaskAndRun() throws {
         let recoveredAt = Date(timeIntervalSince1970: 2_000)

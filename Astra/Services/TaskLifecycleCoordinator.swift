@@ -133,20 +133,8 @@ final class TaskLifecycleCoordinator {
         guard task.status == .pendingUser else { return false }
         guard !hasOpenRuntimePermissionApprovalRequest(task) else { return false }
 
-        guard let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }) else {
-            return true
-        }
-
-        if latestRun.stopReason == "no_usable_result" {
-            return true
-        }
-
-        if latestRun.status != .completed {
-            return true
-        }
-
-        return TaskDeliverableExpectation.requiresStandaloneArtifact(task)
-            && !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun)
+        let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        return PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: latestRun) != nil
     }
 
     private func dismissWithoutMarkingCompleted(_ task: AgentTask) {

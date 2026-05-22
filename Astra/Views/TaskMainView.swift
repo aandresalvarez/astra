@@ -3281,15 +3281,21 @@ struct TaskMainView: View {
         task.status == .pendingUser && (hasOpenRuntimePermissionApprovalRequest || executableApprovedPlan == nil)
     }
 
-    private var latestRunStoppedByPolicy: Bool {
-        guard let run = latestRun else { return false }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
-        return runStoppedByPolicy(run, notices: notices)
+    private var latestRunHasNoUsableResult: Bool {
+        pendingTaskDismissalReason == .noUsableResult ||
+            pendingTaskDismissalReason == .missingRequiredArtifact
     }
 
-    private var latestRunHasNoUsableResult: Bool {
-        latestRun?.stopReason == "no_usable_result"
+    private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
+        guard !hasOpenRuntimePermissionApprovalRequest else { return nil }
+        return PendingTaskReviewPolicy.dismissalReason(
+            for: task,
+            latestRun: latestRunModel
+        )
+    }
+
+    private var latestRunModel: TaskRun? {
+        task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
     private var pendingDecisionTitle: String {
@@ -3299,7 +3305,7 @@ struct TaskMainView: View {
         if latestRunHasNoUsableResult {
             return "No usable result"
         }
-        return latestRunStoppedByPolicy ? "Policy blocked" : "Needs your review"
+        return pendingTaskDismissalReason == .policyBlocked ? "Policy blocked" : "Needs your review"
     }
 
     private var pendingDecisionDetail: String {
@@ -3307,7 +3313,7 @@ struct TaskMainView: View {
             let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
             return pendingRuntimePermissionDecision?.summary ?? fallback
         }
-        if latestRunStoppedByPolicy {
+        if pendingTaskDismissalReason == .policyBlocked {
             return "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
         }
         if latestRunHasNoUsableResult {
@@ -3320,7 +3326,7 @@ struct TaskMainView: View {
         if hasOpenRuntimePermissionApprovalRequest {
             return "Allow once & continue"
         }
-        return (latestRunStoppedByPolicy || latestRunHasNoUsableResult) ? "Dismiss" : "Approve result"
+        return pendingTaskDismissalReason != nil ? "Dismiss" : "Approve result"
     }
 
     private var pendingDecisionPrimaryIcon: String {
@@ -3331,7 +3337,7 @@ struct TaskMainView: View {
         if hasOpenRuntimePermissionApprovalRequest {
             return "hand.raised.fill"
         }
-        if latestRunStoppedByPolicy {
+        if pendingTaskDismissalReason == .policyBlocked {
             return "shield.slash.fill"
         }
         return latestRunHasNoUsableResult ? "doc.badge.exclamationmark" : "person.crop.circle.badge.questionmark"
