@@ -1139,6 +1139,27 @@ struct TaskThreadSnapshotTests {
         )) == true)
     }
 
+    @Test("Runtime permission approval copy explains the decision")
+    func runtimePermissionApprovalCopyExplainsDecision() {
+        let payload = """
+        Permission requested for tool: Bash. ASTRA paused before allowing this run to continue.
+        What ASTRA observed: Bash command: bq ls --project_id=upo-nero-phi-su-deid-jsl --format=prettyjson
+        Why approval is needed: The tool or command is configured as ask-first by the effective ASTRA policy.
+        What allowing does: Grants Bash(bq ls --project_id=upo-nero-phi-su-deid-jsl *) one time for this run, then restarts the provider from the stopped point.
+        What to check: Allow only if this BigQuery command matches the task and should use the signed-in Google Cloud account and project.
+        Detail: bq ls --project_id=upo-nero-phi-su-deid-jsl --format=prettyjson
+        Runtime grant: Bash(bq ls --project_id=upo-nero-phi-su-deid-jsl *)
+        """
+
+        let presentation = RuntimePermissionApprovalText(payload: payload)
+
+        #expect(presentation.compactSummary.contains("Approve Bash"))
+        #expect(presentation.decisionSummary.contains("Allow one-time Bash command for this run"))
+        #expect(presentation.decisionSummary.contains("Bash(bq ls --project_id=upo-nero-phi-su-deid-jsl *)"))
+        #expect(presentation.noticeBody.contains("Observed: Bash command: bq ls"))
+        #expect(presentation.noticeBody.contains("Check: allow only if this BigQuery command matches the task"))
+    }
+
     @Test("Run activity presentation suppresses duplicated actionable notices")
     func runActivityPresentationSuppressesActionableNotices() {
         let task = makeTask(status: .failed)

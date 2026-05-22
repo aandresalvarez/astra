@@ -114,6 +114,11 @@ final class TaskLifecycleCoordinator {
             return
         }
 
+        if shouldDismissWithoutMarkingCompleted(task) {
+            dismissWithoutMarkingCompleted(task)
+            return
+        }
+
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id)
         task.status = .completed
         task.updatedAt = Date()
@@ -122,6 +127,103 @@ final class TaskLifecycleCoordinator {
         let event = TaskEvent(task: task, type: "task.approved", payload: "Task approved by user.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func shouldDismissWithoutMarkingCompleted(_ task: AgentTask) -> Bool {
+        guard task.status == .pendingUser else { return false }
+        guard !hasOpenRuntimePermissionApprovalRequest(task) else { return false }
+
+        guard let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }) else {
+            return true
+        }
+
+        if latestRun.stopReason == "no_usable_result" {
+            return true
+        }
+
+        if latestRun.status != .completed {
+            return true
+        }
+
+        return TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+            && !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun)
+    }
+
+    private func dismissWithoutMarkingCompleted(_ task: AgentTask) {
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "dismiss_without_completion"
+        ])
+        task.isDone = true
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            type: "task.dismissed",
+            payload: "Task dismissed by user without marking it completed."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    func approveSimilarRuntimePermissionForTask(_ task: AgentTask) {
+        guard task.status == .pendingUser,
+              hasOpenRuntimePermissionApprovalRequest(task) else {
+            approveTask(task)
+            return
+        }
+
+        let runtime = task.resolvedRuntimeID
+        let latestGrants = Self.latestRuntimePermissionGrants(for: task)
+        let taskScopedGrants = TaskRuntimePermissionGrants.record(
+            grants: latestGrants,
+            providerID: runtime,
+            task: task,
+            modelContext: modelContext,
+            source: "approve_similar"
+        )
+        guard !taskScopedGrants.isEmpty else {
+            approveRuntimePermissionAndContinue(task)
+            return
+        }
+
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "runtime_permission",
+            "approval_scope": "task",
+            "runtime": runtime.rawValue,
+            "grant_count": String(taskScopedGrants.count)
+        ])
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            type: "task.approved",
+            payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+
+        let resumeMessage = PermissionBroker.resumeMessage(
+            providerID: runtime,
+            grants: taskScopedGrants,
+            fallback: Self.latestRequestedPermissionTool(for: task)
+                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
+            scopeDescription: "task-scoped runtime permission for similar requests in this task"
+        )
+        Task {
+            await taskQueue.continueSession(
+                task: task,
+                message: resumeMessage,
+                modelContext: modelContext,
+                executionPolicy: .default
+            )
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_task_approval"
+            ])
+        }
     }
 
     private func approveRuntimePermissionAndContinue(_ task: AgentTask) {
@@ -142,15 +244,15 @@ final class TaskLifecycleCoordinator {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
         let runtime = task.resolvedRuntimeID
+        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
+        let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
+        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         Task {
             await taskQueue.continueSession(
                 task: task,
-                message: Self.runtimePermissionApprovalResumeMessage,
+                message: resumeMessage,
                 modelContext: modelContext,
-                executionPolicy: .approvedRuntimePermission(
-                    runtime: runtime,
-                    allowedTools: Self.approvedRuntimePermissionTools(for: task)
-                )
+                executionPolicy: executionPolicy
             )
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
@@ -159,62 +261,85 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    private static let runtimePermissionApprovalResumeMessage = """
-    The user approved the blocked runtime permission in ASTRA. Continue the original task from where it stopped. Do not ask for another interactive CLI approval for the same operation; use the approved provider permissions for this run.
-    """
+    private static func runtimePermissionApprovalResumeMessage(
+        for task: AgentTask,
+        grants: [PermissionGrant]
+    ) -> String {
+        PermissionBroker.resumeMessage(
+            providerID: task.resolvedRuntimeID,
+            grants: grants,
+            fallback: latestRequestedPermissionTool(for: task)
+                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName }
+        )
+    }
 
-    private static func approvedRuntimePermissionTools(for task: AgentTask) -> [String] {
-        var tools = Set(AgentPolicy.preset(.review).allowedTools)
+    private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
+        let events = permissionRequestEvents(for: task)
 
-        if let requestedGrant = latestRequestedPermissionGrant(for: task) {
-            tools.insert(requestedGrant)
-        } else if let requestedTool = latestRequestedPermissionTool(for: task) {
-            tools.formUnion(providerToolAliases(for: requestedTool, runtime: task.resolvedRuntimeID))
-        } else {
-            tools.formUnion(AgentPolicy.preset(.review).askFirstTools)
+        let structuredGrants = events
+            .flatMap { PermissionBroker.structuredApprovalGrants(from: $0.payload) }
+        if !structuredGrants.isEmpty {
+            return structuredGrants
         }
 
-        return tools.sorted()
+        let legacyGrants = events
+            .flatMap { PermissionBroker.legacyApprovalGrants(from: $0.payload) }
+        if !legacyGrants.isEmpty {
+            return legacyGrants
+        }
+
+        if let requestedTool = latestRequestedPermissionTool(for: task),
+           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
+            return [grant]
+        }
+        return []
+    }
+
+    private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
+        let events = permissionRequestEvents(for: task)
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+        for event in events {
+            let structured = PermissionBroker.structuredApprovalGrants(from: event.payload)
+            if !structured.isEmpty { return structured }
+            let legacy = PermissionBroker.legacyApprovalGrants(from: event.payload)
+            if !legacy.isEmpty { return legacy }
+        }
+        if let requestedTool = latestRequestedPermissionTool(for: task),
+           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
+            return [grant]
+        }
+        return []
     }
 
     private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
-        task.events
-            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
+        permissionRequestEvents(for: task)
             .sorted { $0.timestamp < $1.timestamp }
             .reversed()
             .compactMap { permissionToolName(from: $0.payload) }
             .first
     }
 
-    private static func latestRequestedPermissionGrant(for task: AgentTask) -> String? {
+    private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
         task.events
             .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
-            .sorted { $0.timestamp < $1.timestamp }
-            .reversed()
-            .compactMap { permissionGrant(from: $0.payload) }
-            .first
-    }
-
-    private static func permissionGrant(from payload: String) -> String? {
-        let patterns = [
-            #"Runtime grant:\s*([^\n]+)"#,
-            #""grant"\s*:\s*"([^"]+)""#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
-                  let range = Range(match.range(at: 1), in: payload) else {
-                continue
-            }
-            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                return value
-            }
-        }
-        return nil
     }
 
     private static func permissionToolName(from payload: String) -> String? {
+        if let decoded = PermissionApprovalEventPayload.decoded(from: payload) {
+            switch decoded.request {
+            case .tool(let name, _), .providerNativePrompt(let name, _):
+                return name
+            case .shell(_, let toolName):
+                return toolName ?? "Bash"
+            case .fileWrite(_, let toolName):
+                return toolName ?? "Write"
+            case .network(_, let toolName):
+                return toolName ?? "WebFetch"
+            case .credential(let label):
+                return label
+            }
+        }
         let patterns = [
             #"Permission (?:denied|requested) for tool: ([^.\n]+)"#,
             #""tool"\s*:\s*"([^"]+)""#,
@@ -232,39 +357,6 @@ final class TaskLifecycleCoordinator {
             }
         }
         return nil
-    }
-
-    private static func providerToolAliases(for tool: String, runtime: AgentRuntimeID) -> [String] {
-        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        switch runtime {
-        case .copilotCLI:
-            if trimmed.hasPrefix("shell(") || trimmed == "read" || trimmed == "write" {
-                return [trimmed]
-            }
-            return [trimmed, canonicalProviderToolName(trimmed)]
-        case .claudeCode:
-            return [canonicalProviderToolName(trimmed)]
-        }
-    }
-
-    private static func canonicalProviderToolName(_ tool: String) -> String {
-        let lower = tool.lowercased()
-        if lower.hasPrefix("shell(") { return "Bash" }
-        switch lower {
-        case "read": return "Read"
-        case "grep": return "Grep"
-        case "glob": return "Glob"
-        case "write": return "Write"
-        case "edit": return "Edit"
-        case "multiedit": return "MultiEdit"
-        case "bash": return "Bash"
-        case "webfetch": return "WebFetch"
-        case "websearch": return "WebSearch"
-        case "agent": return "Agent"
-        default:
-            return tool
-        }
     }
 
     private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {

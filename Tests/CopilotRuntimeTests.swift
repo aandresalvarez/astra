@@ -182,6 +182,31 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Tool execution arguments prefer command text over JSON wrapper")
+    func toolExecutionArgumentsPreferCommandTextOverJSONWrapper() {
+        let line = #"{"type":"tool.execution_start","data":{"toolCallId":"toolu_gh","toolName":"bash","arguments":{"command":"set -euo pipefail\ngh pr list --state open"}}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+
+        if case .toolUse(_, _, let inputSummary) = parsed.first {
+            #expect(inputSummary == "set -euo pipefail\ngh pr list --state open")
+        } else {
+            Issue.record("Expected tool use")
+        }
+    }
+
+    @Test("Tool execution arguments prefer path text over JSON wrapper")
+    func toolExecutionArgumentsPreferPathTextOverJSONWrapper() {
+        let line = #"{"type":"tool.execution_start","data":{"toolCallId":"toolu_view","toolName":"view","arguments":{"path":"/tmp/astra-policy-guard/.astra/tasks/7296659E/outputs"}}}"#
+        let parsed = CopilotStreamEventParser.parseAgentEvents(line: line)
+
+        if case .toolUse(let name, _, let inputSummary) = parsed.first {
+            #expect(name == "view")
+            #expect(inputSummary == "/tmp/astra-policy-guard/.astra/tasks/7296659E/outputs")
+        } else {
+            Issue.record("Expected tool use")
+        }
+    }
+
     @Test("Permission request maps to permission denied event")
     func permissionRequest() {
         let line = #"{"type":"permission_request","tool":"shell(rm)","message":"approval needed"}"#
@@ -708,6 +733,22 @@ struct CopilotCLICommandPlanningTests {
 
         #expect(joined.contains("read"))
         #expect(joined.contains("shell(curl:*)"))
+        #expect(!joined.contains("shell(gh:*)"))
+        #expect(!joined.contains("shell(git:*)"))
+    }
+
+    @Test("Restricted permissions translate wrapper one-run Bash grants")
+    func restrictedPermissionsTranslateWrapperOneRunBashGrants() {
+        let args = CopilotCLIRuntime.copilotPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["Read", "Bash(set:*)"],
+            localToolCommands: ["gh"],
+            requiresAllowAllToolsForPrompt: false
+        )
+        let joined = args.joined(separator: " ")
+
+        #expect(joined.contains("read"))
+        #expect(joined.contains("shell(set:*)"))
         #expect(!joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(git:*)"))
     }
@@ -1265,8 +1306,8 @@ struct CopilotWorkerExecutionTests {
         #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("index.html")))
     }
 
-    @Test("Worker pauses for approval when Copilot waits for hidden permission prompt")
-    func copilotHiddenPermissionPromptPausesForApproval() async throws {
+    @Test("Worker stops when Copilot path permission prompt cannot be scoped")
+    func copilotHiddenPathPermissionPromptStopsAsUnresumable() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-permission-prompt-\(UUID().uuidString)", isDirectory: true)
         let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
@@ -1317,12 +1358,13 @@ struct CopilotWorkerExecutionTests {
 
         await worker.execute(task: task, modelContext: context) { _ in }
 
-        #expect(task.status == .pendingUser)
+        #expect(task.status == .failed)
         let run = try #require(task.runs.first)
         #expect(run.status == .failed)
-        #expect(run.stopReason == "permission_approval_required")
+        #expect(run.stopReason == "provider_permission_unresumable")
         #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
-        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Approve to continue") })
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("does not map to a scoped runtime permission") })
+        #expect(!task.events.contains { $0.type == "permission.approval.requested" })
     }
 
     @Test("Worker stops Copilot browser loops on Google Docs controlled browser requirement")

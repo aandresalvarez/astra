@@ -31,8 +31,48 @@ private func policyRenderContext(
     )
 }
 
+private struct FutureProviderPolicyAdapterFixture: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .claudeCode
+    let adapterVersion = 99
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: true,
+            supportsDenyTools: false,
+            supportsAskFirstMode: true,
+            supportsPathScoping: false,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: true,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: false
+        )
+    }
+
+    func render(policy _: AgentPolicy, context _: PolicyRenderContext) -> ProviderPolicyRender {
+        fatalError("This fixture only exercises default ProviderPolicyAdapter grant mapping.")
+    }
+}
+
 @Suite("Agent Policy")
 struct AgentPolicyTests {
+    @Test("Primary policy modes are ask approval automatic and custom")
+    func primaryPolicyModes() {
+        #expect(AgentPolicyLevel.primaryCases == [.review, .autonomous, .custom])
+        #expect(AgentPolicyLevel.customPresetCases == [.locked, .build, .network])
+        #expect(AgentPolicyLevel.review.displayName == "Ask Approval")
+        #expect(AgentPolicyLevel.autonomous.displayName == "Automatic")
+        #expect(AgentPolicyLevel.build.userFacingLevel == .custom)
+        #expect(AgentPolicyLevel.normalized("ask approval") == .review)
+        #expect(AgentPolicyLevel.normalized("automatic") == .autonomous)
+        #expect(AgentPolicyLevel.normalized("read-only") == .locked)
+        #expect(AgentPolicyLevel.normalized("network heavy") == .network)
+    }
+
     @Test("Review is the useful conservative default")
     func reviewPreset() {
         let policy = AgentPolicy.preset(.review)
@@ -122,7 +162,7 @@ struct AgentPolicyTests {
         #expect(!render.allowedTools.contains("Bash"))
         #expect(!render.allowedTools.contains("Write"))
         #expect(!render.allowedTools.contains("WebFetch"))
-        #expect(!render.allowedTools.contains("Bash(gh:*)"))
+        #expect(!render.allowedTools.contains("Bash(gh *)"))
         #expect(render.askFirstTools.contains("Bash"))
     }
 
@@ -147,7 +187,7 @@ struct AgentPolicyTests {
         )
 
         #expect(claudeRender.allowedTools.contains("Bash"))
-        #expect(claudeRender.allowedTools.contains("Bash(gh:*)"))
+        #expect(claudeRender.allowedTools.contains("Bash(gh *)"))
         #expect(!claudeRender.allowedTools.contains("WebFetch"))
 
         let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
@@ -229,6 +269,340 @@ struct AgentPolicyTests {
         #expect(render.enforcementTiers.contains(.astraBrokered))
     }
 
+    @Test("Provider adapters render typed one-run grants")
+    func providerAdaptersRenderTypedOneRunGrants() {
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "curl", pattern: "*"),
+            .providerTool(name: "Write")
+        ]
+
+        let claude = ClaudePolicyAdapter()
+        #expect(claude.providerGrantStrings(for: grants) == ["Bash(curl *)", "Write"])
+
+        let copilot = CopilotPolicyAdapter(capabilities: .conservative)
+        #expect(copilot.providerGrantStrings(for: grants) == ["shell(curl:*)", "write"])
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "Bash(*)") == nil)
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell") == nil)
+    }
+
+    @Test("Provider runtime grants include safe shell companions without broad authority")
+    func providerRuntimeGrantsIncludeSafeShellCompanionsWithoutBroadAuthority() {
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ]
+
+        let storedCopilotGrants = PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI)
+        let runtimeCopilotGrants = PermissionBroker.providerRuntimeGrantStrings(for: grants, runtime: .copilotCLI)
+        let runtimeClaudeGrants = PermissionBroker.providerRuntimeGrantStrings(for: grants, runtime: .claudeCode)
+
+        #expect(storedCopilotGrants == ["shell(gh:search prs *)"])
+        #expect(runtimeCopilotGrants.contains("shell(gh:search prs *)"))
+        #expect(runtimeCopilotGrants.contains("shell(gh:auth status *)"))
+        #expect(runtimeCopilotGrants.contains("shell(mkdir:-p *)"))
+        #expect(!runtimeCopilotGrants.contains("shell(gh:*)"))
+        #expect(!runtimeCopilotGrants.contains("shell(echo:*)"))
+        #expect(runtimeClaudeGrants.contains("Bash(gh auth status *)"))
+        #expect(!runtimeClaudeGrants.contains("Bash(gh *)"))
+    }
+
+    @Test("Broker sanitizes structured approval payloads before provider rendering")
+    func brokerSanitizesStructuredApprovalPayloads() throws {
+        let payload = PermissionApprovalEventPayload(
+            brokerVersion: 999,
+            providerID: .claudeCode,
+            request: .shell(command: "curl https://example.com", toolName: "Bash"),
+            decision: .askUser(message: "approval", grants: [
+                .shellCommand(executable: "python3", pattern: "*"),
+                .shellCommand(executable: "*", pattern: "*"),
+                .providerTool(name: "shell"),
+                .providerTool(name: "Write")
+            ]),
+            grants: [
+                .shellCommand(executable: "curl", pattern: "*"),
+                .shellCommand(executable: "gh;rm", pattern: "*"),
+                .providerTool(name: "Bash"),
+                .filePath(path: "/tmp/report.txt", access: "write"),
+                .networkPattern(pattern: "https://example.com/*")
+            ],
+            displayMessage: "approval"
+        )
+
+        let encoded = try #require(payload.encodedString())
+        let structuredGrants = PermissionBroker.structuredApprovalGrants(from: encoded)
+
+        #expect(structuredGrants == [.shellCommand(executable: "curl", pattern: "*example.com*")])
+        #expect(PermissionBroker.providerGrantStrings(for: structuredGrants, runtime: .claudeCode) == [
+            "Bash(curl *example.com*)"
+        ])
+
+        let executionPolicy = PermissionBroker.executionPolicy(forRuntime: .claudeCode, grants: structuredGrants)
+        let allowedTools = executionPolicy.allowedTools(default: [])
+        #expect(allowedTools.contains("Bash(curl *example.com*)"))
+        #expect(!allowedTools.contains("Bash(python3:*)"))
+        #expect(!allowedTools.contains("Write"))
+        #expect(!allowedTools.contains("Bash"))
+        #expect(!allowedTools.contains("Bash(*)"))
+        #expect(Set(executionPolicy.permissionGrantsOverride ?? []) == Set(structuredGrants))
+    }
+
+    @Test("Broker repairs stale structured shell grants from the typed request")
+    func brokerRepairsStaleStructuredShellGrantsFromTypedRequest() throws {
+        let request = PermissionRequest.shell(
+            command: """
+            OUT=.astra/tasks/7A7D0BA8/open_prs.tsv
+            mkdir -p "$(dirname "$OUT")"
+            gh search prs --author @me --state open
+            """,
+            toolName: "bash"
+        )
+        let payload = PermissionApprovalEventPayload(
+            brokerVersion: 1,
+            providerID: .copilotCLI,
+            request: request,
+            decision: .askUser(message: "approval", grants: [
+                .shellCommand(executable: "dirname", pattern: "*")
+            ]),
+            grants: [.shellCommand(executable: "dirname", pattern: "*")],
+            displayMessage: "Runtime grant: shell(dirname:*)"
+        )
+
+        let encoded = try #require(payload.encodedString())
+
+        #expect(PermissionBroker.structuredApprovalGrants(from: encoded) == [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ])
+        #expect(PermissionBroker.providerGrantStrings(
+            for: PermissionBroker.structuredApprovalGrants(from: encoded),
+            runtime: .copilotCLI
+        ) == ["shell(gh:search prs *)"])
+    }
+
+    @Test("Broker rejects structured grants when request has no scoped approval")
+    func brokerRejectsStructuredGrantsWhenRequestHasNoScopedApproval() throws {
+        let payload = PermissionApprovalEventPayload(
+            brokerVersion: 1,
+            providerID: .claudeCode,
+            request: .providerNativePrompt(toolName: "WorkspaceAccess", context: "Allow access to these paths?"),
+            decision: .askUser(message: "approval", grants: [.providerTool(name: "Write")]),
+            grants: [.providerTool(name: "Write")],
+            displayMessage: "approval"
+        )
+
+        let encoded = try #require(payload.encodedString())
+
+        #expect(PermissionBroker.structuredApprovalGrants(from: encoded).isEmpty)
+    }
+
+    @Test("Broker rejects broad legacy grants and parses scoped legacy grants")
+    func brokerRejectsBroadLegacyGrantsAndParsesScopedLegacyGrants() {
+        #expect(PermissionBroker.legacyApprovalGrants(from: "Runtime grant: Bash(*)").isEmpty)
+        #expect(PermissionBroker.legacyApprovalGrants(from: "Runtime grant: shell").isEmpty)
+        #expect(PermissionBroker.legacyApprovalGrants(from: #""grant":"Bash""#).isEmpty)
+        #expect(PermissionBroker.legacyApprovalGrants(from: "Runtime grant: Bash(curl:*)").isEmpty)
+        #expect(PermissionBroker.legacyApprovalGrants(from: "Runtime grant: Bash(curl *example.com*)") == [
+            .shellCommand(executable: "curl", pattern: "*example.com*")
+        ])
+        #expect(PermissionBroker.legacyApprovalGrants(from: #""grant":"write""#) == [
+            .providerTool(name: "Write")
+        ])
+    }
+
+    @Test("Broker maps provider create tools to scoped file write approval")
+    func brokerMapsProviderCreateToolsToScopedFileWriteApproval() {
+        let path = "/tmp/astra-policy-tests/.astra/tasks/ABC123/index.html"
+        let grants = PermissionBroker.approvalGrants(for: .fileWrite(path: path, toolName: "create"))
+
+        #expect(grants.contains(.filePath(path: path, access: "write")))
+        #expect(grants.contains(.providerTool(name: "Write")))
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .claudeCode) == ["Write"])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI) == ["write"])
+    }
+
+    @Test("Broker chooses substantive shell executable from setup-heavy scripts")
+    func brokerChoosesSubstantiveShellExecutableFromSetupHeavyScripts() {
+        let request = PermissionRequest.shell(
+            command: """
+            set -euo pipefail
+            OUT=.astra/tasks/7A7D0BA8/open_prs.tsv
+            mkdir -p "$(dirname "$OUT")"
+            if ! gh auth status >/dev/null 2>&1; then
+              echo "not authenticated"
+              exit 0
+            fi
+            gh search prs --author @me --state open --json repository,title,url
+            """,
+            toolName: "Bash"
+        )
+
+        let grants = PermissionBroker.approvalGrants(for: request)
+
+        #expect(grants == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .claudeCode) == ["Bash(gh search prs *)"])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI) == ["shell(gh:search prs *)"])
+    }
+
+    @Test("Broker ignores shell comments and status output when choosing approval grants")
+    func brokerIgnoresShellCommentsAndStatusOutputWhenChoosingApprovalGrants() {
+        let request = PermissionRequest.shell(
+            command: """
+            set -euo pipefail
+            # Check gh auth before the query
+            if ! gh auth status >/dev/null 2>&1; then
+              echo '{"error":"gh not authenticated"}'
+              exit 0
+            fi
+            echo "Fetching open PRs"
+            gh search prs "author:@me is:open" --limit 100 --json number,title,url
+            """,
+            toolName: "bash"
+        )
+
+        let grants = PermissionBroker.approvalGrants(for: request)
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .copilotCLI,
+            request: request,
+            reason: "approval required",
+            grants: grants
+        )
+
+        #expect(grants == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI) == ["shell(gh:search prs *)"])
+        #expect(!payload.contains("shell(#:*)"))
+        #expect(!payload.contains("shell(echo:*)"))
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(#:*)") == nil)
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(echo:*)") == nil)
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(gh:*)") == nil)
+        #expect(PermissionBroker.resumeMessage(providerID: .copilotCLI, grants: grants).contains("Start shell calls with the approved executable"))
+    }
+
+    @Test("Broker scopes gh approvals by subcommand so read grants do not cover writes")
+    func brokerScopesGhApprovalsBySubcommandSoReadGrantsDoNotCoverWrites() {
+        let search = PermissionBroker.approvalGrants(for: .shell(
+            command: "gh search prs --author @me --state open",
+            toolName: "bash"
+        ))
+        let view = PermissionBroker.approvalGrants(for: .shell(
+            command: "gh pr view 123 --json title,url",
+            toolName: "bash"
+        ))
+        let merge = PermissionBroker.approvalGrants(for: .shell(
+            command: "gh pr merge 123 --squash --delete-branch",
+            toolName: "bash"
+        ))
+
+        #expect(search == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(view == [.shellCommand(executable: "gh", pattern: "pr view *")])
+        #expect(merge == [.shellCommand(executable: "gh", pattern: "pr merge 123 *")])
+        #expect(PermissionBroker.providerGrantStrings(for: view, runtime: .copilotCLI) == ["shell(gh:pr view *)"])
+        #expect(PermissionBroker.providerGrantStrings(for: merge, runtime: .copilotCLI) == ["shell(gh:pr merge 123 *)"])
+        #expect(view != merge)
+    }
+
+    @Test("Broker scopes common shell command families by action tokens")
+    func brokerScopesCommonShellCommandFamiliesByActionTokens() {
+        let git = PermissionBroker.approvalGrants(for: .shell(
+            command: "git status --short",
+            toolName: "bash"
+        ))
+        let gcloud = PermissionBroker.approvalGrants(for: .shell(
+            command: "gcloud projects describe upo-nero-phi-su-deid-jsl --format=json",
+            toolName: "bash"
+        ))
+        let bq = PermissionBroker.approvalGrants(for: .shell(
+            command: "bq ls --project_id=upo-nero-phi-su-deid-jsl --format=prettyjson",
+            toolName: "bash"
+        ))
+
+        #expect(git == [.shellCommand(executable: "git", pattern: "status --short *")])
+        #expect(gcloud == [.shellCommand(executable: "gcloud", pattern: "projects describe *")])
+        #expect(bq == [.shellCommand(executable: "bq", pattern: "ls --project_id=upo-nero-phi-su-deid-jsl *")])
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "Bash(git:*)") == nil)
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "Bash(git *)") == nil)
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(gcloud:*)") == nil)
+        #expect(PermissionBroker.providerGrantStrings(for: gcloud, runtime: .claudeCode) == [
+            "Bash(gcloud projects describe *)"
+        ])
+    }
+
+    @Test("Shell command risk classifier covers common command families")
+    func shellCommandRiskClassifierCoversCommonCommandFamilies() throws {
+        let cases: [(String, ShellCommandRiskClassifier.Risk, Bool, PermissionGrant)] = [
+            ("git status --short", .read, true, .shellCommand(executable: "git", pattern: "status --short *")),
+            ("git push origin main", .mutation, false, .shellCommand(executable: "git", pattern: "push origin main *")),
+            ("gh search prs --author @me", .read, true, .shellCommand(executable: "gh", pattern: "search prs *")),
+            ("gh pr merge 123 --squash", .mutation, false, .shellCommand(executable: "gh", pattern: "pr merge 123 *")),
+            ("gcloud projects describe upo-nero --format=json", .read, true, .shellCommand(executable: "gcloud", pattern: "projects describe *")),
+            ("gcloud iam service-accounts add-iam-policy-binding svc", .mutation, false, .shellCommand(executable: "gcloud", pattern: "iam service-accounts add-iam-policy-binding *")),
+            ("bq ls --project_id=upo-nero", .read, true, .shellCommand(executable: "bq", pattern: "ls --project_id=upo-nero *")),
+            ("bq query 'delete from dataset.table where true'", .mutation, false, .shellCommand(executable: "bq", pattern: "query delete from *")),
+            ("aws s3 ls s3://bucket", .read, true, .shellCommand(executable: "aws", pattern: "s3 ls *")),
+            ("aws s3 rm s3://bucket/key", .mutation, false, .shellCommand(executable: "aws", pattern: "s3 rm *")),
+            ("kubectl get pods", .read, true, .shellCommand(executable: "kubectl", pattern: "get pods *")),
+            ("kubectl delete pod api-1", .mutation, false, .shellCommand(executable: "kubectl", pattern: "delete pod api-1 *")),
+            ("docker ps", .read, true, .shellCommand(executable: "docker", pattern: "ps *")),
+            ("docker run alpine", .mutation, false, .shellCommand(executable: "docker", pattern: "run alpine *")),
+            ("curl https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            ("ls -la", .fileRead, false, .shellCommand(executable: "ls", pattern: "*")),
+            ("cat ~/.zsh_history", .credential, false, .shellCommand(executable: "cat", pattern: "~/.zsh_history *")),
+            ("python3 script.py", .scriptExecution, false, .shellCommand(executable: "python3", pattern: "script.py *"))
+        ]
+
+        for (command, expectedRisk, expectedReuse, expectedGrant) in cases {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == expectedRisk)
+            #expect(assessment.allowsTaskScopedReuse == expectedReuse)
+            #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: command) == expectedGrant)
+        }
+    }
+
+    @Test("Task scoped approval grants exclude risky shell commands")
+    func taskScopedApprovalGrantsExcludeRiskyShellCommands() {
+        let reusable = PermissionBroker.taskScopedApprovalGrants(for: [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ])
+        let risky = PermissionBroker.taskScopedApprovalGrants(for: [
+            .shellCommand(executable: "gh", pattern: "pr merge *")
+        ])
+        let mixed = PermissionBroker.taskScopedApprovalGrants(for: [
+            .shellCommand(executable: "gh", pattern: "search prs *"),
+            .shellCommand(executable: "cat", pattern: "~/.zsh_history *")
+        ])
+
+        #expect(reusable == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(risky.isEmpty)
+        #expect(mixed.isEmpty)
+    }
+
+    @Test("Broker refuses unscoped provider native prompts")
+    func brokerRefusesUnscopedProviderNativePrompts() {
+        let request = PermissionBroker.providerNativePromptRequest(
+            toolName: "WorkspaceAccess",
+            context: "Allow access to these paths? (y/n)"
+        )
+
+        #expect(PermissionBroker.approvalGrants(for: request).isEmpty)
+        #expect(PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: request,
+            reason: "approval required",
+            grants: PermissionBroker.approvalGrants(for: request)
+        ).contains("Runtime grant:") == false)
+    }
+
+    @Test("Future provider adapter default mapping stays scoped")
+    func futureProviderAdapterDefaultMappingStaysScoped() {
+        let adapter = FutureProviderPolicyAdapterFixture()
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "node", pattern: "*"),
+            .filePath(path: "/tmp/report.txt", access: "write"),
+            .networkPattern(pattern: "https://example.com/*"),
+            .providerTool(name: "Read")
+        ]
+
+        #expect(adapter.providerGrantStrings(for: grants) == ["shell(node:*)", "Read"])
+    }
+
     @Test("Launch execution policy uses rendered provider tools")
     func launchExecutionPolicyUsesRenderedProviderTools() {
         let adapter = ClaudePolicyAdapter()
@@ -259,6 +633,7 @@ struct AgentPolicyTests {
             )
         )
         #expect(!claudeRender.allowedTools.contains("Bash(gh:*)"))
+        #expect(!claudeRender.allowedTools.contains("Bash(gh *)"))
 
         let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
         --allow-tool
@@ -287,7 +662,7 @@ struct AgentPolicyTests {
                 localToolCommands: ["astra-browser page"]
             )
         )
-        #expect(claudeRender.allowedTools.contains("Bash(astra-browser:*)"))
+        #expect(claudeRender.allowedTools.contains("Bash(astra-browser *)"))
 
         let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
         --allow-tool
@@ -335,7 +710,10 @@ struct TaskPolicyStoreTests {
         context.insert(workspace)
         context.insert(task)
         AgentPolicyDefaults.setWorkspaceLevel(.build, for: workspace)
-        defer { AgentPolicyDefaults.setWorkspaceLevel(nil, for: workspace) }
+        defer {
+            AgentPolicyDefaults.setWorkspaceLevel(nil, for: workspace)
+            AgentPolicyDefaults.resetCustomPolicy(for: workspace)
+        }
 
         let workspaceResolution = TaskPolicyStore.resolve(
             for: task,
@@ -343,8 +721,11 @@ struct TaskPolicyStoreTests {
             fallbackPermissionPolicy: .restricted,
             executionPolicy: .default
         )
-        #expect(workspaceResolution.level == .build)
+        #expect(workspaceResolution.level == .custom)
         #expect(workspaceResolution.scope == .workspaceDefault)
+        #expect(workspaceResolution.policy.level == .custom)
+        #expect(workspaceResolution.policy.allowedTools.contains("Bash"))
+        #expect(workspaceResolution.policy.allowedShellPatterns.contains("swift:*"))
 
         TaskPolicyStore.recordSelection(level: .locked, task: task, modelContext: context, source: "test")
         try context.save()
@@ -481,6 +862,95 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent?.payload.contains("value-that-must-not-be-logged") == false)
     }
 
+    @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
+    func preflightManifestReplaysTaskScopedBrokerGrantsThroughActiveProviderAdapter() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Task Grants", primaryPath: "/tmp/task-grants-workspace")
+        let task = AgentTask(title: "Task Grants", goal: "Review open PRs", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [.shellCommand(executable: "gh", pattern: "search prs *")],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: context,
+            source: "test"
+        )
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            copilotCapabilities: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --output-format
+            """),
+            modelContext: context
+        )
+
+        #expect(recorded == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(manifest.policyScope == .taskApproval)
+        #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
+        #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
+    }
+
+    @Test("Task-scoped grant records reject risky shell approvals")
+    func taskScopedGrantRecordsRejectRiskyShellApprovals() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Risky Grants", primaryPath: "/tmp/risky-grants-workspace")
+        let task = AgentTask(title: "Risky Grants", goal: "Merge a PR", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [.shellCommand(executable: "gh", pattern: "pr merge *")],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: context,
+            source: "test"
+        )
+        try context.save()
+
+        #expect(recorded.isEmpty)
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task).isEmpty)
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType } == false)
+    }
+
+    @Test("Task-scoped grant replay ignores stale risky shell approvals")
+    func taskScopedGrantReplayIgnoresStaleRiskyShellApprovals() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Stale Risky Grants", primaryPath: "/tmp/stale-risky-grants-workspace")
+        let task = AgentTask(title: "Stale Risky Grants", goal: "Merge a PR", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let payload = TaskRuntimePermissionGrants.Payload(
+            brokerVersion: PermissionBroker.brokerVersion,
+            providerID: .claudeCode,
+            grants: [.shellCommand(executable: "gh", pattern: "pr merge *")],
+            approvedAt: Date(),
+            source: "legacy-test"
+        )
+        let encoded = try #require(String(data: JSONEncoder().encode(payload), encoding: .utf8))
+        context.insert(TaskEvent(task: task, type: TaskRuntimePermissionGrants.eventType, payload: encoded))
+        try context.save()
+
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task).isEmpty)
+    }
+
     @Test("Preflight manifest includes active browser bridge as local tool grant")
     func preflightManifestIncludesActiveBrowserBridgeLocalToolGrant() throws {
         let container = try makeAgentPolicyContainer()
@@ -518,7 +988,7 @@ struct RunPermissionManifestTests {
         )
 
         #expect(manifest.policyLevel == .build)
-        #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser:*)"))
+        #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser *)"))
     }
 
     @Test("Preflight manifest includes catalog-approved MCP servers")

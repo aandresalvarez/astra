@@ -41,8 +41,23 @@ struct AgentPolicySheet: View {
         _selectedPolicyLevelRaw = selectedPolicyLevelRaw
         _globalDefaultLevelRaw = globalDefaultLevelRaw
         _skipPermissions = skipPermissions
-        _workspaceDefaultLevelRaw = State(initialValue: AgentPolicyDefaults.workspaceLevel(for: workspace)?.rawValue ?? "")
-        let initialCustomPolicy = AgentPolicyDefaults.customPolicy(for: workspace)
+        let selectedStoredLevel = AgentPolicyLevel.normalized(selectedPolicyLevelRaw.wrappedValue)
+        let globalStoredLevel = AgentPolicyLevel.normalized(globalDefaultLevelRaw.wrappedValue)
+        let workspaceStoredLevel = AgentPolicyDefaults.workspaceLevel(for: workspace)
+        if let workspaceStoredLevel {
+            _ = AgentPolicyDefaults.effectiveUserFacingLevel(forStored: workspaceStoredLevel, workspace: workspace)
+        } else {
+            _ = AgentPolicyDefaults.effectiveUserFacingLevel(forStored: globalStoredLevel, workspace: nil)
+        }
+        _workspaceDefaultLevelRaw = State(initialValue: workspaceStoredLevel?.userFacingLevel.rawValue ?? "")
+        let initialCustomPolicy: AgentPolicy
+        if AgentPolicyLevel.customPresetCases.contains(selectedStoredLevel) {
+            var policy = AgentPolicy.preset(selectedStoredLevel)
+            policy.level = .custom
+            initialCustomPolicy = policy
+        } else {
+            initialCustomPolicy = AgentPolicyDefaults.customPolicy(for: workspace)
+        }
         _customPolicyDraft = State(initialValue: initialCustomPolicy)
         _customAllowedShellPatternsText = State(initialValue: Self.policyListText(initialCustomPolicy.allowedShellPatterns))
         _customAskFirstShellPatternsText = State(initialValue: Self.policyListText(initialCustomPolicy.askFirstShellPatterns))
@@ -58,7 +73,7 @@ struct AgentPolicySheet: View {
             Form {
                 Section("Policy Level") {
                     Picker("Current", selection: policySelectionBinding) {
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Label(level.displayName, systemImage: level.symbolName)
                                 .tag(level.rawValue)
                         }
@@ -120,14 +135,14 @@ struct AgentPolicySheet: View {
 
                 Section("Defaults") {
                     Picker("Global default", selection: globalDefaultBinding) {
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Text(level.displayName).tag(level.rawValue)
                         }
                     }
 
                     Picker("Workspace default", selection: $workspaceDefaultLevelRaw) {
                         Text("Use global default").tag("")
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Text(level.displayName).tag(level.rawValue)
                         }
                     }
@@ -145,7 +160,7 @@ struct AgentPolicySheet: View {
                         workspaceDefaultLevelRaw = ""
                         AgentPolicyDefaults.setWorkspaceLevel(nil, for: workspace)
                     } label: {
-                        Label("Reset policy defaults to Review", systemImage: "arrow.counterclockwise")
+                        Label("Reset policy defaults to Ask Approval", systemImage: "arrow.counterclockwise")
                     }
                 }
 
@@ -207,7 +222,7 @@ struct AgentPolicySheet: View {
     }
 
     private var selectedLevel: AgentPolicyLevel {
-        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(selectedPolicyLevelRaw)
+        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(selectedPolicyLevelRaw).userFacingLevel
     }
 
     private var policy: AgentPolicy {
@@ -272,11 +287,17 @@ struct AgentPolicySheet: View {
             )
 
             HStack {
-                Button("Start From Review") {
+                Button("Start From Ask Approval") {
                     applyPresetToCustom(.review)
+                }
+                Button("Read-only") {
+                    applyPresetToCustom(.locked)
                 }
                 Button("Start From Build") {
                     applyPresetToCustom(.build)
+                }
+                Button("Network-heavy") {
+                    applyPresetToCustom(.network)
                 }
                 Button("Reset To Built-In") {
                     resetCustomPolicy()
@@ -296,15 +317,15 @@ struct AgentPolicySheet: View {
 
     private var policySelectionBinding: Binding<String> {
         Binding(
-            get: { selectedLevel.rawValue },
+            get: { selectedLevel.userFacingLevel.rawValue },
             set: { select(level: AgentPolicyLevel.normalized($0)) }
         )
     }
 
     private var globalDefaultBinding: Binding<String> {
         Binding(
-            get: { AgentPolicyLevel.normalized(globalDefaultLevelRaw).rawValue },
-            set: { globalDefaultLevelRaw = AgentPolicyLevel.normalized($0).rawValue }
+            get: { AgentPolicyLevel.normalized(globalDefaultLevelRaw).userFacingLevel.rawValue },
+            set: { globalDefaultLevelRaw = AgentPolicyLevel.normalized($0).userFacingLevel.rawValue }
         )
     }
 

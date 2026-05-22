@@ -58,8 +58,9 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
             summary = "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
             severity = .error
         case "permission.approval.requested":
+            let approval = RuntimePermissionApprovalText(payload: payload)
             title = "Approval needed"
-            summary = payload.isEmpty ? "Review the policy request to continue this run." : payload
+            summary = approval.noticeBody
             severity = .warning
         case "error" where Self.looksPolicyBlocked(payload):
             title = "Policy blocked this run"
@@ -535,6 +536,287 @@ enum PayloadFormatter {
         default:
             key.prefix(1).uppercased() + key.dropFirst()
         }
+    }
+}
+
+struct RuntimePermissionApprovalText: Hashable, Sendable {
+    let payload: String
+    let toolName: String?
+    let observedAction: String?
+    let reason: String?
+    let detail: String?
+    let approvalGrant: String?
+    let providerDetailSummary: String?
+
+    init(payload: String) {
+        self.payload = PermissionBroker.displayMessage(from: payload).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = self.payload
+        toolName = Self.toolName(in: trimmed)
+        reason = Self.field(
+            named: "Why approval is needed:",
+            in: trimmed,
+            stoppingBefore: Self.fieldStopMarkers
+        )
+        detail = Self.field(
+            named: "Detail:",
+            in: trimmed,
+            stoppingBefore: ["Runtime grant:", "Provider detail:"]
+        )
+        approvalGrant = Self.field(
+            named: "Runtime grant:",
+            in: trimmed,
+            stoppingBefore: ["Provider detail:"]
+        )
+        let parsedObservedAction = Self.field(
+            named: "What ASTRA observed:",
+            in: trimmed,
+            stoppingBefore: Self.fieldStopMarkers
+        )
+        observedAction = parsedObservedAction
+            ?? Self.observedActionDescription(toolName: toolName, detail: detail)
+
+        if let providerDetail = Self.field(
+            named: "Provider detail:",
+            in: trimmed,
+            stoppingBefore: []
+        ) {
+            providerDetailSummary = Self.providerApprovalSummary(for: providerDetail)
+        } else {
+            providerDetailSummary = nil
+        }
+    }
+
+    var compactSummary: String {
+        guard !payload.isEmpty else {
+            return "Permission needed"
+        }
+
+        var summary = "Permission needed"
+        if let toolName, !toolName.isEmpty {
+            summary = "Approve \(toolName)"
+        }
+        if let action = actionDetail, !action.isEmpty {
+            summary += " · \(action)"
+        }
+        return Self.compactText(summary, limit: 96)
+    }
+
+    var decisionSummary: String {
+        guard !payload.isEmpty else {
+            return "Review the policy request before continuing this run."
+        }
+
+        var summary = "Allow one-time \(accessLabel) for this run"
+        if let action = actionDetail, !action.isEmpty {
+            summary += ": \(action)"
+        }
+        if let approvalGrant, !approvalGrant.isEmpty {
+            summary += ". Grants \(approvalGrant) only for this continuation."
+        } else {
+            summary += ". Ask Approval policy paused before this action."
+        }
+        return Self.compactText(summary, limit: 190)
+    }
+
+    var noticeBody: String {
+        guard !payload.isEmpty else {
+            return "Review the policy request to continue this run."
+        }
+
+        var parts = ["ASTRA paused before continuing because review policy requires approval for this action."]
+        if let observedAction, !observedAction.isEmpty {
+            parts.append("Observed: \(observedAction)")
+        }
+        if let reason, !reason.isEmpty {
+            parts.append("Reason: \(Self.sentence(reason))")
+        }
+        if let approvalGrant, !approvalGrant.isEmpty {
+            parts.append("One-time grant: \(approvalGrant). Allowing continues this run from the stopped point.")
+        } else {
+            parts.append("Allowing continues this run from the stopped point with one-time expanded provider permissions.")
+        }
+        parts.append("Check: \(decisionGuidance)")
+        if let providerDetailSummary, !providerDetailSummary.isEmpty {
+            parts.append("Provider detail: \(providerDetailSummary)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private var actionDetail: String? {
+        if let detail, !detail.isEmpty {
+            return detail
+        }
+        guard let observedAction, !observedAction.isEmpty else {
+            return nil
+        }
+        if let colon = observedAction.firstIndex(of: ":") {
+            let value = observedAction[observedAction.index(after: colon)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? observedAction : value
+        }
+        return observedAction
+    }
+
+    private var accessLabel: String {
+        guard let toolName, !toolName.isEmpty else {
+            return "provider access"
+        }
+        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "bash", "shell":
+            return "Bash command"
+        case "read":
+            return "file read"
+        case "write", "edit", "multiedit":
+            return "file change"
+        case "webfetch", "websearch":
+            return "web access"
+        default:
+            return "\(toolName) access"
+        }
+    }
+
+    private var decisionGuidance: String {
+        let normalizedTool = toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let root = Self.shellCommandRoot(actionDetail)?.lowercased()
+        if normalizedTool == "bash" || normalizedTool == "shell" {
+            switch root {
+            case "bq":
+                return "allow only if this BigQuery command matches the task and should use the signed-in Google Cloud account and project."
+            case "gcloud":
+                return "allow only if this Google Cloud command matches the task and should use the signed-in Google Cloud account and project."
+            case "curl", "wget":
+                return "allow only if contacting that network destination is expected for this task."
+            default:
+                return "allow only if this shell command matches the task; it will run locally with this run's environment and credentials."
+            }
+        }
+
+        switch normalizedTool {
+        case "read":
+            return "allow only if the provider should read that path for this task."
+        case "write", "edit", "multiedit":
+            return "allow only if the provider should change that path for this task."
+        case "webfetch", "websearch":
+            return "allow only if that web or network access is expected for this task."
+        default:
+            return "allow only if this action matches the task and the requested access is expected."
+        }
+    }
+
+    private static let fieldStopMarkers = [
+        "What ASTRA observed:",
+        "Why approval is needed:",
+        "What allowing does:",
+        "What to check:",
+        "Detail:",
+        "Runtime grant:",
+        "Provider detail:"
+    ]
+
+    private static func toolName(in text: String) -> String? {
+        guard let range = text.range(of: "Permission requested for tool:", options: [.caseInsensitive]) else {
+            return nil
+        }
+        let remainder = text[range.upperBound...]
+        let endCandidates = [remainder.firstIndex(of: "."), remainder.firstIndex(of: "\n")].compactMap { $0 }
+        let end = endCandidates.min() ?? remainder.endIndex
+        let value = remainder[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func field(
+        named marker: String,
+        in text: String,
+        stoppingBefore stopMarkers: [String]
+    ) -> String? {
+        guard let range = text.range(of: marker, options: [.caseInsensitive]) else {
+            return nil
+        }
+        var value = String(text[range.upperBound...])
+        var earliestStop: String.Index?
+        for stopMarker in stopMarkers where stopMarker.caseInsensitiveCompare(marker) != .orderedSame {
+            if let stopRange = value.range(of: stopMarker, options: [.caseInsensitive]),
+               earliestStop.map({ stopRange.lowerBound < $0 }) ?? true {
+                earliestStop = stopRange.lowerBound
+            }
+        }
+        if let earliestStop {
+            value = String(value[..<earliestStop])
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func observedActionDescription(toolName: String?, detail: String?) -> String? {
+        guard let detail, !detail.isEmpty else {
+            return nil
+        }
+        let toolName = toolName ?? "Provider"
+        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "bash", "shell":
+            return "Bash command: \(detail)"
+        case "read", "write", "edit", "multiedit":
+            return "\(toolName) path: \(detail)"
+        case "webfetch", "websearch":
+            return "\(toolName) destination: \(detail)"
+        default:
+            return "\(toolName) request: \(detail)"
+        }
+    }
+
+    private static func providerApprovalSummary(for detail: String) -> String {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let jsonStart = trimmed.firstIndex(of: "{")
+        let leadingText = jsonStart.map { String(trimmed[..<$0]) } ?? trimmed
+        var parts: [String] = []
+        let compactLeadingText = compactText(leadingText, limit: 180)
+        if !compactLeadingText.isEmpty {
+            parts.append(compactLeadingText)
+        }
+
+        if let jsonStart,
+           let object = PayloadFormatter.jsonObject(from: String(trimmed[jsonStart...])) as? [String: Any] {
+            let data = object["data"] as? [String: Any] ?? object
+            if let model = data["model"] as? String, !model.isEmpty {
+                parts.append("Model: \(model)")
+            }
+            if let error = data["error"] as? [String: Any] {
+                if let message = error["message"] as? String, !message.isEmpty {
+                    parts.append("Error: \(message)")
+                }
+                if let code = error["code"] as? String, !code.isEmpty {
+                    parts.append("Code: \(code)")
+                }
+            }
+        }
+
+        return parts.isEmpty ? compactText(trimmed, limit: 260) : parts.joined(separator: ". ")
+    }
+
+    private static func compactText(_ text: String, limit: Int) -> String {
+        let oneLine = text
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard oneLine.count > limit else { return oneLine }
+        return "\(oneLine.prefix(limit))..."
+    }
+
+    private static func sentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "The effective ASTRA policy requires user approval." }
+        guard let last = trimmed.last, ".!?".contains(last) else {
+            return "\(trimmed)."
+        }
+        return trimmed
+    }
+
+    private static func shellCommandRoot(_ command: String?) -> String? {
+        guard let command else { return nil }
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
     }
 }
 

@@ -65,6 +65,38 @@ struct HeadlessChatScenarioTests {
         #expect(events.contains { if case .systemInit(_, "session-1") = $0 { true } else { false } })
     }
 
+    @Test("Standalone artifact task without created files stays pending review")
+    func standaloneArtifactTaskWithoutCreatedFilesStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Save this as index.html: <html><script></script></html>"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "write a web page with html and javascript for a tic tac toe game",
+            model: "gpt-5"
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(task.completedAt == nil)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
     @Test("Headless chat enforces budget guardrails")
     func headlessChatEnforcesBudget() async throws {
         let harness = try HeadlessChatHarness()
@@ -549,6 +581,188 @@ struct HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
     }
 
+    @Test("UI approval repairs Copilot wrapper shell grants")
+    func uiApprovalRepairsCopilotWrapperShellGrants() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-copilot-wrapper-approval-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:search prs *)' \\
+                  && printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:auth status *)' \\
+                  && printf '%s\\n' "$@" | grep -Fxq -- 'shell(mkdir:-p *)' \\
+                  && ! printf '%s\\n' "$@" | grep -Fxq -- 'shell(#:*)' \\
+                  && ! printf '%s\\n' "$@" | grep -Fxq -- 'shell(echo:*)'; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after repaired approval"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "review my open prs",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+
+        let command = """
+        set -euo pipefail
+        # Check gh auth before running the search
+        if ! gh auth status >/dev/null 2>&1; then
+          echo '{"error":"gh not authenticated"}'
+          exit 0
+        fi
+        echo "Fetching open PRs"
+        gh search prs "author:@me is:open" --limit 100 --json number,title,url
+        """
+        harness.context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .copilotCLI,
+                request: .shell(command: command, toolName: "bash"),
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: [
+                    .shellCommand(executable: "#", pattern: "*"),
+                    .shellCommand(executable: "echo", pattern: "*")
+                ]
+            ),
+            run: blockedRun
+        ))
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: nil,
+            copilotPath: copilotPath,
+            copilotHome: harness.rootURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 10,
+            validationModel: "gpt-5"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(completed)
+        #expect(runs.count == 2)
+        #expect(args.contains("shell(gh:search prs *)"))
+        #expect(args.contains("shell(gh:auth status *)"))
+        #expect(args.contains("shell(mkdir:-p *)"))
+        #expect(!args.contains("shell(#:*)"))
+        #expect(!args.contains("shell(echo:*)"))
+        #expect(!args.contains("shell(gh:*)"))
+        #expect(args.contains("Start shell calls with the approved executable"))
+        #expect(runs.last?.output == "Reviewed open PRs after repaired approval")
+    }
+
+    @Test("UI approve similar records task-scoped command grant")
+    func uiApproveSimilarRecordsTaskScopedCommandGrant() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-copilot-similar-approval-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:search prs *)' \\
+                  && printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:auth status *)' \\
+                  && printf '%s\\n' "$@" | grep -Fxq -- 'shell(mkdir:-p *)' \\
+                  && ! printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:*)'; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after task-scoped approval"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "review my open prs",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+
+        let command = """
+        set -euo pipefail
+        if ! gh auth status >/dev/null 2>&1; then
+          echo '{"error":"gh not authenticated"}'
+          exit 0
+        fi
+        gh search prs "author:@me is:open" --limit 100 --json number,title,url
+        """
+        harness.context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .copilotCLI,
+                request: .shell(command: command, toolName: "bash"),
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: [.shellCommand(executable: "gh", pattern: "*")]
+            ),
+            run: blockedRun
+        ))
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: nil,
+            copilotPath: copilotPath,
+            copilotHome: harness.rootURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 10,
+            validationModel: "gpt-5"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        coordinator.approveSimilarRuntimePermissionForTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(completed)
+        #expect(runs.count == 2)
+        #expect(args.contains("shell(gh:search prs *)"))
+        #expect(args.contains("shell(gh:auth status *)"))
+        #expect(args.contains("shell(mkdir:-p *)"))
+        #expect(!args.contains("shell(gh:*)"))
+        #expect(args.contains("task-scoped runtime permission"))
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType })
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task) == [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ])
+        #expect(runs.last?.output == "Reviewed open PRs after task-scoped approval")
+    }
+
     @Test("UI approval resumes a Claude ASTRA ask-first shell pause")
     func uiApprovalResumesClaudeAstraAskFirstShellPause() async throws {
         let harness = try HeadlessChatHarness()
@@ -559,7 +773,7 @@ struct HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(curl:*)'; then
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(curl *redcap.stanford.edu*)'; then
                   printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-policy-approved","model":"claude-sonnet-4-6"}'
                   printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Approved curl completed"}]}}'
                   printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Approved curl completed","usage":{"input_tokens":3,"output_tokens":5}}'
@@ -593,7 +807,13 @@ struct HeadlessChatScenarioTests {
         await queue.executeTask(task, modelContext: harness.context)
         #expect(task.status == .pendingUser)
         #expect(task.runs.first?.stopReason == "permission_approval_required")
-        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Runtime grant: Bash(curl:*)") })
+        let approvalEvent = try #require(task.events.first {
+            $0.type == "permission.approval.requested" && $0.payload.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)")
+        })
+        let approvalPayload = try #require(PermissionApprovalEventPayload.decoded(from: approvalEvent.payload))
+        #expect(approvalPayload.providerID == .claudeCode)
+        #expect(approvalPayload.grants.contains(.shellCommand(executable: "curl", pattern: "*redcap.stanford.edu*")))
+        #expect(approvalPayload.displayMessage.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)"))
 
         coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
@@ -602,9 +822,142 @@ struct HeadlessChatScenarioTests {
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(completed)
         #expect(runs.count == 2)
-        #expect(args.contains("Bash(curl:*)"))
+        #expect(args.contains("Bash(curl *redcap.stanford.edu*)"))
         #expect(!args.contains("--dangerously-skip-permissions"))
         #expect(runs.last?.output == "Approved curl completed")
+    }
+
+    @Test("UI approval ignores stale broad shell runtime grants")
+    func uiApprovalIgnoresStaleBroadShellRuntimeGrants() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-stale-broad-grant-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-sanitized-approval","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Sanitized approval completed"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Sanitized approval completed","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Continue after an old permission request",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+        harness.context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: """
+            Permission requested for tool: Bash.
+            Runtime grant: Bash(*)
+            """,
+            run: blockedRun
+        ))
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(completed)
+        #expect(!args.contains("Bash(*)"))
+        #expect(!args.contains("Bash"))
+        #expect(!args.contains("--dangerously-skip-permissions"))
+    }
+
+    @Test("UI approval replays structured permission grants")
+    func uiApprovalReplaysStructuredPermissionGrants() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-structured-grant-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(curl *redcap.stanford.edu*)'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-structured-approval","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Structured approval completed"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Structured approval completed","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"result","subtype":"error","is_error":true,"duration_ms":12,"num_turns":1,"result":"Missing structured grant","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Continue after a structured permission request",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+        let request = PermissionRequest.shell(command: "curl https://redcap.stanford.edu/api/", toolName: "Bash")
+        let grants = [PermissionGrant.shellCommand(executable: "curl", pattern: "*")]
+        harness.context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: request,
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: grants
+            ),
+            run: blockedRun
+        ))
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(completed)
+        #expect(args.contains("Bash(curl *redcap.stanford.edu*)"))
+        #expect(!args.contains("--dangerously-skip-permissions"))
     }
 
     @Test("Claude hidden permission prompt pauses for user approval and can continue")
@@ -634,7 +987,7 @@ struct HeadlessChatScenarioTests {
 
         let task = harness.makeTask(
             runtime: .claudeCode,
-            goal: "write a file after approval",
+            goal: "use the write tool after approval",
             model: "claude-sonnet-4-6",
             tokenBudget: 200_000
         )
@@ -1187,6 +1540,10 @@ struct HeadlessChatScenarioTests {
                   printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"blocked","usage":{"input_tokens":3,"output_tokens":5}}'
                   exit 0
                 fi
+                task_dir="$(find \(Self.shQuote(harness.workspaceURL.appendingPathComponent(".astra/tasks", isDirectory: true).path)) -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)"
+                if [ -n "$task_dir" ]; then
+                  printf '%s\\n' '<!doctype html><html><body>Home</body></html>' > "$task_dir/index.html"
+                fi
                 printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-retry-session-2","model":"claude-sonnet-4-6"}'
                 printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Created index.html\\"}\\n"}]}}'
                 printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"wrote artifact","usage":{"input_tokens":3,"output_tokens":5}}'
@@ -1278,8 +1635,8 @@ struct HeadlessChatScenarioTests {
         #expect(state.plan?.steps.first?.status == .done)
     }
 
-    @Test("Approved plan permission prompts pause for user approval instead of timing out")
-    func approvedPlanPermissionPromptPausesForUserApprovalInsteadOfTimingOut() async throws {
+    @Test("Approved plan path permission prompts stop instead of looping")
+    func approvedPlanPathPermissionPromptStopsInsteadOfLooping() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
@@ -1316,11 +1673,12 @@ struct HeadlessChatScenarioTests {
         _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
 
         let run = try #require(task.runs.first)
-        #expect(task.status == .pendingUser)
+        #expect(task.status == .failed)
         #expect(run.status == .failed)
-        #expect(run.stopReason == "permission_approval_required")
+        #expect(run.stopReason == "provider_permission_unresumable")
         #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("WorkspaceAccess") })
-        #expect(task.events.contains { $0.type == "permission.approval.requested" && $0.payload.contains("Approve to continue") })
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("does not map to a scoped runtime permission") })
+        #expect(!task.events.contains { $0.type == "permission.approval.requested" })
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("idle timeout") })
     }
 

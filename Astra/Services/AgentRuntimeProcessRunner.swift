@@ -48,6 +48,11 @@ final class AgentRuntimeProcessRunner {
         let taskID = task.id
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
+        let providerAllowed = Self.providerAllowedTools(
+            for: .claudeCode,
+            baseAllowedTools: allowed,
+            permissionManifest: permissionManifest
+        )
         let tokenBudget = Self.effectiveTokenBudget(for: task)
 
         return await withCheckedContinuation { continuation in
@@ -67,8 +72,8 @@ final class AgentRuntimeProcessRunner {
             if task.maxTurns > 0 {
                 args += ["--max-turns", String(task.maxTurns)]
             }
-            if !allowed.isEmpty {
-                args += ["--allowedTools"] + allowed
+            if !providerAllowed.isEmpty {
+                args += ["--allowedTools"] + providerAllowed
             }
             let processEnvironment = Self.environment(
                 phase: "run",
@@ -91,7 +96,7 @@ final class AgentRuntimeProcessRunner {
                 "model": model,
                 "provider_model": Self.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
-                "allowed_tools_count": String(allowed.count),
+                "allowed_tools_count": String(providerAllowed.count),
                 "allowed_tools_override": String(executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
                 "max_turns": String(task.maxTurns)
@@ -232,6 +237,11 @@ final class AgentRuntimeProcessRunner {
         let taskID = task.id
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         let allowed = executionPolicy.allowedTools(default: TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
+        let providerAllowed = Self.providerAllowedTools(
+            for: .copilotCLI,
+            baseAllowedTools: allowed,
+            permissionManifest: permissionManifest
+        )
         let tokenBudget = Self.effectiveTokenBudget(for: task)
         let pathPrefix = Self.pathPrefix(for: task, taskEnv: taskEnv)
 
@@ -262,7 +272,7 @@ final class AgentRuntimeProcessRunner {
                 workspacePath: workspacePath,
                 additionalPaths: additionalPaths,
                 permissionPolicy: effectivePermissionPolicy,
-                allowedTools: allowed,
+                allowedTools: providerAllowed,
                 timeoutSeconds: timeoutSeconds,
                 capabilities: capabilities,
                 taskEnvironment: taskEnv,
@@ -297,7 +307,7 @@ final class AgentRuntimeProcessRunner {
                 "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
-                "allowed_tools_count": String(allowed.count),
+                "allowed_tools_count": String(providerAllowed.count),
                 "allowed_tools_override": String(executionPolicy.allowedToolsOverride != nil),
                 "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),
@@ -762,6 +772,23 @@ final class AgentRuntimeProcessRunner {
     private static func hasStanfordOutlookMailAccess(_ task: AgentTask) -> Bool {
         TaskCapabilityResolver(task: task).allConnectors.contains { $0.isStanfordOutlookMail } ||
             TaskCapabilityResolver(task: task).allLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
+    }
+
+    private static func providerAllowedTools(
+        for runtime: AgentRuntimeID,
+        baseAllowedTools: [String],
+        permissionManifest: RunPermissionManifest?
+    ) -> [String] {
+        guard let permissionManifest,
+              permissionManifest.providerID == runtime,
+              !permissionManifest.approvalGrants.isEmpty else {
+            return baseAllowedTools
+        }
+        let runtimeGrants = PermissionBroker.providerRuntimeGrantStrings(
+            for: permissionManifest.approvalGrants,
+            runtime: runtime
+        )
+        return Array(Set(baseAllowedTools + runtimeGrants)).sorted()
     }
 
     private static func ensureSubAgentPermissions(

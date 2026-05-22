@@ -2682,124 +2682,22 @@ struct TaskMainView: View {
     }
 
     private func permissionApprovalBody(for payload: String) -> String {
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return "Review the policy request to continue this run."
-        }
-
-        guard let providerRange = trimmed.range(of: "Provider detail:", options: [.caseInsensitive]) else {
-            return compactNoticeText(trimmed, limit: 420)
-        }
-
-        let intro = trimmed[..<providerRange.lowerBound]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let providerDetail = trimmed[providerRange.upperBound...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let providerSummary = providerApprovalSummary(for: providerDetail)
-
-        var parts: [String] = []
-        if !intro.isEmpty {
-            parts.append(compactNoticeText(intro, limit: 340))
-        }
-        if !providerSummary.isEmpty {
-            parts.append("Provider detail: \(providerSummary)")
-        }
-        return parts.isEmpty ? compactNoticeText(trimmed, limit: 420) : parts.joined(separator: "\n\n")
+        RuntimePermissionApprovalText(payload: payload).noticeBody
     }
 
     private var pendingApprovalSurfaceSummary: String {
         if let payload = latestRuntimePermissionRequestPayload {
-            return permissionApprovalSurfaceSummary(for: payload)
+            return RuntimePermissionApprovalText(payload: payload).compactSummary
         }
         return "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
     }
 
+    private func permissionApprovalDecisionSummary(for payload: String) -> String {
+        RuntimePermissionApprovalText(payload: payload).decisionSummary
+    }
+
     private func permissionApprovalSurfaceSummary(for payload: String) -> String {
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return "Permission needed"
-        }
-
-        var summary = "Permission needed"
-        if let tool = permissionApprovalToolName(in: trimmed), !tool.isEmpty {
-            summary = "Approve \(tool)"
-        }
-
-        if let detail = permissionApprovalField(
-            named: "Detail:",
-            in: trimmed,
-            stoppingBefore: ["Runtime grant:", "Provider detail:"]
-        ), !detail.isEmpty {
-            summary += " · \(detail)"
-        }
-
-        return compactNoticeText(summary, limit: 96)
-    }
-
-    private func permissionApprovalToolName(in text: String) -> String? {
-        guard let range = text.range(of: "Permission requested for tool:", options: [.caseInsensitive]) else {
-            return nil
-        }
-        let remainder = text[range.upperBound...]
-        let end = remainder.firstIndex(of: ".") ?? remainder.endIndex
-        return remainder[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func permissionApprovalField(
-        named marker: String,
-        in text: String,
-        stoppingBefore stopMarkers: [String]
-    ) -> String? {
-        guard let range = text.range(of: marker, options: [.caseInsensitive]) else {
-            return nil
-        }
-        var value = String(text[range.upperBound...])
-        for stopMarker in stopMarkers {
-            if let stopRange = value.range(of: stopMarker, options: [.caseInsensitive]) {
-                value = String(value[..<stopRange.lowerBound])
-            }
-        }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func providerApprovalSummary(for detail: String) -> String {
-        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        let jsonStart = trimmed.firstIndex(of: "{")
-        let leadingText = jsonStart.map { String(trimmed[..<$0]) } ?? trimmed
-        var parts: [String] = []
-        let compactLeadingText = compactNoticeText(leadingText, limit: 180)
-        if !compactLeadingText.isEmpty {
-            parts.append(compactLeadingText)
-        }
-
-        if let jsonStart,
-           let object = PayloadFormatter.jsonObject(from: String(trimmed[jsonStart...])) as? [String: Any] {
-            let data = object["data"] as? [String: Any] ?? object
-            if let model = data["model"] as? String, !model.isEmpty {
-                parts.append("Model: \(model)")
-            }
-            if let error = data["error"] as? [String: Any] {
-                if let message = error["message"] as? String, !message.isEmpty {
-                    parts.append("Error: \(message)")
-                }
-                if let code = error["code"] as? String, !code.isEmpty {
-                    parts.append("Code: \(code)")
-                }
-            }
-        }
-
-        return parts.isEmpty ? compactNoticeText(trimmed, limit: 260) : parts.joined(separator: ". ")
-    }
-
-    private func compactNoticeText(_ text: String, limit: Int) -> String {
-        let oneLine = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "  ", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard oneLine.count > limit else { return oneLine }
-        return "\(oneLine.prefix(limit))..."
+        RuntimePermissionApprovalText(payload: payload).compactSummary
     }
 
     private func budgetWarningBody(for payload: String) -> String {
@@ -3331,21 +3229,47 @@ struct TaskMainView: View {
         task.status == .pendingUser && (hasOpenRuntimePermissionApprovalRequest || executableApprovedPlan == nil)
     }
 
+    private var latestRunStoppedByPolicy: Bool {
+        guard let run = latestRun else { return false }
+        let activity = currentThreadSnapshot.activity(for: run)
+        let notices = runNoticesToDisplay(activity.notices, for: run)
+        return runStoppedByPolicy(run, notices: notices)
+    }
+
+    private var latestRunHasNoUsableResult: Bool {
+        latestRun?.stopReason == "no_usable_result"
+    }
+
     private var pendingDecisionTitle: String {
-        hasOpenRuntimePermissionApprovalRequest ? "Permission needed" : "Needs your review"
+        if hasOpenRuntimePermissionApprovalRequest {
+            return "Permission needed"
+        }
+        if latestRunHasNoUsableResult {
+            return "No usable result"
+        }
+        return latestRunStoppedByPolicy ? "Policy blocked" : "Needs your review"
     }
 
     private var pendingDecisionDetail: String {
         if hasOpenRuntimePermissionApprovalRequest {
             let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
             guard let payload = latestRuntimePermissionRequestPayload else { return fallback }
-            return permissionApprovalSurfaceSummary(for: payload)
+            return permissionApprovalDecisionSummary(for: payload)
+        }
+        if latestRunStoppedByPolicy {
+            return "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
+        }
+        if latestRunHasNoUsableResult {
+            return "The task did not create the expected artifact. Retry or dismiss without marking it completed."
         }
         return "Review the latest output, then approve it or retry the task."
     }
 
     private var pendingDecisionPrimaryLabel: String {
-        hasOpenRuntimePermissionApprovalRequest ? "Allow once & continue" : "Approve result"
+        if hasOpenRuntimePermissionApprovalRequest {
+            return "Allow once & continue"
+        }
+        return (latestRunStoppedByPolicy || latestRunHasNoUsableResult) ? "Dismiss" : "Approve result"
     }
 
     private var pendingDecisionPrimaryIcon: String {
@@ -3353,7 +3277,13 @@ struct TaskMainView: View {
     }
 
     private var pendingDecisionIcon: String {
-        hasOpenRuntimePermissionApprovalRequest ? "hand.raised.fill" : "person.crop.circle.badge.questionmark"
+        if hasOpenRuntimePermissionApprovalRequest {
+            return "hand.raised.fill"
+        }
+        if latestRunStoppedByPolicy {
+            return "shield.slash.fill"
+        }
+        return latestRunHasNoUsableResult ? "doc.badge.exclamationmark" : "person.crop.circle.badge.questionmark"
     }
 
     private var composerPlaceholder: String {
@@ -3380,7 +3310,7 @@ struct TaskMainView: View {
                 Text(pendingDecisionDetail)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -3406,6 +3336,32 @@ struct TaskMainView: View {
                 .controlSize(.small)
                 .accessibilityIdentifier("ApproveTaskButton")
                 .accessibilityLabel(pendingDecisionPrimaryLabel)
+
+                if hasOpenRuntimePermissionApprovalRequest {
+                    Menu {
+                        Button {
+                            approveSimilarRuntimePermissionForTask()
+                        } label: {
+                            Label("Allow similar for this task", systemImage: "checkmark.shield")
+                        }
+                        .accessibilityIdentifier("ApproveSimilarTaskButton")
+
+                        Button {
+                            onApprove(task)
+                        } label: {
+                            Label("Allow once & continue", systemImage: "lock.open")
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down.circle")
+                            .font(Stanford.ui(18, weight: .semibold))
+                            .foregroundStyle(Stanford.paloAltoGreen)
+                            .frame(width: 32, height: 32)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .help("Approval options")
+                    .accessibilityLabel("Permission approval options")
+                }
             }
         }
         .padding(12)
@@ -3417,14 +3373,23 @@ struct TaskMainView: View {
         )
     }
 
+    private func approveSimilarRuntimePermissionForTask() {
+        guard let taskQueue else {
+            onApproveTask?(task)
+            return
+        }
+        let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
+        coordinator.approveSimilarRuntimePermissionForTask(task)
+    }
+
     private func planExecutionActionBar(_ plan: TaskPlanPayload) -> some View {
         let nextStep = TaskPlanService.nextExecutableStep(in: plan)
         let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
         let title = skipPermissions ? "Run remaining plan" : "Approve next step"
         let detail = nextStep.map { "Next: \($0.title)" } ?? plan.title
         let modeLabel = skipPermissions
-            ? "Auto mode runs every remaining step."
-            : "Review mode runs one approved step, then pauses again."
+            ? "Automatic mode runs every remaining step."
+            : "Ask Approval mode runs one approved step, then pauses again."
 
         return HStack(alignment: .center, spacing: 12) {
             Image(systemName: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill")

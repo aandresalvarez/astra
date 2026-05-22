@@ -234,6 +234,33 @@ struct BuildPromptTests {
         #expect(prompt.contains("Goal: Fix the login bug"))
     }
 
+    @Test("Prompt routes standalone artifacts to task output folder")
+    func promptRoutesStandaloneArtifactsToTaskOutputFolder() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-artifact")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Tic tac toe",
+            goal: "write a web page with html and javascript for a tic tac toe game",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let initialPrompt = AgentPromptBuilder.buildPrompt(for: task)
+        let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "write this in files to see it working",
+            task: task
+        )
+
+        for prompt in [initialPrompt, followUpPrompt] {
+            #expect(prompt.contains("Task Output Folder:"))
+            #expect(prompt.contains("create them in this task output folder by default"))
+            #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+        }
+    }
+
     @Test("Prompt makes current task explicit before context and at end")
     func currentTaskIsExplicitBeforeContextAndAtEnd() throws {
         let container = try makeContainer()

@@ -161,11 +161,13 @@ enum AgentPromptBuilder {
                 Task Output Folder: \(relativePath)
                 Absolute path: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
+                For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 """)
             } else {
                 parts.append("""
                 Task Output Folder: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
+                For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 """)
             }
         }
@@ -582,6 +584,8 @@ enum AgentPromptBuilder {
                 parts.append("Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.")
             }
         }
+
+        appendTaskOutputFolder(for: task, to: &parts)
 
         let contextLine = buildFollowUpMessage(message: "", task: task, capabilityScope: capabilityScope)
         if contextLine != "",

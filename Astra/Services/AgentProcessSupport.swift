@@ -1435,6 +1435,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private static func isProviderPermissionDenial(_ content: String) -> Bool {
         let lower = content.lowercased()
         return lower.contains("permission denied and could not request permission from user")
+            || lower.contains("this command requires approval")
+            || lower.contains("command requires approval")
             || (lower.contains("allow access to these paths") && lower.contains("(y/n)"))
     }
 
@@ -1459,6 +1461,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let requestText = context?.summary
             .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
             ?? ""
+        let providerID = policyGuard?.providerID ?? .claudeCode
+        let permissionRequest = Self.providerPermissionRequest(toolName: toolName, context: context)
+        let policyProbeViolation = Self.shouldPolicyProbeProviderPermission(toolName: toolName, context: context)
+            ? policyGuard?.violation(for: Self.providerPermissionPolicyProbe(toolName: toolName, toolID: toolID, context: context))
+            : nil
+        if let policyProbeViolation, !policyProbeViolation.requiresApproval {
+            return recordPolicyViolation(policyProbeViolation, process: process)
+        }
+        let approvalGrants = PermissionBroker.approvalGrants(
+            for: policyProbeViolation?.permissionRequest ?? permissionRequest
+        )
 
         if policyGuard?.usesBroadProviderPermissions == true {
             let message = """
@@ -1474,17 +1487,61 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             ], level: .error, fieldMaxLength: 360)
             _runtimeStopReason = "provider_permission_denied_broad_permissions"
             _runtimeStopMessage = message
-        } else {
+        } else if approvalGrants.isEmpty {
             let message = """
-            Permission requested for tool: \(toolName). ASTRA paused the provider because Copilot reported a tool permission prompt that ASTRA cannot answer inside the non-interactive runtime.\(requestText)
+            \(providerName) requested a native permission prompt that ASTRA cannot safely approve in the non-interactive runtime.
+            Tool: \(toolName).\(requestText)
             Provider detail: \(providerDetail)
 
-            Approve to continue this task with one-time expanded runtime permissions.
+            ASTRA stopped this run instead of offering an approval because this provider request does not map to a scoped runtime permission that can be applied on retry. Review the workspace paths or policy settings, then retry with the needed access already in scope.
             """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_unresumable",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_unresumable"
+            _runtimeStopMessage = message
+        } else if policyGuard?.hasAppliedApprovalGrants(approvalGrants) == true {
+            let providerGrantSummary = PermissionBroker.providerGrantStrings(
+                for: approvalGrants,
+                runtime: providerID
+            ).joined(separator: ",")
+            let message = """
+            \(providerName) denied the tool request after ASTRA had already applied the scoped approval for this run.
+            Tool: \(toolName).\(requestText)
+            Applied grant: \(providerGrantSummary.isEmpty ? "the requested runtime permission" : providerGrantSummary)
+            Provider detail: \(providerDetail)
+
+            ASTRA stopped instead of asking for the same approval again. This usually means the provider CLI, account policy, or organization policy rejected the request after ASTRA allowed the scoped operation.
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_denied_after_approval",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "approval_grant": providerGrantSummary.isEmpty ? "none" : providerGrantSummary,
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_denied_after_approval"
+            _runtimeStopMessage = message
+        } else {
+            let message = PermissionBroker.approvalPayloadString(
+                providerID: providerID,
+                request: permissionRequest,
+                reason: "\(providerName) reported a tool permission prompt that ASTRA cannot answer inside the non-interactive runtime.",
+                providerDetail: providerDetail,
+                grants: approvalGrants
+            )
+            let providerGrantSummary = PermissionBroker.providerGrantStrings(
+                for: approvalGrants,
+                runtime: providerID
+            ).joined(separator: ",")
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
                 "reason": "provider_permission_approval_required",
                 "tool": toolName,
                 "tool_id": toolID ?? "unknown",
+                "approval_grant": providerGrantSummary.isEmpty ? "none" : providerGrantSummary,
                 "detail": providerDetail
             ], level: .warning, fieldMaxLength: 360)
             _policyApprovalRequired = true
@@ -1493,6 +1550,103 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         process?.terminate()
         return true
+    }
+
+    private static func providerPermissionRequest(toolName: String, context: ToolUseContext?) -> PermissionRequest {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        let contextSummary = context.flatMap { nonEmpty($0.summary) }
+        if isShellToolName(effectiveToolName) || isShellToolName(toolName) {
+            let command = providerPermissionCommandHint(toolName: effectiveToolName, context: context)
+                ?? providerPermissionCommandHint(toolName: toolName, context: context)
+            if let command {
+                return .shell(command: command, toolName: effectiveToolName)
+            }
+        }
+        return PermissionBroker.providerNativePromptRequest(
+            toolName: effectiveToolName,
+            context: contextSummary
+        )
+    }
+
+    private static func providerPermissionPolicyProbe(
+        toolName: String,
+        toolID: String?,
+        context: ToolUseContext?
+    ) -> ParsedEvent {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        let isShell = isShellToolName(effectiveToolName) || isShellToolName(toolName)
+        let probeToolName = isShell ? "Bash" : effectiveToolName
+        var input: [String: Any] = [:]
+        if isShell,
+           let command = providerPermissionCommandHint(toolName: effectiveToolName, context: context)
+            ?? providerPermissionCommandHint(toolName: toolName, context: context) {
+            input["command"] = command
+            input["summary"] = command
+        } else if let summary = nonEmpty(context?.summary) {
+            input["summary"] = summary
+        }
+        return .toolUse(name: probeToolName, id: toolID ?? "", input: input.isEmpty ? nil : input)
+    }
+
+    private static func shouldPolicyProbeProviderPermission(toolName: String, context: ToolUseContext?) -> Bool {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        if isShellToolName(effectiveToolName) || isShellToolName(toolName) {
+            return true
+        }
+        switch effectiveToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view", "write", "edit", "multiedit", "multi_edit", "webfetch", "websearch":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func providerPermissionCommandHint(toolName: String, context: ToolUseContext?) -> String? {
+        if let summary = nonEmpty(context?.summary) {
+            if let command = commandHintFromJSONSummary(summary) {
+                return command
+            }
+            return summary
+        }
+        return AgentRuntimePolicyGuard.commandHintFromShellPermissionToolName(toolName)
+    }
+
+    private static func commandHintFromJSONSummary(_ summary: String) -> String? {
+        guard let object = jsonObject(fromExactContent: summary) else { return nil }
+        for key in ["command", "cmd"] {
+            if let value = object[key] as? String,
+               let command = nonEmpty(value) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func isShellToolName(_ toolName: String) -> Bool {
+        let normalized = toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "bash"
+            || normalized == "shell"
+            || normalized.hasPrefix("shell(")
+            || normalized.hasPrefix("bash(")
+    }
+
+    private static func canonicalProviderToolName(_ toolName: String) -> String {
+        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit", "multi_edit": return "MultiEdit"
+        case "bash", "shell": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -1509,20 +1663,49 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             "reason": reason,
             "tool": violation.toolName ?? "unknown",
             "message": violation.reason,
-            "approval_grant": violation.approvalGrant ?? "none",
+            "approval_grant": PermissionBroker.providerGrantStrings(
+                for: violation.approvalGrants,
+                runtime: policyGuard?.providerID ?? .claudeCode
+            ).joined(separator: ","),
             "detail": redactedDetail ?? "none"
         ], level: violation.requiresApproval ? .warning : .error)
-        let message = AgentRuntimePolicyViolation(
-            reason: violation.reason,
-            toolName: violation.toolName,
-            detail: redactedDetail,
-            requiresApproval: violation.requiresApproval,
-            approvalGrant: violation.approvalGrant
-        ).userMessage
         if violation.requiresApproval {
+            let providerID = policyGuard?.providerID ?? .claudeCode
+            let request = violation.permissionRequest
+                ?? PermissionBroker.providerNativePromptRequest(
+                    toolName: violation.toolName ?? "ToolApproval",
+                    context: redactedDetail
+                )
+            let grants = violation.approvalGrants.isEmpty
+                ? PermissionBroker.approvalGrants(for: request)
+                : violation.approvalGrants
+            guard !grants.isEmpty else {
+                _runtimeStopReason = "permission_unresumable"
+                _runtimeStopMessage = """
+                ASTRA stopped this run because the requested action requires approval but does not map to a scoped runtime permission that can be replayed safely.
+                Tool: \(violation.toolName ?? "unknown").
+                \(redactedDetail.map { "Detail: \($0)" } ?? "")
+                """
+                process?.terminate()
+                return true
+            }
+            let message = PermissionBroker.approvalPayloadString(
+                providerID: providerID,
+                request: request,
+                reason: violation.reason,
+                grants: grants
+            )
             _policyApprovalRequired = true
             _policyApprovalMessage = message
         } else {
+            let message = AgentRuntimePolicyViolation(
+                reason: violation.reason,
+                toolName: violation.toolName,
+                detail: redactedDetail,
+                requiresApproval: violation.requiresApproval,
+                permissionRequest: violation.permissionRequest,
+                approvalGrants: violation.approvalGrants
+            ).userMessage
             _policyViolation = true
             _policyViolationMessage = message
         }

@@ -10,6 +10,9 @@ protocol ProviderPolicyAdapter {
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender
     func validate(render: ProviderPolicyRender, context: PolicyRenderContext) -> [PolicyDiagnostic]
     func observedEvent(from providerEvent: ParsedEvent) -> PolicyObservedEvent?
+    func permissionRequest(from providerEvent: ParsedEvent) -> PermissionRequest?
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String]
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String]
 }
 
 extension ProviderPolicyAdapter {
@@ -19,6 +22,27 @@ extension ProviderPolicyAdapter {
 
     func observedEvent(from providerEvent: ParsedEvent) -> PolicyObservedEvent? {
         PolicyObservedEvent(providerEvent: providerEvent)
+    }
+
+    func permissionRequest(from providerEvent: ParsedEvent) -> PermissionRequest? {
+        observedEvent(from: providerEvent).flatMap(PermissionBroker.permissionRequest)
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        grants.compactMap { grant in
+            switch grant {
+            case .tool(let name), .providerTool(let name):
+                return name.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .shellCommand(let executable, let pattern):
+                return "shell(\(executable):\(pattern))"
+            case .filePath, .networkPattern:
+                return nil
+            }
+        }
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: grants)
     }
 }
 
@@ -70,7 +94,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 title: "Shell deny patterns are advisory",
                 message: "Claude tool permissions can allow or deny tools, but ASTRA-owned command brokering is required to enforce individual shell command patterns.",
                 affectedCapability: "shell",
-                remediation: "Use Locked or Review mode until ASTRA brokered shell execution is enabled for this workspace."
+                remediation: "Use Ask Approval or a stricter Custom configuration until ASTRA brokered shell execution is enabled for this workspace."
             ))
         }
 
@@ -102,6 +126,48 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             diagnostics: diagnostics,
             usesBroadProviderPermissions: permissionPolicy == .autonomous
         )
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        PermissionBroker.uniqueProviderGrantStrings(grants.compactMap { grant in
+            switch grant {
+            case .tool(let name), .providerTool(let name):
+                return canonicalClaudeToolName(name)
+            case .shellCommand(let executable, let pattern):
+                return claudeShellGrant(executable: executable, pattern: pattern)
+            case .filePath, .networkPattern:
+                return nil
+            }
+        })
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+
+    private func canonicalClaudeToolName(_ name: String) -> String {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit", "multi_edit": return "MultiEdit"
+        case "bash", "shell": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func claudeShellGrant(executable: String, pattern: String) -> String {
+        let executable = executable.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.isEmpty else {
+            return "Bash(\(executable) *)"
+        }
+        return "Bash(\(executable) \(pattern))"
     }
 }
 
@@ -142,7 +208,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 title: "Deny rules require ASTRA enforcement",
                 message: "This Copilot CLI adapter records deny intent, but the current command path only renders positive allow-tool grants.",
                 affectedCapability: "deny",
-                remediation: "Keep the policy at Review or Locked when strict denial must be guaranteed."
+                remediation: "Keep the policy at Ask Approval or a stricter Custom configuration when strict denial must be guaranteed."
             ))
         }
         if policy.level == .autonomous, !capabilities.supportsAllowAll && !capabilities.supportsAllowAllTools {
@@ -189,6 +255,73 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             usesBroadProviderPermissions: copilotUsesBroadProviderPermissions(args)
         )
     }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        PermissionBroker.uniqueProviderGrantStrings(grants.compactMap { grant in
+            switch grant {
+            case .tool(let name), .providerTool(let name):
+                return canonicalCopilotToolName(name)
+            case .shellCommand(let executable, let pattern):
+                return "shell(\(executable):\(pattern))"
+            case .filePath, .networkPattern:
+                return nil
+            }
+        })
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+
+    private func canonicalCopilotToolName(_ name: String) -> String {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "read"
+        case "grep": return "grep"
+        case "glob": return "glob"
+        case "write": return "write"
+        case "edit": return "edit"
+        case "multiedit", "multi_edit": return "multiedit"
+        case "bash", "shell": return "shell"
+        case "webfetch": return "webfetch"
+        case "websearch": return "websearch"
+        case "agent": return "agent"
+        default: return name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+}
+
+private enum ProviderRuntimeGrantCompanions {
+    static func grants(for grants: [PermissionGrant]) -> [PermissionGrant] {
+        let sanitized = PermissionBroker.sanitizeApprovedGrants(grants)
+        guard sanitized.contains(where: isShellCommandGrant) else {
+            return sanitized
+        }
+
+        var companions: [PermissionGrant] = [
+            .shellCommand(executable: "mkdir", pattern: "-p *")
+        ]
+        for grant in sanitized {
+            guard case .shellCommand(let executable, _) = grant else { continue }
+            switch executable.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "gh":
+                companions.append(.shellCommand(executable: "gh", pattern: "auth status *"))
+            case "gcloud":
+                companions.append(.shellCommand(executable: "gcloud", pattern: "auth list *"))
+            case "git":
+                companions.append(.shellCommand(executable: "git", pattern: "status *"))
+            default:
+                continue
+            }
+        }
+        return PermissionBroker.sanitizeApprovedGrants(sanitized + companions)
+    }
+
+    private static func isShellCommandGrant(_ grant: PermissionGrant) -> Bool {
+        if case .shellCommand = grant {
+            return true
+        }
+        return false
+    }
 }
 
 private enum PolicyLocalToolGrants {
@@ -211,7 +344,7 @@ private enum PolicyLocalToolGrants {
 
     private static func claudeShellGrant(for command: String) -> String? {
         guard let executable = shellExecutableToken(command) else { return nil }
-        return "Bash(\(executable):*)"
+        return "Bash(\(executable) *)"
     }
 
     private static func shellExecutableToken(_ command: String) -> String? {
@@ -294,17 +427,25 @@ enum TaskPolicyStore {
         }
 
         if let workspaceDefault = AgentPolicyDefaults.workspaceLevel(for: task.workspace) {
+            let effectiveWorkspaceDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
+                forStored: workspaceDefault,
+                workspace: task.workspace
+            )
             return Resolution(
-                level: workspaceDefault,
+                level: effectiveWorkspaceDefault,
                 scope: .workspaceDefault,
-                policy: policy(for: workspaceDefault, workspace: task.workspace)
+                policy: policy(for: effectiveWorkspaceDefault, workspace: task.workspace)
             )
         }
 
+        let effectiveGlobalDefault = AgentPolicyDefaults.effectiveUserFacingLevel(
+            forStored: globalDefaultLevel,
+            workspace: nil
+        )
         return Resolution(
-            level: globalDefaultLevel,
+            level: effectiveGlobalDefault,
             scope: .globalDefault,
-            policy: policy(for: globalDefaultLevel, workspace: nil)
+            policy: policy(for: effectiveGlobalDefault, workspace: nil)
         )
     }
 
@@ -361,7 +502,10 @@ enum AgentPolicyManifestService {
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
-        let defaultLevel = AgentPolicyLevel.normalized(defaultPolicyLevelRaw)
+        let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
+            forStored: AgentPolicyLevel.normalized(defaultPolicyLevelRaw),
+            workspace: nil
+        )
         let resolution = TaskPolicyStore.resolve(
             for: task,
             globalDefaultLevel: defaultLevel,
@@ -369,10 +513,25 @@ enum AgentPolicyManifestService {
             executionPolicy: executionPolicy
         )
         let basePolicy = resolution.policy
-        let policy = executionPolicy.allowedToolsOverride
-            .map { basePolicy.applyingOneRunAllowedTools($0) }
-            ?? basePolicy
         let taskCapabilityResolver = TaskCapabilityResolver(task: task)
+        let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
+        let executionGrants = executionPolicy.permissionGrantsOverride ?? []
+        let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
+        let taskScopedProviderGrants = PermissionBroker.providerGrantStrings(for: taskScopedGrants, runtime: runtime)
+        let effectiveProviderGrants = PermissionBroker.providerGrantStrings(for: effectiveGrants, runtime: runtime)
+        let policyApprovedTools = uniqueStrings((executionPolicy.allowedToolsOverride ?? []) + effectiveProviderGrants)
+        let policy = policyApprovedTools.isEmpty
+            ? basePolicy
+            : basePolicy.applyingOneRunAllowedTools(policyApprovedTools)
+        let requestedAllowedTools = uniqueStrings(
+            executionPolicy.allowedTools(default: taskCapabilityResolver.resolver.resolvedProviderAllowedTools)
+                + taskScopedProviderGrants
+        )
+        let manifestExecutionPolicy = AgentRuntimeExecutionPolicy(
+            permissionPolicyOverride: executionPolicy.permissionPolicyOverride,
+            allowedToolsOverride: policyApprovedTools.isEmpty ? executionPolicy.allowedToolsOverride : policyApprovedTools,
+            permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
+        )
         let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
         let configOwnership = providerConfigOwnership(for: runtime, workspacePath: workspacePath)
         let context = PolicyRenderContext(
@@ -380,7 +539,7 @@ enum AgentPolicyManifestService {
             model: model,
             workspacePath: workspacePath,
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
-            requestedAllowedTools: executionPolicy.allowedTools(default: taskCapabilityResolver.resolver.resolvedProviderAllowedTools),
+            requestedAllowedTools: requestedAllowedTools,
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
@@ -391,7 +550,14 @@ enum AgentPolicyManifestService {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime, copilotCapabilities: copilotCapabilities)
         var render = adapter.render(policy: policy, context: context)
         render.diagnostics = adapter.validate(render: render, context: context)
-        let approvals = approvalsGranted(executionPolicy: executionPolicy, render: render)
+        let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
+        let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {
+            AgentPolicyScope.oneRunEscalation
+        } else if !taskScopedGrants.isEmpty {
+            AgentPolicyScope.taskApproval
+        } else {
+            resolution.scope
+        }
         let manifest = RunPermissionManifest(
             taskID: task.id,
             runID: run.id,
@@ -400,7 +566,7 @@ enum AgentPolicyManifestService {
             providerVersion: providerVersion,
             model: model,
             policyLevel: resolution.level,
-            policyScope: executionPolicy.allowedToolsOverride == nil ? resolution.scope : .oneRunEscalation,
+            policyScope: policyScope,
             providerRender: render,
             workspacePath: workspacePath,
             additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
@@ -413,7 +579,8 @@ enum AgentPolicyManifestService {
                     approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
                 )
             } ?? taskCapabilityResolver.enabledMCPServerManifests,
-            approvalsGranted: approvals
+            approvalsGranted: approvals,
+            approvalGrants: effectiveGrants
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
         AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
@@ -448,6 +615,7 @@ enum AgentPolicyManifestService {
             externalDomains: externalDomains(from: runEvents),
             environmentKeyNames: manifest?.environmentKeyNames ?? [],
             approvalsGranted: manifest?.approvalsGranted ?? [],
+            approvalGrantDescriptions: manifest?.approvalGrants.map(\.displayName) ?? [],
             usedBroadProviderPermissions: manifest?.providerRender.usesBroadProviderPermissions ?? false,
             exceededInitialPermissionLevel: manifest?.policyScope == .oneRunEscalation || manifest?.providerRender.usesBroadProviderPermissions == true,
             completedAt: run.completedAt ?? Date()
@@ -512,6 +680,10 @@ enum AgentPolicyManifestService {
         return Array(Set(skillKeys + connectorKeys)).sorted()
     }
 
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+    }
+
     private static func approvalsGranted(
         executionPolicy: AgentRuntimeExecutionPolicy,
         render: ProviderPolicyRender
@@ -519,6 +691,12 @@ enum AgentPolicyManifestService {
         var approvals: [String] = []
         if let override = executionPolicy.allowedToolsOverride {
             approvals.append("allowed_tools:\(override.sorted().joined(separator: ","))")
+        }
+        if let grants = executionPolicy.permissionGrantsOverride, !grants.isEmpty {
+            let providerGrants = ProviderPolicyAdapterRegistry
+                .adapter(for: render.providerID)
+                .providerGrantStrings(for: grants)
+            approvals.append("permission_grants:\(providerGrants.sorted().joined(separator: ","))")
         }
         if executionPolicy.permissionPolicyOverride != nil {
             approvals.append("permission_mode:\(render.permissionMode)")
@@ -555,6 +733,7 @@ enum AgentPolicyManifestService {
         var externalDomains: [String]
         var environmentKeyNames: [String]
         var approvalsGranted: [String]
+        var approvalGrantDescriptions: [String]
         var usedBroadProviderPermissions: Bool
         var exceededInitialPermissionLevel: Bool
         var completedAt: Date
@@ -674,7 +853,7 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             id: "\(context.runtimeID.rawValue).autonomous-broad-permissions",
             severity: .warning,
             title: "Broad provider permissions",
-            message: "Autonomous mode grants broad provider permissions and should be used only for trusted or isolated work.",
+            message: "Automatic mode grants broad provider permissions and should be used only for trusted or isolated work.",
             affectedCapability: "autonomous"
         ))
     }

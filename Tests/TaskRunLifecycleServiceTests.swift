@@ -77,6 +77,30 @@ struct TaskRunLifecycleServiceTests {
         #expect(task.events.contains { $0.type == "task.cancelled" })
     }
 
+    @Test("Coordinator dismisses unusable pending result without completing task")
+    func coordinatorDismissesUnusablePendingResultWithoutCompletingTask() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Web page", goal: "write a web page with html and javascript")
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "no_usable_result"
+        context.insert(run)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .pendingUser)
+        #expect(task.isDone == true)
+        #expect(task.completedAt == nil)
+        #expect(task.events.contains { $0.type == "task.dismissed" })
+        #expect(!task.events.contains { $0.type == "task.approved" })
+    }
+
     @Test("Startup recovery cancels orphaned running task and run")
     func startupRecoveryCancelsOrphanedRunningTaskAndRun() throws {
         let recoveredAt = Date(timeIntervalSince1970: 2_000)

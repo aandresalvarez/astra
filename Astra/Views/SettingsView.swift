@@ -135,8 +135,8 @@ struct SettingsView: View {
             }
 
             Section("Agent Policy") {
-                Picker("Default Policy", selection: $defaultAgentPolicyLevelRaw) {
-                    ForEach(AgentPolicyLevel.allCases) { level in
+                Picker("Default Policy", selection: defaultPolicySelectionBinding) {
+                    ForEach(AgentPolicyLevel.primaryCases) { level in
                         Label(level.displayName, systemImage: level.symbolName)
                             .tag(level.rawValue)
                     }
@@ -493,7 +493,14 @@ struct SettingsView: View {
     }
 
     private var selectedDefaultPolicyLevel: AgentPolicyLevel {
-        AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw)
+        AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw).userFacingLevel
+    }
+
+    private var defaultPolicySelectionBinding: Binding<String> {
+        Binding(
+            get: { AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw).userFacingLevel.rawValue },
+            set: { defaultAgentPolicyLevelRaw = AgentPolicyLevel.normalized($0).userFacingLevel.rawValue }
+        )
     }
 
     private var readinessConfiguration: RuntimeReadinessConfiguration {

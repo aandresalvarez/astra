@@ -973,6 +973,44 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
     }
 
+    @Test("Runtime support tools do not trip policy")
+    func runtimeSupportToolsDoNotTripPolicy() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Read", "Glob", "Grep"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "report_intent", id: "t1", input: ["intent": "Listing open PRs"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
+    @Test("Runtime support tool exemption does not hide actionable fields")
+    func runtimeSupportToolExemptionDoesNotHideActionableFields() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Read", "Glob", "Grep"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "report_intent", id: "t1", input: ["command": "rm -rf build"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
     @Test("Ask-first tool pauses for runtime approval")
     func askFirstToolPausesForRuntimeApproval() {
         let manifest = runtimePolicyManifest(
@@ -993,8 +1031,36 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyApprovalRequired == true)
         #expect(monitor.policyApprovalMessage?.contains("Permission requested for tool: Bash") == true)
-        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(curl:*)") == true)
+        #expect(monitor.policyApprovalMessage?.contains("What ASTRA observed: Bash command: curl") == true)
+        #expect(monitor.policyApprovalMessage?.contains("What allowing does: Grants Bash(curl *redcap.stanford.edu*) one time for this run") == true)
+        #expect(monitor.policyApprovalMessage?.contains("What to check: Allow only if contacting that network destination is expected for this task.") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)") == true)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("JSON-wrapped shell arguments produce usable approval grants")
+    func jsonWrappedShellArgumentsProduceUsableApprovalGrants() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "bash", id: "t1", input: ["summary": #"{"command":"set -euo pipefail\ngh pr list --state open"}"#]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyApprovalMessage?.contains("What ASTRA observed: Bash command: set -euo pipefail") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(gh pr list *)") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Bash({") == false)
+        #expect(monitor.policyApprovalMessage?.contains("Bash(*)") == false)
     }
 
     @Test("Provider permission denial in restricted mode includes the recent command")
@@ -1018,7 +1084,56 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyApprovalRequired == true)
         #expect(monitor.policyApprovalMessage?.contains("cat ~/.zsh_history") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(cat ~/.zsh_history *)") == true)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Provider permission denial respects denied shell policy")
+    func providerPermissionDenialRespectsDeniedShellPolicy() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .permissionDenied(tool: "shell(rm)", reason: "Permission denied and could not request permission from user"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("denied command pattern") == true)
+    }
+
+    @Test("Provider shell permission denial without command does not grant broad shell")
+    func providerShellPermissionDenialWithoutCommandDoesNotGrantBroadShell() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .permissionDenied(tool: "shell", reason: "Permission denied and could not request permission from user"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("could not validate the shell command text") == true)
+        #expect(monitor.policyViolationMessage?.contains("Bash(*)") == false)
     }
 
     @Test("Provider permission denial in broad mode is terminal instead of another approval")
@@ -1054,10 +1169,110 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Provider path permission prompt without scoped grant is terminal across runtimes")
+    func providerPathPermissionPromptWithoutScopedGrantIsTerminalAcrossRuntimes() {
+        for providerID in [AgentRuntimeID.claudeCode, .copilotCLI] {
+            let manifest = runtimePolicyManifest(
+                allowedTools: ["Read", "Glob", "Grep"],
+                providerID: providerID
+            )
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
+
+            let shouldKill = monitor.processEvent(
+                .permissionDenied(tool: "WorkspaceAccess", reason: "Allow access to these paths? (y/n):"),
+                process: nil
+            )
+
+            #expect(shouldKill == true)
+            #expect(monitor.runtimeStopReason == "provider_permission_unresumable")
+            #expect(monitor.runtimeStopMessage?.contains("WorkspaceAccess") == true)
+            #expect(monitor.runtimeStopMessage?.contains("does not map to a scoped runtime permission") == true)
+            #expect(monitor.policyApprovalRequired == false)
+            #expect(monitor.policyViolation == false)
+        }
+    }
+
+    @Test("Provider denial after applied scoped approval is terminal")
+    func providerDenialAfterAppliedScopedApprovalIsTerminal() {
+        let grant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read", "shell(gh:search prs *)"],
+            providerID: .copilotCLI,
+            approvalGrants: [grant]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        _ = monitor.processEvent(
+            .toolUse(
+                name: "bash",
+                id: "toolu_denied",
+                input: [
+                    "command": "gh auth status && gh search prs --author @me --state open --limit 100"
+                ]
+            ),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(toolId: "toolu_denied", content: "Permission denied and could not request permission from user"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "provider_permission_denied_after_approval")
+        #expect(monitor.runtimeStopMessage?.contains("already applied the scoped approval") == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Claude command approval denial after applied scoped approval is terminal")
+    func claudeCommandApprovalDenialAfterAppliedScopedApprovalIsTerminal() {
+        let grant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Bash(gh search prs *)"],
+            providerID: .claudeCode,
+            approvalGrants: [grant]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        _ = monitor.processEvent(
+            .toolUse(
+                name: "Bash",
+                id: "toolu_denied",
+                input: [
+                    "command": "gh search prs --author @me --state open --limit 100"
+                ]
+            ),
+            process: nil
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(toolId: "toolu_denied", content: "This command requires approval"),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.runtimeStopReason == "provider_permission_denied_after_approval")
+        #expect(monitor.runtimeStopMessage?.contains("already applied the scoped approval") == true)
+        #expect(monitor.runtimeStopMessage?.contains("Bash(gh search prs *)") == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
     @Test("Approved shell grant satisfies ask-first tool")
     func approvedShellGrantSatisfiesAskFirstTool() {
         let manifest = runtimePolicyManifest(
-            allowedTools: ["Read", "Glob", "Grep", "Bash(curl:*)"],
+            allowedTools: ["Read", "Glob", "Grep", "Bash(curl *)"],
             askFirstTools: ["Bash"]
         )
         let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -1074,6 +1289,161 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == false)
         #expect(monitor.policyApprovalRequired == false)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved substantive shell grant satisfies wrapper command")
+    func approvedSubstantiveShellGrantSatisfiesWrapperCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Bash(gh search prs *)"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: [
+                "command": """
+                set -euo pipefail
+                OUT=.astra/tasks/7A7D0BA8/open_prs.tsv
+                mkdir -p "$(dirname "$OUT")"
+                gh search prs --author @me --state open --json repository,title,url
+                """
+            ]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved shell grant ignores comments and status output in wrapper command")
+    func approvedShellGrantIgnoresCommentsAndStatusOutputInWrapperCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "shell(gh:search prs *)"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "bash", id: "t1", input: [
+                "command": """
+                set -euo pipefail
+                # Check gh auth before running the search
+                if ! gh auth status >/dev/null 2>&1; then
+                  echo '{"error":"gh not authenticated"}'
+                  exit 0
+                fi
+                echo "Fetching open PRs"
+                gh search prs "author:@me is:open" --limit 100 --json number,title,url
+                """
+            ]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved read gh grant does not authorize write gh command")
+    func approvedReadGhGrantDoesNotAuthorizeWriteGhCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Bash(gh pr view *)"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "gh pr merge 123 --squash --delete-branch"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(gh pr merge 123 *)") == true)
+        #expect(monitor.policyApprovalMessage?.contains("Bash(gh:*)") == false)
+        #expect(monitor.policyApprovalMessage?.contains("Bash(gh *)") == false)
+    }
+
+    @Test("Wrapper setup grant does not authorize later shell command")
+    func wrapperSetupGrantDoesNotAuthorizeLaterShellCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Bash(set *)"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "set -euo pipefail\ncat ~/.ssh/id_rsa"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(cat ~/.ssh/id_rsa *)") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Denied shell pattern catches wrapped command segment")
+    func deniedShellPatternCatchesWrappedCommandSegment() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash", "Bash(set *)"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "set -euo pipefail\nrm -rf build"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("denied command pattern") == true)
+    }
+
+    @Test("Denied shell pattern catches absolute executable path")
+    func deniedShellPatternCatchesAbsoluteExecutablePath() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "/bin/rm -rf build"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
     }
 
     @Test("Denied shell pattern wins over ask-first tool")
@@ -1097,6 +1467,52 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyApprovalRequired == false)
         #expect(monitor.policyViolation == true)
+    }
+
+    @Test("Denied shell pattern catches pipeline command segment")
+    func deniedShellPatternCatchesPipelineCommandSegment() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            deniedShellPatterns: ["cat:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status --short | cat ~/.ssh/id_rsa"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("denied command pattern") == true)
+    }
+
+    @Test("Denied shell pattern catches command substitution segment")
+    func deniedShellPatternCatchesCommandSubstitutionSegment() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            deniedShellPatterns: ["cat:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status --short $(cat ~/.ssh/id_rsa)"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("denied command pattern") == true)
     }
 
     @Test("Denied shell command pattern stops the provider")
@@ -1142,6 +1558,78 @@ struct RuntimePolicyGuardTests {
 
         #expect(shouldKill == false)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Allowed shell patterns must cover every command segment")
+    func allowedShellPatternsMustCoverEveryCommandSegment() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedShellPatterns: ["git:*", "swift:*"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "set -euo pipefail\ncat ~/.ssh/id_rsa\ngit status --short"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the allowed command patterns") == true)
+    }
+
+    @Test("Allowed shell patterns must cover every pipeline command segment")
+    func allowedShellPatternsMustCoverEveryPipelineCommandSegment() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedShellPatterns: ["git:*"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status --short | cat ~/.ssh/id_rsa"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the allowed command patterns") == true)
+    }
+
+    @Test("Allowed shell patterns must cover command substitution segments")
+    func allowedShellPatternsMustCoverCommandSubstitutionSegments() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            allowedShellPatterns: ["git:*"],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git status --short $(cat ~/.ssh/id_rsa)"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the allowed command patterns") == true)
     }
 
     @Test("Mutating file outside allowed paths stops the provider")
@@ -1308,6 +1796,101 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyViolation == true)
     }
+
+    @Test("Copilot view tool follows read path policy")
+    func copilotViewToolFollowsReadPathPolicy() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Read"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "view",
+                id: "t1",
+                input: ["summary": #"{"path":"/tmp/astra-policy-guard/.astra/tasks/7296659E/outputs"}"#]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
+    @Test("Copilot create tool pauses as scoped file write approval")
+    func copilotCreateToolPausesAsScopedFileWriteApproval() throws {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            askFirstTools: ["write"],
+            providerID: .copilotCLI
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let path = "/tmp/astra-policy-guard/.astra/tasks/7296659E/index.html"
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "create",
+                id: "t1",
+                input: ["path": path]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyViolation == false)
+        let payload = try #require(monitor.policyApprovalMessage)
+        let decoded = try #require(PermissionApprovalEventPayload.decoded(from: payload))
+        #expect(decoded.request == .fileWrite(path: path, toolName: "create"))
+        #expect(decoded.grants.contains(.filePath(path: path, access: "write")))
+        #expect(decoded.grants.contains(.providerTool(name: "Write")))
+        #expect(decoded.displayMessage.contains("Runtime grant: write"))
+    }
+
+    @Test("Copilot read allow covers provider read-class grep and glob tools")
+    func copilotReadAllowCoversProviderReadClassGrepAndGlobTools() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let grepShouldKill = monitor.processEvent(
+            .toolUse(
+                name: "grep",
+                id: "t1",
+                input: [
+                    "pattern": "open_prs",
+                    "paths": "/tmp/astra-policy-guard"
+                ]
+            ),
+            process: nil
+        )
+        let globShouldKill = monitor.processEvent(
+            .toolUse(
+                name: "glob",
+                id: "t2",
+                input: ["pattern": "*.json"]
+            ),
+            process: nil
+        )
+
+        #expect(grepShouldKill == false)
+        #expect(globShouldKill == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired == false)
+    }
 }
 
 private func runtimePolicyManifest(
@@ -1323,7 +1906,8 @@ private func runtimePolicyManifest(
     permissionMode: String = PermissionPolicy.restricted.rawValue,
     providerID: AgentRuntimeID = .claudeCode,
     policyLevel: AgentPolicyLevel = .review,
-    usesBroadProviderPermissions: Bool = false
+    usesBroadProviderPermissions: Bool = false,
+    approvalGrants: [PermissionGrant] = []
 ) -> RunPermissionManifest {
     let render = ProviderPolicyRender(
         providerID: providerID,
@@ -1361,7 +1945,8 @@ private func runtimePolicyManifest(
         additionalPaths: [],
         environmentKeyNames: [],
         credentialLabels: [],
-        approvalsGranted: []
+        approvalsGranted: [],
+        approvalGrants: approvalGrants
     )
 }
 
