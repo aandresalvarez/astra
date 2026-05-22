@@ -109,7 +109,7 @@ struct NewTaskView: View {
                     }
 
                     Picker("Agent Policy", selection: $policyLevelRaw) {
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Label(level.displayName, systemImage: level.symbolName)
                                 .tag(level.rawValue)
                         }
@@ -204,7 +204,7 @@ struct NewTaskView: View {
             policyLevelRaw = AgentPolicyDefaults.effectiveLevel(
                 workspace: workspace,
                 globalDefaultRaw: defaultAgentPolicyLevelRaw
-            ).rawValue
+            ).userFacingLevel.rawValue
         }
         .onChange(of: claudeAvailableModels) {
             let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime

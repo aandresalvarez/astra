@@ -41,8 +41,23 @@ struct AgentPolicySheet: View {
         _selectedPolicyLevelRaw = selectedPolicyLevelRaw
         _globalDefaultLevelRaw = globalDefaultLevelRaw
         _skipPermissions = skipPermissions
-        _workspaceDefaultLevelRaw = State(initialValue: AgentPolicyDefaults.workspaceLevel(for: workspace)?.rawValue ?? "")
-        let initialCustomPolicy = AgentPolicyDefaults.customPolicy(for: workspace)
+        let selectedStoredLevel = AgentPolicyLevel.normalized(selectedPolicyLevelRaw.wrappedValue)
+        let globalStoredLevel = AgentPolicyLevel.normalized(globalDefaultLevelRaw.wrappedValue)
+        let workspaceStoredLevel = AgentPolicyDefaults.workspaceLevel(for: workspace)
+        if let workspaceStoredLevel {
+            _ = AgentPolicyDefaults.effectiveUserFacingLevel(forStored: workspaceStoredLevel, workspace: workspace)
+        } else {
+            _ = AgentPolicyDefaults.effectiveUserFacingLevel(forStored: globalStoredLevel, workspace: nil)
+        }
+        _workspaceDefaultLevelRaw = State(initialValue: workspaceStoredLevel?.userFacingLevel.rawValue ?? "")
+        let initialCustomPolicy: AgentPolicy
+        if AgentPolicyLevel.customPresetCases.contains(selectedStoredLevel) {
+            var policy = AgentPolicy.preset(selectedStoredLevel)
+            policy.level = .custom
+            initialCustomPolicy = policy
+        } else {
+            initialCustomPolicy = AgentPolicyDefaults.customPolicy(for: workspace)
+        }
         _customPolicyDraft = State(initialValue: initialCustomPolicy)
         _customAllowedShellPatternsText = State(initialValue: Self.policyListText(initialCustomPolicy.allowedShellPatterns))
         _customAskFirstShellPatternsText = State(initialValue: Self.policyListText(initialCustomPolicy.askFirstShellPatterns))
@@ -56,9 +71,9 @@ struct AgentPolicySheet: View {
             header
 
             Form {
-                Section("Policy Level") {
-                    Picker("Current", selection: policySelectionBinding) {
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                Section("Mode") {
+                    Picker("Policy", selection: policySelectionBinding) {
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Label(level.displayName, systemImage: level.symbolName)
                                 .tag(level.rawValue)
                         }
@@ -74,20 +89,20 @@ struct AgentPolicySheet: View {
                     customRulesSection
                 }
 
-                Section("What Can Happen") {
-                    policyListRow("Allowed without asking", values: policy.allowedTools, color: Stanford.paloAltoGreen)
-                    policyListRow("Ask first", values: policy.askFirstTools + policy.askFirstShellPatterns, color: Stanford.poppy)
-                    policyListRow("Denied", values: policy.deniedTools + policy.deniedShellPatterns + policy.deniedURLPatterns, color: Stanford.cardinalRed)
+                Section("Effective Rules") {
+                    policyListRow("Auto-approved", values: policy.allowedTools, color: Stanford.paloAltoGreen)
+                    policyListRow("Ask before running", values: policy.askFirstTools + policy.askFirstShellPatterns, color: Stanford.poppy)
+                    policyListRow("Blocked", values: policy.deniedTools + policy.deniedShellPatterns + policy.deniedURLPatterns, color: Stanford.cardinalRed)
                 }
 
-                Section("Scope") {
+                Section("Run Scope") {
                     factRow("Workspace", value: workspacePath)
                     factRow("Additional paths", value: additionalPaths.isEmpty ? "None" : "\(additionalPaths.count) configured")
                     factRow("Network", value: networkSummary)
                     factRow("Credentials", value: credentialLabels.isEmpty ? "None injected by policy preview" : credentialLabels.joined(separator: ", "))
                 }
 
-                Section("Provider Render") {
+                Section("Provider Preview") {
                     factRow("Runtime", value: runtime.displayName)
                     factRow("Permission mode", value: render.permissionMode)
                     factRow("Config source", value: render.configOwnership.displayName)
@@ -120,14 +135,14 @@ struct AgentPolicySheet: View {
 
                 Section("Defaults") {
                     Picker("Global default", selection: globalDefaultBinding) {
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Text(level.displayName).tag(level.rawValue)
                         }
                     }
 
                     Picker("Workspace default", selection: $workspaceDefaultLevelRaw) {
                         Text("Use global default").tag("")
-                        ForEach(AgentPolicyLevel.allCases) { level in
+                        ForEach(AgentPolicyLevel.primaryCases) { level in
                             Text(level.displayName).tag(level.rawValue)
                         }
                     }
@@ -145,7 +160,7 @@ struct AgentPolicySheet: View {
                         workspaceDefaultLevelRaw = ""
                         AgentPolicyDefaults.setWorkspaceLevel(nil, for: workspace)
                     } label: {
-                        Label("Reset policy defaults to Review", systemImage: "arrow.counterclockwise")
+                        Label("Reset policy defaults to Ask", systemImage: "arrow.counterclockwise")
                     }
                 }
 
@@ -192,7 +207,7 @@ struct AgentPolicySheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Agent Policy")
+                Text("Policy")
                     .font(Stanford.heading(20))
                 Text("\(selectedLevel.displayName) for \(runtime.displayName) · \(model)")
                     .font(Stanford.caption(12))
@@ -207,7 +222,7 @@ struct AgentPolicySheet: View {
     }
 
     private var selectedLevel: AgentPolicyLevel {
-        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(selectedPolicyLevelRaw)
+        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(selectedPolicyLevelRaw).userFacingLevel
     }
 
     private var policy: AgentPolicy {
@@ -235,9 +250,18 @@ struct AgentPolicySheet: View {
 
     private var customRulesSection: some View {
         Section("Custom Rules") {
-            Text("Saved \(customPolicyScopeDescription). These rules are rendered into the provider command/config and into ASTRA's runtime guard.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
+            customRulesIntro
+            customPresetControls
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Tool Rules")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Text("Auto runs without pausing, Ask creates an approval gate, and Block stops the action.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
 
             ForEach(configurableTools, id: \.self) { tool in
                 customToolRow(tool)
@@ -245,66 +269,116 @@ struct AgentPolicySheet: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Shell and Network Patterns")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Text("Add one pattern per line. Shell patterns use `executable:arguments`; network patterns can use URL or host wildcards.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+
             customPatternField(
-                "Allowed shell patterns",
+                "Auto shell patterns",
                 text: customAllowedShellPatternsBinding,
+                help: "Commands that can run without another approval.",
                 placeholder: "git:*\nswift:*"
             )
             customPatternField(
-                "Ask-first shell patterns",
+                "Ask shell patterns",
                 text: customAskFirstShellPatternsBinding,
+                help: "Commands that should pause for approval before running.",
                 placeholder: "curl:*"
             )
             customPatternField(
-                "Denied shell patterns",
+                "Blocked shell patterns",
                 text: customDeniedShellPatternsBinding,
+                help: "Commands that should always stop.",
                 placeholder: "rm:*\nsudo:*"
             )
             customPatternField(
-                "Allowed network patterns",
+                "Auto network patterns",
                 text: customAllowedURLPatternsBinding,
+                help: "Network destinations that can be used without another approval.",
                 placeholder: "https://api.github.com/*"
             )
             customPatternField(
-                "Denied network patterns",
+                "Blocked network patterns",
                 text: customDeniedURLPatternsBinding,
+                help: "Network destinations that should always stop.",
                 placeholder: "*.internal.example.com"
             )
+        }
+    }
 
-            HStack {
-                Button("Start From Review") {
+    private var customRulesIntro: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(customPolicyScopeTitle, systemImage: "slider.horizontal.3")
+                .font(Stanford.caption(12).weight(.semibold))
+            Text("Rendered into the provider command/config and ASTRA's runtime guard for every run that uses Custom.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                customRuleCountPill("Auto", count: policy.allowedTools.count + policy.allowedShellPatterns.count + policy.allowedURLPatterns.count, color: Stanford.paloAltoGreen)
+                customRuleCountPill("Ask", count: policy.askFirstTools.count + policy.askFirstShellPatterns.count, color: Stanford.poppy)
+                customRuleCountPill("Block", count: policy.deniedTools.count + policy.deniedShellPatterns.count + policy.deniedURLPatterns.count, color: Stanford.cardinalRed)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var customPresetControls: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button("Ask") {
                     applyPresetToCustom(.review)
                 }
-                Button("Start From Build") {
+                Button("Read-only") {
+                    applyPresetToCustom(.locked)
+                }
+                Button("Build") {
                     applyPresetToCustom(.build)
                 }
-                Button("Reset To Built-In") {
-                    resetCustomPolicy()
+                Button("Network-heavy") {
+                    applyPresetToCustom(.network)
                 }
-                if workspace != nil {
-                    Button("Use Global") {
-                        useGlobalCustomPolicy()
-                    }
-                    Button("Save Globally") {
-                        AgentPolicyDefaults.setCustomPolicy(customPolicyDraft, for: nil)
-                    }
-                }
-                Spacer()
+            } label: {
+                Label("Start from preset", systemImage: "square.stack.3d.up")
             }
+
+            Button {
+                resetCustomPolicy()
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+            }
+
+            if workspace != nil {
+                Button {
+                    useGlobalCustomPolicy()
+                } label: {
+                    Label("Use global", systemImage: "arrow.down.doc")
+                }
+                Button {
+                    AgentPolicyDefaults.setCustomPolicy(customPolicyDraft, for: nil)
+                } label: {
+                    Label("Save globally", systemImage: "arrow.up.doc")
+                }
+            }
+
+            Spacer()
         }
     }
 
     private var policySelectionBinding: Binding<String> {
         Binding(
-            get: { selectedLevel.rawValue },
+            get: { selectedLevel.userFacingLevel.rawValue },
             set: { select(level: AgentPolicyLevel.normalized($0)) }
         )
     }
 
     private var globalDefaultBinding: Binding<String> {
         Binding(
-            get: { AgentPolicyLevel.normalized(globalDefaultLevelRaw).rawValue },
-            set: { globalDefaultLevelRaw = AgentPolicyLevel.normalized($0).rawValue }
+            get: { AgentPolicyLevel.normalized(globalDefaultLevelRaw).userFacingLevel.rawValue },
+            set: { globalDefaultLevelRaw = AgentPolicyLevel.normalized($0).userFacingLevel.rawValue }
         )
     }
 
@@ -333,8 +407,8 @@ struct AgentPolicySheet: View {
         return Array(Set(environmentKeyNames + connectorKeys)).sorted()
     }
 
-    private var customPolicyScopeDescription: String {
-        workspace == nil ? "as the global custom policy" : "as this workspace's custom policy"
+    private var customPolicyScopeTitle: String {
+        workspace == nil ? "Global custom policy" : "Workspace custom policy"
     }
 
     private var configurableTools: [String] {
@@ -438,9 +512,13 @@ struct AgentPolicySheet: View {
 
     private func customToolRow(_ tool: String) -> some View {
         HStack(spacing: 12) {
+            Image(systemName: toolIcon(tool))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
             Text(tool)
                 .font(Stanford.caption(12).monospaced())
-                .frame(minWidth: 92, alignment: .leading)
+                .frame(minWidth: 100, alignment: .leading)
 
             Picker(tool, selection: customToolDispositionBinding(for: tool)) {
                 ForEach(CustomToolDisposition.allCases) { disposition in
@@ -449,23 +527,62 @@ struct AgentPolicySheet: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 280)
+            .frame(width: 240)
 
             Spacer()
         }
         .padding(.vertical, 2)
     }
 
-    private func customPatternField(_ title: String, text: Binding<String>, placeholder: String) -> some View {
+    private func customPatternField(
+        _ title: String,
+        text: Binding<String>,
+        help: String,
+        placeholder: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(Stanford.caption(12).weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(Stanford.caption(12).weight(.semibold))
+                Text(help)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             TextField(placeholder, text: text, axis: .vertical)
                 .font(Stanford.mono(11))
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
         }
         .padding(.vertical, 3)
+    }
+
+    private func customRuleCountPill(_ title: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text("\(title) \(count)")
+                .font(Stanford.caption(11).weight(.semibold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.10))
+        .clipShape(Capsule())
+    }
+
+    private func toolIcon(_ tool: String) -> String {
+        switch Self.normalizedPolicyToolKey(tool) {
+        case "read": "doc.text"
+        case "glob": "folder"
+        case "grep": "magnifyingglass"
+        case "write", "edit", "multiedit": "square.and.pencil"
+        case "bash": "terminal"
+        case "webfetch", "websearch": "network"
+        case "agent": "person.2"
+        default: "wrench.and.screwdriver"
+        }
     }
 
     private func customToolDispositionBinding(for tool: String) -> Binding<CustomToolDisposition> {
@@ -704,9 +821,9 @@ private enum CustomToolDisposition: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .allow: "Allow"
+        case .allow: "Auto"
         case .askFirst: "Ask"
-        case .deny: "Deny"
+        case .deny: "Block"
         }
     }
 }

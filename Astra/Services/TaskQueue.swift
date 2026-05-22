@@ -92,7 +92,11 @@ final class TaskQueue {
         skipPermissions: Bool = false,
         defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
     ) {
-        let configuredPolicyLevel = skipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(defaultPolicyLevelRaw)
+        let configuredPolicyLevel = AgentPolicyDefaults.effectiveLevel(
+            workspace: nil,
+            globalDefaultRaw: defaultPolicyLevelRaw,
+            skipPermissions: skipPermissions
+        )
         for worker in workers {
             if let path = claudePath, !path.isEmpty {
                 worker.claudePath = path

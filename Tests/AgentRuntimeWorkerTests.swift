@@ -161,6 +161,66 @@ struct SubAgentPermissionsTests {
     }
 }
 
+// MARK: - Task deliverable expectation
+
+@Suite("Task Deliverable Expectation")
+@MainActor
+struct TaskDeliverableExpectationTests {
+    @Test("Artifact scan finds shallow task output files")
+    func artifactScanFindsShallowTaskOutputFiles() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-shallow-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Deliverable", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create HTML", goal: "create an html file", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try "<html></html>".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
+    @Test("Artifact scan respects explicit entry and depth caps")
+    func artifactScanRespectsExplicitCaps() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-caps-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Deliverable Caps", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create HTML", goal: "create an html file", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let nested = URL(fileURLWithPath: taskFolder)
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("b", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "<html></html>".write(
+            to: nested.appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanEntryLimit: 0))
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 0))
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 3))
+    }
+}
+
 // MARK: - compactEvents
 
 @Suite("Event Compaction (SwiftData)")
@@ -232,6 +292,34 @@ struct BuildPromptTests {
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Goal: Fix the login bug"))
+    }
+
+    @Test("Prompt routes standalone artifacts to task output folder")
+    func promptRoutesStandaloneArtifactsToTaskOutputFolder() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-artifact")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Tic tac toe",
+            goal: "write a web page with html and javascript for a tic tac toe game",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let initialPrompt = AgentPromptBuilder.buildPrompt(for: task)
+        let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "write this in files to see it working",
+            task: task
+        )
+
+        for prompt in [initialPrompt, followUpPrompt] {
+            #expect(prompt.contains("Task Output Folder:"))
+            #expect(prompt.contains("create them in this task output folder by default"))
+            #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+            #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
+        }
     }
 
     @Test("Prompt makes current task explicit before context and at end")

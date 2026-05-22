@@ -440,9 +440,12 @@ final class AgentRuntimeWorker {
             // Run validation based on strategy
             switch task.validationStrategy {
             case .manual:
-                task.status = .completed
-                let event = TaskEvent(task: task, type: "task.completed", payload: "Agent finished.", run: run)
-                modelContext.insert(event)
+                Self.applyManualCompletion(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    successPayload: "Agent finished."
+                )
 
             case .runTests:
                 let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
@@ -1065,7 +1068,6 @@ final class AgentRuntimeWorker {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
-            task.status = .completed
             AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
                 result: result,
                 task: task,
@@ -1074,8 +1076,12 @@ final class AgentRuntimeWorker {
                 phase: "resume",
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            let event = TaskEvent(task: task, type: "task.completed", payload: "Follow-up completed.", run: run)
-            modelContext.insert(event)
+            Self.applyManualCompletion(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                successPayload: "Follow-up completed."
+            )
         } else if Self.shouldPauseForRuntimePermissionApproval(
             failureDiagnostic: failureDiagnostic,
             task: task,
@@ -1516,9 +1522,12 @@ final class AgentRuntimeWorker {
             )
             switch task.validationStrategy {
             case .manual:
-                task.status = .completed
-                let event = TaskEvent(task: task, type: "task.completed", payload: "Copilot finished.", run: run)
-                modelContext.insert(event)
+                Self.applyManualCompletion(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    successPayload: "Copilot finished."
+                )
             case .runTests:
                 let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
                 modelContext.insert(testEvent)
@@ -1616,6 +1625,34 @@ final class AgentRuntimeWorker {
     }
 
     // MARK: - Private
+
+    @MainActor
+    private static func applyManualCompletion(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        successPayload: String
+    ) {
+        if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
+           !TaskDeliverableExpectation.hasArtifact(for: task, run: run) {
+            run.status = .failed
+            run.stopReason = "no_usable_result"
+            task.status = .pendingUser
+            task.completedAt = nil
+            let event = TaskEvent(
+                task: task,
+                type: "error",
+                payload: TaskDeliverableExpectation.missingArtifactMessage(for: task),
+                run: run
+            )
+            modelContext.insert(event)
+            return
+        }
+
+        task.status = .completed
+        let event = TaskEvent(task: task, type: "task.completed", payload: successPayload, run: run)
+        modelContext.insert(event)
+    }
 
     @MainActor
     private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: String) {
@@ -2009,6 +2046,7 @@ final class AgentRuntimeWorker {
     private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         switch reason {
         case "provider_permission_denied_broad_permissions",
+             "provider_permission_unresumable",
              "provider_no_semantic_progress":
             return true
         default:

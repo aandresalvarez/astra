@@ -135,10 +135,7 @@ struct Phase3FunctionalTest {
         let eventTypes = Set(allEvents.map(\.type))
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
-        #expect(
-            eventTypes.contains("agent.thinking") || eventTypes.contains("agent.response"),
-            "Missing agent progress event"
-        )
+        #expect(E2ETestSupport.hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
         }

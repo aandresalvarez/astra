@@ -737,6 +737,8 @@ struct TaskThreadSnapshot: Sendable {
             switch event.type {
             case "user.message":
                 items.append(.userMessage(text: event.payload, timestamp: event.timestamp))
+            case "task.approved":
+                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp))
             case TaskPlanConversationEventTypes.userMessage:
                 items.append(.planUserMessage(text: event.payload, timestamp: event.timestamp))
             case TaskPlanConversationEventTypes.assistantMessage:
@@ -768,12 +770,15 @@ struct TaskThreadSnapshot: Sendable {
 
     private static func isVisibleConversationEvent(_ event: TaskEventSnapshot) -> Bool {
         switch event.type {
-        case "user.message",
-             "agent.response",
+        case "user.message":
+            return !isBrokerRuntimePermissionResumePrompt(event.payload)
+        case "agent.response",
              TaskPlanConversationEventTypes.userMessage,
              TaskPlanConversationEventTypes.assistantMessage,
              "recap.result":
             return true
+        case "task.approved":
+            return isRuntimePermissionApprovalEvent(event.payload)
         case "system.info":
             return isVisibleSystemInfo(event.payload)
         case "schedule.result":
@@ -824,6 +829,12 @@ struct TaskThreadSnapshot: Sendable {
         case "task.started":
             return event.payload.isEmpty ? "Task moved back to draft for editing." : event.payload
         case "task.approved":
+            if isRuntimePermissionApprovalEvent(event.payload) {
+                return event.payload.localizedCaseInsensitiveContains("similar") ||
+                    event.payload.localizedCaseInsensitiveContains("task-scoped")
+                    ? "Permission approved for this task. Continuing."
+                    : "Permission approved. Continuing."
+            }
             return "Approval granted."
         case TaskPlanEventTypes.approved:
             return "Plan approved."
@@ -838,6 +849,18 @@ struct TaskThreadSnapshot: Sendable {
         default:
             return event.payload
         }
+    }
+
+    private static func isRuntimePermissionApprovalEvent(_ payload: String) -> Bool {
+        payload.localizedCaseInsensitiveContains("runtime permission approved")
+    }
+
+    private static func isBrokerRuntimePermissionResumePrompt(_ payload: String) -> Bool {
+        let normalized = payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized.hasPrefix("astra approved one-time runtime permission") ||
+            normalized.hasPrefix("astra approved task-scoped runtime permission")
     }
 
     private static func shouldShowAgentResponse(

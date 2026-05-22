@@ -390,13 +390,13 @@ struct ComposerToolbar: View {
 
     private func permissionModeButton(compact: Bool) -> some View {
         Menu {
-            ForEach(AgentPolicyLevel.allCases) { level in
+            ForEach(AgentPolicyLevel.primaryCases) { level in
                 Button {
                     setPolicyLevel(level)
                 } label: {
                     HStack {
                         Label(level.displayName, systemImage: level.symbolName)
-                        if currentPolicyLevel == level {
+                        if currentPolicyLevel.userFacingLevel == level {
                             Image(systemName: "checkmark")
                         }
                     }
@@ -413,31 +413,31 @@ struct ComposerToolbar: View {
         } label: {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
-                    Image(systemName: currentPolicyLevel.symbolName)
+                    Image(systemName: currentPolicyLevel.userFacingLevel.symbolName)
                         .font(Stanford.ui(12))
-                    Text(currentPolicyLevel.displayName)
+                    Text(currentPolicyLevel.userFacingLevel.displayName)
                         .font(Stanford.chatMeta(13))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
                         .font(Stanford.ui(9))
                 }
             }
-            .foregroundStyle(policyColor(currentPolicyLevel))
+            .foregroundStyle(policyColor(currentPolicyLevel.userFacingLevel))
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 6)
-            .background(policyColor(currentPolicyLevel).opacity(0.10))
+            .background(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.10))
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(policyColor(currentPolicyLevel).opacity(0.16), lineWidth: 1)
+                    .stroke(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.16), lineWidth: 1)
             )
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help(currentPolicyLevel.shortDescription)
+        .help(currentPolicyLevel.userFacingLevel.shortDescription)
         .accessibilityIdentifier("SecurityGate")
         .accessibilityLabel("Agent Policy")
-        .accessibilityValue(currentPolicyLevel.displayName)
+        .accessibilityValue(currentPolicyLevel.userFacingLevel.displayName)
     }
 
     private var currentPolicyLevel: AgentPolicyLevel {

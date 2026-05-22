@@ -4,6 +4,7 @@ import ASTRACore
 struct AgentRuntimeExecutionPolicy: Equatable {
     var permissionPolicyOverride: PermissionPolicy?
     var allowedToolsOverride: [String]?
+    var permissionGrantsOverride: [PermissionGrant]?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -18,7 +19,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     func applyingProviderRender(_ render: ProviderPolicyRender) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: PermissionPolicy(rawValue: render.permissionMode) ?? permissionPolicyOverride,
-            allowedToolsOverride: render.allowedTools
+            allowedToolsOverride: render.allowedTools,
+            permissionGrantsOverride: permissionGrantsOverride
         )
     }
 
@@ -31,14 +33,20 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedPlan(
                 current: currentPermissionPolicy
             ),
-            allowedToolsOverride: allowedTools
+            allowedToolsOverride: allowedTools,
+            permissionGrantsOverride: nil
         )
     }
 
-    static func approvedRuntimePermission(runtime: AgentRuntimeID, allowedTools: [String]) -> AgentRuntimeExecutionPolicy {
+    static func approvedRuntimePermission(
+        runtime: AgentRuntimeID,
+        allowedTools: [String],
+        grants: [PermissionGrant] = []
+    ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedRuntimePermission(),
-            allowedToolsOverride: allowedTools
+            allowedToolsOverride: allowedTools,
+            permissionGrantsOverride: grants
         )
     }
 }

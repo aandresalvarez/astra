@@ -14,7 +14,22 @@ enum AgentPolicyDefaults {
         if skipPermissions {
             return .autonomous
         }
-        return workspaceLevel(for: workspace) ?? AgentPolicyLevel.normalized(globalDefaultRaw)
+        if let workspaceLevel = workspaceLevel(for: workspace) {
+            return effectiveUserFacingLevel(forStored: workspaceLevel, workspace: workspace)
+        }
+        return effectiveUserFacingLevel(
+            forStored: AgentPolicyLevel.normalized(globalDefaultRaw),
+            workspace: nil
+        )
+    }
+
+    static func effectiveUserFacingLevel(
+        forStored level: AgentPolicyLevel,
+        workspace: Workspace?
+    ) -> AgentPolicyLevel {
+        guard !level.isPrimaryUserFacing else { return level }
+        ensureCustomPolicyPreservesLegacyPreset(level, workspace: workspace)
+        return level.userFacingLevel
     }
 
     static func workspaceLevel(for workspace: Workspace?) -> AgentPolicyLevel? {
@@ -80,6 +95,23 @@ enum AgentPolicyDefaults {
 
     static func resetCustomPolicy(for workspace: Workspace?) {
         setCustomPolicy(nil, for: workspace)
+    }
+
+    private static func ensureCustomPolicyPreservesLegacyPreset(_ level: AgentPolicyLevel, workspace: Workspace?) {
+        guard AgentPolicyLevel.customPresetCases.contains(level),
+              !hasCustomPolicy(for: workspace) else {
+            return
+        }
+        var policy = AgentPolicy.preset(level)
+        policy.level = .custom
+        setCustomPolicy(policy, for: workspace)
+    }
+
+    private static func hasCustomPolicy(for workspace: Workspace?) -> Bool {
+        if let workspace {
+            return workspaceCustomPoliciesMap()[workspace.id.uuidString] != nil
+        }
+        return UserDefaults.standard.string(forKey: globalCustomPolicyKey) != nil
     }
 
     private static func workspaceDefaultsMap() -> [String: String] {

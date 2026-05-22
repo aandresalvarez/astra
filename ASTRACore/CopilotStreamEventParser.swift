@@ -251,6 +251,15 @@ public enum CopilotStreamEventParser {
         if let command = firstStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
             return command
         }
+        if let command = argumentStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
+            return command
+        }
+        if let path = argumentStringIncludingPayload(in: object, keys: ["file_path", "path", "target_path"]) {
+            return path
+        }
+        if let url = argumentStringIncludingPayload(in: object, keys: ["url", "uri"]) {
+            return url
+        }
         if let input = object["input"] ?? object["arguments"] ?? object["args"] {
             return stableJSONString(input)
         }
@@ -507,6 +516,26 @@ public enum CopilotStreamEventParser {
             ?? payloadObject(in: object).flatMap { doubleValue(in: $0, keys: keys) }
     }
 
+    private static func argumentStringIncludingPayload(in object: [String: Any], keys: [String]) -> String? {
+        argumentString(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { argumentString(in: $0, keys: keys) }
+    }
+
+    private static func argumentString(in object: [String: Any], keys: [String]) -> String? {
+        for containerKey in ["input", "arguments", "args"] {
+            if let dictionary = object[containerKey] as? [String: Any],
+               let value = firstString(in: dictionary, keys: keys) {
+                return value
+            }
+            if let text = object[containerKey] as? String,
+               let dictionary = jsonDictionary(from: text),
+               let value = firstString(in: dictionary, keys: keys) {
+                return value
+            }
+        }
+        return nil
+    }
+
     private static func nestedIntIncludingPayload(_ object: [String: Any], path: [String]) -> Int? {
         nestedInt(object, path: path)
             ?? payloadObject(in: object).flatMap { nestedInt($0, path: path) }
@@ -608,5 +637,15 @@ public enum CopilotStreamEventParser {
             return nil
         }
         return string
+    }
+
+    private static func jsonDictionary(from text: String) -> [String: Any]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"),
+              let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
     }
 }

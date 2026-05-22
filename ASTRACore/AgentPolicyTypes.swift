@@ -10,13 +10,34 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
 
     public var id: String { rawValue }
 
+    public static var primaryCases: [AgentPolicyLevel] {
+        [.review, .autonomous, .custom]
+    }
+
+    public static var customPresetCases: [AgentPolicyLevel] {
+        [.locked, .build, .network]
+    }
+
+    public var isPrimaryUserFacing: Bool {
+        Self.primaryCases.contains(self)
+    }
+
+    public var userFacingLevel: AgentPolicyLevel {
+        switch self {
+        case .locked, .build, .network:
+            .custom
+        case .review, .autonomous, .custom:
+            self
+        }
+    }
+
     public var displayName: String {
         switch self {
-        case .locked: "Locked"
-        case .review: "Review"
-        case .build: "Build"
-        case .network: "Network"
-        case .autonomous: "Autonomous"
+        case .locked: "Read-only preset"
+        case .review: "Ask"
+        case .build: "Build preset"
+        case .network: "Network-heavy preset"
+        case .autonomous: "Auto"
         case .custom: "Custom"
         }
     }
@@ -24,17 +45,17 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
     public var shortDescription: String {
         switch self {
         case .locked:
-            "Read and plan only."
+            "Legacy custom preset: read and plan only."
         case .review:
-            "Inspect work and ask before edits, broad shell, network, or credentials."
+            "Ask before edits, shell commands, network access, credentials, and sensitive actions."
         case .build:
-            "Edit scoped files and run approved build or test commands."
+            "Legacy custom preset: edit scoped files and run approved build or test commands."
         case .network:
-            "Use approved connectors and network destinations."
+            "Legacy custom preset: allow approved connectors and network destinations."
         case .autonomous:
-            "Broad provider permissions for trusted or isolated work."
+            "Do routine work automatically while ASTRA still stops terminal denials, budgets, and non-negotiable safety checks."
         case .custom:
-            "Advanced user-defined ASTRA and provider rules."
+            "Use a saved configuration for exact tool, shell, network, and provider rules."
         }
     }
 
@@ -54,12 +75,26 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
     }
 
     public static func normalized(_ rawValue: String?) -> AgentPolicyLevel {
-        guard let rawValue,
-              let level = AgentPolicyLevel(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        else {
+        guard let rawValue else {
             return .review
         }
-        return level
+        let normalized = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "ask", "ask_approval", "askapproval", "approval":
+            return .review
+        case "auto", "automatic":
+            return .autonomous
+        case "read_only", "readonly":
+            return .locked
+        case "network_heavy", "networkheavy":
+            return .network
+        default:
+            return AgentPolicyLevel(rawValue: normalized) ?? .review
+        }
     }
 }
 
@@ -68,6 +103,7 @@ public enum AgentPolicyScope: String, Codable, Sendable, CaseIterable {
     case globalDefault = "global_default"
     case workspaceDefault = "workspace_default"
     case taskOverride = "task_override"
+    case taskApproval = "task_approval"
     case oneRunEscalation = "one_run_escalation"
 
     public var displayName: String {
@@ -76,6 +112,7 @@ public enum AgentPolicyScope: String, Codable, Sendable, CaseIterable {
         case .globalDefault: "Global default"
         case .workspaceDefault: "Workspace default"
         case .taskOverride: "Task override"
+        case .taskApproval: "Task approval"
         case .oneRunEscalation: "One-run escalation"
         }
     }
@@ -521,9 +558,14 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     public init?(providerEvent: ParsedEvent) {
         switch providerEvent {
         case .toolUse(let name, _, let input):
-            let command = Self.firstString(in: input, keys: ["command", "cmd", "summary"])
-            let path = Self.firstString(in: input, keys: ["file_path", "path", "target_path"])
+            let normalizedInput = Self.normalizedToolInput(input)
+            let command = Self.firstString(in: normalizedInput, keys: ["command", "cmd"])
+                ?? (Self.isShellTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
+            let path = Self.firstString(in: normalizedInput, keys: ["file_path", "path", "target_path"])
+                ?? (Self.isFileTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let url = Self.firstString(in: input, keys: ["url", "uri"])
+                ?? Self.firstString(in: normalizedInput, keys: ["url", "uri"])
+                ?? (Self.isNetworkTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
                 ?? command.flatMap(Self.firstURL(in:))
             let kind: PolicyObservedEventKind = if path != nil && Self.isMutationTool(name) {
                 .fileChange
@@ -538,7 +580,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
                 command: command,
                 path: path,
                 url: url,
-                summary: command ?? path ?? url
+                summary: command ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"])
             )
         case .toolResult(let toolId, let content):
             self.init(kind: .toolResult, toolName: toolId.isEmpty ? nil : toolId, summary: String(content.prefix(500)))
@@ -546,6 +588,35 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
             self.init(kind: .deniedAction, toolName: tool, summary: String(reason.prefix(500)))
         default:
             return nil
+        }
+    }
+
+    private static func normalizedToolInput(_ input: [String: Any]?) -> [String: Any]? {
+        guard let input else { return nil }
+        var normalized = input
+        mergeToolArgumentContainers(from: input, into: &normalized)
+        if let summary = input["summary"] as? String,
+           let summaryObject = jsonDictionary(from: summary) {
+            mergeToolArgumentContainers(from: summaryObject, into: &normalized)
+            mergeMissingValues(from: summaryObject, into: &normalized)
+        }
+        return normalized
+    }
+
+    private static func mergeToolArgumentContainers(from source: [String: Any], into destination: inout [String: Any]) {
+        for key in ["input", "arguments", "args"] {
+            if let nested = source[key] as? [String: Any] {
+                mergeMissingValues(from: nested, into: &destination)
+            } else if let nestedText = source[key] as? String,
+                      let nested = jsonDictionary(from: nestedText) {
+                mergeMissingValues(from: nested, into: &destination)
+            }
+        }
+    }
+
+    private static func mergeMissingValues(from source: [String: Any], into destination: inout [String: Any]) {
+        for (key, value) in source where destination[key] == nil {
+            destination[key] = value
         }
     }
 
@@ -560,12 +631,32 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
         return nil
     }
 
+    private static func isShellTool(_ tool: String) -> Bool {
+        ["bash", "shell"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    private static func isFileTool(_ tool: String) -> Bool {
+        ["read", "view", "write", "create", "edit", "multiedit", "multi_edit"].contains(
+            tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+    }
+
     private static func isMutationTool(_ tool: String) -> Bool {
-        ["write", "edit", "multiedit"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        ["write", "create", "edit", "multiedit", "multi_edit"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private static func isNetworkTool(_ tool: String) -> Bool {
         ["webfetch", "websearch"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    private static func jsonDictionary(from text: String) -> [String: Any]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"),
+              let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
     }
 
     private static func firstURL(in text: String) -> String? {
@@ -576,6 +667,91 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
             return nil
         }
         return String(text[valueRange])
+    }
+}
+
+public enum PermissionRequest: Codable, Equatable, Sendable {
+    case tool(name: String, context: String?)
+    case shell(command: String, toolName: String?)
+    case fileWrite(path: String, toolName: String?)
+    case network(url: String, toolName: String?)
+    case credential(label: String)
+    case providerNativePrompt(toolName: String, context: String?)
+}
+
+public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
+    case tool(name: String)
+    case shellCommand(executable: String, pattern: String)
+    case filePath(path: String, access: String)
+    case networkPattern(pattern: String)
+    case providerTool(name: String)
+
+    public var displayName: String {
+        switch self {
+        case .tool(let name):
+            name
+        case .shellCommand(let executable, let pattern):
+            "shell(\(executable):\(pattern))"
+        case .filePath(let path, let access):
+            "\(access):\(path)"
+        case .networkPattern(let pattern):
+            "network(\(pattern))"
+        case .providerTool(let name):
+            name
+        }
+    }
+}
+
+public enum PermissionDecision: Codable, Equatable, Sendable {
+    case allow
+    case askUser(message: String, grants: [PermissionGrant])
+    case deny(reason: String, stopReason: String)
+    case terminalProviderDenial(reason: String, stopReason: String)
+
+    public var grants: [PermissionGrant] {
+        switch self {
+        case .askUser(_, let grants):
+            grants
+        case .allow, .deny, .terminalProviderDenial:
+            []
+        }
+    }
+}
+
+public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
+    public var brokerVersion: Int
+    public var providerID: AgentRuntimeID
+    public var request: PermissionRequest
+    public var decision: PermissionDecision
+    public var grants: [PermissionGrant]
+    public var displayMessage: String
+
+    public init(
+        brokerVersion: Int,
+        providerID: AgentRuntimeID,
+        request: PermissionRequest,
+        decision: PermissionDecision,
+        grants: [PermissionGrant],
+        displayMessage: String
+    ) {
+        self.brokerVersion = brokerVersion
+        self.providerID = providerID
+        self.request = request
+        self.decision = decision
+        self.grants = grants
+        self.displayMessage = displayMessage
+    }
+
+    public static func decoded(from payload: String) -> PermissionApprovalEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(PermissionApprovalEventPayload.self, from: data)
+    }
+
+    public func encodedString() -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let data = try? encoder.encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
 
@@ -631,6 +807,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var credentialLabels: [String]
     public var mcpServers: [MCPServer]
     public var approvalsGranted: [String]
+    public var approvalGrants: [PermissionGrant]
     public var observedToolUseCount: Int
     public var observedDeniedCount: Int
     public var observedFileChangeCount: Int
@@ -653,6 +830,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         case credentialLabels
         case mcpServers
         case approvalsGranted
+        case approvalGrants
         case observedToolUseCount
         case observedDeniedCount
         case observedFileChangeCount
@@ -676,6 +854,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         credentialLabels: [String],
         mcpServers: [MCPServer] = [],
         approvalsGranted: [String],
+        approvalGrants: [PermissionGrant] = [],
         observedToolUseCount: Int = 0,
         observedDeniedCount: Int = 0,
         observedFileChangeCount: Int = 0
@@ -700,6 +879,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
             return $0.id < $1.id
         }
         self.approvalsGranted = Array(Set(approvalsGranted)).sorted()
+        self.approvalGrants = Array(Set(approvalGrants)).sorted { $0.displayName < $1.displayName }
         self.observedToolUseCount = observedToolUseCount
         self.observedDeniedCount = observedDeniedCount
         self.observedFileChangeCount = observedFileChangeCount
@@ -724,6 +904,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.credentialLabels = try container.decode([String].self, forKey: .credentialLabels)
         self.mcpServers = try container.decodeIfPresent([MCPServer].self, forKey: .mcpServers) ?? []
         self.approvalsGranted = try container.decode([String].self, forKey: .approvalsGranted)
+        self.approvalGrants = try container.decodeIfPresent([PermissionGrant].self, forKey: .approvalGrants) ?? []
         self.observedToolUseCount = try container.decodeIfPresent(Int.self, forKey: .observedToolUseCount) ?? 0
         self.observedDeniedCount = try container.decodeIfPresent(Int.self, forKey: .observedDeniedCount) ?? 0
         self.observedFileChangeCount = try container.decodeIfPresent(Int.self, forKey: .observedFileChangeCount) ?? 0
