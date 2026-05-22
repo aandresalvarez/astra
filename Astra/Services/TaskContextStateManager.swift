@@ -133,9 +133,7 @@ enum TaskContextStateManager {
         let stateJSONPath = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent(jsonFileName)
         let stateMDPath = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent(markdownFileName)
         let outputFiles = outputTurnFiles(in: outputDirectory)
-        let outputChars = outputFiles.reduce(0) { total, path in
-            total + fileSize(path)
-        }
+        let latestOutputChars = outputFiles.last.map(fileSize) ?? 0
 
         return [
             "phase": phase,
@@ -147,7 +145,7 @@ enum TaskContextStateManager {
             "state_md_chars": String(fileSize(stateMDPath)),
             "session_history_chars": String(fileSize(historyPath)),
             "output_file_count": String(outputFiles.count),
-            "output_chars_total": String(outputChars)
+            "output_latest_chars": String(latestOutputChars)
         ]
     }
 
@@ -225,8 +223,8 @@ enum TaskContextStateManager {
         let planState = TaskPlanService.reconstruct(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
-            state.startingRequest,
             firstConversationRequest(for: task),
+            state.startingRequest,
             task.goal
         )
         state.currentObjective = firstNonEmpty(
@@ -327,7 +325,7 @@ enum TaskContextStateManager {
             summary: summarizeOutput(run.output, fallback: run.stopReason),
             filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path), limit: 20),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
-            outputFile: latestOutputFile(in: taskFolder) ?? formattedOutputFileName(turn: number),
+            outputFile: formattedOutputFileName(turn: number),
             runStatus: run.status.rawValue,
             completedAt: run.completedAt.map(timestamp)
         )
@@ -473,11 +471,12 @@ enum TaskContextStateManager {
     }
 
     private static func nextTurnNumber(in state: TaskContextState, taskFolder: String) -> Int {
+        let nextStateTurn = (state.turns.map(\.turn).max() ?? 0) + 1
         if let latest = latestOutputFile(in: taskFolder),
            let parsed = parseTurnNumber(fromOutputFile: latest) {
-            return parsed
+            return max(parsed, nextStateTurn)
         }
-        return (state.turns.map(\.turn).max() ?? 0) + 1
+        return nextStateTurn
     }
 
     private static func parseTurnNumber(fromOutputFile path: String) -> Int? {

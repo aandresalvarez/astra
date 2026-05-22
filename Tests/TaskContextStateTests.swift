@@ -58,6 +58,68 @@ struct TaskContextStateTests {
         #expect(FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)))
     }
 
+    @Test("first user request wins over later edited task goal")
+    func startingRequestUsesFirstConversationMessage() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Original Request", primaryPath: root)
+        let task = AgentTask(title: "Edited", goal: "Edited execution goal", workspace: workspace)
+        let event = TaskEvent(task: task, type: "user.message", payload: "Original exploratory request")
+        event.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(event)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.startingRequest == "Original exploratory request")
+        #expect(state.currentObjective == "Edited execution goal")
+    }
+
+    @Test("turn numbering follows saved state and deterministic output paths")
+    func turnNumberingUsesStateFloorAndFormattedOutputPath() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Turns", primaryPath: root)
+        let task = AgentTask(title: "Number turns", goal: "Keep turn numbers stable", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let firstRun = TaskRun(task: task)
+        firstRun.status = .completed
+        firstRun.stopReason = "completed"
+        firstRun.output = "first output"
+        firstRun.completedAt = Date()
+        context.insert(firstRun)
+        TaskContextStateManager.recordTurn(task: task, run: firstRun, message: "first ask")
+
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let outputs = (folder as NSString).appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+        try "stale first output".write(
+            toFile: (outputs as NSString).appendingPathComponent("turn_001.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let secondRun = TaskRun(task: task)
+        secondRun.status = .completed
+        secondRun.stopReason = "completed"
+        secondRun.output = "second output"
+        secondRun.completedAt = Date()
+        context.insert(secondRun)
+        TaskContextStateManager.recordTurn(task: task, run: secondRun, message: "second ask")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.turns.map(\.turn) == [1, 2])
+        #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()
@@ -145,6 +207,8 @@ struct TaskContextStateTests {
         #expect(fields["has_thread_intent"] == "true")
         #expect(Int(fields["state_json_chars"] ?? "0", radix: 10) ?? 0 > 0)
         #expect(Int(fields["session_history_chars"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(fields["output_file_count"] == "1")
+        #expect(Int(fields["output_latest_chars"] ?? "0", radix: 10) ?? 0 > 0)
     }
 
     private func temporaryRoot() throws -> String {
