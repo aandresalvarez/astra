@@ -446,7 +446,7 @@ enum PermissionBroker {
     }
 
     private static var grantMetacharacters: CharacterSet {
-        CharacterSet(charactersIn: "\n\r;&|`$<>")
+        CharacterSet(charactersIn: "\n\r;&|`$<>\\")
     }
 
     private static func canonicalProviderToolName(_ tool: String) -> String {
@@ -573,14 +573,81 @@ enum PermissionBroker {
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {
-        command
-            .replacingOccurrences(of: "&&", with: "\n")
-            .replacingOccurrences(of: "||", with: "\n")
-            .replacingOccurrences(of: "|", with: "\n")
-            .replacingOccurrences(of: "$(", with: "\n")
-            .replacingOccurrences(of: "<(", with: "\n")
-            .replacingOccurrences(of: ">(", with: "\n")
-            .replacingOccurrences(of: "`", with: "\n")
+        let command = command
+            .replacingOccurrences(of: "\\\r\n", with: " ")
+            .replacingOccurrences(of: "\\\n", with: " ")
+            .replacingOccurrences(of: "\\\r", with: " ")
+        var result = ""
+        var index = command.startIndex
+        var isInSingleQuote = false
+        var isInDoubleQuote = false
+        var isEscaped = false
+
+        while index < command.endIndex {
+            let character = command[index]
+            let nextIndex = command.index(after: index)
+            let next = nextIndex < command.endIndex ? command[nextIndex] : nil
+
+            if isEscaped {
+                result.append(character)
+                isEscaped = false
+                index = nextIndex
+                continue
+            }
+            if character == "\\" {
+                result.append(character)
+                isEscaped = true
+                index = nextIndex
+                continue
+            }
+            if character == "'", !isInDoubleQuote {
+                isInSingleQuote.toggle()
+                result.append(character)
+                index = nextIndex
+                continue
+            }
+            if character == "\"", !isInSingleQuote {
+                isInDoubleQuote.toggle()
+                result.append(character)
+                index = nextIndex
+                continue
+            }
+
+            if !isInSingleQuote {
+                if character == "$", next == "(" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if !isInDoubleQuote, (character == "<" || character == ">"), next == "(" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+            }
+
+            if !isInSingleQuote, !isInDoubleQuote {
+                if character == "&", next == "&" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if character == "|", next == "|" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if character == "|" || character == ";" || character.isNewline || character == "`" {
+                    result.append("\n")
+                    index = nextIndex
+                    continue
+                }
+            }
+
+            result.append(character)
+            index = nextIndex
+        }
+        return result
     }
 
     private static func actionableShellSegment(_ segment: String) -> String {
@@ -699,7 +766,7 @@ enum PermissionBroker {
 
     private static func isBenignShellSetupRoot(_ root: String) -> Bool {
         [
-            "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask",
+            "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask", "read",
             "dirname", "echo", "printf", "test", "[", "]", "exit", "return"
         ].contains(root)
     }
@@ -721,7 +788,7 @@ enum PermissionBroker {
             ? "the approved shell grant"
             : providerGrants.joined(separator: ", ")
         let executableSummary = shellExecutables.joined(separator: ", ")
-        return " The shell approval is scoped to \(providerGrantSummary). Start shell calls with the approved executable (\(executableSummary)) instead of wrapping it in setup commands, comments, or echo/if scaffolding that the provider may classify as a new command."
+        return " The shell approval is scoped to \(providerGrantSummary). Start shell calls with the approved executable (\(executableSummary)) instead of wrapping it in setup commands, comments, or echo/if scaffolding that the provider may classify as a new command. For read/list commands, do not redirect output to a file; run the approved command directly and summarize stdout unless a separate file-write permission was approved."
     }
 
     private static func normalizedShellText(_ value: String) -> String {

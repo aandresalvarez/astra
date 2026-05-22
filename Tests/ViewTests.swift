@@ -1153,11 +1153,34 @@ struct TaskThreadSnapshotTests {
 
         let presentation = RuntimePermissionApprovalText(payload: payload)
 
-        #expect(presentation.compactSummary.contains("Approve Bash"))
-        #expect(presentation.decisionSummary.contains("Allow one-time Bash command for this run"))
-        #expect(presentation.decisionSummary.contains("Bash(bq ls --project_id=upo-nero-phi-su-deid-jsl *)"))
-        #expect(presentation.noticeBody.contains("Observed: Bash command: bq ls"))
+        #expect(presentation.compactSummary.contains("Bash"))
+        #expect(presentation.decisionTitle == "BigQuery command needs permission")
+        #expect(presentation.decisionSummary.contains("ASTRA wants to run a BigQuery command"))
+        #expect(!presentation.decisionSummary.contains("Bash(bq"))
+        #expect(presentation.noticeBody.contains("Requested: bq ls"))
         #expect(presentation.noticeBody.contains("Check: allow only if this BigQuery command matches the task"))
+    }
+
+    @Test("Runtime permission decision presentation keeps technical grant out of visible copy")
+    func runtimePermissionDecisionPresentationHidesRawGrant() {
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .copilotCLI,
+            request: .shell(
+                command: "gh search prs --author @me --state open --limit 200 --json number,title,url",
+                toolName: "bash"
+            ),
+            reason: "The tool or command is configured as ask-first by the effective ASTRA policy.",
+            grants: [.shellCommand(executable: "gh", pattern: "search prs *")]
+        )
+
+        let presentation = RuntimePermissionDecisionPresentation(payload: payload)
+
+        #expect(presentation.title == "GitHub PR command needs permission")
+        #expect(presentation.summary == "ASTRA wants to use your GitHub CLI login for this task.")
+        #expect(presentation.scope == "Scope: one time for this run.")
+        #expect(presentation.commandPreview?.contains("gh search prs") == true)
+        #expect(presentation.grantSummary == "shell(gh:search prs *)")
+        #expect(!presentation.summary.contains("shell(gh"))
     }
 
     @Test("Run activity presentation suppresses duplicated actionable notices")
@@ -1328,15 +1351,14 @@ struct TaskThreadSnapshotTests {
         let visibleTypes = [
             "budget.warning",
             "budget.exceeded",
-            "error",
-            "permission.approval.requested"
+            "error"
         ]
         for type in visibleTypes {
             let notice = TaskRunNotice(id: UUID(), type: type, payload: "payload")
             #expect(TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
         }
 
-        for type in ["task.stats", "astra.permission_summary", "tool.result"] {
+        for type in ["task.stats", "astra.permission_summary", "tool.result", "permission.approval.requested"] {
             let notice = TaskRunNotice(id: UUID(), type: type, payload: "payload")
             #expect(!TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
         }
@@ -1400,13 +1422,60 @@ struct TaskThreadSnapshotTests {
             runs: [run]
         )
         let activity = snapshot.activity(for: run)
+        let visibleRun = snapshot.latestRun!
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
 
         #expect(activity.notices.count == 1)
         #expect(activity.notices.first?.type == "permission.approval.requested")
         #expect(activity.notices.first?.payload.contains("Approve to continue") == true)
+        #expect(presentation.approvals.count == 1)
+        #expect(presentation.issues.isEmpty)
         #expect(snapshot.conversationItems.contains {
             if case .agentResponse(let visibleRun) = $0 {
                 return visibleRun.id == run.id
+            }
+            return false
+        })
+    }
+
+    @Test("Runtime permission resume prompt is hidden behind compact approval row")
+    func runtimePermissionResumePromptIsHiddenBehindCompactApprovalRow() {
+        let task = makeTask(status: .running)
+        let events = [
+            makeEvent(
+                task: task,
+                type: "task.approved",
+                payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions.",
+                timestamp: Date(timeIntervalSince1970: 1)
+            ),
+            makeEvent(
+                task: task,
+                type: "user.message",
+                payload: "ASTRA approved one-time runtime permission for this run: shell(gh:search prs *). Continue the original task from where it stopped.",
+                timestamp: Date(timeIntervalSince1970: 2)
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: []
+        )
+
+        #expect(snapshot.conversationItems.contains {
+            if case .systemInfo(let text, _) = $0 {
+                return text == "Permission approved. Continuing."
+            }
+            return false
+        })
+        #expect(!snapshot.conversationItems.contains {
+            if case .userMessage(let text, _) = $0 {
+                return text.contains("ASTRA approved one-time runtime permission")
             }
             return false
         })

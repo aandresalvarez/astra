@@ -258,6 +258,7 @@ struct BuildPromptTests {
             #expect(prompt.contains("Task Output Folder:"))
             #expect(prompt.contains("create them in this task output folder by default"))
             #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+            #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
         }
     }
 

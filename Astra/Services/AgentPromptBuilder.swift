@@ -162,12 +162,14 @@ enum AgentPromptBuilder {
                 Absolute path: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
+                For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 """)
             } else {
                 parts.append("""
                 Task Output Folder: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
+                For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 """)
             }
         }

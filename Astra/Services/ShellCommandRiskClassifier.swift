@@ -315,6 +315,7 @@ enum ShellCommandRiskClassifier {
         let normalizedRoot = normalizedExecutable(root)
         guard !normalizedRoot.isEmpty,
               normalizedRoot.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r)")) == nil,
+              normalizedRoot.rangeOfCharacter(from: grantMetacharacters) == nil,
               !unsafeGrantRoots.contains(normalizedRoot) else {
             return nil
         }
@@ -413,11 +414,11 @@ enum ShellCommandRiskClassifier {
     }
 
     private static var grantMetacharacters: CharacterSet {
-        CharacterSet(charactersIn: "\n\r;&|`$<>")
+        CharacterSet(charactersIn: "\n\r;&|`$<>\\")
     }
 
     private static let unsafeGrantRoots: Set<String> = [
-        "#", "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask",
+        "#", "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask", "read",
         "dirname", "echo", "printf", "test", "[", "]", "exit", "return",
         "if", "then", "do", "else", "elif", "while", "for", "until", "case", "in",
         "fi", "done", "esac", "time", "command", "builtin", "exec", "!"

@@ -59,9 +59,9 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
             severity = .error
         case "permission.approval.requested":
             let approval = RuntimePermissionApprovalText(payload: payload)
-            title = "Approval needed"
+            title = "Permission requested"
             summary = approval.noticeBody
-            severity = .warning
+            severity = .info
         case "error" where Self.looksPolicyBlocked(payload):
             title = "Policy blocked this run"
             summary = "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
@@ -111,11 +111,47 @@ enum TaskRunNoticePresentationRules {
     static func shouldShowInline(_ notice: TaskRunNotice, for run: TaskRunSnapshot) -> Bool {
         guard !run.hasVPNWarning || notice.type != "error" else { return false }
         switch notice.type {
-        case "error", "budget.exceeded", "budget.warning", "permission.approval.requested":
+        case "error", "budget.exceeded", "budget.warning":
             return true
         default:
             return false
         }
+    }
+}
+
+struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
+    let title: String
+    let summary: String
+    let scope: String
+    let check: String
+    let commandPreview: String?
+    let grantSummary: String?
+    let compactAuditSummary: String
+    let allowSimilarLabel: String
+
+    init(payload: String) {
+        let approval = RuntimePermissionApprovalText(payload: payload)
+        title = approval.decisionTitle
+        summary = approval.decisionBody
+        scope = "Scope: one time for this run."
+        check = approval.checkSummary
+        commandPreview = approval.actionPreview
+        grantSummary = approval.approvalGrant
+        compactAuditSummary = approval.compactSummary
+        allowSimilarLabel = approval.allowSimilarLabel
+    }
+}
+
+struct RuntimePermissionApprovalNoticePresentation: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let decision: RuntimePermissionDecisionPresentation
+    let rawPayload: String?
+
+    init(notice: TaskRunNotice) {
+        id = notice.id
+        decision = RuntimePermissionDecisionPresentation(payload: notice.payload)
+        let raw = notice.payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        rawPayload = raw.isEmpty ? nil : PayloadFormatter.prettyRawPayload(raw)
     }
 }
 
@@ -248,6 +284,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
 
 struct RunActivityPresentation: Hashable, Sendable {
     let issues: [RunIssuePresentation]
+    let approvals: [RuntimePermissionApprovalNoticePresentation]
     let progressMessages: [TaskRunProgressMessage]
     let tools: [ToolActivityPresentation]
     let files: [StoredFileChange]
@@ -263,10 +300,16 @@ struct RunActivityPresentation: Hashable, Sendable {
         progressMessages: [TaskRunProgressMessage] = []
     ) {
         var issueRows: [RunIssuePresentation] = []
+        var approvalRows: [RuntimePermissionApprovalNoticePresentation] = []
         var technicalRows: [TechnicalOutputPresentation] = []
         let permissionSummaryPayload = notices.last(where: { $0.type == "astra.permission_summary" })?.payload
 
         for notice in notices where notice.type != "astra.permission_summary" {
+            if notice.type == "permission.approval.requested" {
+                approvalRows.append(RuntimePermissionApprovalNoticePresentation(notice: notice))
+                continue
+            }
+
             let issue = RunIssuePresentation(notice: notice)
             if suppressedNoticeIDs.contains(notice.id) {
                 if let rawPayload = issue.rawPayload {
@@ -287,6 +330,7 @@ struct RunActivityPresentation: Hashable, Sendable {
         technicalRows.append(contentsOf: activity.toolResults.map(Self.technicalOutput))
 
         issues = issueRows
+        approvals = approvalRows
         self.progressMessages = progressMessages
         tools = Self.groupToolCalls(activity.toolCalls)
         files = activity.fileChanges
@@ -299,7 +343,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     }
 
     var hasVisibleDetails: Bool {
-        !issues.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+        !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
     }
 
     private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {
@@ -588,14 +632,12 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
 
     var compactSummary: String {
         guard !payload.isEmpty else {
-            return "Permission needed"
+            return "Permission requested"
         }
 
-        var summary = "Permission needed"
-        if let toolName, !toolName.isEmpty {
-            summary = "Approve \(toolName)"
-        }
-        if let action = actionDetail, !action.isEmpty {
+        let trimmedToolName = toolName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var summary = trimmedToolName.isEmpty ? "Provider access" : trimmedToolName
+        if let action = actionPreview, !action.isEmpty {
             summary += " · \(action)"
         }
         return Self.compactText(summary, limit: 96)
@@ -605,17 +647,94 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         guard !payload.isEmpty else {
             return "Review the policy request before continuing this run."
         }
+        return Self.compactText("\(decisionBody) \(scopeSentence)", limit: 190)
+    }
 
-        var summary = "Allow one-time \(accessLabel) for this run"
-        if let action = actionDetail, !action.isEmpty {
-            summary += ": \(action)"
+    var decisionTitle: String {
+        switch accessKind {
+        case .shell:
+            switch shellRoot {
+            case "gh":
+                if actionDetail?.localizedCaseInsensitiveContains("pr") == true ||
+                    actionDetail?.localizedCaseInsensitiveContains("pull request") == true ||
+                    actionDetail?.localizedCaseInsensitiveContains("prs") == true {
+                    return "GitHub PR command needs permission"
+                }
+                return "GitHub command needs permission"
+            case "bq":
+                return "BigQuery command needs permission"
+            case "gcloud":
+                return "Google Cloud command needs permission"
+            case "curl", "wget":
+                return "Network request needs permission"
+            case "cat", "head", "tail", "less", "more", "ls", "find":
+                return "File command needs permission"
+            default:
+                return "Shell command needs permission"
+            }
+        case .fileRead:
+            return "File read needs permission"
+        case .fileWrite:
+            return "File change needs permission"
+        case .network:
+            return "Network access needs permission"
+        case .provider:
+            let name = toolName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return "\(name.isEmpty ? "Provider" : name) access needs permission"
         }
-        if let approvalGrant, !approvalGrant.isEmpty {
-            summary += ". Grants \(approvalGrant) only for this continuation."
-        } else {
-            summary += ". Ask Approval policy paused before this action."
+    }
+
+    var decisionBody: String {
+        let action = actionPreview
+        switch accessKind {
+        case .shell:
+            switch shellRoot {
+            case "gh":
+                return "ASTRA wants to use your GitHub CLI login for this task."
+            case "bq":
+                return "ASTRA wants to run a BigQuery command with your local Google Cloud credentials."
+            case "gcloud":
+                return "ASTRA wants to run a Google Cloud command with your local cloud credentials."
+            case "curl", "wget":
+                return "ASTRA wants to contact this network destination from your machine."
+            default:
+                if let action, !action.isEmpty {
+                    return "ASTRA wants to run this local command: \(action)."
+                }
+                return "ASTRA wants to run a local shell command with this task's environment."
+            }
+        case .fileRead:
+            return action.map { "ASTRA wants to read \($0)." } ?? "ASTRA wants to read a local file."
+        case .fileWrite:
+            return action.map { "ASTRA wants to change \($0)." } ?? "ASTRA wants to change a local file."
+        case .network:
+            return action.map { "ASTRA wants to access \($0)." } ?? "ASTRA wants to access a network destination."
+        case .provider:
+            return action.map { "ASTRA wants to use \(accessLabel): \($0)." } ?? "ASTRA wants to use \(accessLabel)."
         }
-        return Self.compactText(summary, limit: 190)
+    }
+
+    var checkSummary: String {
+        Self.sentence(decisionGuidance)
+    }
+
+    var actionPreview: String? {
+        actionDetail.map { Self.compactText($0, limit: 140) }
+    }
+
+    var allowSimilarLabel: String {
+        switch shellRoot {
+        case "gh":
+            return "Allow similar GitHub commands"
+        case "bq":
+            return "Allow similar BigQuery commands"
+        case "gcloud":
+            return "Allow similar Google Cloud commands"
+        case "curl", "wget":
+            return "Allow similar network reads"
+        default:
+            return "Allow similar for this task"
+        }
     }
 
     var noticeBody: String {
@@ -623,23 +742,47 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "Review the policy request to continue this run."
         }
 
-        var parts = ["ASTRA paused before continuing because review policy requires approval for this action."]
-        if let observedAction, !observedAction.isEmpty {
-            parts.append("Observed: \(observedAction)")
+        var parts = ["ASTRA paused before continuing because review policy requires approval."]
+        if let action = actionPreview, !action.isEmpty {
+            parts.append("Requested: \(action)")
         }
-        if let reason, !reason.isEmpty {
-            parts.append("Reason: \(Self.sentence(reason))")
-        }
-        if let approvalGrant, !approvalGrant.isEmpty {
-            parts.append("One-time grant: \(approvalGrant). Allowing continues this run from the stopped point.")
-        } else {
-            parts.append("Allowing continues this run from the stopped point with one-time expanded provider permissions.")
-        }
+        parts.append(scopeSentence)
         parts.append("Check: \(decisionGuidance)")
         if let providerDetailSummary, !providerDetailSummary.isEmpty {
             parts.append("Provider detail: \(providerDetailSummary)")
         }
         return parts.joined(separator: "\n\n")
+    }
+
+    private var scopeSentence: String {
+        "Allowing continues this run once from the stopped point."
+    }
+
+    private enum AccessKind {
+        case shell
+        case fileRead
+        case fileWrite
+        case network
+        case provider
+    }
+
+    private var accessKind: AccessKind {
+        switch toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "bash", "shell":
+            return .shell
+        case "read":
+            return .fileRead
+        case "write", "edit", "multiedit":
+            return .fileWrite
+        case "webfetch", "websearch":
+            return .network
+        default:
+            return .provider
+        }
+    }
+
+    private var shellRoot: String? {
+        Self.shellCommandRoot(actionDetail)?.lowercased()
     }
 
     private var actionDetail: String? {

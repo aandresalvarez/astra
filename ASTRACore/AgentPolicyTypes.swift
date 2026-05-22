@@ -34,10 +34,10 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
     public var displayName: String {
         switch self {
         case .locked: "Read-only preset"
-        case .review: "Ask Approval"
+        case .review: "Ask"
         case .build: "Build preset"
         case .network: "Network-heavy preset"
-        case .autonomous: "Automatic"
+        case .autonomous: "Auto"
         case .custom: "Custom"
         }
     }

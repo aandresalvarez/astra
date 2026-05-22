@@ -729,14 +729,81 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {
-        command
-            .replacingOccurrences(of: "&&", with: "\n")
-            .replacingOccurrences(of: "||", with: "\n")
-            .replacingOccurrences(of: "|", with: "\n")
-            .replacingOccurrences(of: "$(", with: "\n")
-            .replacingOccurrences(of: "<(", with: "\n")
-            .replacingOccurrences(of: ">(", with: "\n")
-            .replacingOccurrences(of: "`", with: "\n")
+        let command = command
+            .replacingOccurrences(of: "\\\r\n", with: " ")
+            .replacingOccurrences(of: "\\\n", with: " ")
+            .replacingOccurrences(of: "\\\r", with: " ")
+        var result = ""
+        var index = command.startIndex
+        var isInSingleQuote = false
+        var isInDoubleQuote = false
+        var isEscaped = false
+
+        while index < command.endIndex {
+            let character = command[index]
+            let nextIndex = command.index(after: index)
+            let next = nextIndex < command.endIndex ? command[nextIndex] : nil
+
+            if isEscaped {
+                result.append(character)
+                isEscaped = false
+                index = nextIndex
+                continue
+            }
+            if character == "\\" {
+                result.append(character)
+                isEscaped = true
+                index = nextIndex
+                continue
+            }
+            if character == "'", !isInDoubleQuote {
+                isInSingleQuote.toggle()
+                result.append(character)
+                index = nextIndex
+                continue
+            }
+            if character == "\"", !isInSingleQuote {
+                isInDoubleQuote.toggle()
+                result.append(character)
+                index = nextIndex
+                continue
+            }
+
+            if !isInSingleQuote {
+                if character == "$", next == "(" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if !isInDoubleQuote, (character == "<" || character == ">"), next == "(" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+            }
+
+            if !isInSingleQuote, !isInDoubleQuote {
+                if character == "&", next == "&" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if character == "|", next == "|" {
+                    result.append("\n")
+                    index = command.index(after: nextIndex)
+                    continue
+                }
+                if character == "|" || character == ";" || character.isNewline || character == "`" {
+                    result.append("\n")
+                    index = nextIndex
+                    continue
+                }
+            }
+
+            result.append(character)
+            index = nextIndex
+        }
+        return result
     }
 
     private static func actionableShellSegment(_ segment: String) -> String {
@@ -844,7 +911,7 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private static func isBenignShellSetupRoot(_ root: String) -> Bool {
         [
-            "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask",
+            "set", "cd", "pwd", "true", "false", ":", "export", "unset", "umask", "read",
             "dirname", "echo", "printf", "test", "[", "]", "exit", "return"
         ].contains(root)
     }

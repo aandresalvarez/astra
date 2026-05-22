@@ -60,15 +60,16 @@ private struct FutureProviderPolicyAdapterFixture: ProviderPolicyAdapter {
 
 @Suite("Agent Policy")
 struct AgentPolicyTests {
-    @Test("Primary policy modes are ask approval automatic and custom")
+    @Test("Primary policy modes are ask auto and custom")
     func primaryPolicyModes() {
         #expect(AgentPolicyLevel.primaryCases == [.review, .autonomous, .custom])
         #expect(AgentPolicyLevel.customPresetCases == [.locked, .build, .network])
-        #expect(AgentPolicyLevel.review.displayName == "Ask Approval")
-        #expect(AgentPolicyLevel.autonomous.displayName == "Automatic")
+        #expect(AgentPolicyLevel.review.displayName == "Ask")
+        #expect(AgentPolicyLevel.autonomous.displayName == "Auto")
         #expect(AgentPolicyLevel.build.userFacingLevel == .custom)
         #expect(AgentPolicyLevel.normalized("ask approval") == .review)
         #expect(AgentPolicyLevel.normalized("automatic") == .autonomous)
+        #expect(AgentPolicyLevel.normalized("auto") == .autonomous)
         #expect(AgentPolicyLevel.normalized("read-only") == .locked)
         #expect(AgentPolicyLevel.normalized("network heavy") == .network)
     }
@@ -473,6 +474,32 @@ struct AgentPolicyTests {
         #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(echo:*)") == nil)
         #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(gh:*)") == nil)
         #expect(PermissionBroker.resumeMessage(providerID: .copilotCLI, grants: grants).contains("Start shell calls with the approved executable"))
+    }
+
+    @Test("Broker ignores shell line continuations and quoted parser text when choosing approval grants")
+    func brokerIgnoresShellLineContinuationsAndQuotedParserText() {
+        let request = PermissionRequest.shell(
+            command: """
+            mkdir -p .astra/tasks/57096337 && \\
+            if ! gh auth status >/dev/null 2>&1; then echo "GH_AUTH_MISSING"; exit 2; fi && \\
+            gh search prs --author "@me" --state open --limit 100 --json number,title,state,author,repository,url,createdAt,updatedAt > .astra/tasks/57096337/prs.json && \\
+            jq -r '.[] | "repo: \\(.repository) #\\(.number) - \\(.title) | author:\\(.author.login // "unknown")"' .astra/tasks/57096337/prs.json && \\
+            gh pr view 123 --repo susom/astra --comments --json number,title,author,state,labels,reviews,files,statusCheckRollup,mergeable,url
+            """,
+            toolName: "bash"
+        )
+
+        let grants = PermissionBroker.approvalGrants(for: request)
+        let providerGrants = PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI)
+        let resumeMessage = PermissionBroker.resumeMessage(providerID: .copilotCLI, grants: grants)
+
+        #expect(grants.contains(.shellCommand(executable: "gh", pattern: "search prs *")))
+        #expect(grants.contains(.shellCommand(executable: "gh", pattern: "pr view *")))
+        #expect(!providerGrants.contains { $0.contains("shell(\\:") })
+        #expect(!providerGrants.contains { $0.contains("author:") })
+        #expect(!providerGrants.contains { $0.contains("shell(read:") })
+        #expect(PermissionBroker.permissionGrant(fromProviderString: "shell(\\:*)") == nil)
+        #expect(resumeMessage.contains("do not redirect output to a file"))
     }
 
     @Test("Broker scopes gh approvals by subcommand so read grants do not cover writes")

@@ -1159,7 +1159,7 @@ struct TaskMainView: View {
 
     private var pendingApprovalStatusDetail: String {
         hasOpenRuntimePermissionApprovalRequest
-            ? pendingApprovalSurfaceSummary
+            ? (pendingRuntimePermissionDecision?.compactAuditSummary ?? pendingApprovalSurfaceSummary)
             : "Use the review controls above the composer to continue."
     }
 
@@ -1180,7 +1180,7 @@ struct TaskMainView: View {
             parts.append(runtimeHealth.message)
         }
         if shouldShowPendingApprovalStatus {
-            parts.append(hasOpenRuntimePermissionApprovalRequest ? pendingApprovalSurfaceSummary : "Waiting for approval")
+            parts.append(hasOpenRuntimePermissionApprovalRequest ? (pendingRuntimePermissionDecision?.compactAuditSummary ?? pendingApprovalSurfaceSummary) : "Waiting for approval")
         }
         if isCreatingScheduleForCurrentTask {
             parts.append("Creating routine")
@@ -1922,6 +1922,15 @@ struct TaskMainView: View {
         presentation: RunActivityPresentation
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !presentation.approvals.isEmpty {
+                runActivityDetailSection(
+                    title: presentation.approvals.count == 1 ? "Permission" : "Permissions",
+                    systemImage: "hand.raised"
+                ) {
+                    permissionApprovalList(presentation.approvals)
+                }
+            }
+
             if !presentation.issues.isEmpty {
                 runActivityDetailSection(
                     title: presentation.issues.count == 1 ? "Issue" : "Issues",
@@ -2019,6 +2028,7 @@ struct TaskMainView: View {
         var parts: [String] = []
         let toolCallCount = presentation.tools.reduce(0) { $0 + $1.count }
         let progressCount = presentation.progressMessages.count
+        let approvalCount = presentation.approvals.count
         let warningCount = presentation.issues.filter { $0.severity == .warning }.count
         let issueCount = presentation.issues.filter { $0.severity == .error }.count
 
@@ -2031,8 +2041,12 @@ struct TaskMainView: View {
         if warningCount > 0 {
             parts.append("\(warningCount) \(warningCount == 1 ? "warning" : "warnings")")
         }
-        if let approvalNotice = notices.first(where: { $0.type == "permission.approval.requested" }) {
-            parts.append(permissionApprovalSurfaceSummary(for: approvalNotice.payload))
+        if approvalCount > 0 {
+            if approvalCount == 1, let approval = presentation.approvals.first {
+                parts.append(approval.decision.compactAuditSummary)
+            } else {
+                parts.append("\(approvalCount) permissions requested")
+            }
         } else if runStoppedByPolicy(run, notices: notices) {
             parts.append("stopped by policy")
         } else if runStoppedBySystem(run, notices: notices) {
@@ -2123,7 +2137,7 @@ struct TaskMainView: View {
         if notices.contains(where: { $0.type == "error" || $0.type == "budget.exceeded" }) {
             return Stanford.failed
         }
-        if notices.contains(where: { $0.type == "budget.warning" || $0.type == "permission.approval.requested" }) {
+        if notices.contains(where: { $0.type == "budget.warning" }) {
             return Stanford.poppy
         }
         return Stanford.coolGrey
@@ -2432,6 +2446,37 @@ struct TaskMainView: View {
         ))
     }
 
+    private func permissionApprovalList(_ approvals: [RuntimePermissionApprovalNoticePresentation]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(approvals) { approval in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: "hand.raised")
+                            .font(Stanford.ui(11))
+                            .foregroundStyle(Stanford.coolGrey.opacity(0.82))
+                            .frame(width: 16)
+                        Text(approval.decision.compactAuditSummary)
+                            .font(Stanford.chatSection())
+                            .foregroundStyle(Stanford.readingText)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                    }
+
+                    Text(approval.decision.scope)
+                        .font(Stanford.chatMeta())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.leading, 23)
+
+                    if let rawPayload = approval.rawPayload {
+                        rawOutputDisclosure(rawPayload, label: "Show permission details")
+                            .padding(.leading, 23)
+                    }
+                }
+            }
+        }
+    }
+
     private func runNoticeTitleRow(
         presentation: (title: String, icon: String, color: Color),
         showsChevron: Bool,
@@ -2617,7 +2662,7 @@ struct TaskMainView: View {
         case "budget.exceeded":
             ("Budget exceeded", "xmark.octagon", Stanford.failed)
         case "permission.approval.requested":
-            ("Approval needed", "hand.raised", Stanford.poppy)
+            ("Permission requested", "hand.raised", Stanford.coolGrey)
         case "astra.permission_summary":
             ("Permission summary", "checklist.shield", Stanford.coolGrey)
         case "error":
@@ -2690,14 +2735,6 @@ struct TaskMainView: View {
             return RuntimePermissionApprovalText(payload: payload).compactSummary
         }
         return "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
-    }
-
-    private func permissionApprovalDecisionSummary(for payload: String) -> String {
-        RuntimePermissionApprovalText(payload: payload).decisionSummary
-    }
-
-    private func permissionApprovalSurfaceSummary(for payload: String) -> String {
-        RuntimePermissionApprovalText(payload: payload).compactSummary
     }
 
     private func budgetWarningBody(for payload: String) -> String {
@@ -3225,6 +3262,21 @@ struct TaskMainView: View {
             .payload
     }
 
+    private var pendingRuntimePermissionDecision: RuntimePermissionDecisionPresentation? {
+        latestRuntimePermissionRequestPayload.map(RuntimePermissionDecisionPresentation.init(payload:))
+    }
+
+    private var latestRuntimePermissionTaskScopedGrants: [PermissionGrant] {
+        guard let payload = latestRuntimePermissionRequestPayload else { return [] }
+        let structured = PermissionBroker.structuredApprovalGrants(from: payload)
+        let grants = structured.isEmpty ? PermissionBroker.legacyApprovalGrants(from: payload) : structured
+        return PermissionBroker.taskScopedApprovalGrants(for: grants)
+    }
+
+    private var canApproveSimilarRuntimePermissionForTask: Bool {
+        hasOpenRuntimePermissionApprovalRequest && !latestRuntimePermissionTaskScopedGrants.isEmpty
+    }
+
     private var shouldShowPendingDecisionBar: Bool {
         task.status == .pendingUser && (hasOpenRuntimePermissionApprovalRequest || executableApprovedPlan == nil)
     }
@@ -3242,7 +3294,7 @@ struct TaskMainView: View {
 
     private var pendingDecisionTitle: String {
         if hasOpenRuntimePermissionApprovalRequest {
-            return "Permission needed"
+            return pendingRuntimePermissionDecision?.title ?? "Permission needed"
         }
         if latestRunHasNoUsableResult {
             return "No usable result"
@@ -3253,8 +3305,7 @@ struct TaskMainView: View {
     private var pendingDecisionDetail: String {
         if hasOpenRuntimePermissionApprovalRequest {
             let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
-            guard let payload = latestRuntimePermissionRequestPayload else { return fallback }
-            return permissionApprovalDecisionSummary(for: payload)
+            return pendingRuntimePermissionDecision?.summary ?? fallback
         }
         if latestRunStoppedByPolicy {
             return "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
@@ -3310,66 +3361,76 @@ struct TaskMainView: View {
                 Text(pendingDecisionDetail)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(hasOpenRuntimePermissionApprovalRequest ? 2 : 3)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if hasOpenRuntimePermissionApprovalRequest,
+                   let decision = pendingRuntimePermissionDecision {
+                    Text(decision.scope)
+                        .font(Stanford.chatMeta())
+                        .foregroundStyle(Stanford.coolGrey.opacity(0.85))
+                        .lineLimit(1)
+
+                    if let command = decision.commandPreview {
+                        Label(command, systemImage: "terminal")
+                            .font(Stanford.caption(11).monospaced())
+                            .foregroundStyle(Stanford.readingText.opacity(0.82))
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Stanford.cardBackground.opacity(0.38))
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                }
             }
 
             Spacer(minLength: 12)
 
-            if let onRetry = onRetryTask {
-                Button("Retry") {
-                    onRetry(task)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                .controlSize(.small)
-                .accessibilityLabel("Retry task")
-            }
-
-            if let onApprove = onApproveTask {
-                Button {
-                    onApprove(task)
-                } label: {
-                    Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(PendingDecisionButtonStyle())
-                .controlSize(.small)
-                .accessibilityIdentifier("ApproveTaskButton")
-                .accessibilityLabel(pendingDecisionPrimaryLabel)
-
-                if hasOpenRuntimePermissionApprovalRequest {
-                    Menu {
-                        Button {
-                            approveSimilarRuntimePermissionForTask()
-                        } label: {
-                            Label("Allow similar for this task", systemImage: "checkmark.shield")
-                        }
-                        .accessibilityIdentifier("ApproveSimilarTaskButton")
-
-                        Button {
-                            onApprove(task)
-                        } label: {
-                            Label("Allow once & continue", systemImage: "lock.open")
-                        }
-                    } label: {
-                        Image(systemName: "chevron.down.circle")
-                            .font(Stanford.ui(18, weight: .semibold))
-                            .foregroundStyle(Stanford.paloAltoGreen)
-                            .frame(width: 32, height: 32)
+            VStack(alignment: .trailing, spacing: 8) {
+                if let onRetry = onRetryTask {
+                    Button("Retry") {
+                        onRetry(task)
                     }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .help("Approval options")
-                    .accessibilityLabel("Permission approval options")
+                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                    .controlSize(.small)
+                    .accessibilityLabel("Retry task")
+                }
+
+                if hasOpenRuntimePermissionApprovalRequest,
+                   canApproveSimilarRuntimePermissionForTask {
+                    Button {
+                        approveSimilarRuntimePermissionForTask()
+                    } label: {
+                        Label("Allow similar", systemImage: "checkmark.shield")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                    .controlSize(.small)
+                    .help((pendingRuntimePermissionDecision?.allowSimilarLabel ?? "Allow similar requests") + " for this task.")
+                    .accessibilityIdentifier("ApproveSimilarTaskButton")
+                    .accessibilityLabel("Allow similar for this task")
+                }
+
+                if let onApprove = onApproveTask {
+                    Button {
+                        onApprove(task)
+                    } label: {
+                        Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(PendingDecisionButtonStyle())
+                    .controlSize(.small)
+                    .accessibilityIdentifier("ApproveTaskButton")
+                    .accessibilityLabel(pendingDecisionPrimaryLabel)
                 }
             }
         }
         .padding(12)
-        .background(Stanford.poppy.opacity(0.08))
+        .background(Stanford.poppy.opacity(0.055))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.poppy.opacity(0.20), lineWidth: 1)
+                .stroke(Stanford.poppy.opacity(0.16), lineWidth: 1)
         )
     }
 
@@ -3388,8 +3449,8 @@ struct TaskMainView: View {
         let title = skipPermissions ? "Run remaining plan" : "Approve next step"
         let detail = nextStep.map { "Next: \($0.title)" } ?? plan.title
         let modeLabel = skipPermissions
-            ? "Automatic mode runs every remaining step."
-            : "Ask Approval mode runs one approved step, then pauses again."
+            ? "Auto mode runs every remaining step."
+            : "Ask mode runs one approved step, then pauses again."
 
         return HStack(alignment: .center, spacing: 12) {
             Image(systemName: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill")

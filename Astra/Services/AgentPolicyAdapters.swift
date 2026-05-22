@@ -94,7 +94,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 title: "Shell deny patterns are advisory",
                 message: "Claude tool permissions can allow or deny tools, but ASTRA-owned command brokering is required to enforce individual shell command patterns.",
                 affectedCapability: "shell",
-                remediation: "Use Ask Approval or a stricter Custom configuration until ASTRA brokered shell execution is enabled for this workspace."
+                remediation: "Use Ask or a stricter Custom configuration until ASTRA brokered shell execution is enabled for this workspace."
             ))
         }
 
@@ -208,7 +208,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 title: "Deny rules require ASTRA enforcement",
                 message: "This Copilot CLI adapter records deny intent, but the current command path only renders positive allow-tool grants.",
                 affectedCapability: "deny",
-                remediation: "Keep the policy at Ask Approval or a stricter Custom configuration when strict denial must be guaranteed."
+                remediation: "Keep the policy at Ask or a stricter Custom configuration when strict denial must be guaranteed."
             ))
         }
         if policy.level == .autonomous, !capabilities.supportsAllowAll && !capabilities.supportsAllowAllTools {
@@ -853,7 +853,7 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             id: "\(context.runtimeID.rawValue).autonomous-broad-permissions",
             severity: .warning,
             title: "Broad provider permissions",
-            message: "Automatic mode grants broad provider permissions and should be used only for trusted or isolated work.",
+            message: "Auto mode grants broad provider permissions and should be used only for trusted or isolated work.",
             affectedCapability: "autonomous"
         ))
     }

@@ -60,7 +60,7 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var permissionMode: String {
-        skipPermissions ? "Automatic mode" : "Ask Approval mode"
+        skipPermissions ? "Auto mode" : "Ask mode"
     }
 
     private var canEditPlan: Bool {
@@ -232,12 +232,12 @@ struct WorkspaceCanvasPanelView: View {
             Button {
                 skipPermissions = true
             } label: {
-                Label("Automatic mode - run steps without pausing", systemImage: "bolt.fill")
+                Label("Auto mode - run steps without pausing", systemImage: "bolt.fill")
             }
             Button {
                 skipPermissions = false
             } label: {
-                Label("Ask Approval mode - pause before each step", systemImage: "checkmark.shield")
+                Label("Ask mode - pause before each step", systemImage: "checkmark.shield")
             }
         } label: {
             HStack(spacing: 4) {
