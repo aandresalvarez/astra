@@ -3746,6 +3746,24 @@ struct SidebarGroupingTests {
 
         #expect(visible.map(\.id) == [starredMatch.id])
     }
+
+    @Test("Collapsed selected workspace is not force-expanded on selection change")
+    func collapsedSelectedWorkspaceDoesNotAutoExpand() {
+        let workspaceID = UUID()
+
+        #expect(!WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
+            selectedWorkspaceID: workspaceID,
+            collapsedWorkspaceIDs: [workspaceID]
+        ))
+        #expect(WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
+            selectedWorkspaceID: workspaceID,
+            collapsedWorkspaceIDs: []
+        ))
+        #expect(!WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
+            selectedWorkspaceID: nil,
+            collapsedWorkspaceIDs: [workspaceID]
+        ))
+    }
 }
 
 // MARK: - DiffsTabView logic

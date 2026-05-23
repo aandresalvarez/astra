@@ -75,6 +75,16 @@ enum WorkspaceSidebarFilter {
     }
 }
 
+enum WorkspaceSidebarSelection {
+    static func shouldEnsureSelectedWorkspaceExpanded(
+        selectedWorkspaceID: UUID?,
+        collapsedWorkspaceIDs: Set<UUID>
+    ) -> Bool {
+        guard let selectedWorkspaceID else { return false }
+        return !collapsedWorkspaceIDs.contains(selectedWorkspaceID)
+    }
+}
+
 private struct SidebarTopToolbar: View {
     @Binding var isSearchActive: Bool
     let showsWorkspaceActions: Bool
@@ -1430,7 +1440,11 @@ struct TaskSidebarView: View {
     }
 
     private func handleSelectedWorkspaceChanged() {
-        if let selectedWorkspace {
+        if let selectedWorkspace,
+           WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
+               selectedWorkspaceID: selectedWorkspace.id,
+               collapsedWorkspaceIDs: collapsedWorkspaceIDs
+           ) {
             ensureWorkspaceExpanded(selectedWorkspace)
         }
         updateNewTaskNudge()

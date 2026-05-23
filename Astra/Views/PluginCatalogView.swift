@@ -144,6 +144,18 @@ private struct PluginCatalogPresentationState {
     let visibleCategories: [String]
 }
 
+enum PluginCatalogSearch {
+    static func matches(_ package: PluginPackage, query: String) -> Bool {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedQuery.isEmpty else { return true }
+
+        return package.name.lowercased().contains(normalizedQuery) ||
+            package.description.lowercased().contains(normalizedQuery) ||
+            package.contentSummary.lowercased().contains(normalizedQuery) ||
+            package.tags.contains { $0.lowercased().contains(normalizedQuery) }
+    }
+}
+
 private struct CapabilityDetailSection: Identifiable {
     let id: String
     let title: String
@@ -300,11 +312,7 @@ struct PluginCatalogView: View {
             }
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if !query.isEmpty {
-                filtered = filtered.filter {
-                    $0.name.lowercased().contains(query) ||
-                    $0.description.lowercased().contains(query) ||
-                    $0.tags.contains { $0.lowercased().contains(query) }
-                }
+                filtered = filtered.filter { PluginCatalogSearch.matches($0, query: query) }
             }
 
             let enabledCount = focused.reduce(0) { count, package in
