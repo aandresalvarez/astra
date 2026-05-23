@@ -428,18 +428,11 @@ struct TaskMainView: View {
     }
 
     private var taskTitleGroup: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(task.title)
-                .font(Stanford.ui(14, weight: .semibold))
-                .foregroundStyle(Stanford.black)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(task.workspace?.name ?? "Astra")
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
+        Text(task.title)
+            .font(Stanford.ui(14, weight: .semibold))
+            .foregroundStyle(Stanford.black)
+            .lineLimit(1)
+            .truncationMode(.tail)
         .frame(minWidth: 180, idealWidth: 300, maxWidth: 440, alignment: .leading)
     }
 
