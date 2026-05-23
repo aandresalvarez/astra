@@ -31,24 +31,6 @@ private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     }
 }
 
-private struct PendingDecisionButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-
-        configuration.label
-            .font(Stanford.body(15).weight(.medium))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(isEnabled ? Stanford.paloAltoGreen : Stanford.fog.opacity(0.85))
-            .foregroundStyle(isEnabled ? .white : Stanford.coolGrey.opacity(0.82))
-            .clipShape(shape)
-            .contentShape(shape)
-            .opacity(configuration.isPressed && isEnabled ? 0.82 : 1.0)
-    }
-}
-
 private enum RunNoticeProminence {
     case actionable
     case detail
@@ -302,19 +284,15 @@ struct TaskMainView: View {
                 composerView
             }
         }
-        .navigationTitle(task.title)
-        .navigationSubtitle(task.workspace?.name ?? "Astra")
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Spacer(minLength: 0)
-                taskControlBar
+        .navigationTitle("")
+        .navigationSubtitle("")
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                taskTitleToolbar
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
-            .frame(height: 44, alignment: .center)
-            .allowsHitTesting(true)
         }
+        .toolbarBackground(Stanford.panelBackground, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL,
                   TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
@@ -440,10 +418,37 @@ struct TaskMainView: View {
 
     // MARK: - Header Actions
 
+    private var taskTitleToolbar: some View {
+        HStack(alignment: .center, spacing: 12) {
+            taskTitleGroup
+            taskControlBar
+        }
+        .frame(maxWidth: 620, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var taskTitleGroup: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(task.title)
+                .font(Stanford.ui(14, weight: .semibold))
+                .foregroundStyle(Stanford.black)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(task.workspace?.name ?? "Astra")
+                .font(Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(minWidth: 180, idealWidth: 300, maxWidth: 440, alignment: .leading)
+    }
+
     private var taskControlBar: some View {
         HStack(spacing: 10) {
             filesButton
-            actionButtons
+            if task.status != .draft {
+                moreMenu
+            }
         }
         .controlSize(.small)
         .frame(height: 34, alignment: .center)
@@ -462,12 +467,8 @@ struct TaskMainView: View {
                 }
             }
             .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : .secondary)
-            .padding(.horizontal, headerFileCount > 0 ? 9 : 7)
+            .padding(.horizontal, headerFileCount > 0 ? 7 : 5)
             .frame(height: 26)
-            .background(
-                Capsule()
-                    .fill((selectedTab == .files || isShowingFilesPopover) ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.035))
-            )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -673,89 +674,6 @@ struct TaskMainView: View {
             summaryContent
         case .files:
             FilesTabView(task: task, onOpenGeneratedFile: onOpenGeneratedFile)
-        }
-    }
-
-    // MARK: - Action Buttons
-
-    @ViewBuilder
-    private var actionButtons: some View {
-        HStack(spacing: 6) {
-            switch task.status {
-            case .queued:
-                if let onRun = onRunTask {
-                    Button("Run") { onRun(task) }
-                        .buttonStyle(StanfordButtonStyle())
-                        .controlSize(.small)
-                        .accessibilityIdentifier("RunTaskButton")
-                        .accessibilityLabel("Run task")
-                }
-            case .running:
-                if let onCancel = onCancelTask {
-                    Button("Cancel") { onCancel(task) }
-                        .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                        .controlSize(.small)
-                        .accessibilityIdentifier("CancelTaskButton")
-                        .accessibilityLabel("Cancel task")
-                }
-            case .pendingUser:
-                if let onRetry = onRetryTask {
-                    Button("Retry") { onRetry(task) }
-                        .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                        .controlSize(.small)
-                        .accessibilityLabel("Retry task")
-                }
-            case .failed, .budgetExceeded:
-                if task.sessionId != nil, let onResume = onResumeTask {
-                    Button("Resume") { onResume(task) }
-                        .buttonStyle(StanfordButtonStyle(color: Stanford.lagunita))
-                        .controlSize(.small)
-                        .help("Continue where the agent left off")
-                        .accessibilityLabel("Resume task")
-                }
-                if let onRetry = onRetryTask {
-                    Button("Retry") { onRetry(task) }
-                        .buttonStyle(StanfordButtonStyle(isPrimary: task.sessionId == nil, color: Stanford.lagunita))
-                        .controlSize(.small)
-                        .help("Start over from scratch")
-                        .accessibilityLabel("Retry task")
-                }
-            case .completed, .cancelled, .draft:
-                EmptyView()
-            }
-
-            if task.status != .running {
-                Button {
-                    if let onToggleDone {
-                        onToggleDone(task)
-                    } else {
-                        withAnimation {
-                            task.isDone.toggle()
-                            task.updatedAt = Date()
-                            try? modelContext.save()
-                        }
-                    }
-                } label: {
-                    Text(task.isDone ? "Reopen" : "Done")
-                        .font(Stanford.body(15).weight(.medium))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(task.isDone ? Stanford.cardBackground : Stanford.lagunita)
-                        .foregroundStyle(task.isDone ? Stanford.black : .white)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(task.isDone ? Color.secondary.opacity(0.25) : .clear, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .controlSize(.small)
-                .accessibilityLabel(task.isDone ? "Reopen task" : "Mark task as done")
-            }
-
-            if task.status != .draft {
-                moreMenu
-            }
         }
     }
 
@@ -3308,8 +3226,26 @@ struct TaskMainView: View {
         hasOpenRuntimePermissionApprovalRequest && !latestRuntimePermissionTaskScopedGrants.isEmpty
     }
 
-    private var shouldShowPendingDecisionBar: Bool {
-        task.status == .pendingUser && (hasOpenRuntimePermissionApprovalRequest || executableApprovedPlan == nil)
+    private var shouldShowTaskDecisionDock: Bool {
+        if task.status == .running {
+            return onCancelTask != nil
+        }
+        if task.status == .pendingUser {
+            return true
+        }
+        if executableApprovedPlan != nil {
+            return true
+        }
+        switch task.status {
+        case .queued:
+            return onRunTask != nil || canToggleTaskDoneFromDecisionDock
+        case .failed, .budgetExceeded:
+            return onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
+        case .completed, .cancelled:
+            return canToggleTaskDoneFromDecisionDock
+        case .draft, .running, .pendingUser:
+            return false
+        }
     }
 
     private var latestRunHasNoUsableResult: Bool {
@@ -3383,46 +3319,54 @@ struct TaskMainView: View {
         }
     }
 
-    private var pendingDecisionBar: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: pendingDecisionIcon)
-                .font(Stanford.ui(18, weight: .semibold))
-                .foregroundStyle(Stanford.poppy)
-                .frame(width: 24, height: 24)
-                .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pendingDecisionTitle)
-                    .font(Stanford.body(14).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(pendingDecisionDetail)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(hasOpenRuntimePermissionApprovalRequest ? 2 : 3)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if hasOpenRuntimePermissionApprovalRequest,
-                   let decision = pendingRuntimePermissionDecision {
-                    Text(decision.scope)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(Stanford.coolGrey.opacity(0.85))
-                        .lineLimit(1)
-
-                    if let command = decision.commandPreview {
-                        Label(command, systemImage: "terminal")
-                            .font(Stanford.caption(11).monospaced())
-                            .foregroundStyle(Stanford.readingText.opacity(0.82))
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.primary.opacity(0.035))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
+    @ViewBuilder
+    private var taskDecisionDock: some View {
+        if task.status == .running, let onCancel = onCancelTask {
+            taskDecisionSurface(
+                icon: "stop.circle.fill",
+                color: Stanford.cardinalRed,
+                title: "Task running",
+                detail: "The agent is working. Stop it here if you need to change direction."
+            ) {
+                Button {
+                    onCancel(task)
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .labelStyle(.titleAndIcon)
                 }
+                .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.cardinalRed))
+                .controlSize(.small)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityIdentifier("CancelTaskButton")
+                .accessibilityLabel("Stop task")
             }
+        } else if task.status == .pendingUser, hasOpenRuntimePermissionApprovalRequest {
+            pendingReviewDecisionDock
+        } else if let plan = executableApprovedPlan {
+            planDecisionDock(plan)
+        } else if task.status == .pendingUser {
+            pendingReviewDecisionDock
+        } else if task.status == .failed || task.status == .budgetExceeded {
+            failedDecisionDock
+        } else if task.status == .queued {
+            queuedDecisionDock
+        } else if task.status == .completed || task.status == .cancelled {
+            doneStateDecisionDock
+        }
+    }
 
-            Spacer(minLength: 12)
+    private var pendingReviewDecisionDock: some View {
+        let primaryColor = hasOpenRuntimePermissionApprovalRequest ? Stanford.poppy : Stanford.paloAltoGreen
 
+        return taskDecisionSurface(
+            icon: pendingDecisionIcon,
+            color: Stanford.poppy,
+            title: pendingDecisionTitle,
+            detail: pendingDecisionDetail,
+            detailLineLimit: hasOpenRuntimePermissionApprovalRequest ? 2 : 3,
+            scope: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.scope : nil,
+            commandPreview: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.commandPreview : nil
+        ) {
             VStack(alignment: .trailing, spacing: 8) {
                 if let onRetry = onRetryTask {
                     Button("Retry") {
@@ -3455,27 +3399,14 @@ struct TaskMainView: View {
                         Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
                             .labelStyle(.titleAndIcon)
                     }
-                    .buttonStyle(PendingDecisionButtonStyle())
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: primaryColor))
                     .controlSize(.small)
                     .accessibilityIdentifier("ApproveTaskButton")
                     .accessibilityLabel(pendingDecisionPrimaryLabel)
                 }
+
+                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? "Mark done anyway" : nil)
             }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.primary.opacity(0.022))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Stanford.poppy.opacity(0.12), lineWidth: 1)
-        )
-        .overlay(alignment: .leading) {
-            Capsule()
-                .fill(Stanford.poppy.opacity(0.76))
-                .frame(width: 3)
-                .padding(.vertical, 10)
-                .padding(.leading, 1)
         }
     }
 
@@ -3488,7 +3419,7 @@ struct TaskMainView: View {
         coordinator.approveSimilarRuntimePermissionForTask(task)
     }
 
-    private func planExecutionActionBar(_ plan: TaskPlanPayload) -> some View {
+    private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
         let nextStep = TaskPlanService.nextExecutableStep(in: plan)
         let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
         let title = skipPermissions ? "Run remaining plan" : "Approve next step"
@@ -3496,12 +3427,157 @@ struct TaskMainView: View {
         let modeLabel = skipPermissions
             ? "Auto mode runs every remaining step."
             : "Ask mode runs one approved step, then pauses again."
+        let tint = skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen
 
-        return HStack(alignment: .center, spacing: 12) {
-            Image(systemName: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill")
+        return taskDecisionSurface(
+            icon: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill",
+            color: tint,
+            title: title,
+            detail: detail,
+            modeLabel: modeLabel
+        ) {
+            HStack(spacing: 8) {
+                if let onOpenPlan {
+                    Button {
+                        onOpenPlan(task)
+                    } label: {
+                        Label(
+                            isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
+                            systemImage: "list.bullet.clipboard"
+                        )
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
+                    .controlSize(.small)
+                    .help(isPlanCanvasVisible ? "Hide plan shelf" : "Open plan shelf")
+                    .accessibilityIdentifier("OpenPlanButton")
+                }
+
+                Button {
+                    runApprovedPlan(plan, mode: mode)
+                } label: {
+                    Label(title, systemImage: skipPermissions ? "play.fill" : "checkmark")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: true, color: tint))
+                .controlSize(.small)
+                .disabled(taskQueue == nil)
+                .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
+
+                taskDecisionOverflowMenu(doneLabelOverride: "Mark done without running plan")
+            }
+        }
+    }
+
+    private var queuedDecisionDock: some View {
+        taskDecisionSurface(
+            icon: "play.circle.fill",
+            color: Stanford.lagunita,
+            title: "Ready to run",
+            detail: "Start this task now, or send a message below to refine it first."
+        ) {
+            HStack(spacing: 8) {
+                if let onRun = onRunTask {
+                    Button {
+                        onRun(task)
+                    } label: {
+                        Label("Run task", systemImage: "play.fill")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.lagunita))
+                    .controlSize(.small)
+                    .accessibilityIdentifier("RunTaskButton")
+                    .accessibilityLabel("Run task")
+                }
+
+                taskDecisionOverflowMenu()
+            }
+        }
+    }
+
+    private var failedDecisionDock: some View {
+        let canResume = task.sessionId != nil && onResumeTask != nil
+        let isBudgetExceeded = task.status == .budgetExceeded
+        let title = isBudgetExceeded ? "Budget exceeded" : "Run stopped"
+        let detail = isBudgetExceeded
+            ? "Raise the budget and resume, or retry this task from scratch."
+            : failureReason
+
+        return taskDecisionSurface(
+            icon: isBudgetExceeded ? "speedometer" : "exclamationmark.triangle.fill",
+            color: Stanford.failed,
+            title: title,
+            detail: detail,
+            detailLineLimit: 2
+        ) {
+            HStack(spacing: 8) {
+                if let onRetry = onRetryTask {
+                    Button {
+                        onRetry(task)
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: !canResume, color: Stanford.lagunita))
+                    .controlSize(.small)
+                    .help("Start over from scratch")
+                    .accessibilityLabel("Retry task")
+                }
+
+                if task.sessionId != nil, let onResume = onResumeTask {
+                    Button {
+                        onResume(task)
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.lagunita))
+                    .controlSize(.small)
+                    .help("Continue where the agent left off")
+                    .accessibilityLabel("Resume task")
+                }
+
+                taskDecisionOverflowMenu()
+            }
+        }
+    }
+
+    private var doneStateDecisionDock: some View {
+        let title = task.isDone ? "Task marked done" : "Review complete?"
+        let detail = task.isDone
+            ? "Reopen it here if you need to continue with this task."
+            : "Mark this task done when the current result no longer needs action."
+
+        return taskDecisionSurface(
+            icon: task.isDone ? "arrow.uturn.backward.circle.fill" : "checkmark.circle.fill",
+            color: task.isDone ? Stanford.lagunita : Stanford.paloAltoGreen,
+            title: title,
+            detail: detail
+        ) {
+            taskDoneToggleButton(isPrimary: true)
+        }
+    }
+
+    private func taskDecisionSurface<Actions: View>(
+        icon: String,
+        color: Color,
+        title: String,
+        detail: String,
+        detailLineLimit: Int = 1,
+        modeLabel: String? = nil,
+        scope: String? = nil,
+        commandPreview: String? = nil,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+        let hasSupportingRows = modeLabel != nil || scope != nil || commandPreview != nil || detailLineLimit > 1
+
+        return HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
+            Image(systemName: icon)
                 .font(Stanford.ui(20, weight: .semibold))
-                .foregroundStyle(skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen)
-                .frame(width: 24)
+                .foregroundStyle(color)
+                .frame(width: 24, height: 24)
+                .padding(.top, hasSupportingRows ? 1 : 0)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -3510,56 +3586,118 @@ struct TaskMainView: View {
                 Text(detail)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(modeLabel)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(detailLineLimit)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let modeLabel {
+                    Text(modeLabel)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if let scope {
+                    Text(scope)
+                        .font(Stanford.chatMeta())
+                        .foregroundStyle(Stanford.coolGrey.opacity(0.85))
+                        .lineLimit(1)
+                }
+
+                if let commandPreview {
+                    Label(commandPreview, systemImage: "terminal")
+                        .font(Stanford.caption(11).monospaced())
+                        .foregroundStyle(Stanford.readingText.opacity(0.82))
+                        .lineLimit(1)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.035))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
             }
 
             Spacer(minLength: 12)
 
-            if let onOpenPlan {
-                Button {
-                    onOpenPlan(task)
-                } label: {
-                    Label(
-                        isPlanCanvasVisible ? "Hide Plan" : "Open Plan",
-                        systemImage: "list.bullet.clipboard"
-                    )
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                .controlSize(.small)
-                .help(isPlanCanvasVisible ? "Hide plan shelf" : "Open plan shelf")
-                .accessibilityIdentifier("OpenPlanButton")
-            }
-
-            Button {
-                runApprovedPlan(plan, mode: mode)
-            } label: {
-                Label(title, systemImage: skipPermissions ? "play.fill" : "checkmark")
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(StanfordButtonStyle(isPrimary: true))
-            .controlSize(.small)
-            .disabled(taskQueue == nil)
-            .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
+            actions()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.022))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.12), lineWidth: 1)
-        )
+        .clipShape(shape)
+        .overlay {
+            shape.stroke(color.opacity(0.12), lineWidth: 1)
+        }
         .overlay(alignment: .leading) {
             Capsule()
-                .fill((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.76))
+                .fill(color.opacity(0.76))
                 .frame(width: 3)
                 .padding(.vertical, 10)
                 .padding(.leading, 1)
+        }
+    }
+
+    private var canToggleTaskDoneFromDecisionDock: Bool {
+        task.status != .running && task.status != .draft
+    }
+
+    private var taskDoneToggleTitle: String {
+        task.isDone ? "Reopen task" : "Mark task done"
+    }
+
+    private var taskDoneToggleIcon: String {
+        task.isDone ? "arrow.uturn.backward" : "checkmark.circle"
+    }
+
+    private var taskDoneToggleColor: Color {
+        task.isDone ? Stanford.lagunita : Stanford.paloAltoGreen
+    }
+
+    private func taskDoneToggleButton(isPrimary: Bool = false) -> some View {
+        Button {
+            toggleTaskDoneFromDecisionDock()
+        } label: {
+            Label(taskDoneToggleTitle, systemImage: taskDoneToggleIcon)
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(StanfordButtonStyle(isPrimary: isPrimary, color: taskDoneToggleColor))
+        .controlSize(.small)
+        .accessibilityLabel(taskDoneToggleTitle)
+    }
+
+    @ViewBuilder
+    private func taskDecisionOverflowMenu(doneLabelOverride: String? = nil) -> some View {
+        if canToggleTaskDoneFromDecisionDock {
+            Menu {
+                Button {
+                    toggleTaskDoneFromDecisionDock()
+                } label: {
+                    Label(task.isDone ? "Reopen task" : (doneLabelOverride ?? "Mark task done"),
+                          systemImage: taskDoneToggleIcon)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.primary.opacity(0.035)))
+                    .contentShape(Circle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 30, height: 30)
+            .help("More task decisions")
+            .accessibilityLabel("More task decisions")
+        }
+    }
+
+    private func toggleTaskDoneFromDecisionDock() {
+        if let onToggleDone {
+            onToggleDone(task)
+        } else {
+            withAnimation(reduceMotion ? nil : .default) {
+                task.isDone.toggle()
+                task.updatedAt = Date()
+                try? modelContext.save()
+            }
         }
     }
 
@@ -3586,16 +3724,8 @@ struct TaskMainView: View {
 
         return VStack(spacing: 0) {
             VStack(spacing: 0) {
-                if shouldShowPendingDecisionBar {
-                    pendingDecisionBar
-                        .padding(.horizontal, 14)
-                        .padding(.top, 12)
-                        .padding(.bottom, 8)
-
-                    Divider()
-                        .overlay(Color.primary.opacity(0.06))
-                } else if let plan = executableApprovedPlan {
-                    planExecutionActionBar(plan)
+                if shouldShowTaskDecisionDock {
+                    taskDecisionDock
                         .padding(.horizontal, 14)
                         .padding(.top, 12)
                         .padding(.bottom, 8)
@@ -3671,7 +3801,7 @@ struct TaskMainView: View {
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
                     onSend: { sendMessage() },
-                    onStop: { onCancelTask?(task) },
+                    onStop: shouldShowTaskDecisionDock ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
                         let previousRuntime = task.runtimeID
