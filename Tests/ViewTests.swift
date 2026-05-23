@@ -631,7 +631,7 @@ struct ShelfMarkdownSessionTests {
 
     @MainActor
     @Test("Files shelf infers Markdown and JSON document kinds")
-    func textShelfInfersMarkdownAndJSONKinds() throws {
+    func filesShelfInfersMarkdownAndJSONKinds() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-text-kinds-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -2055,23 +2055,35 @@ struct TaskThreadSnapshotTests {
             .appendingPathComponent("astra-workspace-file-roots-\(UUID().uuidString)")
         let extra = root.appendingPathComponent("extra", isDirectory: true)
         let input = root.appendingPathComponent("input", isDirectory: true)
+        let inputFile = root.appendingPathComponent("input.md")
 
         try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        try "# Input".write(to: inputFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let workspace = Workspace(name: "Files", primaryPath: root.path, additionalPaths: [extra.path])
         let task = AgentTask(title: "Browse", goal: "Browse files", workspace: workspace)
-        task.inputs = [input.path]
+        task.inputs = [input.path, inputFile.path]
         _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
 
         let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
 
-        #expect(roots.map(\.kind) == [.primary, .additional, .taskFolder, .input])
-        #expect(roots.last?.title == "Input 1")
+        #expect(roots.map(\.kind) == [.primary, .additional, .taskFolder, .input, .input])
+        #expect(roots.suffix(2).map(\.title) == ["Input 1", "Input 2"])
         #expect(roots.map(\.path).contains(root.standardizedFileURL.path))
         #expect(roots.map(\.path).contains(extra.standardizedFileURL.path))
         #expect(roots.map(\.path).contains(input.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(inputFile.standardizedFileURL.path))
+        #expect(roots.last?.isDirectory == false)
+
+        let snapshot = WorkspaceFileIndexService.scanSync(roots: roots)
+        let inputFileRoot = try #require(roots.last)
+        #expect(snapshot.nodes.contains {
+            $0.rootID == inputFileRoot.id
+                && $0.path == inputFile.standardizedFileURL.path
+                && !$0.isDirectory
+        })
     }
 
     @Test("Workspace file scan skips heavy internal folders and symlink escapes")
@@ -2104,7 +2116,8 @@ struct TaskThreadSnapshotTests {
             id: "primary:\(root.standardizedFileURL.path)",
             kind: .primary,
             title: "Primary",
-            path: root.standardizedFileURL.path
+            path: root.standardizedFileURL.path,
+            isDirectory: true
         )
         let snapshot = WorkspaceFileIndexService.scanSync(roots: [rootModel])
         let paths = Set(snapshot.nodes.map(\.relativePath))

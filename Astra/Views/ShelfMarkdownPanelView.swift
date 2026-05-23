@@ -307,7 +307,7 @@ struct ShelfMarkdownPanelView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 12)
 
-                    Image(systemName: root.kind == .taskFolder ? "tray.full" : "folder")
+                    Image(systemName: root.isDirectory ? (root.kind == .taskFolder ? "tray.full" : "folder") : "doc.text")
                         .font(Stanford.ui(12, weight: .semibold))
                         .foregroundStyle(Stanford.lagunita)
                         .frame(width: 16)
@@ -347,9 +347,14 @@ struct ShelfMarkdownPanelView: View {
                 }
 
                 Button {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: root.path))
+                    let url = URL(fileURLWithPath: root.path, isDirectory: root.isDirectory)
+                    if root.isDirectory {
+                        NSWorkspace.shared.open(url)
+                    } else {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
                 } label: {
-                    Label("Open in Finder", systemImage: "folder")
+                    Label(root.isDirectory ? "Open in Finder" : "Reveal in Finder", systemImage: "folder")
                 }
             }
 
@@ -843,6 +848,16 @@ struct ShelfMarkdownPanelView: View {
         let filePath = fileURL.standardizedFileURL.path
 
         if let root = fileRoots.first(where: { WorkspaceFileIndexService.isPath(filePath, inside: $0) }) {
+            if !root.isDirectory {
+                return [
+                    FileBreadcrumbSegment(
+                        title: URL(fileURLWithPath: root.path).lastPathComponent,
+                        path: root.path,
+                        isFile: true
+                    )
+                ]
+            }
+
             let relative = relativePath(for: filePath, rootPath: root.path)
             let rootName = URL(fileURLWithPath: root.path).lastPathComponent
             let components = relative

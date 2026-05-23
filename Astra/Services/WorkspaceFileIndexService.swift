@@ -12,6 +12,7 @@ struct WorkspaceFileRoot: Identifiable, Hashable {
     let kind: Kind
     let title: String
     let path: String
+    let isDirectory: Bool
 }
 
 struct WorkspaceFileNode: Identifiable, Hashable {
@@ -73,8 +74,7 @@ enum WorkspaceFileIndexService {
             let path = normalizedPath(rawPath)
             guard !path.isEmpty else { return false }
             var isDirectory = ObjCBool(false)
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
                 return false
             }
             let standardized = standardizedPath(path)
@@ -83,7 +83,8 @@ enum WorkspaceFileIndexService {
                 id: "\(kind.rawValue):\(standardized)",
                 kind: kind,
                 title: title,
-                path: standardized
+                path: standardized,
+                isDirectory: isDirectory.boolValue
             ))
             return true
         }
@@ -173,6 +174,9 @@ enum WorkspaceFileIndexService {
     static func isPath(_ path: String, inside root: WorkspaceFileRoot) -> Bool {
         let resolvedPath = resolvingSymlinks(standardizedPath(path))
         let resolvedRoot = resolvingSymlinks(root.path)
+        guard root.isDirectory else {
+            return resolvedPath == resolvedRoot
+        }
         return resolvedPath == resolvedRoot || resolvedPath.hasPrefix(resolvedRoot + "/")
     }
 
@@ -185,6 +189,11 @@ enum WorkspaceFileIndexService {
         errors: inout [WorkspaceFileIndexError],
         isTruncated: inout Bool
     ) {
+        guard root.isDirectory else {
+            scanFileRoot(root, maxNodes: maxNodes, nodes: &nodes, isTruncated: &isTruncated)
+            return
+        }
+
         let rootURL = URL(fileURLWithPath: root.path, isDirectory: true)
         let resolvedRoot = resolvingSymlinks(root.path)
         guard let enumerator = fileManager.enumerator(
@@ -245,6 +254,35 @@ enum WorkspaceFileIndexService {
             if nodes.count >= maxNodes {
                 isTruncated = true
             }
+        }
+    }
+
+    private static func scanFileRoot(
+        _ root: WorkspaceFileRoot,
+        maxNodes: Int,
+        nodes: inout [WorkspaceFileNode],
+        isTruncated: inout Bool
+    ) {
+        guard !Task.isCancelled, !isTruncated else { return }
+
+        let url = URL(fileURLWithPath: root.path, isDirectory: false)
+        let values = try? url.resourceValues(forKeys: resourceKeys)
+        let name = url.lastPathComponent
+        nodes.append(WorkspaceFileNode(
+            id: "\(root.id):\(root.path)",
+            rootID: root.id,
+            path: standardizedPath(root.path),
+            relativePath: name,
+            name: name,
+            isDirectory: false,
+            depth: 0,
+            size: Int64(values?.fileSize ?? 0),
+            modifiedAt: values?.contentModificationDate,
+            destination: TaskGeneratedFiles.shelfDestination(for: root.path)
+        ))
+
+        if nodes.count >= maxNodes {
+            isTruncated = true
         }
     }
 

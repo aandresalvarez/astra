@@ -3789,7 +3789,7 @@ struct TaskMainView: View {
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
                     onSend: { sendMessage() },
-                    onStop: shouldShowTaskDecisionDock ? nil : { onCancelTask?(task) },
+                    onStop: (shouldShowTaskDecisionDock || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
                         let previousRuntime = task.runtimeID
