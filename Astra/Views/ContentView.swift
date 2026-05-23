@@ -2480,7 +2480,7 @@ private struct WorkspaceTopRightToolbar: View {
             AstraToolbarCommandCluster {
                 toolbarButton(
                     title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                    systemImage: "sidebar.right",
+                    systemImage: "rectangle.stack.badge.person.crop",
                     isActive: actions.isRightRailVisible,
                     action: onToggleControlPanel
                 )

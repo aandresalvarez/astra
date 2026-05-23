@@ -996,16 +996,9 @@ struct TaskSidebarView: View {
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
         return HStack(alignment: .center, spacing: 7) {
-            // Folder icon doubles as the expand/collapse affordance —
-            // the `folder` ↔ `folder.fill` swap carries the state, and
-            // clicking it toggles expansion. Dropped the leading
-            // chevron entirely to match the simplified header style
-            // (no glyphs, no disclosure indicators); the folder fill
-            // change + the row's task children below are the only
-            // expansion cues now.
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    toggleWorkspaceExpansion(workspace, using: taskIndex)
+                    toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -1017,43 +1010,31 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
-            // Name: smart select + expand
-            Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    if isExpanded && isSelected {
-                        // Already open and selected → collapse
-                        toggleWorkspaceExpansion(workspace, using: taskIndex)
-                    } else if !isExpanded {
-                        // Collapsed → expand and select
-                        collapsedWorkspaceIDs.remove(workspace.id)
-                        expandedWorkspaceIDs.insert(workspace.id)
-                        selectedWorkspace = workspace
-                        selectedTask = nil
-                    } else {
-                        // Expanded but not selected → just select
-                        selectedWorkspace = workspace
-                        selectedTask = nil
-                    }
+            HStack(spacing: 0) {
+                Text(workspace.name)
+                    .font(Stanford.body(15))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if workspace.isStarred {
+                    Image(systemName: "star.fill")
+                        .font(Stanford.ui(10, weight: .semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.leading, 6)
+                        .accessibilityLabel("Starred")
                 }
-            } label: {
-                HStack(spacing: 0) {
-                    Text(workspace.name)
-                        .font(Stanford.body(15))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if workspace.isStarred {
-                        Image(systemName: "star.fill")
-                            .font(Stanford.ui(10, weight: .semibold))
-                            .foregroundStyle(Stanford.lagunita)
-                            .padding(.leading, 6)
-                            .accessibilityLabel("Starred")
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                    toggleWorkspaceOpenState(workspace, using: taskIndex)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(workspace.name)
+            .accessibilityHint("Click to expand or collapse the workspace.")
             .help(workspace.name)
 
             workspaceRowActions(for: workspace, isHovered: isHovered)
@@ -1149,11 +1130,37 @@ struct TaskSidebarView: View {
     }
 
     private func startNewTask(in workspace: Workspace) {
-        selectedWorkspace = workspace
+        openWorkspace(workspace)
+        onNewTask()
+    }
+
+    private func openWorkspace(_ workspace: Workspace) {
         selectedTask = nil
+        selectedWorkspace = workspace
+        ensureWorkspaceExpanded(workspace)
+    }
+
+    private func toggleWorkspaceOpenState(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
+        let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
+        selectedTask = nil
+        selectedWorkspace = workspace
+
+        if wasExpanded {
+            collapseWorkspace(workspace)
+        } else {
+            expandWorkspace(workspace)
+        }
+    }
+
+    private func expandWorkspace(_ workspace: Workspace) {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
-        onNewTask()
+    }
+
+    private func collapseWorkspace(_ workspace: Workspace) {
+        expandedWorkspaceIDs.remove(workspace.id)
+        collapsedWorkspaceIDs.insert(workspace.id)
+        expandedWorkspaceTaskLists.remove(workspace.id)
     }
 
     private func groupedTaskAttempts(_ tasks: [AgentTask]) -> [SidebarTaskAttemptGroup] {
@@ -1318,12 +1325,9 @@ struct TaskSidebarView: View {
 
     private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
         if isWorkspaceExpanded(workspace, using: taskIndex) {
-            expandedWorkspaceIDs.remove(workspace.id)
-            collapsedWorkspaceIDs.insert(workspace.id)
-            expandedWorkspaceTaskLists.remove(workspace.id)
+            collapseWorkspace(workspace)
         } else {
-            collapsedWorkspaceIDs.remove(workspace.id)
-            expandedWorkspaceIDs.insert(workspace.id)
+            expandWorkspace(workspace)
         }
     }
 
@@ -1433,8 +1437,7 @@ struct TaskSidebarView: View {
     }
 
     private func ensureWorkspaceExpanded(_ workspace: Workspace) {
-        collapsedWorkspaceIDs.remove(workspace.id)
-        expandedWorkspaceIDs.insert(workspace.id)
+        expandWorkspace(workspace)
     }
 
     private func handleNewTaskButton() {

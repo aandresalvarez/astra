@@ -219,7 +219,7 @@ struct WorkspaceRightRailView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "sidebar.right")
+            Image(systemName: "rectangle.stack.badge.person.crop")
                 .font(Stanford.ui(14, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
