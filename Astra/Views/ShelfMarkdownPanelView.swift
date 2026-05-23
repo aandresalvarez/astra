@@ -2,6 +2,13 @@ import AppKit
 import SwiftUI
 
 struct ShelfMarkdownPanelView: View {
+    private static let fileSizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter
+    }()
+
     @ObservedObject var session: ShelfMarkdownSession
     @Binding var isPresented: Bool
     @Binding var isPinnedToTask: Bool
@@ -713,10 +720,7 @@ struct ShelfMarkdownPanelView: View {
 
     private func fileSizeLabel(_ size: Int64) -> String {
         guard size > 0 else { return "" }
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
+        return Self.fileSizeFormatter.string(fromByteCount: size)
     }
 
     @ViewBuilder

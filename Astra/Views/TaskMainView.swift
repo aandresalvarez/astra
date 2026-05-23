@@ -3353,7 +3353,7 @@ struct TaskMainView: View {
 
         return taskDecisionSurface(
             icon: pendingDecisionIcon,
-            color: Stanford.poppy,
+            color: primaryColor,
             title: pendingDecisionTitle,
             detail: pendingDecisionDetail,
             detailLineLimit: hasOpenRuntimePermissionApprovalRequest ? 2 : 3,

@@ -110,14 +110,20 @@ enum WorkspaceFileIndexService {
         maxNodes: Int = 5_000,
         fileManager: FileManager = .default
     ) async -> WorkspaceFileIndexSnapshot {
-        await Task.detached(priority: .utility) {
+        let scanTask = Task(priority: .utility) {
             scanSync(
                 roots: roots,
                 maxDepth: maxDepth,
                 maxNodes: maxNodes,
                 fileManager: fileManager
             )
-        }.value
+        }
+
+        return await withTaskCancellationHandler {
+            await scanTask.value
+        } onCancel: {
+            scanTask.cancel()
+        }
     }
 
     static func scanSync(
@@ -131,7 +137,7 @@ enum WorkspaceFileIndexService {
         var isTruncated = false
 
         for root in roots {
-            guard !isTruncated else { break }
+            guard !Task.isCancelled, !isTruncated else { break }
             scanRoot(
                 root,
                 maxDepth: maxDepth,
@@ -186,7 +192,7 @@ enum WorkspaceFileIndexService {
         }
 
         for case let url as URL in enumerator {
-            guard !isTruncated else { break }
+            guard !Task.isCancelled, !isTruncated else { break }
 
             let relativePath = relativePath(for: url.path, rootPath: root.path)
             guard !relativePath.isEmpty else { continue }
