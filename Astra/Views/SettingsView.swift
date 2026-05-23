@@ -79,6 +79,7 @@ struct SettingsView: View {
         }
         .frame(width: 680, height: 560)
         .navigationTitle("Settings")
+        .scenePadding()
         .onAppear {
             detectClaudeCLI()
             detectCopilotCLI()
@@ -616,7 +617,9 @@ struct SettingsView: View {
     }
 
     private func readinessTile(_ check: RuntimeReadinessCheck) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: readinessSymbol(for: check.state))
                 .foregroundStyle(readinessColor(for: check.state))
                 .font(Stanford.ui(13))
@@ -644,12 +647,11 @@ struct SettingsView: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-        .background(readinessColor(for: check.state).opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(readinessColor(for: check.state).opacity(0.2), lineWidth: 1)
-        )
+        .background(shape.fill(Color.primary.opacity(0.018)))
+        .overlay {
+            shape.stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        }
+        .clipShape(shape)
     }
 
     private func readinessSymbol(for state: RuntimeReadinessState) -> String {

@@ -738,12 +738,15 @@ struct ContentView: View {
         .toolbar {
             if shouldUseDetailOnlyCompactLayout {
                 ToolbarItem(placement: .navigation) {
-                    Button(action: revealSidebarFromCompactLayout) {
-                        Label("Show Sidebar", systemImage: "sidebar.left")
-                            .foregroundStyle(Stanford.lagunita)
+                    AstraToolbarCommandCluster {
+                        Button(action: revealSidebarFromCompactLayout) {
+                            AstraToolbarCommandIcon(systemImage: "sidebar.left", isActive: false)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show sidebar and close the right panel")
+                        .accessibilityIdentifier("CompactShowSidebarButton")
+                        .accessibilityLabel("Show sidebar")
                     }
-                    .help("Show sidebar and close the right panel")
-                    .accessibilityIdentifier("CompactShowSidebarButton")
                 }
             }
 
@@ -2423,8 +2426,8 @@ private struct WorkspaceTopRightToolbar: View {
     var body: some View {
         HStack(spacing: 8) {
             if actions.hasShelfControls {
-                toolbarCluster {
-                    if actions.canShowPlanShelf {
+                if actions.canShowPlanShelf {
+                    AstraToolbarCommandCluster {
                         toolbarButton(
                             title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
                             label: "Plan",
@@ -2433,8 +2436,12 @@ private struct WorkspaceTopRightToolbar: View {
                             action: onTogglePlan
                         )
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Plan shelf")
+                }
 
-                    if actions.canShowTextShelf {
+                if actions.canShowTextShelf {
+                    AstraToolbarCommandCluster {
                         toolbarButton(
                             title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
                             label: "Text",
@@ -2443,8 +2450,12 @@ private struct WorkspaceTopRightToolbar: View {
                             action: onToggleText
                         )
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Text shelf")
+                }
 
-                    if actions.canShowQueryShelf {
+                if actions.canShowQueryShelf {
+                    AstraToolbarCommandCluster {
                         toolbarButton(
                             title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
                             label: "Query",
@@ -2453,16 +2464,20 @@ private struct WorkspaceTopRightToolbar: View {
                             action: onToggleQuery
                         )
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Query shelf")
+                }
 
-                    if actions.canShowBrowserShelf {
+                if actions.canShowBrowserShelf {
+                    AstraToolbarCommandCluster {
                         browserMenuButton
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Browser shelf")
                 }
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Task shelves")
             }
 
-            toolbarCluster {
+            AstraToolbarCommandCluster {
                 toolbarButton(
                     title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
                     systemImage: "sidebar.right",
@@ -2483,35 +2498,9 @@ private struct WorkspaceTopRightToolbar: View {
 
     private var browserMenuButton: some View {
         Menu {
-            Button {
-                onOpenBrowserEngine(.embedded)
-            } label: {
-                Label(
-                    "Open Embedded Browser",
-                    systemImage: actions.browserEngine == .embedded ? "checkmark" : "globe"
-                )
-            }
-
-            Button {
-                onOpenBrowserEngine(.controlled)
-            } label: {
-                Label(
-                    "Open Controlled Browser",
-                    systemImage: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
-                )
-            }
-
-            if actions.isBrowserShelfVisible {
-                Divider()
-
-                Button {
-                    onToggleBrowser()
-                } label: {
-                    Label("Hide Browser Shelf", systemImage: "xmark")
-                }
-            }
+            browserMenuItems
         } label: {
-            toolbarLabel(systemImage: "globe", text: "Browser", isActive: actions.isBrowserShelfVisible)
+            AstraToolbarCommandLabel(systemImage: "globe", text: "Browser", isActive: actions.isBrowserShelfVisible)
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
@@ -2520,17 +2509,35 @@ private struct WorkspaceTopRightToolbar: View {
         .accessibilityLabel("Browser shelf mode")
     }
 
-    private func toolbarCluster<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 2) {
-            content()
+    @ViewBuilder
+    private var browserMenuItems: some View {
+        Button {
+            onOpenBrowserEngine(.embedded)
+        } label: {
+            Label(
+                "Open Embedded Browser",
+                systemImage: actions.browserEngine == .embedded ? "checkmark" : "globe"
+            )
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        )
+
+        Button {
+            onOpenBrowserEngine(.controlled)
+        } label: {
+            Label(
+                "Open Controlled Browser",
+                systemImage: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
+            )
+        }
+
+        if actions.isBrowserShelfVisible {
+            Divider()
+
+            Button {
+                onToggleBrowser()
+            } label: {
+                Label("Hide Browser Shelf", systemImage: "xmark")
+            }
+        }
     }
 
     private func toolbarButton(
@@ -2542,32 +2549,14 @@ private struct WorkspaceTopRightToolbar: View {
     ) -> some View {
         Button(action: action) {
             if let label {
-                toolbarLabel(systemImage: systemImage, text: label, isActive: isActive)
+                AstraToolbarCommandLabel(systemImage: systemImage, text: label, isActive: isActive)
             } else {
-                Image(systemName: systemImage)
-                    .font(Stanford.ui(16, weight: .medium))
-                    .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
-                    .frame(width: 30, height: 28)
-                    .contentShape(Rectangle())
+                AstraToolbarCommandIcon(systemImage: systemImage, isActive: isActive)
             }
         }
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
-    }
-
-    private func toolbarLabel(systemImage: String, text: String, isActive: Bool) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: systemImage)
-                .font(Stanford.ui(15, weight: .medium))
-            Text(text)
-                .font(Stanford.ui(11, weight: .semibold))
-                .lineLimit(1)
-        }
-        .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
-        .padding(.horizontal, 8)
-        .frame(height: 28)
-        .contentShape(Rectangle())
     }
 }
 
@@ -2732,26 +2721,15 @@ private struct ContentDetailAreaView: View {
         .background(.bar)
         .overlay(alignment: .leading) {
             ZStack(alignment: .leading) {
-                // Skip the divider when a shelf is also visible — the shelf's
-                // trailing edge already supplies the boundary line, so drawing
-                // ours too produces a 2pt double-seam.
-                if activeCanvasItem == nil {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.12))
-                        .frame(width: 1)
-                }
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1)
 
                 if !isOverlay {
                     rightRailResizeHandle(availableWidth: availableWidth)
                 }
             }
         }
-        .shadow(
-            color: .black.opacity(isOverlay ? 0.16 : 0.06),
-            radius: isOverlay ? 18 : 12,
-            x: isOverlay ? -6 : -3,
-            y: 0
-        )
     }
 
     private func rightRailWidth(availableWidth: CGFloat) -> CGFloat {
@@ -2875,19 +2853,18 @@ private struct ContentDetailAreaView: View {
                 }
                 .compositingGroup()
                 .frame(width: panelWidth, height: proxy.size.height)
-                // .bar extends behind toolbar; Stanford.panelBackground would stop at the toolbar boundary.
-                .background(.bar, ignoresSafeAreaEdges: .top)
+                // Keep the shelf material below the titlebar so toolbar commands sit on window chrome.
+                .background(.bar)
                 .overlay(alignment: .leading) {
-                    shelfResizeHandle(for: item, availableWidth: proxy.size.width)
+                    ZStack(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.10))
+                            .frame(width: 1)
+
+                        shelfResizeHandle(for: item, availableWidth: proxy.size.width)
+                    }
                 }
                 .transition(canvasTransition)
-                // Lighter shadow while dragging so the GPU isn't re-blurring 18pt of soft shadow each frame.
-                .shadow(
-                    color: .black.opacity(isResizing ? 0.06 : 0.10),
-                    radius: isResizing ? 8 : 18,
-                    x: -5,
-                    y: 0
-                )
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .preference(

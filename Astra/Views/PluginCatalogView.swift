@@ -238,10 +238,13 @@ struct PluginCatalogView: View {
     }
 
     private var galleryColumns: [GridItem] {
-        Array(
-            repeating: GridItem(.flexible(), spacing: 10, alignment: .top),
-            count: CapabilityGalleryLayout.columnCount(for: presentation)
-        )
+        [
+            GridItem(
+                .adaptive(minimum: isEmbedded ? 430 : 520, maximum: 620),
+                spacing: 12,
+                alignment: .top
+            )
+        ]
     }
 
     private var detailComponentColumns: [GridItem] {
@@ -373,12 +376,12 @@ struct PluginCatalogView: View {
                     Spacer()
                 } else {
                     ScrollView {
-                        LazyVGrid(columns: galleryColumns, alignment: .leading, spacing: 10) {
+                        LazyVGrid(columns: galleryColumns, alignment: .leading, spacing: 12) {
                             ForEach(state.filteredPackages) { package in
                                 packageCard(package)
                             }
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, 18)
                         .padding(.vertical, 14)
                     }
                 }
@@ -468,29 +471,23 @@ struct PluginCatalogView: View {
                     closePackageEditor()
                 } label: {
                     Label("All capabilities", systemImage: "chevron.left")
-                        .font(Stanford.body(13).weight(.medium))
+                        .font(Stanford.caption(12).weight(.medium))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.primary.opacity(0.045))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
 
                 Image(systemName: package.icon)
-                    .font(Stanford.ui(18, weight: .semibold))
+                    .font(Stanford.ui(15, weight: .semibold))
                     .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 36, height: 36)
-                    .background(Stanford.lagunita.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .frame(width: 22, height: 22)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(package.name)
-                        .font(Stanford.heading(20))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.ui(14, weight: .semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text(package.description.isEmpty ? package.contentSummary : package.description)
-                        .font(Stanford.caption(12))
+                        .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -512,8 +509,9 @@ struct PluginCatalogView: View {
                     installButton(for: package)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
 
             Divider()
 
@@ -548,20 +546,18 @@ struct PluginCatalogView: View {
     // MARK: - Header
 
     private func header(_ state: PluginCatalogPresentationState) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "square.grid.2x2.fill")
-                .font(Stanford.ui(20, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 36, height: 36)
-                .background(Stanford.lagunita.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "slider.horizontal.3")
+                .font(Stanford.ui(14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(focus.title)
-                    .font(Stanford.heading(20))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.primary)
                 Text("\(state.focusedPackages.count) available \u{00B7} \(state.enabledCount) enabled \u{00B7} \(focus.subtitle)")
-                    .font(Stanford.caption(12))
+                    .font(Stanford.caption(11))
                     .foregroundStyle(.secondary)
             }
 
@@ -574,9 +570,9 @@ struct PluginCatalogView: View {
                     .keyboardShortcut(.cancelAction)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 18)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 
     // MARK: - Search
@@ -652,6 +648,7 @@ struct PluginCatalogView: View {
 
     private func categoryChip(_ category: String?, label: String, count: Int) -> some View {
         let isSelected = selectedCategory == category
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
         return Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 selectedCategory = category
@@ -659,21 +656,19 @@ struct PluginCatalogView: View {
         } label: {
             HStack(spacing: 4) {
                 Text(label)
-                    .font(Stanford.body(13))
+                    .font(Stanford.caption(12))
                     .fontWeight(isSelected ? .semibold : .regular)
                 Text("\(count)")
                     .font(Stanford.caption(10))
                     .foregroundStyle(isSelected ? Stanford.lagunita.opacity(0.7) : Color.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? Stanford.lagunita.opacity(0.12) : Color.primary.opacity(0.04))
-            .foregroundStyle(isSelected ? Stanford.lagunita : Stanford.black)
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Stanford.lagunita.opacity(0.3) : Color.clear, lineWidth: 1)
-            )
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(shape.fill(isSelected ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.035)))
+            .foregroundStyle(isSelected ? Stanford.lagunita : Color.primary)
+            .overlay {
+                shape.stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Color.primary.opacity(0.04), lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
     }
@@ -724,117 +719,139 @@ struct PluginCatalogView: View {
         let state = packageState(package)
         let enabled = state.isEnabled
         let needsSetup = requiresSetupFlow(package)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
 
-        return VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 11) {
             Button {
                 openPackageEditor(package.id)
             } label: {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: package.icon)
-                        .font(Stanford.ui(18, weight: .medium))
-                        .foregroundStyle(enabled ? .secondary : Stanford.lagunita)
-                        .frame(width: 36, height: 36)
-                        .background((enabled ? Color.secondary : Stanford.lagunita).opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .font(Stanford.ui(16, weight: .medium))
+                        .foregroundStyle(enabled ? Stanford.lagunita : .secondary)
+                        .frame(width: 30, height: 30)
+                        .background((enabled ? Stanford.lagunita : Color.secondary).opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
                             Text(package.name)
-                                .font(Stanford.body(14))
-                                .fontWeight(.semibold)
-                                .foregroundStyle(enabled ? .secondary : Stanford.black)
+                                .font(Stanford.body(14).weight(.semibold))
+                                .foregroundStyle(.primary)
                                 .lineLimit(1)
+                                .layoutPriority(1)
 
                             if needsSetup {
                                 Image(systemName: "key.fill")
-                                    .font(Stanford.ui(10))
+                                    .font(Stanford.ui(9, weight: .semibold))
                                     .foregroundStyle(Stanford.poppy.opacity(0.7))
                                     .help("Requires configuration")
                             }
                         }
 
-                        Text(package.description)
+                        Text(package.description.isEmpty ? package.contentSummary : package.description)
                             .font(Stanford.caption(12))
-                            .foregroundStyle(enabled ? Color.secondary.opacity(0.6) : .secondary)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
                     }
 
                     Spacer(minLength: 0)
 
                     Image(systemName: "chevron.right")
                         .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.quaternary)
                         .padding(.top, 4)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 8) {
-                Text(package.category)
-                    .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(enabled ? Stanford.coolGrey.opacity(0.55) : Stanford.coolGrey)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.04))
-                    .clipShape(Capsule())
+            packageCardFooter(package, enabled: enabled, needsSetup: needsSetup)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .frame(minHeight: 92, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background {
+            shape.fill(enabled ? Color.primary.opacity(0.018) : Color(nsColor: .controlBackgroundColor))
+        }
+        .overlay {
+            shape.stroke(enabled ? Color.primary.opacity(0.045) : Color.primary.opacity(0.075), lineWidth: 1)
+        }
+        .clipShape(shape)
+    }
 
-                        if needsSetup {
-                            Text("Setup required")
-                                .font(Stanford.caption(10).weight(.medium))
-                                .foregroundStyle(Stanford.poppy)
-                                .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                                .background(Stanford.poppy.opacity(0.08))
-                                .clipShape(Capsule())
-                        }
+    private func packageCardFooter(_ package: PluginPackage, enabled: Bool, needsSetup: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 8) {
+                packageBadgeRow(package, needsSetup: needsSetup)
+                Spacer(minLength: 8)
+                packageActionRow(package, enabled: enabled)
+            }
 
-                        governanceBadge(package)
-
-                        Spacer(minLength: 0)
-
-                if enabled {
-                    HStack(spacing: 8) {
-                        enabledStatusLabel
-
-                        Button {
-                            disableCapability(package)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "minus.circle")
-                                    .font(Stanford.ui(12))
-                                Text("Disable")
-                                    .font(Stanford.caption(12))
-                                    .fontWeight(.semibold)
-                            }
-                            .foregroundStyle(Stanford.cardinalRed)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4)
-                            .background(Stanford.cardinalRed.opacity(0.06))
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    installButton(for: package)
+            VStack(alignment: .leading, spacing: 8) {
+                packageBadgeRow(package, needsSetup: needsSetup)
+                HStack {
+                    Spacer(minLength: 0)
+                    packageActionRow(package, enabled: enabled)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
         }
-        .background(enabled ? Color.primary.opacity(0.02) : Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(
-                    enabled ? Color.primary.opacity(0.04) : Color.primary.opacity(0.08),
-                    lineWidth: 1
-                )
-        )
+    }
+
+    private func packageBadgeRow(_ package: PluginPackage, needsSetup: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(package.category)
+                .font(Stanford.caption(10).weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(Capsule())
+
+            if needsSetup {
+                Text("Setup required")
+                    .font(Stanford.caption(10).weight(.medium))
+                    .foregroundStyle(Stanford.poppy)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Stanford.poppy.opacity(0.08))
+                    .clipShape(Capsule())
+            }
+
+            governanceBadge(package)
+            riskBadge(package)
+        }
+        .lineLimit(1)
+    }
+
+    private func packageActionRow(_ package: PluginPackage, enabled: Bool) -> some View {
+        Group {
+            if enabled {
+                enabledPackageControls(package)
+            } else {
+                installButton(for: package)
+            }
+        }
+        .fixedSize()
+    }
+
+    private func enabledPackageControls(_ package: PluginPackage) -> some View {
+        HStack(spacing: 8) {
+            enabledStatusLabel
+
+            Button(role: .destructive) {
+                disableCapability(package)
+            } label: {
+                Label("Disable", systemImage: "minus.circle")
+                    .font(Stanford.caption(11).weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .fixedSize()
     }
 
     private var enabledStatusLabel: some View {
@@ -918,20 +935,12 @@ struct PluginCatalogView: View {
                 installCapability(package)
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "plus.circle.fill")
-                    .font(Stanford.ui(12))
-                Text("Enable")
-                    .font(Stanford.caption(12))
-                    .fontWeight(.semibold)
-            }
-            .foregroundStyle(isBlocked ? Color.secondary : Color.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(isBlocked ? Color.primary.opacity(0.06) : Stanford.lagunita)
-            .clipShape(Capsule())
+            Label("Enable", systemImage: "plus.circle")
+                .font(Stanford.caption(11).weight(.medium))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(Stanford.lagunita)
         .disabled(isBlocked)
         .help(helpText)
     }
@@ -1225,8 +1234,11 @@ struct PluginCatalogView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .liquidSurface(
+            cornerRadius: Stanford.railCompactCardCornerRadius,
+            fallbackFill: Color.primary.opacity(0.018),
+            fallbackStrokeOpacity: 0.045
+        )
     }
 
     private func capabilityContentsSummary(_ package: PluginPackage) -> String {
@@ -1469,8 +1481,11 @@ struct PluginCatalogView: View {
                     .controlSize(.small)
                 }
                 .padding(10)
-                .background(Color.primary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .liquidSurface(
+                    cornerRadius: Stanford.railCompactCardCornerRadius,
+                    fallbackFill: Color.primary.opacity(0.018),
+                    fallbackStrokeOpacity: 0.045
+                )
             }
         }
     }
@@ -1593,11 +1608,10 @@ struct PluginCatalogView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Color.primary.opacity(0.025))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(section.color.opacity(0.12), lineWidth: 1)
+        .liquidSurface(
+            cornerRadius: Stanford.railCompactCardCornerRadius,
+            fallbackFill: Color.primary.opacity(0.018),
+            fallbackStrokeOpacity: 0.055
         )
     }
 
@@ -1750,11 +1764,11 @@ struct PluginCatalogView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color.primary.opacity(0.025))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        .liquidSurface(
+            cornerRadius: Stanford.railCompactCardCornerRadius,
+            interactive: true,
+            fallbackFill: Color.primary.opacity(0.018),
+            fallbackStrokeOpacity: 0.055
         )
     }
 

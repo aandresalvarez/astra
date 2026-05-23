@@ -75,6 +75,51 @@ enum WorkspaceSidebarFilter {
     }
 }
 
+private struct SidebarTopToolbar: View {
+    @Binding var isSearchActive: Bool
+    let showsWorkspaceActions: Bool
+    var onNewWorkspace: (() -> Void)?
+    var onImportWorkspace: (() -> Void)?
+
+    private var showsAddWorkspaceMenu: Bool {
+        showsWorkspaceActions && (onNewWorkspace != nil || onImportWorkspace != nil)
+    }
+
+    var body: some View {
+        AstraToolbarCommandCluster {
+            Button { isSearchActive.toggle() } label: {
+                AstraToolbarCommandIcon(systemImage: "magnifyingglass", isActive: isSearchActive)
+            }
+            .buttonStyle(.plain)
+            .help("Search (⌘F)")
+            .keyboardShortcut("f", modifiers: .command)
+            .accessibilityLabel("Search")
+
+            if showsAddWorkspaceMenu {
+                Menu {
+                    if let onNewWorkspace {
+                        Button(action: onNewWorkspace) {
+                            Label("New Workspace", systemImage: "folder.badge.plus")
+                        }
+                    }
+                    if let onImportWorkspace {
+                        Button(action: onImportWorkspace) {
+                            Label("Import Workspace", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                } label: {
+                    AstraToolbarCommandIcon(systemImage: "folder.badge.plus", isActive: false)
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Add workspace")
+                .accessibilityLabel("Add workspace")
+            }
+        }
+    }
+}
+
 enum SidebarTaskIndexInvalidation {
     static func signature(for tasks: [AgentTask]) -> Int {
         tasks.reduce(into: 0) { acc, task in
@@ -240,33 +285,13 @@ struct TaskSidebarView: View {
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .toolbar {
-            if selectedWorkspace == nil {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { isSearchActive.toggle() } label: {
-                        Label("Search", systemImage: "magnifyingglass")
-                    }
-                    .help("Search (⌘F)")
-                    .keyboardShortcut("f", modifiers: .command)
-
-                    Menu {
-                        Button(action: { onNewWorkspace?() }) {
-                            Label("New Workspace", systemImage: "folder.badge.plus")
-                        }
-                        Button(action: { onImportWorkspace?() }) {
-                            Label("Import Workspace", systemImage: "square.and.arrow.down")
-                        }
-                    } label: {
-                        Label("Add Workspace", systemImage: "folder.badge.plus")
-                    }
-                }
-            } else {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { isSearchActive.toggle() } label: {
-                        Label("Search", systemImage: "magnifyingglass")
-                    }
-                    .help("Search (⌘F)")
-                    .keyboardShortcut("f", modifiers: .command)
-                }
+            ToolbarItem(placement: .primaryAction) {
+                SidebarTopToolbar(
+                    isSearchActive: $isSearchActive,
+                    showsWorkspaceActions: selectedWorkspace == nil,
+                    onNewWorkspace: onNewWorkspace,
+                    onImportWorkspace: onImportWorkspace
+                )
             }
         }
         .accessibilityIdentifier("TaskSidebar")
