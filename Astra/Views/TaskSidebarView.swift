@@ -1020,31 +1020,33 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
-            HStack(spacing: 0) {
-                Text(workspace.name)
-                    .font(Stanford.body(15))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if workspace.isStarred {
-                    Image(systemName: "star.fill")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.leading, 6)
-                        .accessibilityLabel("Starred")
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
+            Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
+            } label: {
+                HStack(spacing: 0) {
+                    Text(workspace.name)
+                        .font(Stanford.body(15))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if workspace.isStarred {
+                        Image(systemName: "star.fill")
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, 6)
+                            .accessibilityLabel("Starred")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(workspace.name)
-            .accessibilityHint("Click to expand or collapse the workspace.")
+            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
+            .accessibilityHint("Expands or collapses the workspace.")
             .help(workspace.name)
 
             workspaceRowActions(for: workspace, isHovered: isHovered)
