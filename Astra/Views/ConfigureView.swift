@@ -129,23 +129,30 @@ struct ConfigureView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: selectedTab.icon)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 2) {
                     Text(headerTitle)
-                        .font(Stanford.heading(24))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.ui(14, weight: .semibold))
+                        .foregroundStyle(.primary)
                     Text(headerSubtitle)
-                        .font(Stanford.caption(13))
+                        .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 0)
 
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
 
             Divider()
 
@@ -221,23 +228,23 @@ struct ConfigureView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button {
                     showCapabilities()
                 } label: {
                     Label("Capabilities", systemImage: "chevron.left")
-                        .font(Stanford.body(13).weight(.medium))
+                        .font(Stanford.caption(12).weight(.medium))
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
 
                 ConfigureCardIcon(systemName: tab.icon, color: tab.color)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(tab.rawValue)
-                        .font(Stanford.heading(20))
-                        .foregroundStyle(Stanford.black)
+                        .font(Stanford.ui(14, weight: .semibold))
+                        .foregroundStyle(.primary)
                     Text(tab.subtitle)
-                        .font(Stanford.caption(12))
+                        .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
                 }
 
@@ -246,13 +253,14 @@ struct ConfigureView: View {
                 Text("\(count(for: tab)) active")
                     .font(Stanford.caption(11).weight(.medium))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
                     .background(Color.primary.opacity(0.05))
                     .clipShape(Capsule())
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
 
             Divider()
 
@@ -278,7 +286,7 @@ private struct ConfigureSelectionList<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 content
             }
             .padding(16)
@@ -292,7 +300,7 @@ private struct ConfigureSelectionSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
     private let columns = [
-        GridItem(.adaptive(minimum: 320, maximum: 420), spacing: 10, alignment: .top)
+        GridItem(.adaptive(minimum: 330, maximum: 460), spacing: 12, alignment: .top)
     ]
 
     init(_ title: String, @ViewBuilder content: () -> Content) {
@@ -301,13 +309,13 @@ private struct ConfigureSelectionSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(Stanford.caption(11).weight(.semibold))
+                .font(Stanford.caption(10).weight(.semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -324,18 +332,19 @@ private struct ConfigureSelectionCard<Content: View>: View {
     }
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+
         HStack(spacing: 12) {
             content
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .background(shape.fill(Color.primary.opacity(0.018)))
+        .overlay {
+            shape.stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        }
+        .clipShape(shape)
     }
 }
 
@@ -345,11 +354,11 @@ private struct ConfigureCardIcon: View {
 
     var body: some View {
         Image(systemName: systemName)
-            .font(Stanford.ui(18, weight: .medium))
+            .font(Stanford.ui(14, weight: .medium))
             .foregroundStyle(color)
-            .frame(width: 36, height: 36)
-            .background(color.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .frame(width: 28, height: 28)
+            .background(color.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 
@@ -364,7 +373,7 @@ private struct ConfigureCardChip: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background((color ?? Color.primary).opacity(color == nil ? 0.04 : 0.1))
-            .clipShape(Capsule())
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
 

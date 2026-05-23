@@ -1047,8 +1047,12 @@ struct TaskMainView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Stanford.fog.opacity(0.45))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(0.025))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Task status. \(summary)")
             .transition(chatStatusBlockTransition)
@@ -1440,7 +1444,7 @@ struct TaskMainView: View {
                     .lineSpacing(Stanford.chatBodyLineSpacing)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(Stanford.sky.opacity(0.055))
+                    .background(Color.primary.opacity(0.028))
                     .foregroundStyle(Stanford.readingText)
                     .tint(Stanford.link)
                     .clipShape(UnevenRoundedRectangle(
@@ -1456,7 +1460,7 @@ struct TaskMainView: View {
                             bottomTrailingRadius: 4,
                             topTrailingRadius: 16
                         )
-                        .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
                     .textSelection(.enabled)
             }
@@ -1536,12 +1540,18 @@ struct TaskMainView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.paloAltoGreen.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.primary.opacity(0.024))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.paloAltoGreen.opacity(0.3), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
             )
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Stanford.paloAltoGreen.opacity(0.72))
+                    .frame(width: 3)
+                    .padding(.vertical, 9)
+            }
 
             Spacer(minLength: 40)
         }
@@ -1566,12 +1576,18 @@ struct TaskMainView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Stanford.lagunita.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.primary.opacity(0.024))
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.25), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                    .stroke(Color.primary.opacity(0.065), lineWidth: 1)
             )
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Stanford.lagunita.opacity(0.72))
+                    .frame(width: 3)
+                    .padding(.vertical, 9)
+            }
 
             Spacer(minLength: 40)
         }
@@ -1902,8 +1918,12 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Stanford.fog.opacity(0.24))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title). \(parts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
@@ -2015,8 +2035,12 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(Stanford.cardBackground.opacity(0.36))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(0.052), lineWidth: 1)
+        )
     }
 
     private func runActivitySummaryParts(
@@ -2394,8 +2418,8 @@ struct TaskMainView: View {
         let isCollapsible = prominence == .actionable
         let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
         let rawDetail = isExpanded ? runNoticeRawDetail(for: notice, body: body) : nil
-        let backgroundOpacity = prominence == .actionable ? 0.04 : 0.045
-        let strokeOpacity = prominence == .actionable ? 0.14 : 0.14
+        let backgroundOpacity = prominence == .actionable ? 0.026 : 0.022
+        let strokeOpacity = prominence == .actionable ? 0.12 : 0.08
 
         return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
             if isCollapsible {
@@ -2431,12 +2455,19 @@ struct TaskMainView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, isExpanded ? 8 : 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(presentation.color.opacity(backgroundOpacity))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(backgroundOpacity))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(presentation.color.opacity(strokeOpacity), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(presentation.color.opacity(prominence == .actionable ? 0.72 : 0.46))
+                .frame(width: 3)
+                .padding(.vertical, 8)
+                .padding(.leading, 1)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(runNoticeAccessibilityLabel(
             title: presentation.title,
@@ -3384,7 +3415,7 @@ struct TaskMainView: View {
                             .lineLimit(1)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Stanford.cardBackground.opacity(0.38))
+                            .background(Color.primary.opacity(0.035))
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                 }
@@ -3431,13 +3462,21 @@ struct TaskMainView: View {
                 }
             }
         }
-        .padding(12)
-        .background(Stanford.poppy.opacity(0.055))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.poppy.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Stanford.poppy.opacity(0.12), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(Stanford.poppy.opacity(0.76))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .padding(.leading, 1)
+        }
     }
 
     private func approveSimilarRuntimePermissionForTask() {
@@ -3507,46 +3546,74 @@ struct TaskMainView: View {
             .disabled(taskQueue == nil)
             .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
         }
-        .padding(12)
-        .background((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.022))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.12), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill((skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen).opacity(0.76))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .padding(.leading, 1)
+        }
+    }
+
+    private var composerFill: Color {
+        isComposerFocused ? Stanford.cardBackground.opacity(0.98) : Stanford.cardBackground.opacity(0.90)
+    }
+
+    private var composerStrokeColor: Color {
+        if isDragOver {
+            return Stanford.cardinalRed.opacity(0.68)
+        }
+        if isComposerFocused {
+            return Stanford.lagunita.opacity(0.30)
+        }
+        return Color.primary.opacity(0.10)
+    }
+
+    private var composerStrokeWidth: CGFloat {
+        isDragOver || isComposerFocused ? 1.5 : 1
     }
 
     private var composerView: some View {
-        VStack(spacing: 0) {
+        let composerShape = RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
+
+        return VStack(spacing: 0) {
             VStack(spacing: 0) {
                 if shouldShowPendingDecisionBar {
                     pendingDecisionBar
-                        .padding(.horizontal, 18)
-                        .padding(.top, 14)
-                        .padding(.bottom, 10)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
 
                     Divider()
-                        .overlay(Stanford.sandstone.opacity(0.25))
+                        .overlay(Color.primary.opacity(0.06))
                 } else if let plan = executableApprovedPlan {
                     planExecutionActionBar(plan)
-                        .padding(.horizontal, 18)
-                        .padding(.top, 14)
-                        .padding(.bottom, 10)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
 
                     Divider()
-                        .overlay(Stanford.sandstone.opacity(0.25))
+                        .overlay(Color.primary.opacity(0.06))
                 }
 
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 8) {
                             ForEach(attachedFiles, id: \.self) { file in
                                 fileChip(file)
                             }
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.top, 14)
-                        .padding(.bottom, 4)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
                     }
                 }
 
@@ -3554,9 +3621,9 @@ struct TaskMainView: View {
                     .textFieldStyle(.plain)
                     .font(Stanford.chatBody())
                     .lineLimit(2...10)
-                    .padding(.horizontal, 18)
-                    .padding(.top, attachedFiles.isEmpty ? 14 : 8)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.top, attachedFiles.isEmpty ? 12 : 8)
+                    .padding(.bottom, 9)
                     .focused($isComposerFocused)
                     .onSubmit {
                         if showSlashMenu && !visibleSlashOptions.isEmpty {
@@ -3687,12 +3754,13 @@ struct TaskMainView: View {
                     sshConnections: sshConnections
                 )
             }
-            .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .background(composerFill)
+            .clipShape(composerShape)
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(isDragOver ? Stanford.cardinalRed : Stanford.sandstone.opacity(0.3), lineWidth: isDragOver ? 2 : 1)
+                composerShape
+                    .stroke(composerStrokeColor, lineWidth: composerStrokeWidth)
             )
+            .shadow(color: Color.black.opacity(isComposerFocused ? 0.08 : 0.045), radius: isComposerFocused ? 12 : 8, y: 3)
             .overlay(alignment: .topLeading) {
                 if showSlashMenu && !visibleSlashOptions.isEmpty {
                     let opts = visibleSlashOptions
@@ -3722,28 +3790,28 @@ struct TaskMainView: View {
                                     Spacer()
                                 }
                                 .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(isSelected ? Stanford.coolGrey.opacity(0.1) : .clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .padding(.vertical, 8)
+                                .background(isSelected ? Color.primary.opacity(0.075) : .clear)
+                                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 5)
                     .frame(maxWidth: 420)
-                    .background(.ultraThickMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
+                            .stroke(Color.primary.opacity(0.11), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.12), radius: 12, y: -4)
-                    .offset(y: -CGFloat(visibleSlashOptions.count) * 52 - 16)
+                    .shadow(color: .black.opacity(0.14), radius: 14, y: -3)
+                    .offset(y: -CGFloat(visibleSlashOptions.count) * 48 - 16)
                     .padding(.leading, 4)
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .padding(.vertical, 11)
             .onDrop(of: [UTType.fileURL, UTType.image], isTargeted: $isDragOver) { providers in
                 for provider in providers {
                     if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -4467,31 +4535,38 @@ struct TaskMainView: View {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 24, height: 24)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .frame(width: 22, height: 22)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             } else {
                 Image(systemName: Formatters.fileIcon(for: file))
                     .font(Stanford.ui(11))
                     .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 16)
             }
             Text(URL(fileURLWithPath: file).lastPathComponent)
                 .font(Stanford.caption(12))
                 .foregroundStyle(Stanford.black)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 180)
             Button {
                 attachedFiles.removeAll { $0 == file }
             } label: {
-                Image(systemName: "xmark")
-                    .font(Stanford.ui(10))
-                    .foregroundStyle(Stanford.coolGrey)
+                Image(systemName: "xmark.circle.fill")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.72))
             }
             .buttonStyle(.plain)
+            .help("Remove attachment")
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(Stanford.fog)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Stanford.sandstone.opacity(0.4), lineWidth: 0.5))
+        .background(Color.primary.opacity(0.035))
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private func attachFile() {

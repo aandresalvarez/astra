@@ -50,6 +50,35 @@ private let testPackage = PluginPackage(
     governance: .builtInApproved(riskLevel: .medium)
 )
 
+// MARK: - Search
+
+@Suite("PluginCatalog Search")
+struct PluginCatalogSearchTests {
+
+    @Test("Matches generated content summary fallback")
+    func matchesGeneratedContentSummaryFallback() {
+        let package = PluginPackage(
+            id: "browser-only",
+            name: "Drive Browser",
+            icon: "globe",
+            description: "",
+            author: "Test",
+            category: "Browser",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: ["google-drive"]
+        )
+
+        #expect(package.contentSummary == "1 browser adapter")
+        #expect(PluginCatalogSearch.matches(package, query: " BROWSER ADAPTER "))
+        #expect(!PluginCatalogSearch.matches(package, query: "jira"))
+    }
+}
+
 // MARK: - Load Catalog
 
 @Suite("PluginCatalog Load")

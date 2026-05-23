@@ -68,7 +68,7 @@ struct ComposerToolbar: View {
     @State private var isPolicySheetPresented = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             plusMenu
 
             if showSecurityGate || showPermissionControls {
@@ -81,8 +81,8 @@ struct ComposerToolbar: View {
             runtimeStatusPill
             submitArea
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
         .sheet(isPresented: $isPolicySheetPresented) {
             AgentPolicySheet(
                 runtime: resolvedRuntime,
@@ -186,19 +186,20 @@ struct ComposerToolbar: View {
                 }
             }
         } label: {
-            Text("+")
-                .font(Stanford.ui(28, weight: .light))
+            Image(systemName: "plus")
+                .font(Stanford.ui(14, weight: .semibold))
                 .foregroundStyle(isPlusHovered ? Stanford.black : Stanford.coolGrey)
-                .frame(width: 36, height: 36)
-                .background(
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Color.primary.opacity(isPlusHovered ? 0.075 : 0.035)))
+                .overlay(
                     Circle()
-                        .fill(Color.primary.opacity(isPlusHovered ? 0.15 : 0.06))
+                        .stroke(Color.primary.opacity(isPlusHovered ? 0.13 : 0.08), lineWidth: 1)
                 )
                 .animation(.easeInOut(duration: 0.15), value: isPlusHovered)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 38, height: 38)
+        .frame(width: 32, height: 32)
         .contentShape(Circle())
         .onHover { isPlusHovered = $0 }
         .help("Add files, paste from clipboard, or adjust task options")
@@ -224,11 +225,11 @@ struct ComposerToolbar: View {
             .foregroundStyle(presentation.color)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(presentation.color.opacity(0.10))
+            .background(Color.primary.opacity(0.045))
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(presentation.color.opacity(0.16), lineWidth: 1)
+                    .stroke(presentation.color.opacity(0.13), lineWidth: 1)
             )
             .help(presentation.help)
             .accessibilityLabel("Task status")
@@ -333,11 +334,11 @@ struct ComposerToolbar: View {
             .foregroundStyle(isRunning ? Stanford.lagunita : Stanford.coolGrey)
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 6)
-            .background((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.13 : 0.07))
+            .background(Color.primary.opacity(isRunning ? 0.06 : 0.04))
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.18 : 0.10), lineWidth: 1)
+                    .stroke((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.15 : 0.08), lineWidth: 1)
             )
         }
         .help(runtimeStatusHelp)
@@ -425,11 +426,11 @@ struct ComposerToolbar: View {
             .foregroundStyle(policyColor(currentPolicyLevel.userFacingLevel))
             .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 6)
-            .background(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.10))
+            .background(Color.primary.opacity(0.04))
             .clipShape(Capsule())
             .overlay(
                 Capsule()
-                    .stroke(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.16), lineWidth: 1)
+                    .stroke(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.13), lineWidth: 1)
             )
         }
         .menuStyle(.borderlessButton)
@@ -483,7 +484,7 @@ struct ComposerToolbar: View {
             .foregroundStyle(useAgentTeam ? Stanford.plum : Stanford.coolGrey)
             .padding(.horizontal, compact ? 7 : 9)
             .padding(.vertical, 5)
-            .background(useAgentTeam ? Stanford.plum.opacity(0.12) : Stanford.fog)
+            .background(Color.primary.opacity(useAgentTeam ? 0.055 : 0.035))
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -721,9 +722,11 @@ struct ComposerToolbar: View {
                 Button {
                     onStop()
                 } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(Stanford.ui(28))
-                        .foregroundStyle(Stanford.cardinalRed)
+                    Image(systemName: "stop.fill")
+                        .font(Stanford.ui(12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(Stanford.cardinalRed))
                 }
                 .buttonStyle(.plain)
                 .help("Stop task")
@@ -736,37 +739,55 @@ struct ComposerToolbar: View {
             Button {
                 onSend()
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: submitIcon)
-                        .font(Stanford.ui(14))
-                    Text(submitTitle)
-                        .font(Stanford.chatBody(15))
-                }
-                .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.55))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background(canSubmit ? submitColor : Color.primary.opacity(0.10))
-                .clipShape(Capsule())
+                Image(systemName: submitSymbolName)
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.38))
+                    .frame(width: 30, height: 30)
+                    .background(
+                        Circle()
+                            .fill(canSubmit ? submitColor : Color.primary.opacity(0.065))
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(canSubmit ? submitColor.opacity(0.0) : Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSubmit)
+            .keyboardShortcut(.return, modifiers: .command)
+            .help(submitTitle)
+            .accessibilityIdentifier("ComposerSubmitButton")
+            .accessibilityLabel(submitTitle)
+        } else {
+            Button {
+                onSend()
+            } label: {
+                Image(systemName: submitSymbolName)
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.38))
+                    .frame(width: 30, height: 30)
+                    .background(
+                        Circle()
+                            .fill(canSubmit ? submitColor : Color.primary.opacity(0.065))
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(canSubmit ? submitColor.opacity(0.0) : Color.primary.opacity(0.08), lineWidth: 1)
+                    )
             }
             .buttonStyle(.plain)
             .disabled(!canSubmit)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityIdentifier("ComposerSubmitButton")
-        } else {
-            Button {
-                onSend()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(Stanford.ui(28))
-                    .foregroundStyle(canSubmit ? Stanford.lagunita : Color.primary.opacity(0.25))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-            .keyboardShortcut(.return, modifiers: .command)
+            .accessibilityLabel("Send")
         }
     }
 
     // MARK: - Helpers
+
+    private var submitSymbolName: String {
+        submitIcon == "arrow.up.circle.fill" ? "arrow.up" : submitIcon
+    }
 
     private func modelDisplayName(_ model: String) -> String {
         model.trimmingCharacters(in: .whitespacesAndNewlines)

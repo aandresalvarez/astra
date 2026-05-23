@@ -75,6 +75,61 @@ enum WorkspaceSidebarFilter {
     }
 }
 
+enum WorkspaceSidebarSelection {
+    static func shouldEnsureSelectedWorkspaceExpanded(
+        selectedWorkspaceID: UUID?,
+        collapsedWorkspaceIDs: Set<UUID>
+    ) -> Bool {
+        guard let selectedWorkspaceID else { return false }
+        return !collapsedWorkspaceIDs.contains(selectedWorkspaceID)
+    }
+}
+
+private struct SidebarTopToolbar: View {
+    @Binding var isSearchActive: Bool
+    let showsWorkspaceActions: Bool
+    var onNewWorkspace: (() -> Void)?
+    var onImportWorkspace: (() -> Void)?
+
+    private var showsAddWorkspaceMenu: Bool {
+        showsWorkspaceActions && (onNewWorkspace != nil || onImportWorkspace != nil)
+    }
+
+    var body: some View {
+        AstraToolbarCommandCluster {
+            Button { isSearchActive.toggle() } label: {
+                AstraToolbarCommandIcon(systemImage: "magnifyingglass", isActive: isSearchActive)
+            }
+            .buttonStyle(.plain)
+            .help("Search (⌘F)")
+            .keyboardShortcut("f", modifiers: .command)
+            .accessibilityLabel("Search")
+
+            if showsAddWorkspaceMenu {
+                Menu {
+                    if let onNewWorkspace {
+                        Button(action: onNewWorkspace) {
+                            Label("New Workspace", systemImage: "folder.badge.plus")
+                        }
+                    }
+                    if let onImportWorkspace {
+                        Button(action: onImportWorkspace) {
+                            Label("Import Workspace", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                } label: {
+                    AstraToolbarCommandIcon(systemImage: "folder.badge.plus", isActive: false)
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Add workspace")
+                .accessibilityLabel("Add workspace")
+            }
+        }
+    }
+}
+
 enum SidebarTaskIndexInvalidation {
     static func signature(for tasks: [AgentTask]) -> Int {
         tasks.reduce(into: 0) { acc, task in
@@ -240,33 +295,13 @@ struct TaskSidebarView: View {
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .toolbar {
-            if selectedWorkspace == nil {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { isSearchActive.toggle() } label: {
-                        Label("Search", systemImage: "magnifyingglass")
-                    }
-                    .help("Search (⌘F)")
-                    .keyboardShortcut("f", modifiers: .command)
-
-                    Menu {
-                        Button(action: { onNewWorkspace?() }) {
-                            Label("New Workspace", systemImage: "folder.badge.plus")
-                        }
-                        Button(action: { onImportWorkspace?() }) {
-                            Label("Import Workspace", systemImage: "square.and.arrow.down")
-                        }
-                    } label: {
-                        Label("Add Workspace", systemImage: "folder.badge.plus")
-                    }
-                }
-            } else {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { isSearchActive.toggle() } label: {
-                        Label("Search", systemImage: "magnifyingglass")
-                    }
-                    .help("Search (⌘F)")
-                    .keyboardShortcut("f", modifiers: .command)
-                }
+            ToolbarItem(placement: .primaryAction) {
+                SidebarTopToolbar(
+                    isSearchActive: $isSearchActive,
+                    showsWorkspaceActions: selectedWorkspace == nil,
+                    onNewWorkspace: onNewWorkspace,
+                    onImportWorkspace: onImportWorkspace
+                )
             }
         }
         .accessibilityIdentifier("TaskSidebar")
@@ -971,16 +1006,9 @@ struct TaskSidebarView: View {
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
 
         return HStack(alignment: .center, spacing: 7) {
-            // Folder icon doubles as the expand/collapse affordance —
-            // the `folder` ↔ `folder.fill` swap carries the state, and
-            // clicking it toggles expansion. Dropped the leading
-            // chevron entirely to match the simplified header style
-            // (no glyphs, no disclosure indicators); the folder fill
-            // change + the row's task children below are the only
-            // expansion cues now.
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    toggleWorkspaceExpansion(workspace, using: taskIndex)
+                    toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
                 Image(systemName: isExpanded ? "folder.fill" : "folder")
@@ -992,23 +1020,9 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
-            // Name: smart select + expand
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
-                    if isExpanded && isSelected {
-                        // Already open and selected → collapse
-                        toggleWorkspaceExpansion(workspace, using: taskIndex)
-                    } else if !isExpanded {
-                        // Collapsed → expand and select
-                        collapsedWorkspaceIDs.remove(workspace.id)
-                        expandedWorkspaceIDs.insert(workspace.id)
-                        selectedWorkspace = workspace
-                        selectedTask = nil
-                    } else {
-                        // Expanded but not selected → just select
-                        selectedWorkspace = workspace
-                        selectedTask = nil
-                    }
+                    toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
                 HStack(spacing: 0) {
@@ -1026,9 +1040,13 @@ struct TaskSidebarView: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
+            .accessibilityHint("Expands or collapses the workspace.")
             .help(workspace.name)
 
             workspaceRowActions(for: workspace, isHovered: isHovered)
@@ -1124,11 +1142,37 @@ struct TaskSidebarView: View {
     }
 
     private func startNewTask(in workspace: Workspace) {
-        selectedWorkspace = workspace
+        openWorkspace(workspace)
+        onNewTask()
+    }
+
+    private func openWorkspace(_ workspace: Workspace) {
         selectedTask = nil
+        selectedWorkspace = workspace
+        ensureWorkspaceExpanded(workspace)
+    }
+
+    private func toggleWorkspaceOpenState(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
+        let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
+        selectedTask = nil
+        selectedWorkspace = workspace
+
+        if wasExpanded {
+            collapseWorkspace(workspace)
+        } else {
+            expandWorkspace(workspace)
+        }
+    }
+
+    private func expandWorkspace(_ workspace: Workspace) {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
-        onNewTask()
+    }
+
+    private func collapseWorkspace(_ workspace: Workspace) {
+        expandedWorkspaceIDs.remove(workspace.id)
+        collapsedWorkspaceIDs.insert(workspace.id)
+        expandedWorkspaceTaskLists.remove(workspace.id)
     }
 
     private func groupedTaskAttempts(_ tasks: [AgentTask]) -> [SidebarTaskAttemptGroup] {
@@ -1293,12 +1337,9 @@ struct TaskSidebarView: View {
 
     private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
         if isWorkspaceExpanded(workspace, using: taskIndex) {
-            expandedWorkspaceIDs.remove(workspace.id)
-            collapsedWorkspaceIDs.insert(workspace.id)
-            expandedWorkspaceTaskLists.remove(workspace.id)
+            collapseWorkspace(workspace)
         } else {
-            collapsedWorkspaceIDs.remove(workspace.id)
-            expandedWorkspaceIDs.insert(workspace.id)
+            expandWorkspace(workspace)
         }
     }
 
@@ -1401,15 +1442,18 @@ struct TaskSidebarView: View {
     }
 
     private func handleSelectedWorkspaceChanged() {
-        if let selectedWorkspace {
+        if let selectedWorkspace,
+           WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
+               selectedWorkspaceID: selectedWorkspace.id,
+               collapsedWorkspaceIDs: collapsedWorkspaceIDs
+           ) {
             ensureWorkspaceExpanded(selectedWorkspace)
         }
         updateNewTaskNudge()
     }
 
     private func ensureWorkspaceExpanded(_ workspace: Workspace) {
-        collapsedWorkspaceIDs.remove(workspace.id)
-        expandedWorkspaceIDs.insert(workspace.id)
+        expandWorkspace(workspace)
     }
 
     private func handleNewTaskButton() {
@@ -1753,7 +1797,7 @@ private struct SidebarThreadRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(displayTitle)
-                        .font(Stanford.ui(14, weight: titleWeight))
+                        .font(Stanford.ui(13, weight: titleWeight))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1765,7 +1809,7 @@ private struct SidebarThreadRow: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.primary.opacity(0.055))
+                            .background(Color.primary.opacity(0.04))
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                             .fixedSize()
                     }
@@ -1796,7 +1840,7 @@ private struct SidebarThreadRow: View {
                         // looks like a duplicate.
                         Image(systemName: "pin.fill")
                             .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(Stanford.lagunita.opacity(0.55))
+                            .foregroundStyle(.secondary.opacity(0.58))
                             .help("Pinned")
                             .accessibilityLabel("Pinned")
                     }
@@ -1816,7 +1860,7 @@ private struct SidebarThreadRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -1837,13 +1881,13 @@ private struct SidebarThreadRow: View {
 
     private var rowFill: Color {
         if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.09) }
+        if isHovered { return Color.primary.opacity(0.052) }
         return .clear
     }
 
     private var rowStroke: Color {
-        if isSelected { return Color.primary.opacity(0.14) }
-        if isHovered { return Color.primary.opacity(0.12) }
+        if isSelected { return Color.primary.opacity(0.10) }
+        if isHovered { return Color.primary.opacity(0.055) }
         return .clear
     }
 

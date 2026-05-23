@@ -301,19 +301,15 @@ struct WorkspaceCanvasPanelView: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusMedium,
-            fallbackFill: Stanford.paloAltoGreen.opacity(0.08),
-            fallbackStrokeOpacity: 0
-        )
-        .overlay(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous).stroke(Stanford.paloAltoGreen.opacity(Stanford.strokeActive), lineWidth: 1))
+        .background(stepRowShape.fill(Stanford.cardBackground.opacity(0.36)))
+        .overlay(stepRowShape.strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
     private var stepList: some View {
         let steps = currentDraft?.steps ?? []
         let expandedID = effectiveExpandedStepID(for: steps)
 
-        return VStack(spacing: 6) {
+        return VStack(spacing: 5) {
             ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                 planStepRow(index: index, step: step, isExpanded: step.id == expandedID)
             }
@@ -337,24 +333,28 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, isExpanded ? 10 : 8)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusMedium,
-            interactive: isStepEditable(step),
-            fallbackFill: stepRowFill(for: step, isExpanded: isExpanded),
-            fallbackStrokeOpacity: 0
-        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, isExpanded ? 9 : 7)
+        .background(stepRowShape.fill(stepRowFill(for: step, isExpanded: isExpanded)))
         .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(stepRowStroke(for: step, isExpanded: isExpanded), lineWidth: 1)
+            stepRowShape
+                .strokeBorder(stepRowStroke(for: step, isExpanded: isExpanded), lineWidth: 1)
         )
+        .overlay(alignment: .leading) {
+            if isExpanded, step.status != .pending {
+                Capsule()
+                    .fill(color(for: step.status))
+                    .frame(width: 3)
+                    .padding(.vertical, 8)
+                    .padding(.leading, 1)
+            }
+        }
     }
 
     private func compactStepHeader(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
         HStack(alignment: .center, spacing: 8) {
             Button {
-                expandedStepID = step.id
+                expandedStepID = isExpanded ? nil : step.id
             } label: {
                 HStack(alignment: .center, spacing: 9) {
                     stepNumberBadge(index: index, step: step, isExpanded: isExpanded)
@@ -369,7 +369,8 @@ struct WorkspaceCanvasPanelView: View {
                         }
 
                         HStack(spacing: 5) {
-                            Text(permissionSummary(for: step))
+                            Label(toolSummary(for: step), systemImage: "key.horizontal")
+                                .labelStyle(.titleAndIcon)
                                 .foregroundStyle(.secondary)
                             if let detail = compactDetail(for: step) {
                                 Text("·")
@@ -433,22 +434,30 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func expandedLockedStepBody(_ step: TaskPlanStep) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             if step.status == .blocked, !step.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 blockedCallout(step.detail)
             } else if !step.detail.isEmpty {
-                stepReadOnlyBlock(label: "Instructions", text: step.detail)
+                stepReadOnlyText(step.detail, systemImage: "text.alignleft", tint: .secondary)
             }
 
             if !step.doneSignal.isEmpty {
-                stepReadOnlyBlock(label: step.status == .done ? "Completed" : "Acceptance", text: step.doneSignal)
+                stepReadOnlyText(
+                    step.doneSignal,
+                    systemImage: step.status == .done ? "checkmark.circle.fill" : "checkmark.circle",
+                    tint: step.status == .done ? Stanford.paloAltoGreen : .secondary
+                )
             }
 
-            HStack(spacing: 8) {
-                Text(permissionSummary(for: step))
-                Text("Risk: \(step.risk.rawValue.capitalized)")
+            HStack(spacing: 6) {
+                Label(toolSummary(for: step), systemImage: "key.horizontal")
+                    .labelStyle(.titleAndIcon)
+                Text("·")
+                    .foregroundStyle(.secondary.opacity(0.55))
+                Label(step.risk.rawValue.capitalized, systemImage: "gauge")
+                    .labelStyle(.titleAndIcon)
             }
-            .font(Stanford.caption(11).weight(.semibold))
+            .font(Stanford.caption(11))
             .foregroundStyle(.secondary)
         }
         .padding(.leading, 31)
@@ -458,23 +467,21 @@ struct WorkspaceCanvasPanelView: View {
         Button {
             addStep()
         } label: {
-            Label("Add step", systemImage: "plus")
-                .font(Stanford.caption(12).weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 9)
+            HStack(spacing: 7) {
+                Spacer(minLength: 0)
+                Image(systemName: "plus")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Text("Add step")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .contentShape(stepRowShape)
         }
         .buttonStyle(.plain)
         .foregroundStyle(Stanford.lagunita)
-        .liquidSurface(
-            cornerRadius: Stanford.radiusMedium,
-            interactive: true,
-            fallbackFill: Stanford.lagunita.opacity(0.06),
-            fallbackStrokeOpacity: 0
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-        )
+        .background(stepRowShape.fill(Stanford.cardBackground.opacity(0.26)))
+        .overlay(stepRowShape.strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
         .disabled(!canEditPlan)
     }
 
@@ -605,7 +612,7 @@ struct WorkspaceCanvasPanelView: View {
             return pending.id
         }
 
-        return steps.first?.id
+        return nil
     }
 
     private func compactDetail(for step: TaskPlanStep) -> String? {
@@ -621,18 +628,31 @@ struct WorkspaceCanvasPanelView: View {
         return "Needs: \(step.likelyTools.joined(separator: ", "))"
     }
 
+    private func toolSummary(for step: TaskPlanStep) -> String {
+        guard !step.likelyTools.isEmpty else { return "No tools" }
+        return step.likelyTools.joined(separator: ", ")
+    }
+
+    private var stepRowShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+    }
+
+    private var fieldShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+    }
+
     private func stepRowFill(for step: TaskPlanStep, isExpanded: Bool) -> Color {
         if step.status == .blocked {
-            return Stanford.poppy.opacity(isExpanded ? 0.10 : 0.06)
+            return isExpanded ? Stanford.cardBackground.opacity(0.62) : Stanford.cardBackground.opacity(0.38)
         }
-        return isExpanded ? Stanford.cardBackground.opacity(0.92) : Stanford.cardBackground.opacity(0.46)
+        return isExpanded ? Stanford.cardBackground.opacity(0.72) : Stanford.cardBackground.opacity(0.42)
     }
 
     private func stepRowStroke(for step: TaskPlanStep, isExpanded: Bool) -> Color {
         if step.status == .blocked {
-            return Stanford.poppy.opacity(isExpanded ? Stanford.strokeFocus : Stanford.strokeActive)
+            return Stanford.poppy.opacity(isExpanded ? 0.28 : 0.16)
         }
-        return Color.primary.opacity(isExpanded ? Stanford.strokeActive : Stanford.strokeRest)
+        return Color.primary.opacity(isExpanded ? 0.16 : 0.08)
     }
 
     private func stepNumberBadge(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
@@ -681,8 +701,8 @@ struct WorkspaceCanvasPanelView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(Stanford.fog.opacity(0.42))
-            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+            .background(fieldShape.fill(Color.primary.opacity(0.035)))
+            .overlay(fieldShape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
         }
     }
 
@@ -695,8 +715,8 @@ struct WorkspaceCanvasPanelView: View {
                 .lineLimit(1...3)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 7)
-                .background(Stanford.fog.opacity(0.42))
-                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+                .background(fieldShape.fill(Color.primary.opacity(0.035)))
+                .overlay(fieldShape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
         }
     }
 
@@ -720,13 +740,16 @@ struct WorkspaceCanvasPanelView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(8)
-        .background(Stanford.poppy.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+        .background(fieldShape.fill(Color.primary.opacity(0.035)))
+        .overlay(fieldShape.strokeBorder(Stanford.poppy.opacity(0.20), lineWidth: 1))
     }
 
-    private func stepReadOnlyBlock(label: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            fieldLabel(label)
+    private func stepReadOnlyText(_ text: String, systemImage: String, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: systemImage)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 14)
             Text(text)
                 .font(Stanford.caption(12))
                 .foregroundStyle(.primary.opacity(0.82))
@@ -760,8 +783,6 @@ struct WorkspaceCanvasPanelView: View {
                 .foregroundStyle(riskColor(step.risk))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(riskColor(step.risk).opacity(0.10))
-                .clipShape(Capsule())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
