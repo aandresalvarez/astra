@@ -2,6 +2,10 @@ import AppKit
 import SwiftData
 import SwiftUI
 
+private enum WorkspaceHomeLayout {
+    static let contentMaxWidth: CGFloat = 1_060
+}
+
 struct WorkspaceHomeContainerView: View {
     let workspace: Workspace
     let taskQueue: TaskQueue
@@ -134,7 +138,8 @@ struct WorkspaceHomeView: View {
                 }
             }
             .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Stanford.panelBackground)
     }
