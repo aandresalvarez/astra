@@ -23,7 +23,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
-        case .markdown: 520
+        case .markdown: 620
         case .browser: 440
         case .query: 640
         }
@@ -41,7 +41,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var title: String {
         switch self {
         case .plan: "Plan"
-        case .markdown: "Text"
+        case .markdown: "Files"
         case .browser: "Browser"
         case .query: "Query"
         }
@@ -563,7 +563,7 @@ struct ContentView: View {
             hasWorkspace: effectiveWorkspace != nil,
             hasTaskThread: hasOpenTaskThread,
             canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
-            canShowTextShelf: hasOpenTaskThread && (selectedTaskHasMarkdownShelfContent || activeWorkspaceCanvasItem == .markdown),
+            canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
             canShowBrowserShelf: hasOpenTaskThread,
             canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
             activeCanvasItem: activeWorkspaceCanvasItem,
@@ -794,6 +794,9 @@ struct ContentView: View {
         }
         .onChange(of: hasOpenTaskThread) {
             if !hasOpenTaskThread, activeWorkspaceCanvasItem != nil {
+                if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
+                    return
+                }
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
@@ -1060,7 +1063,7 @@ struct ContentView: View {
         if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
             activeWorkspaceCanvasItem = nil
         }
-        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .markdown {
+        if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
             activeWorkspaceCanvasItem = nil
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -1233,7 +1236,7 @@ struct ContentView: View {
     }
 
     private func toggleMarkdownCanvas() {
-        guard selectedTaskHasMarkdownShelfContent, selectedTask != nil || isComposingTask else {
+        guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
             if activeWorkspaceCanvasItem == .markdown {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
@@ -1291,9 +1294,6 @@ struct ContentView: View {
         guard let selectedTask else {
             selectedTaskHasMarkdownShelfContent = false
             selectedTaskPreferredMarkdownPath = ""
-            if activeWorkspaceCanvasItem == .markdown {
-                activeWorkspaceCanvasItem = nil
-            }
             return
         }
 
@@ -1447,7 +1447,7 @@ struct ContentView: View {
     }
 
     private func closeMarkdownShelfIfUnavailable() {
-        guard activeWorkspaceCanvasItem == .markdown else { return }
+        guard activeWorkspaceCanvasItem == .markdown, effectiveWorkspace == nil else { return }
         let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
@@ -2044,10 +2044,6 @@ struct ContentView: View {
             && activeWorkspaceCanvasItem == .browser
             && previousTaskID != nil
             && previousTaskID != task?.id
-        let shouldCloseMarkdownForTaskChange = isMarkdownPinnedToTask
-            && activeWorkspaceCanvasItem == .markdown
-            && previousTaskID != nil
-            && previousTaskID != task?.id
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
@@ -2060,12 +2056,6 @@ struct ContentView: View {
             currentMarkdownSession.bindToTask(task?.id)
             querySession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
-                let _ = nextPanelTransitionGeneration()
-                animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
-                }
-            }
-            if shouldCloseMarkdownForTaskChange {
                 let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
@@ -2410,7 +2400,7 @@ private struct WorkspaceTopRightActions: Equatable {
     var isQueryShelfVisible: Bool { activeCanvasItem == .query }
 
     var hasShelfControls: Bool {
-        hasTaskThread && (canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf)
+        canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf
     }
 }
 
@@ -2443,15 +2433,15 @@ private struct WorkspaceTopRightToolbar: View {
                 if actions.canShowTextShelf {
                     AstraToolbarCommandCluster {
                         toolbarButton(
-                            title: actions.isTextShelfVisible ? "Hide Text Shelf" : "Show Text Shelf",
-                            label: "Text",
-                            systemImage: "doc.text",
+                            title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
+                            label: "Files",
+                            systemImage: "folder",
                             isActive: actions.isTextShelfVisible,
                             action: onToggleText
                         )
                     }
                     .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Text shelf")
+                    .accessibilityLabel("Files shelf")
                 }
 
                 if actions.canShowQueryShelf {
@@ -3006,7 +2996,10 @@ private struct ContentDetailAreaView: View {
             ShelfMarkdownPanelView(
                 session: markdownSession,
                 isPresented: canvasPresentedBinding(for: .markdown),
-                isPinnedToTask: $isMarkdownPinnedToTask
+                isPinnedToTask: $isMarkdownPinnedToTask,
+                workspace: effectiveWorkspace,
+                task: selectedTask,
+                onOpenGeneratedFile: onOpenGeneratedFile
             )
         case .browser:
             ShelfBrowserPanelView(

@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import SwiftUI
 @testable import ASTRA
 import ASTRACore
@@ -629,8 +630,8 @@ struct ShelfMarkdownSessionTests {
     }
 
     @MainActor
-    @Test("Text shelf infers Markdown and plain text document kinds")
-    func textShelfInfersMarkdownAndPlainTextKinds() throws {
+    @Test("Files shelf infers Markdown and JSON document kinds")
+    func textShelfInfersMarkdownAndJSONKinds() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-text-kinds-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -645,9 +646,77 @@ struct ShelfMarkdownSessionTests {
         session.load(quarto)
         session.load(json)
 
-        #expect(session.documents.map(\.kind) == [.markdown, .text])
-        #expect(session.selectedDocumentKind == .text)
+        #expect(session.documents.map(\.kind) == [.markdown, .json])
+        #expect(session.selectedDocumentKind == .json)
         #expect(session.documents.map(\.title) == ["report.qmd", "data.json"])
+        #expect(session.selectedDocument?.formattedJSONContent?.contains(#""ok" : true"#) == true)
+        #expect(session.selectedDocument?.jsonErrorMessage == nil)
+    }
+
+    @MainActor
+    @Test("Files shelf marks readable large text files before preview")
+    func filesShelfMarksLargeReadableTextFilesBeforePreview() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-large-text-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("large.log")
+        let content = String(repeating: "large line\n", count: Int(ShelfMarkdownSession.largeTextPreviewBytes / 10) + 1)
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+
+        #expect(session.selectedDocumentKind == .text)
+        #expect(session.errorMessage == nil)
+        #expect(session.content == content)
+        #expect(session.selectedDocument?.isLargePreview == true)
+        #expect(session.selectedDocument?.fileByteSize ?? 0 >= ShelfMarkdownSession.largeTextPreviewBytes)
+    }
+
+    @MainActor
+    @Test("Files shelf opens images and binary files as non editable previews")
+    func filesShelfOpensImagesAndBinaryFilesAsNonEditablePreviews() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-image-binary-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let imageFile = root.appendingPathComponent("preview.png")
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let pngData = try #require(bitmap?.representation(using: .png, properties: [:]))
+        try pngData.write(to: imageFile)
+
+        let binaryFile = root.appendingPathComponent("archive.bin")
+        try Data([0, 159, 255, 0]).write(to: binaryFile)
+
+        let session = ShelfMarkdownSession()
+        session.load(imageFile)
+
+        #expect(session.selectedDocumentKind == .image)
+        #expect(session.selectedDocument?.imageSize.map { Int($0.width) } == 2)
+        #expect(session.selectedDocument?.imageSize.map { Int($0.height) } == 1)
+        #expect(session.errorMessage == nil)
+        #expect(session.canSaveSelectedDocument == false)
+
+        session.load(binaryFile)
+
+        #expect(session.selectedDocumentKind == .unsupported)
+        #expect(session.content == "")
+        #expect(session.errorMessage == nil)
+        #expect(session.canSaveSelectedDocument == false)
     }
 
     @MainActor
@@ -1979,6 +2048,75 @@ struct TaskThreadSnapshotTests {
         #expect(merged.map(\.source) == ["output", "input"])
     }
 
+    @MainActor
+    @Test("Workspace file roots include configured and task paths")
+    func workspaceFileRootsIncludeConfiguredAndTaskPaths() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-roots-\(UUID().uuidString)")
+        let extra = root.appendingPathComponent("extra", isDirectory: true)
+        let input = root.appendingPathComponent("input", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Files", primaryPath: root.path, additionalPaths: [extra.path])
+        let task = AgentTask(title: "Browse", goal: "Browse files", workspace: workspace)
+        task.inputs = [input.path]
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
+
+        #expect(roots.map(\.kind) == [.primary, .additional, .taskFolder, .input])
+        #expect(roots.map(\.path).contains(root.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(extra.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(input.standardizedFileURL.path))
+    }
+
+    @Test("Workspace file scan skips heavy internal folders and symlink escapes")
+    func workspaceFileScanSkipsInternalFoldersAndSymlinkEscapes() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-scan-\(UUID().uuidString)")
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        let nodeModules = root.appendingPathComponent("node_modules/pkg", isDirectory: true)
+        let taskInternals = root.appendingPathComponent(".astra/tasks/ABC12345", isDirectory: true)
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-outside-\(UUID().uuidString).txt")
+
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nodeModules, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: taskInternals, withIntermediateDirectories: true)
+        try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: nodeModules.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: taskInternals.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
+        try "secret".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("outside.txt"),
+            withDestinationURL: outside
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path
+        )
+        let snapshot = WorkspaceFileIndexService.scanSync(roots: [rootModel])
+        let paths = Set(snapshot.nodes.map(\.relativePath))
+
+        #expect(paths.contains("Sources"))
+        #expect(paths.contains("Sources/App.swift"))
+        #expect(!paths.contains("node_modules"))
+        #expect(!paths.contains("node_modules/pkg/index.js"))
+        #expect(!paths.contains(".astra/tasks/ABC12345/current_state.md"))
+        #expect(!paths.contains("outside.txt"))
+        #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .text)
+    }
+
     @Test("Generated file preview prefers task index HTML")
     func generatedFilePreviewPrefersTaskIndexHTML() {
         let root = URL(fileURLWithPath: "/tmp/astra-generated-files-preview")
@@ -2055,7 +2193,7 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
     }
 
-    @Test("Generated file text shelf recognition covers common source and config files")
+    @Test("Generated file shelf recognition covers common source and config files")
     func generatedFileTextShelfRecognitionCoversCommonSourceAndConfigFiles() {
         let textPaths = [
             "/tmp/Sources/App.swift",
@@ -2073,7 +2211,7 @@ struct TaskThreadSnapshotTests {
 
         for path in textPaths {
             #expect(TaskGeneratedFiles.isTextShelfFile(path), "Expected \(path) to be recognized as text")
-            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .text, "Expected \(path) to route to the Text Shelf")
+            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .text, "Expected \(path) to route to the Files shelf")
         }
     }
 
@@ -2085,7 +2223,7 @@ struct TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
     }
 
-    @Test("Generated file text shelf rejects unknown binary and arbitrary extensionless files")
+    @Test("Generated file shelf rejects unknown binary and arbitrary extensionless files")
     func generatedFileTextShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
         #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/image.png") == false)
         #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/archive.zip") == false)

@@ -626,13 +626,13 @@ struct TaskMainView: View {
                 Button {
                     openHeaderTextFilesInShelf()
                 } label: {
-                    Label("Open text in shelf", systemImage: "square.split.2x1")
+                    Label("Open in Files", systemImage: "square.split.2x1")
                         .font(Stanford.caption(12).weight(.medium))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil ? .secondary : Stanford.lagunita)
                 .disabled(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil)
-                .help("Open all text files as shelf tabs")
+                .help("Open all text files in the Files shelf")
 
                 Spacer()
 

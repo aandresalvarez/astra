@@ -895,7 +895,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     var title: String {
         switch self {
         case .browser: "Open in Browser Shelf"
-        case .text: "Open in Text Shelf"
+        case .text: "Open in Files Shelf"
         case .query: "Open in Query Shelf"
         }
     }
@@ -903,7 +903,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     var compactTitle: String {
         switch self {
         case .browser: "Browser"
-        case .text: "Text"
+        case .text: "Files"
         case .query: "Query"
         }
     }
