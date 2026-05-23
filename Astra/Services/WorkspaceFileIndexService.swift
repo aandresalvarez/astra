@@ -68,22 +68,24 @@ enum WorkspaceFileIndexService {
         var roots: [WorkspaceFileRoot] = []
         var seen: Set<String> = []
 
-        func append(kind: WorkspaceFileRoot.Kind, title: String, rawPath: String) {
+        @discardableResult
+        func append(kind: WorkspaceFileRoot.Kind, title: String, rawPath: String) -> Bool {
             let path = normalizedPath(rawPath)
-            guard !path.isEmpty else { return }
+            guard !path.isEmpty else { return false }
             var isDirectory = ObjCBool(false)
             guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
                   isDirectory.boolValue else {
-                return
+                return false
             }
             let standardized = standardizedPath(path)
-            guard seen.insert(standardized).inserted else { return }
+            guard seen.insert(standardized).inserted else { return false }
             roots.append(WorkspaceFileRoot(
                 id: "\(kind.rawValue):\(standardized)",
                 kind: kind,
                 title: title,
                 path: standardized
             ))
+            return true
         }
 
         if let workspace {
@@ -96,8 +98,11 @@ enum WorkspaceFileIndexService {
         if let task {
             let access = TaskWorkspaceAccess(task: task)
             append(kind: .taskFolder, title: "Task Folder", rawPath: access.taskFolder)
-            for (index, path) in access.runtimeAdditionalPaths.enumerated() {
-                append(kind: .input, title: "Input \(index + 1)", rawPath: path)
+            var inputIndex = 1
+            for path in task.inputs {
+                if append(kind: .input, title: "Input \(inputIndex)", rawPath: path) {
+                    inputIndex += 1
+                }
             }
         }
 

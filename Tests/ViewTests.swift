@@ -2068,6 +2068,7 @@ struct TaskThreadSnapshotTests {
         let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
 
         #expect(roots.map(\.kind) == [.primary, .additional, .taskFolder, .input])
+        #expect(roots.last?.title == "Input 1")
         #expect(roots.map(\.path).contains(root.standardizedFileURL.path))
         #expect(roots.map(\.path).contains(extra.standardizedFileURL.path))
         #expect(roots.map(\.path).contains(input.standardizedFileURL.path))

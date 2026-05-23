@@ -561,7 +561,6 @@ struct ContentView: View {
     private var topRightActions: WorkspaceTopRightActions {
         WorkspaceTopRightActions(
             hasWorkspace: effectiveWorkspace != nil,
-            hasTaskThread: hasOpenTaskThread,
             canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
             canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
             canShowBrowserShelf: hasOpenTaskThread,
@@ -2385,7 +2384,6 @@ struct ContentView: View {
 
 private struct WorkspaceTopRightActions: Equatable {
     let hasWorkspace: Bool
-    let hasTaskThread: Bool
     let canShowPlanShelf: Bool
     let canShowTextShelf: Bool
     let canShowBrowserShelf: Bool

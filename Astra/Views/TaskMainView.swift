@@ -3220,24 +3220,19 @@ struct TaskMainView: View {
     }
 
     private var shouldShowTaskDecisionDock: Bool {
-        if task.status == .running {
-            return onCancelTask != nil
-        }
-        if task.status == .pendingUser {
-            return true
-        }
-        if executableApprovedPlan != nil {
-            return true
-        }
         switch task.status {
+        case .running:
+            return onCancelTask != nil
+        case .pendingUser:
+            return true
         case .queued:
-            return onRunTask != nil || canToggleTaskDoneFromDecisionDock
+            return executableApprovedPlan != nil || onRunTask != nil || canToggleTaskDoneFromDecisionDock
         case .failed, .budgetExceeded:
-            return onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
+            return executableApprovedPlan != nil || onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
         case .completed, .cancelled:
-            return canToggleTaskDoneFromDecisionDock
-        case .draft, .running, .pendingUser:
-            return false
+            return executableApprovedPlan != nil || canToggleTaskDoneFromDecisionDock
+        case .draft:
+            return executableApprovedPlan != nil
         }
     }
 
