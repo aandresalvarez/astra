@@ -55,6 +55,7 @@ struct WorkspaceRightRailView: View {
     private var globalTools: [LocalTool]
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isIdentityCollapsed = true
     @State private var isCapabilitiesCollapsed = false
     @State private var isContextCollapsed = true
@@ -126,17 +127,13 @@ struct WorkspaceRightRailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            .background(.bar)
-
-            Divider()
-                .opacity(0.65)
 
             GeometryReader { viewport in
                 ScrollView {
                     VStack(alignment: .leading, spacing: contentListSpacing) {
                         configurePanel
                             .padding(.horizontal, contentPadding)
-                            .padding(.top, isCompact ? 10 : 12)
+                            .padding(.top, isCompact ? 6 : 8)
                             .padding(.bottom, contentPadding)
                     }
                     .background {
@@ -260,40 +257,44 @@ struct WorkspaceRightRailView: View {
         let snapshot = capabilityRailSnapshot
 
         return VStack(alignment: .leading, spacing: panelSpacing) {
-            collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
-                HStack(spacing: 10) {
-                    if let onManageCapabilities {
-                        Button {
-                            onManageCapabilities()
-                        } label: {
-                            if isCompact {
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(Stanford.ui(12, weight: .medium))
-                                    .foregroundStyle(Stanford.lagunita)
-                                    .frame(width: 20, height: 20)
-                                    .contentShape(Rectangle())
-                            } else {
-                                Label("Manage", systemImage: "slider.horizontal.3")
-                                    .font(Stanford.caption(11).weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                    .labelStyle(.titleAndIcon)
+            floatingContextSection {
+                collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
+                    HStack(spacing: 10) {
+                        if let onManageCapabilities {
+                            Button {
+                                onManageCapabilities()
+                            } label: {
+                                if isCompact {
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(Stanford.ui(12, weight: .medium))
+                                        .foregroundStyle(Stanford.lagunita)
+                                        .frame(width: 20, height: 20)
+                                        .contentShape(Rectangle())
+                                } else {
+                                    Label("Manage", systemImage: "slider.horizontal.3")
+                                        .font(Stanford.caption(11).weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                        .labelStyle(.titleAndIcon)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .help("Open the capability package library")
                         }
-                        .buttonStyle(.plain)
-                        .help("Open the capability package library")
                     }
+                } content: {
+                    capabilityAvailabilitySummary(snapshot)
+                    capabilityList(snapshot)
                 }
-            } content: {
-                capabilityAvailabilitySummary(snapshot)
-                capabilityList(snapshot)
             }
 
-            collapsibleSection(
-                "Workspace setup",
-                summary: workspaceSetupSummary,
-                isCollapsed: $isContextCollapsed
-            ) {
-                workspaceContextPanel
+            floatingContextSection {
+                collapsibleSection(
+                    "Workspace setup",
+                    summary: workspaceSetupSummary,
+                    isCollapsed: $isContextCollapsed
+                ) {
+                    workspaceContextPanel
+                }
             }
 
         }
@@ -318,6 +319,30 @@ struct WorkspaceRightRailView: View {
         } message: {
             Text(capabilityError ?? "")
         }
+    }
+
+    private func floatingContextSection<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+
+        return content()
+            .padding(isCompact ? 12 : 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(shape.fill(floatingSectionFill))
+            .overlay {
+                shape.stroke(floatingSectionStroke, lineWidth: 1)
+            }
+    }
+
+    private var floatingSectionFill: Color {
+        colorScheme == .dark
+            ? Color.primary.opacity(0.052)
+            : Color.primary.opacity(0.035)
+    }
+
+    private var floatingSectionStroke: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.085)
     }
 
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
@@ -1850,7 +1875,7 @@ struct WorkspaceRightRailView: View {
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
-        isContextCollapsed = true
+        isContextCollapsed = false
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
@@ -2759,6 +2784,8 @@ private struct EmptyRailState: View {
     let title: String
     let description: String
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
@@ -2771,7 +2798,24 @@ private struct EmptyRailState: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Stanford.railCardPadding)
-        .railCard(cornerRadius: Stanford.railCardCornerRadius, fill: Color(nsColor: .windowBackgroundColor), strokeOpacity: 0.05)
+        .background(
+            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+                .fill(emptyStateFill)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+                .stroke(emptyStateStroke, lineWidth: 1)
+        }
+    }
+
+    private var emptyStateFill: Color {
+        colorScheme == .dark
+            ? Color.primary.opacity(0.04)
+            : Color.primary.opacity(0.025)
+    }
+
+    private var emptyStateStroke: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
     }
 }
 

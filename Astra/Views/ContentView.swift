@@ -2680,6 +2680,7 @@ private struct ContentDetailAreaView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(panelAnimation, value: activeCanvasItem)
         .animation(inspectorAnimation, value: isRightRailPresented)
@@ -2708,16 +2709,9 @@ private struct ContentDetailAreaView: View {
         )
         .id(workspace.id)
         .frame(width: width)
-        .background(.bar)
         .overlay(alignment: .leading) {
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.12))
-                    .frame(width: 1)
-
-                if !isOverlay {
-                    rightRailResizeHandle(availableWidth: availableWidth)
-                }
+            if !isOverlay {
+                rightRailResizeHandle(availableWidth: availableWidth)
             }
         }
     }
