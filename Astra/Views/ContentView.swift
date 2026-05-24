@@ -1589,7 +1589,7 @@ struct ContentView: View {
             syncBrowserPresentation()
             return
 
-        case .text?:
+        case .files?:
             let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true

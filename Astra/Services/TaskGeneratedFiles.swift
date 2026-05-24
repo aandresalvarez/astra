@@ -2,13 +2,13 @@ import Foundation
 
 enum TaskGeneratedFileShelfDestination: Equatable {
     case browser
-    case text
+    case files
     case query
 
     var title: String {
         switch self {
         case .browser: "Open in Browser Shelf"
-        case .text: "Open in Files Shelf"
+        case .files: "Open in Files Shelf"
         case .query: "Open in Query Shelf"
         }
     }
@@ -16,7 +16,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     var compactTitle: String {
         switch self {
         case .browser: "Browser"
-        case .text: "Files"
+        case .files: "Files"
         case .query: "Query"
         }
     }
@@ -24,7 +24,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     var systemImage: String {
         switch self {
         case .browser: "globe"
-        case .text: "doc.text"
+        case .files: "doc.text"
         case .query: "cylinder.split.1x2"
         }
     }
@@ -33,7 +33,7 @@ enum TaskGeneratedFileShelfDestination: Equatable {
 enum TaskGeneratedFiles {
     private static let markdownExtensions: Set<String> = ["md", "markdown", "qmd"]
 
-    private static let textShelfExtensions: Set<String> = [
+    private static let filesShelfExtensions: Set<String> = [
         "md", "markdown", "qmd", "txt", "text", "log",
         "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml", "plist",
         "swift", "py", "js", "jsx", "ts", "tsx", "css", "scss", "html", "htm",
@@ -42,7 +42,7 @@ enum TaskGeneratedFiles {
         "php", "pl", "lua", "env", "ini", "cfg", "conf"
     ]
 
-    private static let textShelfFileNames: Set<String> = [
+    private static let filesShelfFileNames: Set<String> = [
         ".env", ".gitignore", ".npmrc", ".zshrc", ".bashrc",
         "dockerfile", "makefile", "rakefile", "gemfile", "podfile",
         "readme", "license", "changelog"
@@ -160,19 +160,19 @@ enum TaskGeneratedFiles {
         URL(fileURLWithPath: path).pathExtension.lowercased() == "sql"
     }
 
-    static func isTextShelfFile(_ path: String) -> Bool {
+    static func isFilesShelfFile(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         let ext = url.pathExtension.lowercased()
         let name = url.lastPathComponent.lowercased()
-        return textShelfExtensions.contains(ext)
-            || textShelfFileNames.contains(name)
+        return filesShelfExtensions.contains(ext)
+            || filesShelfFileNames.contains(name)
             || name.hasPrefix(".env.")
     }
 
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination? {
         if isHTMLFile(path) { return .browser }
         if isSQLFile(path) { return .query }
-        if isTextShelfFile(path) { return .text }
+        if isFilesShelfFile(path) { return .files }
         return nil
     }
 

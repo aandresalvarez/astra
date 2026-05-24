@@ -15,6 +15,7 @@ struct ShelfMarkdownPanelView: View {
     var workspace: Workspace?
     var task: AgentTask?
     var onOpenGeneratedFile: ((String) -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
     @State private var wrapLines = true
@@ -92,7 +93,7 @@ struct ShelfMarkdownPanelView: View {
 
     private var fileExplorerToggle: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
+            withAnimation(fileNavigatorAnimation) {
                 isFileNavigatorCollapsed.toggle()
             }
         } label: {
@@ -438,7 +439,7 @@ struct ShelfMarkdownPanelView: View {
             }
 
             if let destination = node.destination,
-               destination != .text,
+               destination != .files,
                onOpenGeneratedFile != nil {
                 Button {
                     onOpenGeneratedFile?(node.path)
@@ -519,7 +520,7 @@ struct ShelfMarkdownPanelView: View {
             }
 
             if let destination = node.destination,
-               destination != .text,
+               destination != .files,
                onOpenGeneratedFile != nil {
                 Button {
                     onOpenGeneratedFile?(node.path)
@@ -716,7 +717,7 @@ struct ShelfMarkdownPanelView: View {
             Stanford.sky
         case .query?:
             Stanford.paloAltoGreen
-        case .text?:
+        case .files?:
             Stanford.lagunita
         case nil:
             .secondary
@@ -934,10 +935,14 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private func revealBreadcrumbSegment(_ segment: FileBreadcrumbSegment) {
-        withAnimation(.easeInOut(duration: 0.16)) {
+        withAnimation(fileNavigatorAnimation) {
             isFileNavigatorCollapsed = false
         }
         expandFileNavigator(to: segment.path, isFile: segment.isFile)
+    }
+
+    private var fileNavigatorAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.16)
     }
 
     private func expandFileNavigator(to path: String, isFile: Bool) {

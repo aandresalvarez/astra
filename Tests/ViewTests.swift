@@ -2054,7 +2054,7 @@ struct TaskThreadSnapshotTests {
         let files = TaskFileIndex.scanTaskFolder(root.path)
         let destinations = Dictionary(uniqueKeysWithValues: files.map { ($0.name, $0.destination) })
 
-        #expect(destinations["summary.md"] == .text)
+        #expect(destinations["summary.md"] == .files)
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
@@ -2163,7 +2163,7 @@ struct TaskThreadSnapshotTests {
         #expect(!paths.contains("node_modules/pkg/index.js"))
         #expect(!paths.contains(".astra/tasks/ABC12345/current_state.md"))
         #expect(!paths.contains("outside.txt"))
-        #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .text)
+        #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .files)
     }
 
     @Test("Generated file preview prefers task index HTML")
@@ -2232,18 +2232,18 @@ struct TaskThreadSnapshotTests {
     func generatedFileShelfDestinationRoutesPreviewableArtifacts() {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .files)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/query.sql") == .query)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .files)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
     }
 
     @Test("Generated file shelf recognition covers common source and config files")
-    func generatedFileTextShelfRecognitionCoversCommonSourceAndConfigFiles() {
+    func generatedFileFilesShelfRecognitionCoversCommonSourceAndConfigFiles() {
         let textPaths = [
             "/tmp/Sources/App.swift",
             "/tmp/scripts/run.sh",
@@ -2259,24 +2259,24 @@ struct TaskThreadSnapshotTests {
         ]
 
         for path in textPaths {
-            #expect(TaskGeneratedFiles.isTextShelfFile(path), "Expected \(path) to be recognized as text")
-            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .text, "Expected \(path) to route to the Files shelf")
+            #expect(TaskGeneratedFiles.isFilesShelfFile(path), "Expected \(path) to be recognized as a Files shelf file")
+            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .files, "Expected \(path) to route to the Files shelf")
         }
     }
 
     @Test("Generated file shelf keeps HTML in browser even though it is text")
     func generatedFileShelfKeepsHTMLInBrowserEvenThoughItIsText() {
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/index.html") == true)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/preview.htm") == true)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/index.html") == true)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/preview.htm") == true)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
     }
 
     @Test("Generated file shelf rejects unknown binary and arbitrary extensionless files")
-    func generatedFileTextShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/image.png") == false)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/archive.zip") == false)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/random-output") == false)
+    func generatedFileFilesShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/image.png") == false)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/archive.zip") == false)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/random-output") == false)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/archive.zip") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/random-output") == nil)

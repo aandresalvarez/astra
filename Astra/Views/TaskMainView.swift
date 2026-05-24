@@ -486,7 +486,7 @@ struct TaskMainView: View {
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
-        headerFileItems.filter { $0.destination == .text }
+        headerFileItems.filter { $0.destination == .files }
     }
 
     private func openHeaderFileItem(_ item: TaskFileItem) {
