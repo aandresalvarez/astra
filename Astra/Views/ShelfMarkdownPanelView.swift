@@ -1702,18 +1702,33 @@ enum ShelfSyntaxHighlighter {
     ) {
         apply(pattern: #"\b-?\d+(?:\.\d+)?\b"#, color: .systemOrange, to: attributed)
         applyKeywords(keywords, color: .systemBlue, to: attributed)
+        let stringRanges = highlightStrings(in: attributed)
         if let blockCommentPattern {
-            apply(pattern: blockCommentPattern, color: .secondaryLabelColor, to: attributed, options: [.dotMatchesLineSeparators])
+            apply(
+                pattern: blockCommentPattern,
+                color: .secondaryLabelColor,
+                to: attributed,
+                options: [.dotMatchesLineSeparators],
+                excludingMatchStartsIn: stringRanges
+            )
         }
         if let lineCommentPattern {
-            apply(pattern: lineCommentPattern, color: .secondaryLabelColor, to: attributed, options: [.anchorsMatchLines])
+            apply(
+                pattern: lineCommentPattern,
+                color: .secondaryLabelColor,
+                to: attributed,
+                options: [.anchorsMatchLines],
+                excludingMatchStartsIn: stringRanges
+            )
         }
-        highlightStrings(in: attributed)
     }
 
-    private static func highlightStrings(in attributed: NSMutableAttributedString) {
-        apply(pattern: #""(?:\\.|[^"\\])*""#, color: .systemGreen, to: attributed)
-        apply(pattern: #"'(?:\\.|[^'\\])*'"#, color: .systemGreen, to: attributed)
+    @discardableResult
+    private static func highlightStrings(in attributed: NSMutableAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        ranges += apply(pattern: #""(?:\\.|[^"\\])*""#, color: .systemGreen, to: attributed)
+        ranges += apply(pattern: #"'(?:\\.|[^'\\])*'"#, color: .systemGreen, to: attributed)
+        return ranges
     }
 
     private static func applyKeywords(
@@ -1725,18 +1740,27 @@ enum ShelfSyntaxHighlighter {
         apply(pattern: pattern, color: color, to: attributed, options: [.caseInsensitive])
     }
 
+    @discardableResult
     private static func apply(
         pattern: String,
         color: NSColor,
         to attributed: NSMutableAttributedString,
-        options: NSRegularExpression.Options = []
-    ) {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+        options: NSRegularExpression.Options = [],
+        excludingMatchStartsIn excludedRanges: [NSRange] = []
+    ) -> [NSRange] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return [] }
+        var appliedRanges: [NSRange] = []
         let range = NSRange(location: 0, length: attributed.length)
         regex.enumerateMatches(in: attributed.string, range: range) { match, _, _ in
             guard let matchRange = match?.range, matchRange.location != NSNotFound else { return }
+            let startsInExcludedRange = excludedRanges.contains { excludedRange in
+                NSLocationInRange(matchRange.location, excludedRange)
+            }
+            guard !startsInExcludedRange else { return }
             attributed.addAttribute(.foregroundColor, value: color, range: matchRange)
+            appliedRanges.append(matchRange)
         }
+        return appliedRanges
     }
 }
 

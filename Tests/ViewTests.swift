@@ -668,6 +668,30 @@ struct ShelfMarkdownSessionTests {
         #expect(numberColor.isEqual(NSColor.systemGreen))
     }
 
+    @Test("Files shelf syntax highlighting keeps comment strings in comment color")
+    func filesShelfSyntaxHighlightingKeepsCommentStringsInCommentColor() throws {
+        let attributed = ShelfSyntaxHighlighter.attributedString(
+            for: #"""
+            let url = "https://example.com/path"
+            // comment says "return 42"
+            let value = 1 /* block says 'let' */
+            """#,
+            language: .swift
+        )
+        let text = attributed.string as NSString
+        let urlRange = text.range(of: "https://example.com/path")
+        let lineCommentStringRange = text.range(of: #""return 42""#)
+        let blockCommentStringRange = text.range(of: #"'let'"#)
+
+        let urlColor = try #require(attributed.attribute(.foregroundColor, at: urlRange.location, effectiveRange: nil) as? NSColor)
+        let lineCommentColor = try #require(attributed.attribute(.foregroundColor, at: lineCommentStringRange.location, effectiveRange: nil) as? NSColor)
+        let blockCommentColor = try #require(attributed.attribute(.foregroundColor, at: blockCommentStringRange.location, effectiveRange: nil) as? NSColor)
+
+        #expect(urlColor.isEqual(NSColor.systemGreen))
+        #expect(lineCommentColor.isEqual(NSColor.secondaryLabelColor))
+        #expect(blockCommentColor.isEqual(NSColor.secondaryLabelColor))
+    }
+
     @Test("Files shelf syntax highlighting skips large files")
     func filesShelfSyntaxHighlightingSkipsLargeFiles() {
         let line = "let value = 42\n"
