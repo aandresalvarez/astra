@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import SwiftUI
 @testable import ASTRA
 import ASTRACore
@@ -629,8 +630,8 @@ struct ShelfMarkdownSessionTests {
     }
 
     @MainActor
-    @Test("Text shelf infers Markdown and plain text document kinds")
-    func textShelfInfersMarkdownAndPlainTextKinds() throws {
+    @Test("Files shelf infers Markdown and JSON document kinds")
+    func filesShelfInfersMarkdownAndJSONKinds() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-text-kinds-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -645,9 +646,136 @@ struct ShelfMarkdownSessionTests {
         session.load(quarto)
         session.load(json)
 
-        #expect(session.documents.map(\.kind) == [.markdown, .text])
-        #expect(session.selectedDocumentKind == .text)
+        #expect(session.documents.map(\.kind) == [.markdown, .json])
+        #expect(session.selectedDocumentKind == .json)
         #expect(session.documents.map(\.title) == ["report.qmd", "data.json"])
+        #expect(session.selectedDocument?.formattedJSONContent?.contains(#""ok" : true"#) == true)
+        #expect(session.selectedDocument?.jsonErrorMessage == nil)
+    }
+
+    @Test("Files shelf syntax highlighting keeps keywords inside strings green")
+    func filesShelfSyntaxHighlightingKeepsKeywordsInsideStringsGreen() throws {
+        let attributed = ShelfSyntaxHighlighter.attributedString(
+            for: #"let phrase = "return 42""#,
+            language: .swift
+        )
+        let keywordRange = (attributed.string as NSString).range(of: "return")
+        let numberRange = (attributed.string as NSString).range(of: "42")
+
+        let keywordColor = try #require(attributed.attribute(.foregroundColor, at: keywordRange.location, effectiveRange: nil) as? NSColor)
+        let numberColor = try #require(attributed.attribute(.foregroundColor, at: numberRange.location, effectiveRange: nil) as? NSColor)
+        #expect(keywordColor.isEqual(NSColor.systemGreen))
+        #expect(numberColor.isEqual(NSColor.systemGreen))
+    }
+
+    @Test("Files shelf syntax highlighting keeps comment strings in comment color")
+    func filesShelfSyntaxHighlightingKeepsCommentStringsInCommentColor() throws {
+        let attributed = ShelfSyntaxHighlighter.attributedString(
+            for: #"""
+            let url = "https://example.com/path"
+            // comment says "return 42"
+            let value = 1 /* block says 'let' */
+            """#,
+            language: .swift
+        )
+        let text = attributed.string as NSString
+        let urlRange = text.range(of: "https://example.com/path")
+        let lineCommentStringRange = text.range(of: #""return 42""#)
+        let blockCommentStringRange = text.range(of: #"'let'"#)
+
+        let urlColor = try #require(attributed.attribute(.foregroundColor, at: urlRange.location, effectiveRange: nil) as? NSColor)
+        let lineCommentColor = try #require(attributed.attribute(.foregroundColor, at: lineCommentStringRange.location, effectiveRange: nil) as? NSColor)
+        let blockCommentColor = try #require(attributed.attribute(.foregroundColor, at: blockCommentStringRange.location, effectiveRange: nil) as? NSColor)
+
+        #expect(urlColor.isEqual(NSColor.systemGreen))
+        #expect(lineCommentColor.isEqual(NSColor.secondaryLabelColor))
+        #expect(blockCommentColor.isEqual(NSColor.secondaryLabelColor))
+    }
+
+    @Test("Files shelf syntax highlighting skips large files")
+    func filesShelfSyntaxHighlightingSkipsLargeFiles() {
+        let line = "let value = 42\n"
+        let lineCount = (ShelfSyntaxHighlighter.maxHighlightedUTF8Bytes / line.utf8.count) + 2
+        let text = String(repeating: line, count: lineCount)
+        let attributed = ShelfSyntaxHighlighter.attributedString(for: text, language: .swift)
+
+        var sawNonBaseForeground = false
+        attributed.enumerateAttribute(
+            .foregroundColor,
+            in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, _ in
+            guard let color = value as? NSColor else { return }
+            if !color.isEqual(NSColor.labelColor) {
+                sawNonBaseForeground = true
+            }
+        }
+        #expect(!sawNonBaseForeground)
+    }
+
+    @MainActor
+    @Test("Files shelf marks readable large text files before preview")
+    func filesShelfMarksLargeReadableTextFilesBeforePreview() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-large-text-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("large.log")
+        let content = String(repeating: "large line\n", count: Int(ShelfMarkdownSession.largeTextPreviewBytes / 10) + 1)
+        try content.write(to: file, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.load(file)
+
+        #expect(session.selectedDocumentKind == .text)
+        #expect(session.errorMessage == nil)
+        #expect(session.content == content)
+        #expect(session.selectedDocument?.isLargePreview == true)
+        #expect(session.selectedDocument?.fileByteSize ?? 0 >= ShelfMarkdownSession.largeTextPreviewBytes)
+    }
+
+    @MainActor
+    @Test("Files shelf opens images and binary files as non editable previews")
+    func filesShelfOpensImagesAndBinaryFilesAsNonEditablePreviews() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-image-binary-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let imageFile = root.appendingPathComponent("preview.png")
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let pngData = try #require(bitmap?.representation(using: .png, properties: [:]))
+        try pngData.write(to: imageFile)
+
+        let binaryFile = root.appendingPathComponent("archive.bin")
+        try Data([0, 159, 255, 0]).write(to: binaryFile)
+
+        let session = ShelfMarkdownSession()
+        session.load(imageFile)
+
+        #expect(session.selectedDocumentKind == .image)
+        #expect(session.selectedDocument?.imageSize.map { Int($0.width) } == 2)
+        #expect(session.selectedDocument?.imageSize.map { Int($0.height) } == 1)
+        #expect(session.errorMessage == nil)
+        #expect(session.canSaveSelectedDocument == false)
+
+        session.load(binaryFile)
+
+        #expect(session.selectedDocumentKind == .unsupported)
+        #expect(session.content == "")
+        #expect(session.errorMessage == nil)
+        #expect(session.canSaveSelectedDocument == false)
     }
 
     @MainActor
@@ -1950,7 +2078,7 @@ struct TaskThreadSnapshotTests {
         let files = TaskFileIndex.scanTaskFolder(root.path)
         let destinations = Dictionary(uniqueKeysWithValues: files.map { ($0.name, $0.destination) })
 
-        #expect(destinations["summary.md"] == .text)
+        #expect(destinations["summary.md"] == .files)
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
@@ -1977,6 +2105,89 @@ struct TaskThreadSnapshotTests {
 
         #expect(merged.map(\.path) == [report.path, data.path])
         #expect(merged.map(\.source) == ["output", "input"])
+    }
+
+    @MainActor
+    @Test("Workspace file roots include configured and task paths")
+    func workspaceFileRootsIncludeConfiguredAndTaskPaths() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-roots-\(UUID().uuidString)")
+        let extra = root.appendingPathComponent("extra", isDirectory: true)
+        let input = root.appendingPathComponent("input", isDirectory: true)
+        let inputFile = root.appendingPathComponent("input.md")
+
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        try "# Input".write(to: inputFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Files", primaryPath: root.path, additionalPaths: [extra.path])
+        let task = AgentTask(title: "Browse", goal: "Browse files", workspace: workspace)
+        task.inputs = [input.path, inputFile.path]
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
+
+        #expect(roots.map(\.kind) == [.primary, .additional, .taskFolder, .input, .input])
+        #expect(roots.suffix(2).map(\.title) == ["Input 1", "Input 2"])
+        #expect(roots.map(\.path).contains(root.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(extra.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(input.standardizedFileURL.path))
+        #expect(roots.map(\.path).contains(inputFile.standardizedFileURL.path))
+        #expect(roots.last?.isDirectory == false)
+
+        let snapshot = WorkspaceFileIndexService.scanSync(roots: roots)
+        let inputFileRoot = try #require(roots.last)
+        #expect(snapshot.nodes.contains {
+            $0.rootID == inputFileRoot.id
+                && $0.path == inputFile.standardizedFileURL.path
+                && !$0.isDirectory
+        })
+    }
+
+    @Test("Workspace file scan skips heavy internal folders and symlink escapes")
+    func workspaceFileScanSkipsInternalFoldersAndSymlinkEscapes() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-scan-\(UUID().uuidString)")
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        let nodeModules = root.appendingPathComponent("node_modules/pkg", isDirectory: true)
+        let taskInternals = root.appendingPathComponent(".astra/tasks/ABC12345", isDirectory: true)
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-file-outside-\(UUID().uuidString).txt")
+
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nodeModules, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: taskInternals, withIntermediateDirectories: true)
+        try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: nodeModules.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: taskInternals.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
+        try "secret".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("outside.txt"),
+            withDestinationURL: outside
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+        let snapshot = WorkspaceFileIndexService.scanSync(roots: [rootModel])
+        let paths = Set(snapshot.nodes.map(\.relativePath))
+
+        #expect(paths.contains("Sources"))
+        #expect(paths.contains("Sources/App.swift"))
+        #expect(!paths.contains("node_modules"))
+        #expect(!paths.contains("node_modules/pkg/index.js"))
+        #expect(!paths.contains(".astra/tasks/ABC12345/current_state.md"))
+        #expect(!paths.contains("outside.txt"))
+        #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .files)
     }
 
     @Test("Generated file preview prefers task index HTML")
@@ -2045,18 +2256,18 @@ struct TaskThreadSnapshotTests {
     func generatedFileShelfDestinationRoutesPreviewableArtifacts() {
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/README.md") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/report.markdown") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/docs/starr_common.qmd") == .files)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/query.sql") == .query)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .text)
-        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .text)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/script.py") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/data.json") == .files)
+        #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/session.log") == .files)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
     }
 
-    @Test("Generated file text shelf recognition covers common source and config files")
-    func generatedFileTextShelfRecognitionCoversCommonSourceAndConfigFiles() {
+    @Test("Generated file shelf recognition covers common source and config files")
+    func generatedFileFilesShelfRecognitionCoversCommonSourceAndConfigFiles() {
         let textPaths = [
             "/tmp/Sources/App.swift",
             "/tmp/scripts/run.sh",
@@ -2072,24 +2283,24 @@ struct TaskThreadSnapshotTests {
         ]
 
         for path in textPaths {
-            #expect(TaskGeneratedFiles.isTextShelfFile(path), "Expected \(path) to be recognized as text")
-            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .text, "Expected \(path) to route to the Text Shelf")
+            #expect(TaskGeneratedFiles.isFilesShelfFile(path), "Expected \(path) to be recognized as a Files shelf file")
+            #expect(TaskGeneratedFiles.shelfDestination(for: path) == .files, "Expected \(path) to route to the Files shelf")
         }
     }
 
     @Test("Generated file shelf keeps HTML in browser even though it is text")
     func generatedFileShelfKeepsHTMLInBrowserEvenThoughItIsText() {
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/index.html") == true)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/preview.htm") == true)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/index.html") == true)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/preview.htm") == true)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/index.html") == .browser)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/preview.htm") == .browser)
     }
 
-    @Test("Generated file text shelf rejects unknown binary and arbitrary extensionless files")
-    func generatedFileTextShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/image.png") == false)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/archive.zip") == false)
-        #expect(TaskGeneratedFiles.isTextShelfFile("/tmp/random-output") == false)
+    @Test("Generated file shelf rejects unknown binary and arbitrary extensionless files")
+    func generatedFileFilesShelfRejectsUnknownBinaryAndArbitraryExtensionlessFiles() {
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/image.png") == false)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/archive.zip") == false)
+        #expect(TaskGeneratedFiles.isFilesShelfFile("/tmp/random-output") == false)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/image.png") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/archive.zip") == nil)
         #expect(TaskGeneratedFiles.shelfDestination(for: "/tmp/random-output") == nil)

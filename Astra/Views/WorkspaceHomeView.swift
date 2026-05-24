@@ -4,6 +4,8 @@ import SwiftUI
 
 private enum WorkspaceHomeLayout {
     static let contentMaxWidth: CGFloat = 1_060
+    static let boardMaxWidth: CGFloat = 1_520
+    static let pagePadding: CGFloat = 24
 }
 
 struct WorkspaceHomeContainerView: View {
@@ -100,23 +102,28 @@ struct WorkspaceHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Header
-                header
-                    .padding(.bottom, 16)
+            VStack(alignment: .center, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Header
+                    header
+                        .padding(.bottom, 16)
 
-                // Instructions — prominent, always visible
-                instructionsCard
-                    .padding(.bottom, 20)
+                    // Instructions — prominent, always visible
+                    instructionsCard
+                        .padding(.bottom, 20)
+                }
+                .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
+                .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
 
-                // Tasks
                 KanbanBoardView(
                     tasks: tasks,
                     onOpenTask: onOpenTask,
                     onDeleteTask: onDeleteTask,
                     onSetDoneState: onSetDoneState
                 )
-                    .padding(.bottom, 24)
+                .frame(maxWidth: WorkspaceHomeLayout.boardMaxWidth, alignment: .leading)
+                .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
+                .padding(.bottom, 24)
 
                 // Workspace-scoped context such as Memories lives in the
                 // right rail's Workspace Setup section, so the main canvas
@@ -134,11 +141,12 @@ struct WorkspaceHomeView: View {
                         onNew: { onNewSchedule?() }
                     )
                     .workspaceSectionPanel()
+                    .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
+                    .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
                     .padding(.bottom, 24)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
+            .padding(.vertical, WorkspaceHomeLayout.pagePadding)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Stanford.panelBackground)

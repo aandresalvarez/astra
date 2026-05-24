@@ -921,7 +921,7 @@ struct FilesTabView: View {
 
     private var isFileReadable: (ArtifactFile) -> Bool {
         { file in
-            TaskGeneratedFiles.isTextShelfFile(file.path)
+            TaskGeneratedFiles.isFilesShelfFile(file.path)
         }
     }
 
