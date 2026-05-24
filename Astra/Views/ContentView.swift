@@ -2412,63 +2412,19 @@ private struct WorkspaceTopRightToolbar: View {
     let onToggleControlPanel: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 14) {
             if actions.hasShelfControls {
-                if actions.canShowPlanShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                            label: "Plan",
-                            systemImage: "list.bullet.clipboard",
-                            isActive: actions.isPlanShelfVisible,
-                            action: onTogglePlan
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Plan shelf")
+                AstraToolbarCommandCluster {
+                    shelfControls
                 }
-
-                if actions.canShowTextShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
-                            label: "Files",
-                            systemImage: "folder",
-                            isActive: actions.isTextShelfVisible,
-                            action: onToggleText
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Files shelf")
-                }
-
-                if actions.canShowQueryShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                            label: "Query",
-                            systemImage: "cylinder.split.1x2",
-                            isActive: actions.isQueryShelfVisible,
-                            action: onToggleQuery
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Query shelf")
-                }
-
-                if actions.canShowBrowserShelf {
-                    AstraToolbarCommandCluster {
-                        browserMenuButton
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Browser shelf")
-                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Shelf controls")
             }
 
-            AstraToolbarCommandCluster {
+            AstraToolbarContextCommandCluster {
                 toolbarButton(
-                    title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                    systemImage: "rectangle.stack.badge.person.crop",
+                    title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
+                    systemImage: "sidebar.right",
                     isActive: actions.isRightRailVisible,
                     action: onToggleControlPanel
                 )
@@ -2476,11 +2432,52 @@ private struct WorkspaceTopRightToolbar: View {
                 // `.inspector(isPresented:)` modifier used to provide; we
                 // dropped that modifier when moving to a custom HStack column.
                 .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(actions.isRightRailVisible ? "Hide Control Panel (⌥⌘I)" : "Show Control Panel (⌥⌘I)")
+                .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
                 .accessibilityIdentifier("ControlPanelToolbarButton")
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Control Panel")
+            .accessibilityLabel("Workspace Context")
+        }
+    }
+
+    @ViewBuilder
+    private var shelfControls: some View {
+        if actions.canShowPlanShelf {
+            toolbarButton(
+                title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                label: "Plan",
+                systemImage: "list.bullet.clipboard",
+                isActive: actions.isPlanShelfVisible,
+                action: onTogglePlan
+            )
+            .accessibilityLabel("Plan shelf")
+        }
+
+        if actions.canShowTextShelf {
+            toolbarButton(
+                title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
+                label: "Files",
+                systemImage: "folder",
+                isActive: actions.isTextShelfVisible,
+                action: onToggleText
+            )
+            .accessibilityLabel("Files shelf")
+        }
+
+        if actions.canShowQueryShelf {
+            toolbarButton(
+                title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                label: "Query",
+                systemImage: "cylinder.split.1x2",
+                isActive: actions.isQueryShelfVisible,
+                action: onToggleQuery
+            )
+            .accessibilityLabel("Query shelf")
+        }
+
+        if actions.canShowBrowserShelf {
+            browserMenuButton
+                .accessibilityLabel("Browser shelf")
         }
     }
 
@@ -2488,7 +2485,12 @@ private struct WorkspaceTopRightToolbar: View {
         Menu {
             browserMenuItems
         } label: {
-            AstraToolbarCommandLabel(systemImage: "globe", text: "Browser", isActive: actions.isBrowserShelfVisible)
+            AstraToolbarCommandLabel(
+                systemImage: "globe",
+                text: "Browser",
+                isActive: actions.isBrowserShelfVisible,
+                showsMenuIndicator: true
+            )
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
