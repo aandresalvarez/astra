@@ -291,8 +291,6 @@ struct TaskMainView: View {
                 taskTitleToolbar
             }
         }
-        .toolbarBackground(Stanford.panelBackground, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL,
                   TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
@@ -419,11 +417,14 @@ struct TaskMainView: View {
     // MARK: - Header Actions
 
     private var taskTitleToolbar: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             taskTitleGroup
             taskControlBar
         }
-        .frame(maxWidth: 620, alignment: .leading)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 560, alignment: .leading)
         .accessibilityElement(children: .contain)
     }
 
@@ -433,18 +434,19 @@ struct TaskMainView: View {
             .foregroundStyle(Stanford.black)
             .lineLimit(1)
             .truncationMode(.tail)
-        .frame(minWidth: 180, idealWidth: 300, maxWidth: 440, alignment: .leading)
+            .layoutPriority(1)
+            .frame(maxWidth: 420, alignment: .leading)
     }
 
     private var taskControlBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             filesButton
             if task.status != .draft {
                 moreMenu
             }
         }
         .controlSize(.small)
-        .frame(height: 34, alignment: .center)
+        .frame(height: 30, alignment: .center)
     }
 
     private var filesButton: some View {
@@ -460,8 +462,14 @@ struct TaskMainView: View {
                 }
             }
             .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : .secondary)
-            .padding(.horizontal, headerFileCount > 0 ? 7 : 5)
+            .padding(.horizontal, headerFileCount > 0 ? 8 : 6)
             .frame(height: 26)
+            .background {
+                if selectedTab == .files || isShowingFilesPopover {
+                    Capsule()
+                        .fill(Stanford.lagunita.opacity(0.10))
+                }
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -823,13 +831,15 @@ struct TaskMainView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(Stanford.coolGrey)
-                .frame(width: 28, height: 28)
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 28)
+        .buttonStyle(.plain)
+        .frame(width: 26)
         .help("More actions")
     }
 

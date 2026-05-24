@@ -2411,12 +2411,15 @@ private struct WorkspaceTopRightToolbar: View {
     let onToggleQuery: () -> Void
     let onToggleControlPanel: () -> Void
 
+    @State private var browserMenuAnchor: NSView?
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 18) {
             if actions.hasShelfControls {
                 AstraToolbarCommandCluster {
                     shelfControls
                 }
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Shelf controls")
             }
@@ -2435,9 +2438,11 @@ private struct WorkspaceTopRightToolbar: View {
                 .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
                 .accessibilityIdentifier("ControlPanelToolbarButton")
             }
+            .fixedSize(horizontal: true, vertical: false)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Workspace Context")
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
@@ -2482,8 +2487,8 @@ private struct WorkspaceTopRightToolbar: View {
     }
 
     private var browserMenuButton: some View {
-        Menu {
-            browserMenuItems
+        Button {
+            presentBrowserMenu()
         } label: {
             AstraToolbarCommandLabel(
                 systemImage: "globe",
@@ -2492,41 +2497,55 @@ private struct WorkspaceTopRightToolbar: View {
                 showsMenuIndicator: true
             )
         }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+        .background {
+            ToolbarMenuAnchorView(anchor: $browserMenuAnchor)
+        }
         .help("Open Browser Shelf")
         .accessibilityLabel("Browser shelf mode")
     }
 
-    @ViewBuilder
-    private var browserMenuItems: some View {
-        Button {
-            onOpenBrowserEngine(.embedded)
-        } label: {
-            Label(
-                "Open Embedded Browser",
-                systemImage: actions.browserEngine == .embedded ? "checkmark" : "globe"
-            )
-        }
-
-        Button {
-            onOpenBrowserEngine(.controlled)
-        } label: {
-            Label(
-                "Open Controlled Browser",
-                systemImage: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
-            )
-        }
+    private func presentBrowserMenu() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(
+            ToolbarClosureMenuItem(
+                title: "Open Embedded Browser",
+                systemSymbolName: actions.browserEngine == .embedded ? "checkmark" : "globe"
+            ) {
+                onOpenBrowserEngine(.embedded)
+            }
+        )
+        menu.addItem(
+            ToolbarClosureMenuItem(
+                title: "Open Controlled Browser",
+                systemSymbolName: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
+            ) {
+                onOpenBrowserEngine(.controlled)
+            }
+        )
 
         if actions.isBrowserShelfVisible {
-            Divider()
+            menu.addItem(.separator())
+            menu.addItem(
+                ToolbarClosureMenuItem(
+                    title: "Hide Browser Shelf",
+                    systemSymbolName: "xmark"
+                ) {
+                    onToggleBrowser()
+                }
+            )
+        }
 
-            Button {
-                onToggleBrowser()
-            } label: {
-                Label("Hide Browser Shelf", systemImage: "xmark")
-            }
+        if let browserMenuAnchor {
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: browserMenuAnchor.bounds.minY - 4),
+                in: browserMenuAnchor
+            )
+        } else if let event = NSApp.currentEvent, let view = event.window?.contentView {
+            NSMenu.popUpContextMenu(menu, with: event, for: view)
         }
     }
 
@@ -2547,6 +2566,55 @@ private struct WorkspaceTopRightToolbar: View {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+private struct ToolbarMenuAnchorView: NSViewRepresentable {
+    @Binding var anchor: NSView?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ToolbarMenuAnchorNSView()
+        resolve(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        resolve(nsView)
+    }
+
+    private func resolve(_ nsView: NSView) {
+        guard anchor == nil || anchor !== nsView else { return }
+        DispatchQueue.main.async {
+            if anchor == nil || anchor !== nsView {
+                anchor = nsView
+            }
+        }
+    }
+}
+
+private final class ToolbarMenuAnchorNSView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class ToolbarClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, systemSymbolName: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(performMenuAction), keyEquivalent: "")
+        target = self
+        image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func performMenuAction() {
+        handler()
     }
 }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AstraToolbarCommandMetrics {
-    static let clusterSpacing: CGFloat = 2
+    static let clusterSpacing: CGFloat = 4
     static let clusterHorizontalPadding: CGFloat = 4
     static let clusterVerticalPadding: CGFloat = 3
     static let contextClusterSize: CGFloat = 34
@@ -13,14 +13,12 @@ enum AstraToolbarCommandMetrics {
     static let menuChevronFontSize: CGFloat = 7
     static let labelSpacing: CGFloat = 5
     static let labelHorizontalPadding: CGFloat = 8
+    static let labeledControlMinWidth: CGFloat = 88
+    static let labeledMenuControlMinWidth: CGFloat = 120
     static let activeFillOpacity: CGFloat = 0.12
-    static let lightChromeFillOpacity: CGFloat = 0.58
-    static let darkChromeFillOpacity: CGFloat = 0.07
-    static let chromeStrokeOpacity: CGFloat = 0.10
 }
 
 struct AstraToolbarCommandCluster<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -29,22 +27,10 @@ struct AstraToolbarCommandCluster<Content: View>: View {
         }
         .padding(.horizontal, AstraToolbarCommandMetrics.clusterHorizontalPadding)
         .padding(.vertical, AstraToolbarCommandMetrics.clusterVerticalPadding)
-        .background(chromeFill, in: Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color.primary.opacity(AstraToolbarCommandMetrics.chromeStrokeOpacity), lineWidth: 1)
-        )
-    }
-
-    private var chromeFill: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(AstraToolbarCommandMetrics.darkChromeFillOpacity)
-            : Color.white.opacity(AstraToolbarCommandMetrics.lightChromeFillOpacity)
     }
 }
 
 struct AstraToolbarContextCommandCluster<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -55,17 +41,6 @@ struct AstraToolbarContextCommandCluster<Content: View>: View {
             width: AstraToolbarCommandMetrics.contextClusterSize,
             height: AstraToolbarCommandMetrics.contextClusterSize
         )
-        .background(chromeFill, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .stroke(Color.primary.opacity(AstraToolbarCommandMetrics.chromeStrokeOpacity), lineWidth: 1)
-        )
-    }
-
-    private var chromeFill: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(AstraToolbarCommandMetrics.darkChromeFillOpacity)
-            : Color.white.opacity(AstraToolbarCommandMetrics.lightChromeFillOpacity)
     }
 }
 
@@ -97,6 +72,12 @@ struct AstraToolbarCommandLabel: View {
     var isActive = false
     var showsMenuIndicator = false
 
+    private var controlWidth: CGFloat {
+        showsMenuIndicator
+            ? AstraToolbarCommandMetrics.labeledMenuControlMinWidth
+            : AstraToolbarCommandMetrics.labeledControlMinWidth
+    }
+
     var body: some View {
         HStack(spacing: AstraToolbarCommandMetrics.labelSpacing) {
             Image(systemName: systemImage)
@@ -112,7 +93,11 @@ struct AstraToolbarCommandLabel: View {
         }
         .foregroundStyle(isActive ? Stanford.lagunita : Color.primary)
         .padding(.horizontal, AstraToolbarCommandMetrics.labelHorizontalPadding)
-        .frame(height: AstraToolbarCommandMetrics.controlHeight)
+        .frame(
+            width: controlWidth,
+            height: AstraToolbarCommandMetrics.controlHeight
+        )
+        .fixedSize(horizontal: true, vertical: false)
         .background {
             if isActive {
                 Capsule()
