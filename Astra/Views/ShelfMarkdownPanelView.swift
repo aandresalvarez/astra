@@ -1427,7 +1427,7 @@ private struct FileBreadcrumbSegment: Hashable {
     let isFile: Bool
 }
 
-private enum ShelfSyntaxLanguage: Hashable {
+enum ShelfSyntaxLanguage: Hashable {
     case json
     case swift
     case javascript
@@ -1558,13 +1558,17 @@ private struct ShelfSyntaxHighlightedTextView: NSViewRepresentable {
     }
 }
 
-private enum ShelfSyntaxHighlighter {
+enum ShelfSyntaxHighlighter {
+    static let maxHighlightedUTF8Bytes = 256 * 1_024
+
     static func attributedString(for text: String, language: ShelfSyntaxLanguage) -> NSAttributedString {
         let attributed = NSMutableAttributedString(
             string: text,
             attributes: baseAttributes
         )
         guard !text.isEmpty else { return attributed }
+        // Avoid running regex highlighters over large files during SwiftUI view updates.
+        guard text.utf8.count <= maxHighlightedUTF8Bytes else { return attributed }
 
         switch language {
         case .json:
@@ -1603,6 +1607,8 @@ private enum ShelfSyntaxHighlighter {
             apply(pattern: #"\b[A-Za-z_:][-A-Za-z0-9_:.]*(?=\=)"#, color: .systemPurple, to: attributed)
             highlightStrings(in: attributed)
         case .css:
+            apply(pattern: #"#[0-9A-Fa-f]{3,8}\b"#, color: .systemPink, to: attributed)
+            apply(pattern: #"\b-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|%|s|ms)?\b"#, color: .systemOrange, to: attributed)
             highlightCode(
                 in: attributed,
                 text: text,
@@ -1610,8 +1616,6 @@ private enum ShelfSyntaxHighlighter {
                 lineCommentPattern: nil,
                 blockCommentPattern: #"/\*[\s\S]*?\*/"#
             )
-            apply(pattern: #"#[0-9A-Fa-f]{3,8}\b"#, color: .systemPink, to: attributed)
-            apply(pattern: #"\b-?\d+(?:\.\d+)?(?:px|rem|em|vh|vw|%|s|ms)?\b"#, color: .systemOrange, to: attributed)
         case .python:
             highlightCode(
                 in: attributed,
@@ -1626,6 +1630,7 @@ private enum ShelfSyntaxHighlighter {
                 blockCommentPattern: nil
             )
         case .shell:
+            apply(pattern: #"\$[A-Za-z_][A-Za-z0-9_]*"#, color: .systemPurple, to: attributed)
             highlightCode(
                 in: attributed,
                 text: text,
@@ -1636,7 +1641,6 @@ private enum ShelfSyntaxHighlighter {
                 lineCommentPattern: "#[^\\n\\r]*",
                 blockCommentPattern: nil
             )
-            apply(pattern: #"\$[A-Za-z_][A-Za-z0-9_]*"#, color: .systemPurple, to: attributed)
         case .sql:
             highlightCode(
                 in: attributed,
@@ -1653,10 +1657,10 @@ private enum ShelfSyntaxHighlighter {
             )
         case .yaml:
             apply(pattern: "#[^\\n\\r]*", color: .secondaryLabelColor, to: attributed, options: [.anchorsMatchLines])
-            highlightStrings(in: attributed)
             apply(pattern: #"^\s*[-A-Za-z0-9_.]+(?=\s*:)"#, color: .systemBlue, to: attributed, options: [.anchorsMatchLines])
             apply(pattern: #"\b(true|false|null|yes|no|on|off)\b"#, color: .systemPurple, to: attributed, options: [.caseInsensitive])
             apply(pattern: #"\b-?\d+(?:\.\d+)?\b"#, color: .systemOrange, to: attributed)
+            highlightStrings(in: attributed)
         case .markdown:
             apply(pattern: #"^#{1,6}\s+.*$"#, color: .systemBlue, to: attributed, options: [.anchorsMatchLines])
             apply(pattern: #"`[^`\n]+`"#, color: .systemOrange, to: attributed)
@@ -1691,7 +1695,6 @@ private enum ShelfSyntaxHighlighter {
         lineCommentPattern: String?,
         blockCommentPattern: String?
     ) {
-        highlightStrings(in: attributed)
         apply(pattern: #"\b-?\d+(?:\.\d+)?\b"#, color: .systemOrange, to: attributed)
         applyKeywords(keywords, color: .systemBlue, to: attributed)
         if let blockCommentPattern {
@@ -1700,6 +1703,7 @@ private enum ShelfSyntaxHighlighter {
         if let lineCommentPattern {
             apply(pattern: lineCommentPattern, color: .secondaryLabelColor, to: attributed, options: [.anchorsMatchLines])
         }
+        highlightStrings(in: attributed)
     }
 
     private static func highlightStrings(in attributed: NSMutableAttributedString) {

@@ -653,6 +653,41 @@ struct ShelfMarkdownSessionTests {
         #expect(session.selectedDocument?.jsonErrorMessage == nil)
     }
 
+    @Test("Files shelf syntax highlighting keeps keywords inside strings green")
+    func filesShelfSyntaxHighlightingKeepsKeywordsInsideStringsGreen() throws {
+        let attributed = ShelfSyntaxHighlighter.attributedString(
+            for: #"let phrase = "return 42""#,
+            language: .swift
+        )
+        let keywordRange = (attributed.string as NSString).range(of: "return")
+        let numberRange = (attributed.string as NSString).range(of: "42")
+
+        let keywordColor = try #require(attributed.attribute(.foregroundColor, at: keywordRange.location, effectiveRange: nil) as? NSColor)
+        let numberColor = try #require(attributed.attribute(.foregroundColor, at: numberRange.location, effectiveRange: nil) as? NSColor)
+        #expect(keywordColor.isEqual(NSColor.systemGreen))
+        #expect(numberColor.isEqual(NSColor.systemGreen))
+    }
+
+    @Test("Files shelf syntax highlighting skips large files")
+    func filesShelfSyntaxHighlightingSkipsLargeFiles() {
+        let line = "let value = 42\n"
+        let lineCount = (ShelfSyntaxHighlighter.maxHighlightedUTF8Bytes / line.utf8.count) + 2
+        let text = String(repeating: line, count: lineCount)
+        let attributed = ShelfSyntaxHighlighter.attributedString(for: text, language: .swift)
+
+        var sawNonBaseForeground = false
+        attributed.enumerateAttribute(
+            .foregroundColor,
+            in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, _ in
+            guard let color = value as? NSColor else { return }
+            if !color.isEqual(NSColor.labelColor) {
+                sawNonBaseForeground = true
+            }
+        }
+        #expect(!sawNonBaseForeground)
+    }
+
     @MainActor
     @Test("Files shelf marks readable large text files before preview")
     func filesShelfMarksLargeReadableTextFilesBeforePreview() throws {
