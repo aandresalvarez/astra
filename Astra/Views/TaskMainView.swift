@@ -571,7 +571,7 @@ struct TaskMainView: View {
                 .padding(12)
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(items) { item in
                             Button {
                                 openHeaderFileItem(item)
