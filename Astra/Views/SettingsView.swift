@@ -469,7 +469,7 @@ struct SettingsView: View {
     }
 
     private var selectedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
     }
 
     private var runtimeModels: [String] {
@@ -506,7 +506,7 @@ struct SettingsView: View {
 
     private var readinessConfiguration: RuntimeReadinessConfiguration {
         RuntimeReadinessConfiguration(
-            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
+            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID),
             claudePath: claudePath,
             copilotPath: copilotPath,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
@@ -753,7 +753,7 @@ struct SettingsView: View {
     }
 
     private func alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: Bool = false) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let previousDefaultModel = defaultModel
         let previousValidationModel = validationModel
         if resetToRuntimeSuggestion {

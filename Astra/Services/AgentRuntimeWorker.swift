@@ -30,6 +30,14 @@ final class AgentRuntimeWorker {
         set { runtimeConfiguration.copilotHome = newValue }
     }
 
+    func setExecutablePath(_ path: String, for runtime: AgentRuntimeID) {
+        runtimeConfiguration.setExecutablePath(path, for: runtime)
+    }
+
+    func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
+        runtimeConfiguration.setHomeDirectory(path, for: runtime)
+    }
+
     var defaultRuntimeID: AgentRuntimeID {
         get { runtimeConfiguration.defaultRuntimeID }
         set { runtimeConfiguration.defaultRuntimeID = newValue }

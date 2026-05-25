@@ -58,12 +58,16 @@ private extension AgentRuntimeID {
             return current
         case .copilotCLI:
             return current
+        default:
+            return current
         }
     }
 
     func permissionPolicyAfterUserApprovedRuntimePermission() -> PermissionPolicy {
         switch self {
         case .claudeCode, .copilotCLI:
+            return .restricted
+        default:
             return .restricted
         }
     }

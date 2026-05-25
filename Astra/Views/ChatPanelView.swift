@@ -440,7 +440,7 @@ struct ChatPanelView: View {
     }
 
     private var defaultRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
     }
 
     private var normalizedDefaultModel: String {
@@ -1117,7 +1117,7 @@ struct ChatPanelView: View {
                         let previousRuntime = defaultRuntimeID
                         let previousModel = defaultModel
                         defaultRuntimeID = runtime
-                        let resolved = AgentRuntimeID(rawValue: runtime) ?? TaskExecutionDefaults.runtime
+                        let resolved = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime)
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: defaultModel,
                             to: resolved,
@@ -1231,7 +1231,7 @@ struct ChatPanelView: View {
     private func alignDefaultRuntimeWithAvailability() {
         let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
         if !readyRuntimes.isEmpty {
-            let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
             if !readyRuntimes.contains(runtime), let replacement = readyRuntimes.first {
                 defaultRuntimeID = replacement.rawValue
             }

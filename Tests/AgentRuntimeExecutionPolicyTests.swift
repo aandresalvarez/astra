@@ -6,15 +6,25 @@ import ASTRACore
 struct AgentRuntimeRegistryTests {
     @Test("Every runtime has a concrete provider descriptor")
     func everyRuntimeHasAConcreteProviderDescriptor() {
-        let descriptorIDs = Set(AgentRuntimeRegistry.builtInDescriptors.map(\.id))
-        let runtimeIDs = Set(AgentRuntimeID.allCases)
+        let descriptorIDs = AgentRuntimeRegistry.builtInDescriptors.map(\.id)
 
-        #expect(descriptorIDs == runtimeIDs)
+        #expect(Set(descriptorIDs).count == descriptorIDs.count)
+        #expect(Set(descriptorIDs) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
+    }
+
+    @Test("Runtime IDs preserve unknown provider values")
+    func runtimeIDsPreserveUnknownProviderValues() throws {
+        let runtime = try #require(AgentRuntimeID(rawValue: "future_provider"))
+
+        #expect(runtime.rawValue == "future_provider")
+        #expect(runtime.displayName == "Future Provider")
+        #expect(runtime.defaultModels == ["default"])
+        #expect(runtime.supportsAstraRunProtocol == false)
     }
 
     @Test("Provider descriptors carry install, auth, and model metadata")
     func providerDescriptorsCarryRequiredMetadata() {
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             let descriptor = AgentRuntimeRegistry.descriptor(for: runtime)
 
             #expect(!descriptor.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -35,7 +45,7 @@ struct AgentRuntimeExecutionPolicyTests {
     func approvedPlanPolicyCarriesApprovedToolsForEveryRuntime() {
         let approvedTools = ["Read", "Write"]
 
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             let policy = AgentRuntimeExecutionPolicy.approvedPlan(
                 runtime: runtime,
                 currentPermissionPolicy: .restricted,
@@ -72,7 +82,7 @@ struct AgentRuntimeExecutionPolicyTests {
 
     @Test("Runtime permission approval is provider agnostic")
     func runtimePermissionApprovalIsProviderAgnostic() {
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             let policy = AgentRuntimeExecutionPolicy.approvedRuntimePermission(
                 runtime: runtime,
                 allowedTools: ["Read", "Write"]

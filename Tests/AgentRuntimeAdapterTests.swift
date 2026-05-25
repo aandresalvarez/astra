@@ -8,10 +8,10 @@ struct AgentRuntimeAdapterTests {
     func everyRuntimeHasOneRegisteredAdapter() {
         let registeredIDs = AgentRuntimeAdapterRegistry.runtimeIDs
 
-        #expect(Set(registeredIDs) == Set(AgentRuntimeID.allCases))
-        #expect(registeredIDs.count == AgentRuntimeID.allCases.count)
+        #expect(Set(registeredIDs) == Set(AgentRuntimeRegistry.builtInDescriptors.map(\.id)))
+        #expect(registeredIDs.count == AgentRuntimeAdapterRegistry.allAdapters.count)
 
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in registeredIDs {
             let adapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
 
             #expect(adapter.id == runtime)
@@ -29,8 +29,26 @@ struct AgentRuntimeAdapterTests {
         #expect(claude.modelsCheckedAtStorageKey == AppStorageKeys.claudeModelsCheckedAt)
         #expect(copilot.availableModelsStorageKey == AppStorageKeys.copilotAvailableModels)
         #expect(copilot.modelsCheckedAtStorageKey == AppStorageKeys.copilotModelsCheckedAt)
-        #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeID.allCases.count)
-        #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeID.allCases.count)
+        #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
+        #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
+    }
+
+    @Test("Registry rejects unregistered provider IDs without losing the raw value")
+    @MainActor
+    func registryRejectsUnregisteredProviderIDsWithoutLosingRawValue() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let workspace = Workspace(name: "Future", primaryPath: "/tmp/astra-future")
+        let task = AgentTask(
+            title: "Future",
+            goal: "Use future provider",
+            workspace: workspace,
+            runtime: futureRuntime
+        )
+        let configuration = AgentRuntimeConfiguration(defaultRuntimeID: .copilotCLI)
+
+        #expect(futureRuntime.rawValue == "future_cli")
+        #expect(AgentRuntimeAdapterRegistry.adapterIfRegistered(for: futureRuntime) == nil)
+        #expect(configuration.selectedRuntime(for: task) == .copilotCLI)
     }
 
     @Test("Adapters select provider scoped cached model JSON")

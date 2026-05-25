@@ -533,7 +533,7 @@ final class TaskLifecycleCoordinator {
         model: String = "claude-haiku-4-5-20251001",
         limit: Int = 40
     ) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let utilityRuntime = AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(model, for: runtime),

@@ -83,6 +83,8 @@ enum E2ETestSupport {
             if let temporaryRootPath {
                 worker.copilotHome = copilotHomePath(forTemporaryRootPath: temporaryRootPath)
             }
+        default:
+            throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
     }
 

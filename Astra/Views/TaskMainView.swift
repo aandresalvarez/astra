@@ -3896,7 +3896,7 @@ struct TaskMainView: View {
                         let previousRuntime = task.runtimeID
                         let previousModel = task.model
                         task.runtimeID = runtime
-                        let resolved = AgentRuntimeID(rawValue: runtime) ?? TaskExecutionDefaults.runtime
+                        let resolved = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime)
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: task.model,
                             to: resolved,

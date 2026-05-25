@@ -110,7 +110,7 @@ enum WorkspaceCommandService {
         modelContext: ModelContext,
         source: String
     ) -> TemplateTaskCreation {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
             for: runtime

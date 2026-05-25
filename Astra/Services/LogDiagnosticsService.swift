@@ -2052,7 +2052,7 @@ enum LogDiagnosticsService {
     }
 
     private static func settingsSnapshotLines(defaults: UserDefaults = .standard) -> [String] {
-        let runtime = AgentRuntimeID(rawValue: defaults.string(forKey: "defaultRuntimeID") ?? "") ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaults.string(forKey: "defaultRuntimeID"))
         let defaultModel = defaults.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model
         let validationModel = defaults.string(forKey: "validationModel") ?? "claude-haiku-4-5-20251001"
         let budget = defaults.object(forKey: AppStorageKeys.defaultTokenBudget) as? Int ?? TaskExecutionDefaults.tokenBudget

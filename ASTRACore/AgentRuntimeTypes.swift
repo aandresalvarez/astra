@@ -1,8 +1,20 @@
 import Foundation
 
-public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiable {
-    case claudeCode = "claude_code"
-    case copilotCLI = "copilot_cli"
+public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Identifiable {
+    public let rawValue: String
+
+    public init?(rawValue: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        self.rawValue = trimmed
+    }
+
+    private init(staticRawValue: String) {
+        self.rawValue = staticRawValue
+    }
+
+    public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
+    public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
 
     public var id: String { rawValue }
 
@@ -10,6 +22,15 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
         switch self {
         case .claudeCode: "Claude Code"
         case .copilotCLI: "GitHub Copilot CLI"
+        default: rawValue
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { word in
+                guard let first = word.first else { return "" }
+                return first.uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
         }
     }
 
@@ -17,6 +38,7 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
         switch self {
         case .claudeCode: "claude-sonnet-4-6"
         case .copilotCLI: "claude-sonnet-4.6"
+        default: "default"
         }
     }
 
@@ -37,6 +59,8 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
                 "gpt-5-mini",
                 "gpt-4.1"
             ]
+        default:
+            [defaultModel]
         }
     }
 
@@ -44,6 +68,8 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
         switch self {
         case .claudeCode, .copilotCLI:
             true
+        default:
+            false
         }
     }
 }

@@ -214,13 +214,33 @@ enum AgentRuntimeAdapterRegistry {
         ]
     }
 
-    static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
-        switch runtime {
-        case .claudeCode:
-            return ClaudeCodeRuntimeAdapter()
-        case .copilotCLI:
-            return CopilotCLIRuntimeAdapter()
+    static func hasAdapter(for runtime: AgentRuntimeID) -> Bool {
+        adapterIfRegistered(for: runtime) != nil
+    }
+
+    static func registeredRuntime(
+        rawValue: String?,
+        fallback: AgentRuntimeID = TaskExecutionDefaults.runtime
+    ) -> AgentRuntimeID {
+        if let runtime = rawValue.flatMap(AgentRuntimeID.init(rawValue:)),
+           hasAdapter(for: runtime) {
+            return runtime
         }
+        if hasAdapter(for: fallback) {
+            return fallback
+        }
+        return runtimeIDs.first ?? fallback
+    }
+
+    static func adapterIfRegistered(for runtime: AgentRuntimeID) -> (any AgentRuntimeAdapter)? {
+        allAdapters.first { $0.id == runtime }
+    }
+
+    static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
+        guard let adapter = adapterIfRegistered(for: runtime) else {
+            preconditionFailure("No AgentRuntimeAdapter registered for runtime '\(runtime.rawValue)'")
+        }
+        return adapter
     }
 }
 

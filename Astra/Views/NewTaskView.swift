@@ -82,7 +82,7 @@ struct NewTaskView: View {
                         }
                     }
                     .onChange(of: runtimeID) {
-                        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+                        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
                         let previousModel = model
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: model,
@@ -193,7 +193,7 @@ struct NewTaskView: View {
         .onAppear {
             runtimeID = defaultRuntimeID
             model = defaultModel
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -207,7 +207,7 @@ struct NewTaskView: View {
             ).userFacingLevel.rawValue
         }
         .onChange(of: claudeAvailableModels) {
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -216,7 +216,7 @@ struct NewTaskView: View {
             )
         }
         .onChange(of: copilotAvailableModels) {
-            let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
@@ -228,7 +228,7 @@ struct NewTaskView: View {
 
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
-            for: AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime,
+            for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -281,7 +281,7 @@ struct NewTaskView: View {
     }
 
     private func createTask() {
-        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
         let resolvedModel = RuntimeModelAvailability.normalizedModel(
             model,
             for: runtime,

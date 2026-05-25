@@ -84,10 +84,10 @@ struct AgentRuntimeConfiguration {
     }
 
     func selectedRuntime(for task: AgentTask) -> AgentRuntimeID {
-        if let configured = task.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) {
-            return configured
-        }
-        return defaultRuntimeID
+        AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: task.runtimeID,
+            fallback: defaultRuntimeID
+        )
     }
 
     mutating func resolvedCopilotPath() -> String {
