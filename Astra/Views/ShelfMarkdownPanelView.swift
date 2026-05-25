@@ -15,6 +15,7 @@ struct ShelfMarkdownPanelView: View {
     var workspace: Workspace?
     var task: AgentTask?
     var onOpenGeneratedFile: ((String) -> Void)?
+    @AppStorage(AppStorageKeys.markdownShelfShowHiddenPaths) private var showHiddenWorkspacePaths = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
@@ -25,6 +26,7 @@ struct ShelfMarkdownPanelView: View {
     @State private var fileIndexTruncated = false
     @State private var isScanningFiles = false
     @State private var fileSearchText = ""
+    @State private var isFileSearchVisible = false
     @State private var expandedRootIDs: Set<String> = []
     @State private var expandedDirectoryIDs: Set<String> = []
     @State private var fileIndexTask: Task<Void, Never>?
@@ -67,6 +69,9 @@ struct ShelfMarkdownPanelView: View {
             normalizeViewMode()
         }
         .onChange(of: fileScopeSignature) {
+            refreshFileIndex()
+        }
+        .onChange(of: showHiddenWorkspacePaths) {
             refreshFileIndex()
         }
     }
@@ -172,7 +177,7 @@ struct ShelfMarkdownPanelView: View {
 
     private var fileNavigator: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
                     Text("Workspace Paths")
                         .font(Stanford.caption(11).weight(.semibold))
@@ -189,6 +194,22 @@ struct ShelfMarkdownPanelView: View {
                     }
 
                     Button {
+                        withAnimation(fileNavigatorAnimation) {
+                            isFileSearchVisible.toggle()
+                            if !isFileSearchVisible {
+                                fileSearchText = ""
+                            }
+                        }
+                    } label: {
+                        Image(systemName: isFileSearchVisible || isSearchingFiles ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                            .font(Stanford.ui(11, weight: .semibold))
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isFileSearchVisible || isSearchingFiles ? Stanford.lagunita : .secondary)
+                    .help(isFileSearchVisible || isSearchingFiles ? "Hide search" : "Search files")
+
+                    Button {
                         refreshFileIndex()
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -200,12 +221,15 @@ struct ShelfMarkdownPanelView: View {
                     .help("Refresh workspace files")
                 }
 
-                TextField("Search files by name or path", text: $fileSearchText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.caption(12))
+                if shouldShowFileSearchField {
+                    TextField("Search files by name or path", text: $fileSearchText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(Stanford.caption(12))
+                        .transition(.opacity)
+                }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.vertical, shouldShowFileSearchField ? 9 : 8)
             .background(Stanford.cardBackground.opacity(0.45))
 
             Divider()
@@ -294,91 +318,90 @@ struct ShelfMarkdownPanelView: View {
         }
     }
 
+    @ViewBuilder
     private func fileRootSection(_ root: WorkspaceFileRoot) -> some View {
         let rootNodes = filteredNodes(for: root)
         let isExpanded = expandedRootIDs.contains(root.id)
 
-        return VStack(alignment: .leading, spacing: 0) {
-            Button {
-                toggleRoot(root)
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
+        if let node = flattenedFileNode(for: root, rootNodes: rootNodes) {
+            fileNodeRow(node, displayDepth: 0)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    toggleRoot(root)
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(Stanford.ui(9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 12)
 
-                    Image(systemName: root.isDirectory ? (root.kind == .taskFolder ? "tray.full" : "folder") : "doc.text")
-                        .font(Stanford.ui(12, weight: .semibold))
-                        .foregroundStyle(Stanford.lagunita)
-                        .frame(width: 16)
+                        Image(systemName: root.isDirectory ? (root.kind == .taskFolder ? "tray.full" : "folder") : "doc.text")
+                            .font(Stanford.ui(12, weight: .semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                            .frame(width: 16)
 
-                    VStack(alignment: .leading, spacing: 1) {
                         Text(root.title)
                             .font(Stanford.caption(12).weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
 
-                        Text(root.path)
-                            .font(Stanford.caption(10))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+
+                        if !rootNodes.isEmpty {
+                            Text("\(rootNodes.count)")
+                                .font(Stanford.caption(10).weight(.medium))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(root.path)
+                .contextMenu {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(root.path, forType: .string)
+                    } label: {
+                        Label("Copy Path", systemImage: "doc.on.doc")
                     }
 
-                    Spacer(minLength: 0)
-
-                    if !rootNodes.isEmpty {
-                        Text("\(rootNodes.count)")
-                            .font(Stanford.caption(10).weight(.medium))
-                            .foregroundStyle(.tertiary)
+                    Button {
+                        let url = URL(fileURLWithPath: root.path, isDirectory: root.isDirectory)
+                        if root.isDirectory {
+                            NSWorkspace.shared.open(url)
+                        } else {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
+                    } label: {
+                        Label(root.isDirectory ? "Open in Finder" : "Reveal in Finder", systemImage: "folder")
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(root.path, forType: .string)
-                } label: {
-                    Label("Copy Path", systemImage: "doc.on.doc")
-                }
 
-                Button {
-                    let url = URL(fileURLWithPath: root.path, isDirectory: root.isDirectory)
-                    if root.isDirectory {
-                        NSWorkspace.shared.open(url)
+                if isExpanded {
+                    if rootNodes.isEmpty {
+                        Text(fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No files" : "No matches")
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 38)
+                            .padding(.vertical, 7)
                     } else {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }
-                } label: {
-                    Label(root.isDirectory ? "Open in Finder" : "Reveal in Finder", systemImage: "folder")
-                }
-            }
-
-            if isExpanded {
-                if rootNodes.isEmpty {
-                    Text(fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No files" : "No matches")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 38)
-                        .padding(.vertical, 7)
-                } else {
-                    ForEach(visibleNodes(in: rootNodes)) { node in
-                        fileNodeRow(node)
+                        ForEach(visibleNodes(in: rootNodes)) { node in
+                            fileNodeRow(node)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func fileNodeRow(_ node: WorkspaceFileNode) -> some View {
+    private func fileNodeRow(_ node: WorkspaceFileNode, displayDepth: Int? = nil) -> some View {
         let isSelected = session.fileURL?.path == node.path
         let directoryID = directoryExpansionID(node)
         let isExpanded = expandedDirectoryIDs.contains(directoryID)
+        let rowDepth = displayDepth ?? node.depth
 
         return Button {
             if node.isDirectory {
@@ -421,7 +444,7 @@ struct ShelfMarkdownPanelView: View {
                     }
                 }
             }
-            .padding(.leading, CGFloat(node.depth) * 12 + 10)
+            .padding(.leading, CGFloat(rowDepth) * 12 + 10)
             .padding(.trailing, 10)
             .padding(.vertical, 5)
             .contentShape(Rectangle())
@@ -579,6 +602,14 @@ struct ShelfMarkdownPanelView: View {
         !normalizedFileSearchText.isEmpty
     }
 
+    private var browsableFileCount: Int {
+        fileNodes.filter { !$0.isDirectory }.count
+    }
+
+    private var shouldShowFileSearchField: Bool {
+        isFileSearchVisible || isSearchingFiles || browsableFileCount > 8
+    }
+
     private var fileSearchResults: [WorkspaceFileNode] {
         let query = normalizedFileSearchText
         guard !query.isEmpty else { return [] }
@@ -600,15 +631,19 @@ struct ShelfMarkdownPanelView: View {
     private func refreshFileIndex() {
         fileIndexTask?.cancel()
 
-        let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
+        let roots = orderedFileRoots(WorkspaceFileIndexService.roots(workspace: workspace, task: task))
         fileRoots = roots
         expandedRootIDs = Set(roots.map(\.id))
         isScanningFiles = true
         fileIndexErrors = []
         fileIndexTruncated = false
+        let includeHiddenPaths = showHiddenWorkspacePaths
 
         fileIndexTask = Task {
-            let snapshot = await WorkspaceFileIndexService.scan(roots: roots)
+            let snapshot = await WorkspaceFileIndexService.scan(
+                roots: roots,
+                includeHidden: includeHiddenPaths
+            )
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 fileRoots = snapshot.roots
@@ -616,8 +651,54 @@ struct ShelfMarkdownPanelView: View {
                 fileIndexErrors = snapshot.errors
                 fileIndexTruncated = snapshot.isTruncated
                 isScanningFiles = false
+                autoOpenFirstFileIfNeeded(nodes: snapshot.nodes)
             }
         }
+    }
+
+    private func orderedFileRoots(_ roots: [WorkspaceFileRoot]) -> [WorkspaceFileRoot] {
+        guard task != nil else { return roots }
+        return roots.enumerated().sorted { lhs, rhs in
+            let lhsPriority = fileRootPriority(lhs.element.kind)
+            let rhsPriority = fileRootPriority(rhs.element.kind)
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    private func fileRootPriority(_ kind: WorkspaceFileRoot.Kind) -> Int {
+        switch kind {
+        case .taskFolder:
+            0
+        case .input:
+            1
+        case .primary:
+            2
+        case .additional:
+            3
+        }
+    }
+
+    private func autoOpenFirstFileIfNeeded(nodes: [WorkspaceFileNode]) {
+        guard !session.hasFile,
+              let node = nodes.first(where: { !$0.isDirectory }) else {
+            return
+        }
+        session.load(URL(fileURLWithPath: node.path))
+        expandFileNavigator(to: node.path, isFile: true)
+    }
+
+    private func flattenedFileNode(
+        for root: WorkspaceFileRoot,
+        rootNodes: [WorkspaceFileNode]
+    ) -> WorkspaceFileNode? {
+        guard !isSearchingFiles else { return nil }
+        let fileNodes = rootNodes.filter { !$0.isDirectory }
+        guard fileNodes.count == 1,
+              rootNodes.allSatisfy({ !$0.isDirectory }) else {
+            return nil
+        }
+        return fileNodes.first
     }
 
     private func filteredNodes(for root: WorkspaceFileRoot) -> [WorkspaceFileNode] {
@@ -1009,6 +1090,14 @@ struct ShelfMarkdownPanelView: View {
 
             Divider()
 
+            Toggle(isOn: $showHiddenWorkspacePaths) {
+                Label(
+                    "Show hidden paths",
+                    systemImage: showHiddenWorkspacePaths ? "eye" : "eye.slash"
+                )
+            }
+            .help("Show dotfiles and tool folders such as .astra, .codex, and .claude. Internal task history stays hidden.")
+
             Toggle(isOn: $wrapLines) {
                 Label("Wrap lines", systemImage: wrapLines ? "text.word.spacing" : "text.alignleft")
             }
@@ -1053,12 +1142,22 @@ struct ShelfMarkdownPanelView: View {
         if let errorMessage = session.errorMessage {
             fileUnavailableView(errorMessage)
         } else if !session.hasFile {
-            ContentUnavailableView {
-                Label("No file selected", systemImage: "doc.text")
-            } description: {
-                Text("Choose a file from the workspace paths to preview it here.")
+            VStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(Stanford.ui(28, weight: .regular))
+                    .foregroundStyle(.tertiary)
+
+                Text("No file selected")
+                    .font(Stanford.body(16).weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("Choose a file to preview.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, 120)
+            .frame(maxHeight: .infinity, alignment: .top)
         } else if let document = session.selectedDocument, shouldGateLargePreview(document) {
             largeFileOverview(document)
         } else if let document = session.selectedDocument, document.kind == .image {

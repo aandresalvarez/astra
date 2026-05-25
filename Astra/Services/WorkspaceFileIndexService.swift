@@ -114,6 +114,7 @@ enum WorkspaceFileIndexService {
         roots: [WorkspaceFileRoot],
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
+        includeHidden: Bool = false,
         fileManager: FileManager = .default
     ) async -> WorkspaceFileIndexSnapshot {
         let scanTask = Task(priority: .utility) {
@@ -121,6 +122,7 @@ enum WorkspaceFileIndexService {
                 roots: roots,
                 maxDepth: maxDepth,
                 maxNodes: maxNodes,
+                includeHidden: includeHidden,
                 fileManager: fileManager
             )
         }
@@ -136,6 +138,7 @@ enum WorkspaceFileIndexService {
         roots: [WorkspaceFileRoot],
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
+        includeHidden: Bool = false,
         fileManager: FileManager = .default
     ) -> WorkspaceFileIndexSnapshot {
         var nodes: [WorkspaceFileNode] = []
@@ -148,6 +151,7 @@ enum WorkspaceFileIndexService {
                 root,
                 maxDepth: maxDepth,
                 maxNodes: maxNodes,
+                includeHidden: includeHidden,
                 fileManager: fileManager,
                 nodes: &nodes,
                 errors: &errors,
@@ -184,6 +188,7 @@ enum WorkspaceFileIndexService {
         _ root: WorkspaceFileRoot,
         maxDepth: Int,
         maxNodes: Int,
+        includeHidden: Bool,
         fileManager: FileManager,
         nodes: inout [WorkspaceFileNode],
         errors: inout [WorkspaceFileIndexError],
@@ -221,7 +226,13 @@ enum WorkspaceFileIndexService {
             let isDirectory = values?.isDirectory == true
             let name = url.lastPathComponent
 
-            if shouldSkip(relativePath: relativePath, name: name, isDirectory: isDirectory) {
+            if shouldSkip(
+                relativePath: relativePath,
+                name: name,
+                isDirectory: isDirectory,
+                rootKind: root.kind,
+                includeHidden: includeHidden
+            ) {
                 if isDirectory {
                     enumerator.skipDescendants()
                 }
@@ -286,13 +297,49 @@ enum WorkspaceFileIndexService {
         }
     }
 
-    private static func shouldSkip(relativePath: String, name: String, isDirectory: Bool) -> Bool {
+    private static func shouldSkip(
+        relativePath: String,
+        name: String,
+        isDirectory: Bool,
+        rootKind: WorkspaceFileRoot.Kind,
+        includeHidden: Bool
+    ) -> Bool {
         let normalized = relativePath.replacingOccurrences(of: "\\", with: "/")
-        if normalized == ".astra/tasks" || normalized.hasPrefix(".astra/tasks/") {
+        if isInternalWorkspacePath(normalized, rootKind: rootKind) {
+            return true
+        }
+        if rootKind == .taskFolder,
+           !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: normalized) {
+            return true
+        }
+        if !includeHidden && hasHiddenPathComponent(normalized) {
             return true
         }
         guard isDirectory else { return false }
         return ignoredDirectoryNames.contains(name)
+    }
+
+    private static func isInternalWorkspacePath(
+        _ relativePath: String,
+        rootKind: WorkspaceFileRoot.Kind
+    ) -> Bool {
+        if rootKind != .taskFolder,
+           relativePath == "tasks" || relativePath.hasPrefix("tasks/") {
+            return true
+        }
+        if relativePath == ".astra/tasks" || relativePath.hasPrefix(".astra/tasks/") {
+            return true
+        }
+        if relativePath == ".agentflow/tasks" || relativePath.hasPrefix(".agentflow/tasks/") {
+            return true
+        }
+        return false
+    }
+
+    private static func hasHiddenPathComponent(_ relativePath: String) -> Bool {
+        relativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .contains { $0.hasPrefix(".") }
     }
 
     private static func relativePath(for path: String, rootPath: String) -> String {
