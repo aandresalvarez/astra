@@ -2240,7 +2240,7 @@ struct ContentView: View {
                 goal: "UI test task",
                 workspace: ws,
                 tokenBudget: TaskExecutionDefaults.tokenBudget,
-                model: TaskExecutionDefaults.model,
+                model: RuntimeModelAvailability.defaultModel(for: runtime),
                 runtime: runtime
             )
             task.status = .queued

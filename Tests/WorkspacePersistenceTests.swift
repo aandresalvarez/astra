@@ -369,6 +369,68 @@ struct WorkspacePersistenceTests {
         #expect(importedSchedule.routinePaths == schedule.routinePaths)
     }
 
+    @Test("task import stores sanitized runtime ID")
+    @MainActor
+    func taskImportStoresSanitizedRuntimeID() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Runtime",
+            path: "/tmp/astra_import_runtime_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let taskID = UUID().uuidString
+        let now = Date(timeIntervalSince1970: 1_777_001_000)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: taskID,
+                title: "Imported Copilot",
+                goal: "Preserve sanitized runtime",
+                status: TaskStatus.completed.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
+                runtimeID: "  \(AgentRuntimeID.copilotCLI.rawValue)\n",
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: nil,
+                testCommand: nil,
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.id.uuidString == taskID)
+        #expect(importedTask.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(importedTask.resolvedRuntimeID == .copilotCLI)
+    }
+
     @Test("legacy v4 configs use name fallback only when IDs are absent")
     @MainActor
     func legacyV4NameFallback() throws {

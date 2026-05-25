@@ -1256,7 +1256,7 @@ enum WorkspaceConfigManager {
         task.constraints = config.constraints
         task.acceptanceCriteria = config.acceptanceCriteria
         task.tokensUsed = config.tokensUsed
-        task.runtimeID = config.runtimeID ?? AgentRuntimeID.claudeCode.rawValue
+        task.runtimeID = importedRuntime.rawValue
         task.costUSD = config.costUSD
         task.sessionId = config.sessionId
         task.maxTurns = config.maxTurns
