@@ -2232,12 +2232,14 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
 
         if args.contains("--uitesting-seed") {
+            let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
             let task = AgentTask(
                 title: "Seeded Task",
                 goal: "UI test task",
                 workspace: ws,
                 tokenBudget: TaskExecutionDefaults.tokenBudget,
-                model: TaskExecutionDefaults.model
+                model: TaskExecutionDefaults.model,
+                runtime: runtime
             )
             task.status = .queued
             modelContext.insert(task)

@@ -66,9 +66,9 @@ struct ContentExternalRouteResolver {
             goal: trimmedGoal,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
+            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime),
+            runtime: runtime
         )
-        task.runtimeID = runtime.rawValue
         task.status = shouldRun ? .queued : .draft
         modelContext.insert(task)
 

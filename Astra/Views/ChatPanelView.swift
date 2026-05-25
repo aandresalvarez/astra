@@ -1440,9 +1440,9 @@ struct ChatPanelView: View {
             goal: input,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: model
+            model: model,
+            runtime: runtime
         )
-        task.runtimeID = runtime.rawValue
         task.status = .queued
         task.inputs = attachedFiles
         task.skills = selectedSkills
@@ -1606,9 +1606,9 @@ struct ChatPanelView: View {
             goal: spec.goal,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: model
+            model: model,
+            runtime: runtime
         )
-        task.runtimeID = runtime.rawValue
         task.status = .queued
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
@@ -2388,9 +2388,9 @@ struct ChatPanelView: View {
                 goal: messages.first?.content ?? "",
                 workspace: workspace,
                 tokenBudget: defaultBudget,
-                model: model
+                model: model,
+                runtime: runtime
             )
-            draft.runtimeID = runtime.rawValue
             draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles

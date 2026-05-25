@@ -1237,12 +1237,14 @@ enum WorkspaceConfigManager {
         toolsByID: inout [String: LocalTool],
         toolsByName: inout [String: LocalTool]
     ) {
+        let importedRuntime = config.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) ?? .claudeCode
         let task = AgentTask(
             title: config.title,
             goal: config.goal,
             workspace: workspace,
             tokenBudget: config.tokenBudget,
-            model: config.model
+            model: config.model,
+            runtime: importedRuntime
         )
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             task.id = id

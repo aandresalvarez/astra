@@ -541,6 +541,7 @@ final class AgentRuntimeWorker {
                 workspace: task.workspace,
                 tokenBudget: task.tokenBudget,
                 model: task.model,
+                runtime: task.resolvedRuntimeID,
                 isolationStrategy: task.isolationStrategy,
                 validationStrategy: task.validationStrategy
             )

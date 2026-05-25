@@ -294,10 +294,10 @@ struct NewTaskView: View {
             workspace: workspace,
             tokenBudget: tokenBudget,
             model: resolvedModel,
+            runtime: runtime,
             isolationStrategy: isolationStrategy,
             validationStrategy: validationStrategy
         )
-        task.runtimeID = runtime.rawValue
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText
