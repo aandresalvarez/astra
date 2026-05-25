@@ -40,6 +40,23 @@ enum TaskPlanFallbackBuilder {
 }
 
 enum TaskPlanService {
+    static func stateMutationCode(for eventType: String) -> Int? {
+        switch eventType {
+        case TaskPlanEventTypes.created: 0
+        case TaskPlanEventTypes.updated: 1
+        case TaskPlanEventTypes.approved: 2
+        case TaskPlanEventTypes.executionStarted: 3
+        case TaskPlanEventTypes.stepStarted: 4
+        case TaskPlanEventTypes.stepCompleted: 5
+        case TaskPlanEventTypes.stepBlocked: 6
+        case TaskPlanEventTypes.stepSkipped: 7
+        case TaskPlanEventTypes.executionCompleted: 8
+        case TaskPlanEventTypes.executionFailed: 9
+        case TaskPlanEventTypes.cancelled: 10
+        default: nil
+        }
+    }
+
     static func currentState(for task: AgentTask) -> TaskPlanState {
         reconstruct(for: task)
     }
@@ -176,20 +193,7 @@ enum TaskPlanService {
     }
 
     private static func reconstructionPriority(for eventType: String) -> Int {
-        switch eventType {
-        case TaskPlanEventTypes.created: 0
-        case TaskPlanEventTypes.updated: 1
-        case TaskPlanEventTypes.approved: 2
-        case TaskPlanEventTypes.executionStarted: 3
-        case TaskPlanEventTypes.stepStarted: 4
-        case TaskPlanEventTypes.stepCompleted: 5
-        case TaskPlanEventTypes.stepBlocked: 6
-        case TaskPlanEventTypes.stepSkipped: 7
-        case TaskPlanEventTypes.executionCompleted: 8
-        case TaskPlanEventTypes.executionFailed: 9
-        case TaskPlanEventTypes.cancelled: 10
-        default: 20
-        }
+        stateMutationCode(for: eventType) ?? 20
     }
 
     static func approvedPlan(for task: AgentTask) -> TaskPlanPayload? {

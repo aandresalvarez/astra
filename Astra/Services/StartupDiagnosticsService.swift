@@ -36,7 +36,10 @@ enum StartupDiagnosticsService {
         let process = ProcessInfo.processInfo
         let bundle = Bundle.main
         let appSupportDirectory = WorkspaceRecoveryService.applicationSupportDirectory
-        let workspaceRoot = URL(fileURLWithPath: AppChannel.current.defaultWorkspacesRoot, isDirectory: true)
+        let workspaceRoot = URL(
+            fileURLWithPath: AppChannel.current.defaultWorkspacesRoot(fileManager: fileManager),
+            isDirectory: true
+        )
         let logDirectory = AppLogger.mainLogFile.deletingLastPathComponent()
         let latestCrash = crashReports.first
 
@@ -59,7 +62,7 @@ enum StartupDiagnosticsService {
             "app_support_dir": CrashDiagnosticsService.userFacingPath(appSupportDirectory, fileManager: fileManager),
             "app_support_exists": String(fileManager.fileExists(atPath: appSupportDirectory.path)),
             "workspace_root": CrashDiagnosticsService.userFacingPath(workspaceRoot, fileManager: fileManager),
-            "workspace_root_exists": String(fileManager.fileExists(atPath: workspaceRoot.path)),
+            "workspace_root_exists": startupSafeExists(at: workspaceRoot, fileManager: fileManager),
             "log_dir": CrashDiagnosticsService.userFacingPath(logDirectory, fileManager: fileManager),
             "log_dir_exists": String(fileManager.fileExists(atPath: logDirectory.path)),
             "main_log_exists": String(fileManager.fileExists(atPath: AppLogger.mainLogFile.path)),
@@ -93,6 +96,24 @@ enum StartupDiagnosticsService {
         }
 
         return fields
+    }
+
+    private static func startupSafeExists(at url: URL, fileManager: FileManager) -> String {
+        if isProtectedUserContentPath(url, fileManager: fileManager) {
+            return "not_checked_protected_location"
+        }
+        return String(fileManager.fileExists(atPath: url.path))
+    }
+
+    private static func isProtectedUserContentPath(_ url: URL, fileManager: FileManager) -> Bool {
+        let path = url.standardizedFileURL.path
+        let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL
+        let protectedRoots = ["Desktop", "Documents", "Downloads"].map {
+            home.appendingPathComponent($0, isDirectory: true).path
+        }
+        return protectedRoots.contains { root in
+            path == root || path.hasPrefix(root + "/")
+        }
     }
 
     private static var architectureName: String {

@@ -275,7 +275,7 @@ public struct ASTRAApp: App {
             )
             if !isUITesting {
                 if !skipWorkspaceRecovery {
-                    WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                    WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContainer.mainContext)
                 }
                 let capabilityLibrary = CapabilityLibrary()
                 try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
@@ -323,7 +323,7 @@ public struct ASTRAApp: App {
                 )
                 if !isUITesting {
                     if !skipWorkspaceRecovery {
-                        WorkspaceRecoveryService.recoverMissingWorkspaces(modelContext: modelContainer.mainContext)
+                        WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContainer.mainContext)
                     }
                     let capabilityLibrary = CapabilityLibrary()
                     try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)

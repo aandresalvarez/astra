@@ -2151,15 +2151,18 @@ struct TaskThreadSnapshotTests {
             .appendingPathComponent("astra-workspace-file-scan-\(UUID().uuidString)")
         let sources = root.appendingPathComponent("Sources", isDirectory: true)
         let nodeModules = root.appendingPathComponent("node_modules/pkg", isDirectory: true)
+        let legacyTasks = root.appendingPathComponent("tasks/ABC12345", isDirectory: true)
         let taskInternals = root.appendingPathComponent(".astra/tasks/ABC12345", isDirectory: true)
         let outside = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-workspace-file-outside-\(UUID().uuidString).txt")
 
         try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: nodeModules, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: legacyTasks, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: taskInternals, withIntermediateDirectories: true)
         try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
         try "ignored".write(to: nodeModules.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: legacyTasks.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
         try "ignored".write(to: taskInternals.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
         try "secret".write(to: outside, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(
@@ -2185,9 +2188,109 @@ struct TaskThreadSnapshotTests {
         #expect(paths.contains("Sources/App.swift"))
         #expect(!paths.contains("node_modules"))
         #expect(!paths.contains("node_modules/pkg/index.js"))
+        #expect(!paths.contains("tasks"))
+        #expect(!paths.contains("tasks/ABC12345/current_state.md"))
         #expect(!paths.contains(".astra/tasks/ABC12345/current_state.md"))
         #expect(!paths.contains("outside.txt"))
         #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .files)
+    }
+
+    @Test("Workspace file scan hides dot paths unless requested")
+    func workspaceFileScanHidesDotPathsUnlessRequested() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-hidden-paths-\(UUID().uuidString)")
+        let astraSupport = root.appendingPathComponent(".astra", isDirectory: true)
+        let codexSupport = root.appendingPathComponent(".codex", isDirectory: true)
+        let claudeSupport = root.appendingPathComponent(".claude", isDirectory: true)
+        let taskInternals = astraSupport.appendingPathComponent("tasks/ABC12345", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: astraSupport, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codexSupport, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claudeSupport, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: taskInternals, withIntermediateDirectories: true)
+        try "swift".write(to: root.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "{}".write(to: root.appendingPathComponent(".astra-workspace.json"), atomically: true, encoding: .utf8)
+        try "{}".write(to: astraSupport.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try "state".write(to: codexSupport.appendingPathComponent("state.json"), atomically: true, encoding: .utf8)
+        try "settings".write(to: claudeSupport.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        try "internal".write(to: taskInternals.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+
+        let defaultPaths = Set(WorkspaceFileIndexService.scanSync(roots: [rootModel]).nodes.map(\.relativePath))
+        #expect(defaultPaths == ["App.swift"])
+
+        let hiddenPaths = Set(WorkspaceFileIndexService.scanSync(
+            roots: [rootModel],
+            includeHidden: true
+        ).nodes.map(\.relativePath))
+
+        #expect(hiddenPaths.contains("App.swift"))
+        #expect(hiddenPaths.contains(".astra"))
+        #expect(hiddenPaths.contains(".astra/config.json"))
+        #expect(hiddenPaths.contains(".astra-workspace.json"))
+        #expect(hiddenPaths.contains(".codex/state.json"))
+        #expect(hiddenPaths.contains(".claude/settings.json"))
+        #expect(!hiddenPaths.contains(".astra/tasks"))
+        #expect(!hiddenPaths.contains(".astra/tasks/ABC12345/current_state.md"))
+    }
+
+    @Test("Workspace file scan hides task folder runtime documents")
+    func workspaceFileScanHidesTaskFolderRuntimeDocuments() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-folder-runtime-files-\(UUID().uuidString)")
+        let nested = root.appendingPathComponent("nested", isDirectory: true)
+        let outputs = root.appendingPathComponent("outputs", isDirectory: true)
+        let turns = root.appendingPathComponent("turns", isDirectory: true)
+        let runtimeBin = root.appendingPathComponent(".runtime-bin", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: turns, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try "# Report".write(to: root.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
+        try "details".write(to: nested.appendingPathComponent("details.txt"), atomically: true, encoding: .utf8)
+        try "state".write(to: root.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
+        try "{}".write(to: root.appendingPathComponent("current_state.json"), atomically: true, encoding: .utf8)
+        try "history".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
+        try "turn".write(to: root.appendingPathComponent("turn_001.md"), atomically: true, encoding: .utf8)
+        try "output".write(to: outputs.appendingPathComponent("turn_001.md"), atomically: true, encoding: .utf8)
+        try "turn".write(to: turns.appendingPathComponent("turn_002.md"), atomically: true, encoding: .utf8)
+        try "shim".write(to: runtimeBin.appendingPathComponent("astra-browser"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "taskFolder:\(root.standardizedFileURL.path)",
+            kind: .taskFolder,
+            title: "Task Folder",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+
+        let paths = Set(WorkspaceFileIndexService.scanSync(
+            roots: [rootModel],
+            includeHidden: true
+        ).nodes.map(\.relativePath))
+
+        #expect(paths.contains("report.md"))
+        #expect(paths.contains("nested"))
+        #expect(paths.contains("nested/details.txt"))
+        #expect(!paths.contains("current_state.md"))
+        #expect(!paths.contains("current_state.json"))
+        #expect(!paths.contains("session_history.md"))
+        #expect(!paths.contains("turn_001.md"))
+        #expect(!paths.contains("outputs"))
+        #expect(!paths.contains("outputs/turn_001.md"))
+        #expect(!paths.contains("turns"))
+        #expect(!paths.contains("turns/turn_002.md"))
+        #expect(!paths.contains(".runtime-bin/astra-browser"))
     }
 
     @Test("Generated file preview prefers task index HTML")

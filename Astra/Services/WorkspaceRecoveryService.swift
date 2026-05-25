@@ -4,6 +4,18 @@ import SwiftData
 
 enum WorkspaceRecoveryService {
     static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"
+    private static let maxRecoveryScanDirectories = 2_500
+    private static let skippedRecoveryDirectoryNames: Set<String> = [
+        "node_modules",
+        "DerivedData",
+        "Pods",
+        "target",
+        "venv"
+    ]
+
+    private struct LoadedWorkspaceConfig: @unchecked Sendable {
+        var config: WorkspaceConfigManager.WorkspaceConfig
+    }
 
     struct LegacyStoreRepairResult: Equatable {
         var validationStrategyGoalCheckRows = 0
@@ -243,6 +255,73 @@ enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true
     ) -> Int {
         let configs = discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+        return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
+    }
+
+    static func recoverMissingWorkspacesAfterLaunch(
+        modelContext: ModelContext,
+        extraRoots: [String] = [],
+        includeDefaultRoots: Bool = true
+    ) {
+        Task { @MainActor in
+            if extraRoots.isEmpty,
+               includeDefaultRoots,
+               !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
+                return
+            }
+            let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled else { return [] }
+                    return discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                }
+                return await group.next() ?? []
+            }
+            let loadedConfigs = await loadWorkspaceConfigs(configs)
+            guard !Task.isCancelled else { return }
+            _ = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs)
+        }
+    }
+
+    private static func loadWorkspaceConfigs(_ configFiles: [URL]) async -> [LoadedWorkspaceConfig] {
+        await withTaskGroup(of: LoadedWorkspaceConfig?.self, returning: [LoadedWorkspaceConfig].self) { group in
+            for configURL in configFiles {
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        var config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                        config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                        return LoadedWorkspaceConfig(config: config)
+                    } catch {
+                        AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                            "config_file": configURL.lastPathComponent,
+                            "error_type": String(describing: type(of: error))
+                        ], level: .error)
+                        return nil
+                    }
+                }
+            }
+
+            var loadedConfigs: [LoadedWorkspaceConfig] = []
+            for await loaded in group {
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    group.cancelAll()
+                    return loadedConfigs
+                }
+                if let loaded {
+                    loadedConfigs.append(loaded)
+                }
+            }
+            return loadedConfigs
+        }
+    }
+
+    @discardableResult
+    private static func recoverMissingWorkspaces(
+        modelContext: ModelContext,
+        configFiles configs: [URL]
+    ) -> Int {
         guard !configs.isEmpty else { return 0 }
 
         var imported = 0
@@ -274,22 +353,58 @@ enum WorkspaceRecoveryService {
             }
         }
 
-        if imported > 0 {
-            do {
-                try modelContext.save()
-            } catch {
-                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
-                    "operation": "save_recovered_workspaces",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
-            let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
-            UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
-            AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
-                "imported_count": String(imported)
-            ])
-        }
+        saveRecoveryImportCount(imported, modelContext: modelContext)
         return imported
+    }
+
+    @discardableResult
+    private static func recoverMissingWorkspaces(
+        modelContext: ModelContext,
+        loadedConfigs configs: [LoadedWorkspaceConfig]
+    ) -> Int {
+        guard !configs.isEmpty else { return 0 }
+
+        var imported = 0
+        let existing = fetchExistingWorkspaces(modelContext: modelContext)
+        var existingIDs = Set(existing.map { $0.id.uuidString })
+        var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
+
+        for loaded in configs {
+            let config = loaded.config
+            let configID = config.id
+            let configPath = normalizePath(config.primaryPath)
+            if let configID, existingIDs.contains(configID) {
+                continue
+            }
+            if !configPath.isEmpty, existingPaths.contains(configPath) {
+                continue
+            }
+            let workspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+            existingIDs.insert(workspace.id.uuidString)
+            existingPaths.insert(normalizePath(workspace.primaryPath))
+            imported += 1
+        }
+
+        saveRecoveryImportCount(imported, modelContext: modelContext)
+        return imported
+    }
+
+    private static func saveRecoveryImportCount(_ imported: Int, modelContext: ModelContext) {
+        guard imported > 0 else { return }
+
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "save_recovered_workspaces",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+        let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
+        UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
+        AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
+            "imported_count": String(imported)
+        ])
     }
 
     static func discoverWorkspaceConfigFiles(
@@ -308,8 +423,10 @@ enum WorkspaceRecoveryService {
         var seen = Set<String>()
         var configs: [URL] = []
         for root in roots {
+            guard !Task.isCancelled else { break }
             let url = URL(fileURLWithPath: expandTilde(root))
             for config in scanForWorkspaceConfigs(root: url, maxDepth: 4) {
+                guard !Task.isCancelled else { break }
                 let path = normalizePath(config.path)
                 guard !seen.contains(path) else { continue }
                 seen.insert(path)
@@ -418,7 +535,20 @@ enum WorkspaceRecoveryService {
     }
 
     private static func scanForWorkspaceConfigs(root: URL, maxDepth: Int) -> [URL] {
+        var remainingBudget = maxRecoveryScanDirectories
+        return scanForWorkspaceConfigs(root: root, maxDepth: maxDepth, remainingBudget: &remainingBudget)
+    }
+
+    private static func scanForWorkspaceConfigs(
+        root: URL,
+        maxDepth: Int,
+        remainingBudget: inout Int
+    ) -> [URL] {
+        guard !Task.isCancelled else { return [] }
         guard maxDepth >= 0 else { return [] }
+        guard remainingBudget > 0 else { return [] }
+        remainingBudget -= 1
+
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
@@ -435,15 +565,28 @@ enum WorkspaceRecoveryService {
         guard maxDepth > 0,
               let children = try? fileManager.contentsOfDirectory(
                 at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey]
+                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey]
               ) else {
             return results
         }
 
         for child in children {
-            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey])
-            guard values?.isDirectory == true, values?.isHidden != true else { continue }
-            results.append(contentsOf: scanForWorkspaceConfigs(root: child, maxDepth: maxDepth - 1))
+            guard !Task.isCancelled else { break }
+            guard remainingBudget > 0 else { break }
+            guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
+            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])
+            guard values?.isDirectory == true,
+                  values?.isHidden != true,
+                  values?.isPackage != true else {
+                continue
+            }
+            results.append(
+                contentsOf: scanForWorkspaceConfigs(
+                    root: child,
+                    maxDepth: maxDepth - 1,
+                    remainingBudget: &remainingBudget
+                )
+            )
         }
         return results
     }

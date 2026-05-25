@@ -250,6 +250,47 @@ struct TaskPlanServiceTests {
         #expect(state.plan?.steps[1].doneSignal == "Created styles.css with black and white design")
     }
 
+    @Test("Plan cache signature changes for same-length plan payload edits")
+    func planCacheSignatureTracksSameLengthPayloadEdits() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let event = TaskEvent(task: task, type: TaskPlanEventTypes.created, payload: "aaaa")
+        task.events.append(event)
+        let before = TaskPlanStateCacheSignature(task: task)
+
+        event.payload = "bbbb"
+        let after = TaskPlanStateCacheSignature(task: task)
+
+        #expect(after != before)
+    }
+
+    @Test("Plan cache signature ignores unrelated event insertion positions")
+    func planCacheSignatureIgnoresUnrelatedEventInsertionPositions() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let event = TaskEvent(task: task, type: TaskPlanEventTypes.created, payload: "aaaa")
+        task.events.append(event)
+        let before = TaskPlanStateCacheSignature(task: task)
+
+        let unrelatedEvent = TaskEvent(task: task, type: "agent.response", payload: "noise")
+        task.events.insert(unrelatedEvent, at: 0)
+        let after = TaskPlanStateCacheSignature(task: task)
+
+        #expect(after == before)
+    }
+
+    @Test("Plan cache signature changes for same-length run output edits")
+    func planCacheSignatureTracksSameLengthRunOutputEdits() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let run = TaskRun(task: task)
+        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"aaaa"}"#
+        task.runs.append(run)
+        let before = TaskPlanStateCacheSignature(task: task)
+
+        run.output = #"ASTRA_EVENT {"type":"plan.step.completed","summary":"bbbb"}"#
+        let after = TaskPlanStateCacheSignature(task: task)
+
+        #expect(after != before)
+    }
+
     private func encode<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

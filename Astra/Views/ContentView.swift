@@ -48,6 +48,16 @@ private enum WorkspaceCanvasItem: Equatable {
     }
 }
 
+private enum WorkspaceRightPanel: Equatable {
+    case canvas(WorkspaceCanvasItem)
+    case context(UUID)
+
+    var isContext: Bool {
+        if case .context = self { return true }
+        return false
+    }
+}
+
 private struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false
@@ -261,32 +271,6 @@ private extension View {
     }
 }
 
-// Width-driven panel transition for the right-docked Shelf / Control Panel:
-// panel content is rendered at its full natural width and revealed from the
-// trailing edge inward. That keeps child content moving with the panel's
-// right-edge attachment instead of appearing to wipe in from the opposite side.
-private struct WidthRevealModifier: ViewModifier, Animatable {
-    var progress: CGFloat
-
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .mask {
-                GeometryReader { proxy in
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        Rectangle()
-                            .frame(width: max(0, proxy.size.width * progress))
-                    }
-                }
-            }
-    }
-}
-
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
@@ -382,7 +366,6 @@ struct ContentView: View {
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
-    @State private var panelTransitionGeneration = 0
     @State private var cachedHasCanvasContent = false
     @State private var generatedHTMLPreviewTask: Task<Void, Never>?
     @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
@@ -592,11 +575,7 @@ struct ContentView: View {
     }
 
     private var panelTransitionAnimation: Animation? {
-        reduceMotion ? nil : .smooth(duration: 0.3, extraBounce: 0.0)
-    }
-
-    private var panelHandoffDelay: TimeInterval {
-        reduceMotion ? 0 : 0.09
+        AstraMotion.rightPanel(reduceMotion: reduceMotion)
     }
 
     private var rightRailInspectorBinding: Binding<Bool> {
@@ -796,7 +775,6 @@ struct ContentView: View {
                 if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
                     return
                 }
-                let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
@@ -1023,25 +1001,9 @@ struct ContentView: View {
         editingSSHConnection = connection
     }
 
-    private func nextPanelTransitionGeneration() -> Int {
-        panelTransitionGeneration += 1
-        return panelTransitionGeneration
-    }
-
     private func animatePanelChange(_ changes: () -> Void) {
         withAnimation(panelTransitionAnimation) {
             changes()
-        }
-    }
-
-    private func schedulePanelHandoff(_ generation: Int, _ changes: @escaping () -> Void) {
-        guard panelHandoffDelay > 0 else {
-            animatePanelChange(changes)
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + panelHandoffDelay) {
-            guard panelTransitionGeneration == generation else { return }
-            animatePanelChange(changes)
         }
     }
 
@@ -1122,7 +1084,6 @@ struct ContentView: View {
     }
 
     private func hideRightSidePanelsForCompactSidebar() {
-        let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
             isWorkspaceRightRailVisible = false
@@ -1131,7 +1092,6 @@ struct ContentView: View {
 
     private func revealSidebarFromCompactLayout() {
         didAutoHideSidebarForCompactPanels = false
-        let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
             isWorkspaceRightRailVisible = false
@@ -1143,7 +1103,6 @@ struct ContentView: View {
         if isPresented {
             presentRightRail()
         } else {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 isWorkspaceRightRailVisible = false
             }
@@ -1151,34 +1110,16 @@ struct ContentView: View {
     }
 
     private func presentRightRail() {
-        let generation = nextPanelTransitionGeneration()
-        if activeWorkspaceCanvasItem != nil {
-            animatePanelChange {
-                activeWorkspaceCanvasItem = nil
-            }
-            schedulePanelHandoff(generation) {
-                isWorkspaceRightRailVisible = true
-            }
-        } else {
-            animatePanelChange {
-                isWorkspaceRightRailVisible = true
-            }
+        animatePanelChange {
+            activeWorkspaceCanvasItem = nil
+            isWorkspaceRightRailVisible = true
         }
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
-        let generation = nextPanelTransitionGeneration()
-        if isWorkspaceRightRailVisible {
-            animatePanelChange {
-                isWorkspaceRightRailVisible = false
-            }
-            schedulePanelHandoff(generation) {
-                activeWorkspaceCanvasItem = item
-            }
-        } else {
-            animatePanelChange {
-                activeWorkspaceCanvasItem = item
-            }
+        animatePanelChange {
+            isWorkspaceRightRailVisible = false
+            activeWorkspaceCanvasItem = item
         }
     }
 
@@ -1192,7 +1133,6 @@ struct ContentView: View {
 
     private func toggleWorkspaceCanvas() {
         guard hasWorkspaceCanvasContent else {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
                     activeWorkspaceCanvasItem = nil
@@ -1201,7 +1141,6 @@ struct ContentView: View {
             return
         }
         if activeWorkspaceCanvasItem == .plan {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 activeWorkspaceCanvasItem = nil
             }
@@ -1213,7 +1152,6 @@ struct ContentView: View {
     private func toggleBrowserCanvas() {
         currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 activeWorkspaceCanvasItem = nil
             }
@@ -1237,7 +1175,6 @@ struct ContentView: View {
     private func toggleMarkdownCanvas() {
         guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
             if activeWorkspaceCanvasItem == .markdown {
-                let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
@@ -1252,7 +1189,6 @@ struct ContentView: View {
             }
         }
         if activeWorkspaceCanvasItem == .markdown {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 activeWorkspaceCanvasItem = nil
             }
@@ -1264,7 +1200,6 @@ struct ContentView: View {
     private func toggleQueryCanvas() {
         guard hasQueryShelfAffordance else {
             if activeWorkspaceCanvasItem == .query {
-                let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
@@ -1279,7 +1214,6 @@ struct ContentView: View {
             }
         }
         if activeWorkspaceCanvasItem == .query {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 activeWorkspaceCanvasItem = nil
             }
@@ -1447,7 +1381,6 @@ struct ContentView: View {
 
     private func closeMarkdownShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .markdown, effectiveWorkspace == nil else { return }
-        let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
         }
@@ -1455,7 +1388,6 @@ struct ContentView: View {
 
     private func closeQueryShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .query, !selectedTaskHasQueryShelfContent else { return }
-        let _ = nextPanelTransitionGeneration()
         animatePanelChange {
             activeWorkspaceCanvasItem = nil
         }
@@ -1706,7 +1638,6 @@ struct ContentView: View {
             guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
         }
         if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
-            let _ = nextPanelTransitionGeneration()
             animatePanelChange {
                 activeWorkspaceCanvasItem = nil
             }
@@ -2055,7 +1986,6 @@ struct ContentView: View {
             currentMarkdownSession.bindToTask(task?.id)
             querySession.bindToTask(task?.id)
             if shouldCloseBrowserForTaskChange {
-                let _ = nextPanelTransitionGeneration()
                 animatePanelChange {
                     activeWorkspaceCanvasItem = nil
                 }
@@ -2403,6 +2333,8 @@ private struct WorkspaceTopRightActions: Equatable {
 }
 
 private struct WorkspaceTopRightToolbar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let actions: WorkspaceTopRightActions
     let onToggleBrowser: () -> Void
     let onOpenBrowserEngine: (ShelfBrowserEngine) -> Void
@@ -2411,64 +2343,30 @@ private struct WorkspaceTopRightToolbar: View {
     let onToggleQuery: () -> Void
     let onToggleControlPanel: () -> Void
 
+    @State private var browserMenuAnchor: NSView?
+
     var body: some View {
-        HStack(spacing: 8) {
-            if actions.hasShelfControls {
-                if actions.canShowPlanShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                            label: "Plan",
-                            systemImage: "list.bullet.clipboard",
-                            isActive: actions.isPlanShelfVisible,
-                            action: onTogglePlan
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Plan shelf")
-                }
-
-                if actions.canShowTextShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
-                            label: "Files",
-                            systemImage: "folder",
-                            isActive: actions.isTextShelfVisible,
-                            action: onToggleText
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Files shelf")
-                }
-
-                if actions.canShowQueryShelf {
-                    AstraToolbarCommandCluster {
-                        toolbarButton(
-                            title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                            label: "Query",
-                            systemImage: "cylinder.split.1x2",
-                            isActive: actions.isQueryShelfVisible,
-                            action: onToggleQuery
-                        )
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Query shelf")
-                }
-
-                if actions.canShowBrowserShelf {
-                    AstraToolbarCommandCluster {
-                        browserMenuButton
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Browser shelf")
-                }
-            }
-
+        HStack(spacing: 18) {
             AstraToolbarCommandCluster {
+                shelfControls
+            }
+            .background(alignment: .leading) {
+                shelfActiveIndicator
+            }
+            .frame(width: shelfClusterWidth, alignment: .trailing)
+            .clipped()
+            .allowsHitTesting(actions.hasShelfControls)
+            .accessibilityHidden(!actions.hasShelfControls)
+            .animation(commandAnimation, value: shelfClusterWidth)
+            .animation(commandAnimation, value: activeShelfIndicator?.key)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Shelf controls")
+
+            AstraToolbarContextCommandCluster {
                 toolbarButton(
-                    title: actions.isRightRailVisible ? "Hide Control Panel" : "Show Control Panel",
-                    systemImage: "rectangle.stack.badge.person.crop",
+                    title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
+                    systemImage: "sidebar.right",
                     isActive: actions.isRightRailVisible,
                     action: onToggleControlPanel
                 )
@@ -2476,56 +2374,203 @@ private struct WorkspaceTopRightToolbar: View {
                 // `.inspector(isPresented:)` modifier used to provide; we
                 // dropped that modifier when moving to a custom HStack column.
                 .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(actions.isRightRailVisible ? "Hide Control Panel (⌥⌘I)" : "Show Control Panel (⌥⌘I)")
+                .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
                 .accessibilityIdentifier("ControlPanelToolbarButton")
             }
+            .fixedSize(horizontal: true, vertical: false)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Control Panel")
+            .accessibilityLabel("Workspace Context")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private var shelfControls: some View {
+        if actions.canShowPlanShelf {
+            shelfToolbarButton(
+                title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
+                label: "Plan",
+                systemImage: "list.bullet.clipboard",
+                isActive: actions.isPlanShelfVisible,
+                action: onTogglePlan
+            )
+            .accessibilityLabel("Plan shelf")
+        }
+
+        if actions.canShowTextShelf {
+            shelfToolbarButton(
+                title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
+                label: "Files",
+                systemImage: "folder",
+                isActive: actions.isTextShelfVisible,
+                action: onToggleText
+            )
+            .accessibilityLabel("Files shelf")
+        }
+
+        if actions.canShowQueryShelf {
+            shelfToolbarButton(
+                title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
+                label: "Query",
+                systemImage: "cylinder.split.1x2",
+                isActive: actions.isQueryShelfVisible,
+                action: onToggleQuery
+            )
+            .accessibilityLabel("Query shelf")
+        }
+
+        if actions.canShowBrowserShelf {
+            browserMenuButton
+                .accessibilityLabel("Browser shelf")
         }
     }
 
     private var browserMenuButton: some View {
-        Menu {
-            browserMenuItems
+        Button {
+            presentBrowserMenu()
         } label: {
-            AstraToolbarCommandLabel(systemImage: "globe", text: "Browser", isActive: actions.isBrowserShelfVisible)
+            AstraToolbarCommandLabel(
+                systemImage: "globe",
+                text: "Browser",
+                isActive: actions.isBrowserShelfVisible,
+                showsMenuIndicator: true,
+                showsActiveBackground: false
+            )
         }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
+        .background {
+            ToolbarMenuAnchorView(anchor: $browserMenuAnchor)
+        }
         .help("Open Browser Shelf")
         .accessibilityLabel("Browser shelf mode")
     }
 
-    @ViewBuilder
-    private var browserMenuItems: some View {
-        Button {
-            onOpenBrowserEngine(.embedded)
-        } label: {
-            Label(
-                "Open Embedded Browser",
-                systemImage: actions.browserEngine == .embedded ? "checkmark" : "globe"
-            )
-        }
-
-        Button {
-            onOpenBrowserEngine(.controlled)
-        } label: {
-            Label(
-                "Open Controlled Browser",
-                systemImage: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
-            )
-        }
+    private func presentBrowserMenu() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(
+            ToolbarClosureMenuItem(
+                title: "Open Embedded Browser",
+                systemSymbolName: actions.browserEngine == .embedded ? "checkmark" : "globe"
+            ) {
+                onOpenBrowserEngine(.embedded)
+            }
+        )
+        menu.addItem(
+            ToolbarClosureMenuItem(
+                title: "Open Controlled Browser",
+                systemSymbolName: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
+            ) {
+                onOpenBrowserEngine(.controlled)
+            }
+        )
 
         if actions.isBrowserShelfVisible {
-            Divider()
-
-            Button {
-                onToggleBrowser()
-            } label: {
-                Label("Hide Browser Shelf", systemImage: "xmark")
-            }
+            menu.addItem(.separator())
+            menu.addItem(
+                ToolbarClosureMenuItem(
+                    title: "Hide Browser Shelf",
+                    systemSymbolName: "xmark"
+                ) {
+                    onToggleBrowser()
+                }
+            )
         }
+
+        if let browserMenuAnchor {
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: browserMenuAnchor.bounds.minY - 4),
+                in: browserMenuAnchor
+            )
+        } else if let event = NSApp.currentEvent, let view = event.window?.contentView {
+            NSMenu.popUpContextMenu(menu, with: event, for: view)
+        }
+    }
+
+    private var shelfClusterWidth: CGFloat {
+        guard !shelfControlWidths.isEmpty else { return 0 }
+        return shelfControlWidths.reduce(0, +)
+            + (CGFloat(shelfControlWidths.count - 1) * AstraToolbarCommandMetrics.clusterSpacing)
+            + (AstraToolbarCommandMetrics.clusterHorizontalPadding * 2)
+    }
+
+    private var shelfControlWidths: [CGFloat] {
+        var widths: [CGFloat] = []
+        if actions.canShowPlanShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
+        if actions.canShowTextShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
+        if actions.canShowQueryShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
+        if actions.canShowBrowserShelf { widths.append(AstraToolbarCommandMetrics.labeledMenuControlMinWidth) }
+        return widths
+    }
+
+    private var commandAnimation: Animation? {
+        AstraMotion.toolbarCommand(reduceMotion: reduceMotion)
+    }
+
+    @ViewBuilder
+    private var shelfActiveIndicator: some View {
+        if let activeShelfIndicator {
+            Capsule()
+                .fill(Stanford.lagunita.opacity(AstraToolbarCommandMetrics.activeFillOpacity))
+                .frame(
+                    width: activeShelfIndicator.width,
+                    height: AstraToolbarCommandMetrics.controlHeight
+                )
+                .offset(x: activeShelfIndicator.offset)
+        }
+    }
+
+    private var activeShelfIndicator: ShelfActiveIndicator? {
+        var offset = AstraToolbarCommandMetrics.clusterHorizontalPadding
+
+        if actions.canShowPlanShelf {
+            if actions.isPlanShelfVisible {
+                return ShelfActiveIndicator(key: "plan", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
+            }
+            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
+        }
+
+        if actions.canShowTextShelf {
+            if actions.isTextShelfVisible {
+                return ShelfActiveIndicator(key: "files", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
+            }
+            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
+        }
+
+        if actions.canShowQueryShelf {
+            if actions.isQueryShelfVisible {
+                return ShelfActiveIndicator(key: "query", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
+            }
+            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
+        }
+
+        if actions.canShowBrowserShelf, actions.isBrowserShelfVisible {
+            return ShelfActiveIndicator(key: "browser", offset: offset, width: AstraToolbarCommandMetrics.labeledMenuControlMinWidth)
+        }
+
+        return nil
+    }
+
+    private func shelfToolbarButton(
+        title: String,
+        label: String,
+        systemImage: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            AstraToolbarCommandLabel(
+                systemImage: systemImage,
+                text: label,
+                isActive: isActive,
+                showsActiveBackground: false
+            )
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private func toolbarButton(
@@ -2545,6 +2590,61 @@ private struct WorkspaceTopRightToolbar: View {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+private struct ShelfActiveIndicator: Equatable {
+    let key: String
+    let offset: CGFloat
+    let width: CGFloat
+}
+
+private struct ToolbarMenuAnchorView: NSViewRepresentable {
+    @Binding var anchor: NSView?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ToolbarMenuAnchorNSView()
+        resolve(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        resolve(nsView)
+    }
+
+    private func resolve(_ nsView: NSView) {
+        guard anchor == nil || anchor !== nsView else { return }
+        DispatchQueue.main.async {
+            if anchor == nil || anchor !== nsView {
+                anchor = nsView
+            }
+        }
+    }
+}
+
+private final class ToolbarMenuAnchorNSView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private final class ToolbarClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, systemSymbolName: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(performMenuAction), keyEquivalent: "")
+        target = self
+        image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func performMenuAction() {
+        handler()
     }
 }
 
@@ -2630,49 +2730,46 @@ private struct ContentDetailAreaView: View {
     var body: some View {
         GeometryReader { proxy in
             let availableWidth = proxy.size.width
-            let usesInspectorOverlay = isRightRailPresented
+            let activePanel = activeRightPanel
+            let usesInspectorOverlay = activePanel?.isContext == true
                 && PanelLayoutGeometry.shouldOverlayInspector(
                     detailAreaWidth: availableWidth,
                     minimumDetailWidth: Self.contentMinWidth
                 )
+            let dockedPanelWidth = activePanel.flatMap { panel in
+                usesInspectorOverlay ? nil : rightPanelWidth(for: panel, availableWidth: availableWidth, isOverlay: false)
+            } ?? 0
+            let detailWidth = max(0, proxy.size.width - dockedPanelWidth)
 
             ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
-                    contentWithOptionalCanvas
-                        .frame(
-                            minWidth: usesInspectorOverlay ? 0 : Self.contentMinWidth,
-                            maxWidth: .infinity,
-                            maxHeight: .infinity
-                        )
+                    detailContent
+                        .frame(width: usesInspectorOverlay ? proxy.size.width : detailWidth, height: proxy.size.height)
+                        .clipped()
 
-                    // Group with stable identity so the canvasTransition fires only on
-                    // `isRightRailPresented` flips — never on workspace id swaps.
-                    // The `.id(workspace.id)` stays on the inner view so workspace
-                    // changes still rebuild the inspector, just without the width-reveal.
-                    Group {
-                        if isRightRailPresented, let workspace = effectiveWorkspace, !usesInspectorOverlay {
-                            rightRail(
-                                workspace: workspace,
-                                width: rightRailWidth(availableWidth: availableWidth),
-                                availableWidth: availableWidth,
-                                isOverlay: false
-                            )
-                        }
+                    if let activePanel, !usesInspectorOverlay {
+                        rightPanel(
+                            activePanel,
+                            width: dockedPanelWidth,
+                            availableWidth: availableWidth,
+                            isOverlay: false
+                        )
+                        .transition(panelSlideTransition)
                     }
-                    .transition(canvasTransition)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
 
-                if isRightRailPresented, let workspace = effectiveWorkspace, usesInspectorOverlay {
+                if let activePanel, usesInspectorOverlay {
+                    let overlayWidth = rightPanelWidth(for: activePanel, availableWidth: availableWidth, isOverlay: true)
                     inspectorOverlayScrim
-                    rightRail(
-                        workspace: workspace,
-                        width: PanelLayoutGeometry.inspectorOverlayWidth(for: availableWidth),
+                    rightPanel(
+                        activePanel,
+                        width: overlayWidth,
                         availableWidth: availableWidth,
                         isOverlay: true
                     )
                     .padding(.trailing, PanelLayoutGeometry.inspectorOverlayHorizontalMargin)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(panelSlideTransition)
                     .zIndex(1)
                 }
             }
@@ -2680,8 +2777,55 @@ private struct ContentDetailAreaView: View {
         }
         .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(panelAnimation, value: activeCanvasItem)
-        .animation(inspectorAnimation, value: isRightRailPresented)
+        .animation(panelAnimation, value: activeRightPanel)
+    }
+
+    private var activeRightPanel: WorkspaceRightPanel? {
+        if let activeCanvasItem {
+            return .canvas(activeCanvasItem)
+        }
+        if isRightRailPresented, let workspace = effectiveWorkspace {
+            return .context(workspace.id)
+        }
+        return nil
+    }
+
+    private func rightPanelWidth(
+        for panel: WorkspaceRightPanel,
+        availableWidth: CGFloat,
+        isOverlay: Bool
+    ) -> CGFloat {
+        switch panel {
+        case .canvas(let item):
+            return shelfWidth(for: item, availableWidth: availableWidth)
+        case .context:
+            if isOverlay {
+                return PanelLayoutGeometry.inspectorOverlayWidth(for: availableWidth)
+            }
+            return rightRailWidth(availableWidth: availableWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func rightPanel(
+        _ panel: WorkspaceRightPanel,
+        width: CGFloat,
+        availableWidth: CGFloat,
+        isOverlay: Bool
+    ) -> some View {
+        switch panel {
+        case .canvas(let item):
+            shelfPanel(for: item, width: width, availableWidth: availableWidth)
+        case .context:
+            if let workspace = effectiveWorkspace {
+                rightRail(
+                    workspace: workspace,
+                    width: width,
+                    availableWidth: availableWidth,
+                    isOverlay: isOverlay
+                )
+            }
+        }
     }
 
     private func rightRail(
@@ -2775,89 +2919,44 @@ private struct ContentDetailAreaView: View {
     }
 
     private var panelAnimation: Animation? {
-        reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0.15)
+        AstraMotion.rightPanel(reduceMotion: reduceMotion)
     }
 
-    private var inspectorAnimation: Animation? {
-        reduceMotion ? nil : .smooth(duration: 0.32, extraBounce: 0.15).delay(0.08)
+    private var panelSlideTransition: AnyTransition {
+        reduceMotion ? .identity : .move(edge: .trailing)
     }
 
-    private var canvasTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
+    private func shelfPanel(
+        for item: WorkspaceCanvasItem,
+        width: CGFloat,
+        availableWidth: CGFloat
+    ) -> some View {
+        let isResizing = resizingShelfItem == item
+        return ZStack {
+            canvasContent(for: item)
+                .id(item)
         }
-        return .modifier(
-            active: WidthRevealModifier(progress: 0),
-            identity: WidthRevealModifier(progress: 1)
-        )
-    }
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        // Keep the shelf material below the titlebar so toolbar commands sit on window chrome.
+        .background(.bar)
+        .overlay(alignment: .leading) {
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.10))
+                    .frame(width: 1)
 
-    private var innerShelfContentTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
-        }
-        return .asymmetric(
-            insertion: .opacity.animation(.easeOut(duration: 0.24).delay(0.06)),
-            removal: .opacity.animation(.easeIn(duration: 0.16))
-        )
-    }
-
-    @ViewBuilder
-    private var contentWithOptionalCanvas: some View {
-        if let activeCanvasItem {
-            shelfLayout(for: activeCanvasItem)
-        } else {
-            detailContent
-        }
-    }
-
-    private func shelfLayout(for item: WorkspaceCanvasItem) -> some View {
-        GeometryReader { proxy in
-            let panelWidth = shelfWidth(for: item, availableWidth: proxy.size.width)
-            let detailWidth = max(0, proxy.size.width - panelWidth)
-            let isResizing = resizingShelfItem == item
-
-            HStack(spacing: 0) {
-                detailContent
-                    .frame(width: detailWidth, height: proxy.size.height)
-                    .clipped()
-
-                // Chrome wrapper keeps a stable identity across shelf switches so its
-                // width-reveal transition only fires on nil↔set, never on item↔item.
-                // Inner content has its own per-item identity so swapping shelves
-                // cross-fades inside the same chrome instead of close+reopen.
-                // Outgoing fades out faster than incoming fades in, so the new
-                // shelf settles cleanly without a muddy 50%-opacity midpoint.
-                ZStack {
-                    canvasContent(for: item)
-                        .id(item)
-                        .transition(innerShelfContentTransition)
-                }
-                .compositingGroup()
-                .frame(width: panelWidth, height: proxy.size.height)
-                // Keep the shelf material below the titlebar so toolbar commands sit on window chrome.
-                .background(.bar)
-                .overlay(alignment: .leading) {
-                    ZStack(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.10))
-                            .frame(width: 1)
-
-                        shelfResizeHandle(for: item, availableWidth: proxy.size.width)
-                    }
-                }
-                .transition(canvasTransition)
+                shelfResizeHandle(for: item, availableWidth: availableWidth)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .preference(
-                key: ShelfBoundaryMetricsPreferenceKey.self,
-                value: ShelfBoundaryMetrics(
-                    width: panelWidth,
-                    isVisible: true,
-                    isResizing: isResizing
-                )
-            )
         }
+        .preference(
+            key: ShelfBoundaryMetricsPreferenceKey.self,
+            value: ShelfBoundaryMetrics(
+                width: width,
+                isVisible: true,
+                isResizing: isResizing
+            )
+        )
     }
 
     private func committedShelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {

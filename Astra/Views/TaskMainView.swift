@@ -3,11 +3,6 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 
-enum TaskMainTab: String, CaseIterable {
-    case summary = "Chat"
-    case files = "Files"
-}
-
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
@@ -63,7 +58,6 @@ struct TaskMainView: View {
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
-    @State private var selectedTab: TaskMainTab = .summary
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
@@ -88,6 +82,9 @@ struct TaskMainView: View {
     @State private var isPlanning = false
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
+    @State private var cachedPlanState = TaskPlanState.empty
+    @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
+    @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -147,6 +144,10 @@ struct TaskMainView: View {
         TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
     }
 
+    private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
+        TaskPlanStateCacheSignature(task: task)
+    }
+
     private var runtimeHealth: TaskRuntimeHealth {
         TaskRuntimeHealth.evaluate(
             taskStatus: task.status,
@@ -156,7 +157,7 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        TaskPlanService.reconstruct(for: task)
+        cachedPlanState
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -263,12 +264,14 @@ struct TaskMainView: View {
     }
 
     private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        width < 760 ? 20 : 32
+        if width < 520 { return 12 }
+        if width < 760 { return 16 }
+        return 32
     }
 
     private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
         let horizontalPadding = chatHorizontalPadding(for: width) * 2
-        let usableWidth = max(320, width - horizontalPadding)
+        let usableWidth = max(240, width - horizontalPadding)
         guard usableWidth >= 860 else { return usableWidth }
 
         let proportionalWidth = max(900, usableWidth * 0.78)
@@ -280,9 +283,7 @@ struct TaskMainView: View {
             mainContent
                 .frame(maxHeight: .infinity, alignment: .top)
 
-            if selectedTab != .files {
-                composerView
-            }
+            composerView
         }
         .navigationTitle("")
         .navigationSubtitle("")
@@ -291,8 +292,6 @@ struct TaskMainView: View {
                 taskTitleToolbar
             }
         }
-        .toolbarBackground(Stanford.panelBackground, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL,
                   TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
@@ -324,8 +323,10 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
+        .task(id: planStateCacheRefreshTrigger) {
+            refreshPlanStateCache()
+        }
         .onChange(of: task.id) {
-            selectedTab = .summary
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
@@ -336,6 +337,7 @@ struct TaskMainView: View {
             loadSSHConnections()
             alignTaskRuntimeWithAvailability()
             initializeTaskPolicySelection()
+            refreshPlanStateCache()
         }
         .onAppear {
             alignTaskModelWithRuntime()
@@ -344,10 +346,12 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
         }
         .onDisappear {
+            pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
         }
@@ -356,6 +360,7 @@ struct TaskMainView: View {
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
+            schedulePlanStateCacheRefresh()
             runtimeHealthNow = Date()
             logRuntimeHealthIfNeeded(reason: "snapshot")
         }
@@ -404,6 +409,22 @@ struct TaskMainView: View {
         alignTaskRuntimeWithAvailability()
     }
 
+    private func refreshPlanStateCache() {
+        let signature = TaskPlanStateCacheSignature(task: task)
+        guard cachedPlanStateSignature != signature else { return }
+        cachedPlanState = TaskPlanService.reconstruct(for: task)
+        cachedPlanStateSignature = signature
+    }
+
+    private func schedulePlanStateCacheRefresh() {
+        pendingPlanStateRefreshTask?.cancel()
+        pendingPlanStateRefreshTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            refreshPlanStateCache()
+        }
+    }
+
     private func alignTaskRuntimeWithAvailability() {
         guard task.status != .running else { return }
         let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
@@ -419,11 +440,14 @@ struct TaskMainView: View {
     // MARK: - Header Actions
 
     private var taskTitleToolbar: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             taskTitleGroup
             taskControlBar
         }
-        .frame(maxWidth: 620, alignment: .leading)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 560, alignment: .leading)
         .accessibilityElement(children: .contain)
     }
 
@@ -433,18 +457,19 @@ struct TaskMainView: View {
             .foregroundStyle(Stanford.black)
             .lineLimit(1)
             .truncationMode(.tail)
-        .frame(minWidth: 180, idealWidth: 300, maxWidth: 440, alignment: .leading)
+            .layoutPriority(1)
+            .frame(maxWidth: 420, alignment: .leading)
     }
 
     private var taskControlBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             filesButton
             if task.status != .draft {
                 moreMenu
             }
         }
         .controlSize(.small)
-        .frame(height: 34, alignment: .center)
+        .frame(height: 30, alignment: .center)
     }
 
     private var filesButton: some View {
@@ -452,16 +477,22 @@ struct TaskMainView: View {
             isShowingFilesPopover.toggle()
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: selectedTab == .files ? "doc.text.fill" : "doc.text")
+                Image(systemName: isShowingFilesPopover ? "doc.text.fill" : "doc.text")
                     .font(Stanford.ui(12, weight: .medium))
                 if headerFileCount > 0 {
                     Text("Files \(headerFileCount)")
                         .font(Stanford.caption(11).weight(.medium))
                 }
             }
-            .foregroundStyle(selectedTab == .files || isShowingFilesPopover ? Stanford.lagunita : .secondary)
-            .padding(.horizontal, headerFileCount > 0 ? 7 : 5)
+            .foregroundStyle(isShowingFilesPopover ? Stanford.lagunita : .secondary)
+            .padding(.horizontal, headerFileCount > 0 ? 8 : 6)
             .frame(height: 26)
+            .background {
+                if isShowingFilesPopover {
+                    Capsule()
+                        .fill(Stanford.lagunita.opacity(0.10))
+                }
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -491,7 +522,6 @@ struct TaskMainView: View {
 
     private func openHeaderFileItem(_ item: TaskFileItem) {
         isShowingFilesPopover = false
-        selectedTab = .summary
         if item.destination != nil, let onOpenGeneratedFile {
             onOpenGeneratedFile(item.path)
         } else {
@@ -504,7 +534,6 @@ struct TaskMainView: View {
         let items = headerTextShelfFileItems
         guard !items.isEmpty else { return }
         isShowingFilesPopover = false
-        selectedTab = .summary
         for item in items {
             onOpenGeneratedFile(item.path)
         }
@@ -520,8 +549,6 @@ struct TaskMainView: View {
 
     private var taskFilesPopover: some View {
         let items = headerFileItems
-        let visibleItems = Array(items.prefix(8))
-        let hiddenCount = max(0, items.count - visibleItems.count)
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
@@ -544,7 +571,7 @@ struct TaskMainView: View {
 
             Divider()
 
-            if visibleItems.isEmpty {
+            if items.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("No files yet")
                         .font(Stanford.body(13).weight(.medium))
@@ -555,63 +582,58 @@ struct TaskMainView: View {
                 }
                 .padding(12)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(visibleItems) { item in
-                        Button {
-                            openHeaderFileItem(item)
-                        } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: item.destination?.systemImage ?? Formatters.fileIcon(for: item.path))
-                                    .font(Stanford.ui(13))
-                                    .foregroundStyle(item.destination == nil ? Stanford.coolGrey : Stanford.lagunita)
-                                    .frame(width: 18)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(items) { item in
+                            Button {
+                                openHeaderFileItem(item)
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: item.destination?.systemImage ?? Formatters.fileIcon(for: item.path))
+                                        .font(Stanford.ui(13))
+                                        .foregroundStyle(item.destination == nil ? Stanford.coolGrey : Stanford.lagunita)
+                                        .frame(width: 18)
 
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name)
-                                        .font(Stanford.body(13).weight(.medium))
-                                        .foregroundStyle(Stanford.black)
-                                        .lineLimit(1)
-                                    Text(item.path)
-                                        .font(Stanford.caption(11))
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.name)
+                                            .font(Stanford.body(13).weight(.medium))
+                                            .foregroundStyle(Stanford.black)
+                                            .lineLimit(1)
+                                        Text(item.path)
+                                            .font(Stanford.caption(11))
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
 
-                                Spacer(minLength: 8)
+                                    Spacer(minLength: 8)
 
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text(item.source)
-                                        .font(Stanford.caption(10).weight(.medium))
-                                        .foregroundStyle(Stanford.lagunita)
-                                    let size = formatHeaderFileSize(item.size)
-                                    if !size.isEmpty {
-                                        Text(size)
-                                            .font(Stanford.caption(10))
-                                            .foregroundStyle(.secondary)
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(item.source)
+                                            .font(Stanford.caption(10).weight(.medium))
+                                            .foregroundStyle(Stanford.lagunita)
+                                        let size = formatHeaderFileSize(item.size)
+                                        if !size.isEmpty {
+                                            Text(size)
+                                                .font(Stanford.caption(10))
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(item.destination?.title ?? "Open in default app")
+                            .buttonStyle(.plain)
+                            .help(item.destination?.title ?? "Open in default app")
 
-                        if item.id != visibleItems.last?.id {
-                            Divider().padding(.leading, 39)
+                            if item.id != items.last?.id {
+                                Divider().padding(.leading, 39)
+                            }
                         }
                     }
                 }
-
-                if hiddenCount > 0 {
-                    Text("\(hiddenCount) more file\(hiddenCount == 1 ? "" : "s")")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                }
+                .frame(maxHeight: 360)
             }
 
             Divider()
@@ -629,16 +651,6 @@ struct TaskMainView: View {
                 .help("Open all text files in the Files shelf")
 
                 Spacer()
-
-                Button {
-                    selectedTab = selectedTab == .files ? .summary : .files
-                    isShowingFilesPopover = false
-                } label: {
-                    Text(selectedTab == .files ? "Show chat" : "View all")
-                        .font(Stanford.caption(12).weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Stanford.lagunita)
 
                 if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
                     Button {
@@ -662,12 +674,7 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var mainContent: some View {
-        switch selectedTab {
-        case .summary:
-            summaryContent
-        case .files:
-            FilesTabView(task: task, onOpenGeneratedFile: onOpenGeneratedFile)
-        }
+        summaryContent
     }
 
     /// Snapshot the conversation at routine creation time.
@@ -823,13 +830,15 @@ struct TaskMainView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(Stanford.coolGrey)
-                .frame(width: 28, height: 28)
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 28)
+        .buttonStyle(.plain)
+        .frame(width: 26)
         .help("More actions")
     }
 
@@ -1603,7 +1612,9 @@ struct TaskMainView: View {
                         .help("Copy")
 
                         if !activity.fileChanges.isEmpty {
-                            Button { selectedTab = .files } label: {
+                            Button {
+                                isShowingFilesPopover = true
+                            } label: {
                                 Image(systemName: "doc.text")
                                     .font(Stanford.ui(12))
                             }
@@ -1891,7 +1902,7 @@ struct TaskMainView: View {
             if !presentation.files.isEmpty {
                 runActivityDetailSection(title: "Files", systemImage: "doc.text") {
                     Button {
-                        selectedTab = .files
+                        isShowingFilesPopover = true
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "doc.text")
@@ -3560,52 +3571,31 @@ struct TaskMainView: View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
         let hasSupportingRows = modeLabel != nil || scope != nil || commandPreview != nil || detailLineLimit > 1
 
-        return HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
-            Image(systemName: icon)
-                .font(Stanford.ui(20, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 24, height: 24)
-                .padding(.top, hasSupportingRows ? 1 : 0)
+        return ViewThatFits(in: .horizontal) {
+            taskDecisionHorizontalLayout(
+                icon: icon,
+                color: color,
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview,
+                hasSupportingRows: hasSupportingRows,
+                actions: actions
+            )
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(Stanford.body(14).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(detail)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(detailLineLimit)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let modeLabel {
-                    Text(modeLabel)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                if let scope {
-                    Text(scope)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(Stanford.coolGrey.opacity(0.85))
-                        .lineLimit(1)
-                }
-
-                if let commandPreview {
-                    Label(commandPreview, systemImage: "terminal")
-                        .font(Stanford.caption(11).monospaced())
-                        .foregroundStyle(Stanford.readingText.opacity(0.82))
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.035))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            actions()
+            taskDecisionStackedLayout(
+                icon: icon,
+                color: color,
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview,
+                actions: actions
+            )
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -3620,6 +3610,126 @@ struct TaskMainView: View {
                 .frame(width: 3)
                 .padding(.vertical, 10)
                 .padding(.leading, 1)
+        }
+    }
+
+    private func taskDecisionHorizontalLayout<Actions: View>(
+        icon: String,
+        color: Color,
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?,
+        hasSupportingRows: Bool,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
+            Image(systemName: icon)
+                .font(Stanford.ui(20, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 24, height: 24)
+                .padding(.top, hasSupportingRows ? 1 : 0)
+
+            taskDecisionTextStack(
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview
+            )
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            actions()
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func taskDecisionStackedLayout<Actions: View>(
+        icon: String,
+        color: Color,
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(20, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 24, height: 24)
+
+                taskDecisionTextStack(
+                    title: title,
+                    detail: detail,
+                    detailLineLimit: detailLineLimit,
+                    modeLabel: modeLabel,
+                    scope: scope,
+                    commandPreview: commandPreview
+                )
+
+                Spacer(minLength: 0)
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                actions()
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    private func taskDecisionTextStack(
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(Stanford.body(14).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+                .lineLimit(1)
+            Text(detail)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+                .lineLimit(detailLineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let modeLabel {
+                Text(modeLabel)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let scope {
+                Text(scope)
+                    .font(Stanford.chatMeta())
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.85))
+                    .lineLimit(1)
+            }
+
+            if let commandPreview {
+                Label(commandPreview, systemImage: "terminal")
+                    .font(Stanford.caption(11).monospaced())
+                    .foregroundStyle(Stanford.readingText.opacity(0.82))
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.035))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
         }
     }
 

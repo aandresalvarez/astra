@@ -181,6 +181,25 @@ struct AppLoggerTests {
         #expect(fields["logging_subsystem"]?.isEmpty == false)
     }
 
+    @Test("Startup diagnostics uses injected home for protected workspace checks")
+    func startupDiagnosticsUsesInjectedHomeForProtectedWorkspaceChecks() {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-test-home-\(UUID().uuidString)", isDirectory: true)
+        let fileManager = StubHomeFileManager(homeDirectory: home)
+
+        let fields = StartupDiagnosticsService.snapshotFields(
+            stage: "test",
+            isUITesting: true,
+            skipWorkspaceRecovery: true,
+            persistentStoreURL: nil,
+            fileManager: fileManager,
+            crashReports: []
+        )
+
+        #expect(fields["workspace_root"]?.hasPrefix("$HOME/Documents/") == true)
+        #expect(fields["workspace_root_exists"] == "not_checked_protected_location")
+    }
+
     @Test("onNewEntry callback fires on main thread")
     @MainActor
     func onNewEntryMainThread() async {
@@ -266,5 +285,18 @@ private final class Expectation: @unchecked Sendable {
 
     func fulfill() {
         lock.lock(); defer { lock.unlock() }; _fulfilled = true
+    }
+}
+
+private final class StubHomeFileManager: FileManager {
+    private let stubHomeDirectory: URL
+
+    init(homeDirectory: URL) {
+        self.stubHomeDirectory = homeDirectory
+        super.init()
+    }
+
+    override var homeDirectoryForCurrentUser: URL {
+        stubHomeDirectory
     }
 }

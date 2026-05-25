@@ -191,6 +191,10 @@ struct WorkspaceRightRailView: View {
         isCompact ? 8 : Stanford.railSectionContentSpacing
     }
 
+    private var disclosureAnimation: Animation? {
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
+    }
+
     private var showsBottomRailScrollShadow: Bool {
         guard scrollMetrics.contentHeight > scrollMetrics.viewportHeight + 2 else { return false }
         return scrollMetrics.contentHeight + scrollMetrics.contentMinY > scrollMetrics.viewportHeight + 2
@@ -1396,7 +1400,7 @@ struct WorkspaceRightRailView: View {
                 RailCountBadge(count: workspace.memories.count)
                 Spacer(minLength: 0)
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    withAnimation(disclosureAnimation) {
                         isMemoryComposerVisible = true
                     }
                 } label: {
@@ -1793,7 +1797,7 @@ struct WorkspaceRightRailView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                withAnimation(disclosureAnimation) {
                     isCollapsed.wrappedValue.toggle()
                 }
             } label: {
@@ -1836,7 +1840,7 @@ struct WorkspaceRightRailView: View {
         VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
             HStack {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    withAnimation(disclosureAnimation) {
                         isCollapsed.wrappedValue.toggle()
                     }
                 } label: {
@@ -2144,7 +2148,7 @@ struct WorkspaceRightRailView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: sectionContentSpacing) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                withAnimation(disclosureAnimation) {
                     isExpanded.wrappedValue.toggle()
                 }
             } label: {
@@ -2168,7 +2172,6 @@ struct WorkspaceRightRailView: View {
 
             if isExpanded.wrappedValue {
                 content()
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
