@@ -318,7 +318,7 @@ struct ScheduleEditorView: View {
                                 Text("Provider").foregroundStyle(Stanford.coolGrey)
                                 Spacer()
                                 Picker("", selection: $runtimeID) {
-                                    ForEach(AgentRuntimeID.allCases) { runtime in
+                                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                                         Text(runtime.displayName).tag(runtime.rawValue)
                                     }
                                 }

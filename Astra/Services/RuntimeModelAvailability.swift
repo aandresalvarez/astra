@@ -236,12 +236,13 @@ enum RuntimeModelAvailability {
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> RuntimeModelAvailabilitySnapshot? {
-        switch runtime {
-        case .claudeCode:
-            cachedSnapshot(from: cachedClaudeModelsJSON, for: runtime)
-        case .copilotCLI:
-            cachedSnapshot(from: cachedCopilotModelsJSON, for: runtime)
-        }
+        let raw = AgentRuntimeAdapterRegistry
+            .adapter(for: runtime)
+            .cachedModelsJSON(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            )
+        return cachedSnapshot(from: raw, for: runtime)
     }
 
     private static func resolveModel(
@@ -338,20 +339,10 @@ enum RuntimeModelAvailability {
     }
 
     private static func availableModelsKey(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode:
-            AppStorageKeys.claudeAvailableModels
-        case .copilotCLI:
-            AppStorageKeys.copilotAvailableModels
-        }
+        AgentRuntimeAdapterRegistry.adapter(for: runtime).availableModelsStorageKey
     }
 
     private static func checkedAtKey(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode:
-            AppStorageKeys.claudeModelsCheckedAt
-        case .copilotCLI:
-            AppStorageKeys.copilotModelsCheckedAt
-        }
+        AgentRuntimeAdapterRegistry.adapter(for: runtime).modelsCheckedAtStorageKey
     }
 }

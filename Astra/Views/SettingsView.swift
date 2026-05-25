@@ -104,7 +104,7 @@ struct SettingsView: View {
         Form {
             Section("Agent Runtime") {
                 Picker("Default Provider", selection: $defaultRuntimeID) {
-                    ForEach(AgentRuntimeID.allCases) { runtime in
+                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                         Text(runtime.displayName).tag(runtime.rawValue)
                     }
                 }
@@ -747,55 +747,9 @@ struct SettingsView: View {
     }
 
     private func refreshModelAvailability(for configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        switch configuration.runtime {
-        case .claudeCode:
-            let result = await ClaudeModelAvailabilityService().refreshAndPersist(
-                configuration: ClaudeModelAvailabilityConfiguration(
-                    provider: configuration.claudeProvider,
-                    vertexOpusModel: configuration.vertexOpusModel,
-                    vertexSonnetModel: configuration.vertexSonnetModel,
-                    vertexHaikuModel: configuration.vertexHaikuModel
-                )
-            )
-            switch result {
-            case .available(let models):
-                return RuntimeReadinessCheck(
-                    id: "claude-models",
-                    title: "Claude models",
-                    detail: "Available: \(models.joined(separator: ", "))",
-                    state: .ready,
-                    remediation: nil
-                )
-            case .unavailable(let reason):
-                return RuntimeReadinessCheck(
-                    id: "claude-models",
-                    title: "Claude models",
-                    detail: "Using cached or default model choices until provider model access can be verified.",
-                    state: .warning,
-                    remediation: reason
-                )
-            }
-        case .copilotCLI:
-            let result = await CopilotModelAvailabilityService().refreshAndPersist()
-            switch result {
-            case .available(let models):
-                return RuntimeReadinessCheck(
-                    id: "copilot-models",
-                    title: "Copilot models",
-                    detail: "Available: \(models.joined(separator: ", "))",
-                    state: .ready,
-                    remediation: nil
-                )
-            case .unavailable(let reason):
-                return RuntimeReadinessCheck(
-                    id: "copilot-models",
-                    title: "Copilot models",
-                    detail: "Using cached or default model choices until account model access can be verified.",
-                    state: .warning,
-                    remediation: reason
-                )
-            }
-        }
+        await AgentRuntimeAdapterRegistry
+            .adapter(for: configuration.runtime)
+            .modelAvailabilityCheck(configuration: configuration)
     }
 
     private func alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: Bool = false) {
@@ -844,9 +798,6 @@ struct SettingsView: View {
 
 private extension RuntimeReadinessConfiguration {
     var runtimeReadinessCheckID: String {
-        switch runtime {
-        case .claudeCode: "claude-cli"
-        case .copilotCLI: "copilot-cli"
-        }
+        AgentRuntimeAdapterRegistry.adapter(for: runtime).readinessCheckID
     }
 }

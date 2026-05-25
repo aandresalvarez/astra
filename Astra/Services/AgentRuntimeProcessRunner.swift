@@ -10,15 +10,7 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
     }
 
     static func profile(for runtime: AgentRuntimeID) -> AgentRuntimeBudgetProfile {
-        switch runtime {
-        case .claudeCode:
-            // Claude Code includes its system prompt, tool schemas, and runtime context
-            // in billed input. Recent local runs report roughly 120k input tokens before
-            // user-visible output, so low budgets must be rejected before launch.
-            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 120_000)
-        case .copilotCLI:
-            return AgentRuntimeBudgetProfile(runtime: runtime, launchOverheadTokens: 0)
-        }
+        AgentRuntimeAdapterRegistry.adapter(for: runtime).budgetProfile
     }
 }
 

@@ -77,7 +77,7 @@ struct NewTaskView: View {
 
                 Section("Execution") {
                     Picker("Provider", selection: $runtimeID) {
-                        ForEach(AgentRuntimeID.allCases) { runtime in
+                        ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                             Text(runtime.displayName).tag(runtime.rawValue)
                         }
                     }
