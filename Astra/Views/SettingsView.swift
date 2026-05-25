@@ -77,7 +77,7 @@ struct SettingsView: View {
                     Label("Data", systemImage: "folder")
                 }
         }
-        .frame(width: 680, height: 560)
+        .frame(width: 740, height: 640)
         .navigationTitle("Settings")
         .scenePadding()
         .onAppear {
@@ -102,7 +102,7 @@ struct SettingsView: View {
 
     private var runtimeSettingsTab: some View {
         Form {
-            Section("Agent Runtime") {
+            Section("Provider Selection") {
                 Picker("Default Provider", selection: $defaultRuntimeID) {
                     ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                         Text(runtime.displayName).tag(runtime.rawValue)
@@ -116,34 +116,90 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Budget Guardrail") {
-                Picker("Default Budget", selection: $defaultTokenBudget) {
-                    ForEach(budgetPresets, id: \.self) { b in
-                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
+            Section("Claude Code Connection") {
+                providerHeader(
+                    runtime: .claudeCode,
+                    systemImage: "terminal",
+                    detail: "Claude Code can use either an Anthropic session or Google Vertex AI."
+                )
+
+                providerPathRow(
+                    title: "CLI path",
+                    path: $claudePath,
+                    prompt: "Auto-detected",
+                    detectedPath: detectedPath,
+                    detectAction: detectClaudeCLI
+                )
+
+                Picker("Route through", selection: $claudeProviderRaw) {
+                    ForEach(ClaudeProvider.allCases) { provider in
+                        Label(provider.label, systemImage: provider.symbolName)
+                            .tag(provider.rawValue)
                     }
                 }
 
-                Picker("Enforcement", selection: $budgetEnforcementModeRaw) {
-                    ForEach(BudgetEnforcementMode.allCases) { mode in
-                        Text(mode.label).tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
+                if selectedClaudeProvider == .vertex {
+                    TextField(
+                        "GCP Project ID",
+                        text: $claudeVertexProjectID,
+                        prompt: Text("my-gcp-project")
+                    )
+                    TextField(
+                        "Region",
+                        text: $claudeVertexRegion,
+                        prompt: Text("us-east5 or global")
+                    )
 
-                Text(selectedBudgetEnforcementMode.helpText)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
+                    Text("Vertex model aliases")
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    Text("Use Vertex IDs such as `claude-opus-4-6@default`; plain Anthropic model names do not resolve on Vertex.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+
+                    TextField(
+                        "Opus alias",
+                        text: $claudeVertexOpusModel,
+                        prompt: Text("claude-opus-4-6@default")
+                    )
+                    TextField(
+                        "Sonnet alias",
+                        text: $claudeVertexSonnetModel,
+                        prompt: Text("claude-sonnet-4-6@default")
+                    )
+                    TextField(
+                        "Haiku alias",
+                        text: $claudeVertexHaikuModel,
+                        prompt: Text("claude-haiku-4-5@20251001")
+                    )
+
+                    Text("ASTRA injects the Vertex project, region, and model alias environment variables when it starts Claude Code. Authentication comes from `gcloud auth application-default login`.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Anthropic routing uses the Claude Code CLI session on this Mac. Authenticate or refresh the account with `claude /login`.")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Section("Agent Policy") {
-                Picker("Default Policy", selection: defaultPolicySelectionBinding) {
-                    ForEach(AgentPolicyLevel.primaryCases) { level in
-                        Label(level.displayName, systemImage: level.symbolName)
-                            .tag(level.rawValue)
-                    }
-                }
+            Section("GitHub Copilot CLI Connection") {
+                providerHeader(
+                    runtime: .copilotCLI,
+                    systemImage: "person.crop.circle",
+                    detail: "Copilot runs through your GitHub Copilot CLI account."
+                )
 
-                Text(selectedDefaultPolicyLevel.shortDescription)
+                providerPathRow(
+                    title: "CLI path",
+                    path: $copilotPath,
+                    prompt: "Auto-detected",
+                    detectedPath: detectedCopilotPath,
+                    detectAction: detectCopilotCLI
+                )
+
+                Text("Copilot uses your GitHub Copilot account and may consume Copilot premium requests.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -180,85 +236,101 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Claude CLI") {
-                HStack {
-                    TextField("Path", text: $claudePath, prompt: Text("Auto-detected"))
-                    Button("Detect") { detectClaudeCLI() }
-                }
-                if !detectedPath.isEmpty {
-                    Text("Detected: \(detectedPath)")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Claude Provider") {
-                Picker("Route Through", selection: $claudeProviderRaw) {
-                    ForEach(ClaudeProvider.allCases) { provider in
-                        Label(provider.label, systemImage: provider.symbolName)
-                            .tag(provider.rawValue)
+            Section("Runtime Guardrails") {
+                Picker("Default Budget", selection: $defaultTokenBudget) {
+                    ForEach(budgetPresets, id: \.self) { b in
+                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
                     }
                 }
 
-                if claudeProviderRaw == ClaudeProvider.vertex.rawValue {
-                    TextField(
-                        "GCP Project ID",
-                        text: $claudeVertexProjectID,
-                        prompt: Text("my-gcp-project")
-                    )
-                    TextField(
-                        "Region",
-                        text: $claudeVertexRegion,
-                        prompt: Text("us-east5 or global")
-                    )
-
-                    Text("Model aliases — Vertex names look like `claude-opus-4-6@default`, not the plain Anthropic IDs. Without these, the CLI tries names that don't exist on Vertex.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-
-                    TextField(
-                        "Opus alias",
-                        text: $claudeVertexOpusModel,
-                        prompt: Text("claude-opus-4-6@default")
-                    )
-                    TextField(
-                        "Sonnet alias",
-                        text: $claudeVertexSonnetModel,
-                        prompt: Text("claude-sonnet-4-6@default")
-                    )
-                    TextField(
-                        "Haiku alias",
-                        text: $claudeVertexHaikuModel,
-                        prompt: Text("claude-haiku-4-5@20251001")
-                    )
-
-                    Text("ASTRA injects CLAUDE_CODE_USE_VERTEX, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, the three ANTHROPIC_DEFAULT_*_MODEL aliases, plus ANTHROPIC_MODEL (= Opus) and ANTHROPIC_SMALL_FAST_MODEL (= Haiku) when spawning the Claude CLI. Vertex auth uses your `gcloud auth application-default login` credentials.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Anthropic routing uses `claude /login`. Pick Google Vertex AI to route through your GCP project instead.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
+                Picker("Budget Enforcement", selection: $budgetEnforcementModeRaw) {
+                    ForEach(BudgetEnforcementMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
                 }
-            }
+                .pickerStyle(.segmented)
 
-            Section("GitHub Copilot CLI") {
-                HStack {
-                    TextField("Path", text: $copilotPath, prompt: Text("Auto-detected"))
-                    Button("Detect") { detectCopilotCLI() }
+                Text(selectedBudgetEnforcementMode.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Default Policy", selection: defaultPolicySelectionBinding) {
+                    ForEach(AgentPolicyLevel.primaryCases) { level in
+                        Label(level.displayName, systemImage: level.symbolName)
+                            .tag(level.rawValue)
+                    }
                 }
-                if !detectedCopilotPath.isEmpty {
-                    Text("Detected: \(detectedCopilotPath)")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-                Text("Copilot uses your GitHub Copilot account and may consume Copilot premium requests.")
+
+                Text(selectedDefaultPolicyLevel.shortDescription)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func providerHeader(runtime: AgentRuntimeID, systemImage: String, detail: String) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(Stanford.ui(18))
+                .foregroundStyle(runtime == selectedRuntime ? Stanford.statusInfo : .secondary)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(runtime.displayName)
+                    .font(Stanford.body(14).weight(.semibold))
+                Text(detail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            if runtime == selectedRuntime {
+                Label("Default", systemImage: "checkmark.circle.fill")
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.statusHealthy)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Stanford.statusHealthy.opacity(0.12)))
+            }
+        }
+    }
+
+    private func providerPathRow(
+        title: String,
+        path: Binding<String>,
+        prompt: String,
+        detectedPath: String,
+        detectAction: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                Spacer()
+                TextField(prompt, text: path, prompt: Text(prompt))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(minWidth: 280, maxWidth: 420)
+                    .textSelection(.enabled)
+                Button {
+                    detectAction()
+                } label: {
+                    Label("Detect", systemImage: "magnifyingglass")
+                }
+            }
+
+            if !detectedPath.isEmpty {
+                Label {
+                    Text("Detected: \(detectedPath)")
+                        .font(Stanford.caption(12))
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var permissionsSettingsTab: some View {
@@ -470,6 +542,10 @@ struct SettingsView: View {
 
     private var selectedRuntime: AgentRuntimeID {
         AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+    }
+
+    private var selectedClaudeProvider: ClaudeProvider {
+        ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic
     }
 
     private var runtimeModels: [String] {
