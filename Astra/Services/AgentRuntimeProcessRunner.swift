@@ -23,48 +23,13 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    func runClaudeProcess(
+    func runRuntimeProcess(
+        adapter: any AgentRuntimeAdapter,
         prompt: String,
         task: AgentTask,
         workspacePath: String,
-        claudePath: String,
-        permissionPolicy: PermissionPolicy,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        permissionManifest: RunPermissionManifest? = nil,
-        budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
-        timeoutSeconds: TimeInterval,
-        onLine: @escaping (String) -> Void
-    ) async -> AgentProcessResult {
-        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
-        let plan = adapter.makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
-            prompt: prompt,
-            task: task,
-            workspacePath: workspacePath,
-            executablePath: claudePath,
-            copilotHome: "",
-            permissionPolicy: permissionPolicy,
-            executionPolicy: executionPolicy,
-            permissionManifest: permissionManifest,
-            timeoutSeconds: timeoutSeconds
-        ))
-        return await runProcess(
-            adapter: adapter,
-            plan: plan,
-            task: task,
-            permissionManifest: permissionManifest,
-            budgetEnforcementMode: budgetEnforcementMode,
-            timeoutSeconds: timeoutSeconds,
-            onLine: { line, _ in onLine(line) }
-        )
-    }
-
-    @MainActor
-    func runCopilotProcess(
-        prompt: String,
-        task: AgentTask,
-        workspacePath: String,
-        copilotPath: String,
-        copilotHome: String,
+        executablePath: String,
+        homeDirectory: String,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         permissionManifest: RunPermissionManifest? = nil,
@@ -72,13 +37,12 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let plan = adapter.makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
-            executablePath: copilotPath,
-            copilotHome: copilotHome,
+            executablePath: executablePath,
+            copilotHome: homeDirectory,
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             permissionManifest: permissionManifest,

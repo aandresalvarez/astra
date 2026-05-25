@@ -9,6 +9,8 @@ protocol AgentRuntimeAdapter {
     var availableModelsStorageKey: String { get }
     var modelsCheckedAtStorageKey: String { get }
     var budgetProfile: AgentRuntimeBudgetProfile { get }
+    var recordsStreamTelemetry: Bool { get }
+    var recordsInferredFileChanges: Bool { get }
 
     func cachedModelsJSON(
         cachedClaudeModelsJSON: String,
@@ -22,6 +24,35 @@ protocol AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessReport
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
+    func missingExecutableAuditReason() -> String
+    func missingExecutableStopReason() -> String?
+    func missingExecutableMessage(executablePath: String) -> String
+    func defaultStartEventPayload(task: AgentTask) -> String
+    func connectorPreflightContextText(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String,
+        sessionMessage: String?,
+        phase: String
+    ) -> String
+    func shouldCheckWorkspaceDirectory(phase: String) -> Bool
+    func shouldPrepareIsolation(phase: String) -> Bool
+    func policyCapabilities(executablePath: String) -> CopilotCLICapabilities
+    func shouldValidateSuccessfulRun(phase: String) -> Bool
+    func manualCompletionPayload(phase: String) -> String
+    func failurePayloadPrefix(phase: String, exitCode: Int) -> String
+    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
+    func maxTurnsPayload(phase: String, task: AgentTask) -> String
+    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool
+    func performsPostRunFollowUps(phase: String) -> Bool
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String?,
+        sessionMessage: String?,
+        phase: String
+    ) -> String
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent]
@@ -48,11 +79,126 @@ protocol AgentRuntimeAdapter {
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult
+    @MainActor
+    func recordPostProcessEvents(context: AgentRuntimePostProcessContext)
+    @MainActor
+    func logStreamTelemetry(
+        snapshot: AgentRuntimeStreamTelemetrySnapshot,
+        task: AgentTask,
+        run: TaskRun,
+        phase: String,
+        exitCode: Int
+    )
 }
 
 extension AgentRuntimeAdapter {
     var descriptor: AgentRuntimeDescriptor {
         AgentRuntimeRegistry.descriptor(for: id)
+    }
+
+    var recordsStreamTelemetry: Bool { false }
+
+    var recordsInferredFileChanges: Bool { false }
+
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
+        AgentRuntimeLaunchSettings(
+            executablePath: configuration.executablePath(for: id),
+            homeDirectory: configuration.homeDirectory(for: id)
+        )
+    }
+
+    func missingExecutableAuditReason() -> String {
+        "provider_cli_not_found"
+    }
+
+    func missingExecutableStopReason() -> String? {
+        nil
+    }
+
+    func missingExecutableMessage(executablePath: String) -> String {
+        "\(id.displayName) CLI not found at '\(executablePath)'. Check Settings."
+    }
+
+    func defaultStartEventPayload(task: AgentTask) -> String {
+        "Agent started working on: \(task.goal)"
+    }
+
+    func connectorPreflightContextText(
+        task: AgentTask,
+        promptOverride _: String?,
+        startPayload _: String,
+        sessionMessage: String?,
+        phase _: String
+    ) -> String {
+        sessionMessage ?? task.goal
+    }
+
+    func shouldCheckWorkspaceDirectory(phase _: String) -> Bool {
+        true
+    }
+
+    func shouldPrepareIsolation(phase: String) -> Bool {
+        phase == "run"
+    }
+
+    func policyCapabilities(executablePath _: String) -> CopilotCLICapabilities {
+        .conservative
+    }
+
+    func shouldValidateSuccessfulRun(phase: String) -> Bool {
+        phase == "run"
+    }
+
+    func manualCompletionPayload(phase: String) -> String {
+        phase == "resume" ? "Follow-up completed." : "Agent finished."
+    }
+
+    func failurePayloadPrefix(phase: String, exitCode: Int) -> String {
+        phase == "resume" ? "Follow-up failed (exit \(exitCode))." : "Agent exited with code \(exitCode)."
+    }
+
+    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String {
+        let label = phase == "resume" ? "Resume" : "Task"
+        return "\(label) idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    }
+
+    func maxTurnsPayload(phase: String, task: AgentTask) -> String {
+        if phase == "resume" {
+            return "Max turns reached (\(task.maxTurns)) during resume. Process killed."
+        }
+        return "Max turns reached (\(task.maxTurns)). Process killed."
+    }
+
+    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
+        false
+    }
+
+    func performsPostRunFollowUps(phase _: String) -> Bool {
+        false
+    }
+
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride _: String?,
+        startPayload _: String?,
+        sessionMessage: String?,
+        phase _: String
+    ) -> String {
+        sessionMessage ?? task.goal
+    }
+
+    @MainActor
+    func recordPostProcessEvents(context _: AgentRuntimePostProcessContext) {
+    }
+
+    @MainActor
+    func logStreamTelemetry(
+        snapshot _: AgentRuntimeStreamTelemetrySnapshot,
+        task _: AgentTask,
+        run _: TaskRun,
+        phase _: String,
+        exitCode _: Int
+    ) {
     }
 }
 
@@ -95,6 +241,21 @@ struct AgentRuntimeProcessLaunchContext {
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
+}
+
+struct AgentRuntimeLaunchSettings {
+    let executablePath: String
+    let homeDirectory: String
+}
+
+struct AgentRuntimePostProcessContext {
+    let homeDirectory: String
+    let task: AgentTask
+    let run: TaskRun
+    let runStartedAt: Date
+    let modelContext: ModelContext
+    let recordingState: AgentEventRecordingState
+    let onEvent: (ParsedEvent) -> Void
 }
 
 struct AgentRuntimeProcessLaunchPlan {
@@ -316,6 +477,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     let modelsCheckedAtStorageKey = AppStorageKeys.claudeModelsCheckedAt
     // Claude Code includes runtime context in billed input, so low budgets need the launch overhead.
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .claudeCode, launchOverheadTokens: 120_000)
+
+    func shouldCheckWorkspaceDirectory(phase: String) -> Bool {
+        phase == "run"
+    }
+
+    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
+        guard phase == "resume" else { return false }
+        return result.error?.contains("session") == true || result.error?.contains("not found") == true
+    }
+
+    func performsPostRunFollowUps(phase: String) -> Bool {
+        phase == "run"
+    }
 
     func cachedModelsJSON(
         cachedClaudeModelsJSON: String,
@@ -765,6 +939,80 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
     let modelsCheckedAtStorageKey = AppStorageKeys.copilotModelsCheckedAt
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .copilotCLI, launchOverheadTokens: 0)
+    let recordsStreamTelemetry = true
+    let recordsInferredFileChanges = true
+
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
+        let configuredPath = configuration.executablePath(for: id)
+        return AgentRuntimeLaunchSettings(
+            executablePath: configuredPath.isEmpty ? CopilotCLIRuntime.detectPath() : configuredPath,
+            homeDirectory: configuration.homeDirectory(for: id)
+        )
+    }
+
+    func missingExecutableAuditReason() -> String {
+        "copilot_cli_not_found"
+    }
+
+    func missingExecutableStopReason() -> String? {
+        "missing_copilot"
+    }
+
+    func missingExecutableMessage(executablePath _: String) -> String {
+        "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`."
+    }
+
+    func defaultStartEventPayload(task: AgentTask) -> String {
+        "Copilot started working on: \(task.goal)"
+    }
+
+    func connectorPreflightContextText(
+        task _: AgentTask,
+        promptOverride: String?,
+        startPayload: String,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride ?? startPayload
+    }
+
+    func shouldPrepareIsolation(phase _: String) -> Bool {
+        true
+    }
+
+    func policyCapabilities(executablePath: String) -> CopilotCLICapabilities {
+        CopilotCLIRuntime.capabilities(executablePath: executablePath)
+    }
+
+    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
+    func manualCompletionPayload(phase _: String) -> String {
+        "Copilot finished."
+    }
+
+    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
+        "Copilot exited with code \(exitCode)."
+    }
+
+    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
+        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    }
+
+    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
+        "Max turns reached (\(task.maxTurns)). Process killed."
+    }
+
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String?,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+    }
 
     func cachedModelsJSON(
         cachedClaudeModelsJSON _: String,
@@ -1026,6 +1274,55 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             ? extractCopilotUtilityText(from: result.stdout)
             : result.stdout
         return AgentUtilityRunResult(exitCode: result.exitCode, output: output, error: result.stderr)
+    }
+
+    @MainActor
+    func recordPostProcessEvents(context: AgentRuntimePostProcessContext) {
+        guard context.run.tokensUsed == 0,
+              let metrics = CopilotSessionMetricsReader.finalMetrics(
+                copilotHome: context.homeDirectory,
+                taskID: context.task.id,
+                runStartedAt: context.runStartedAt
+              ) else {
+            return
+        }
+
+        AgentEventRecorder.recordCopilotEvent(
+            metrics.event,
+            to: context.task,
+            run: context.run,
+            modelContext: context.modelContext,
+            recordingState: context.recordingState
+        )
+        if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {
+            context.onEvent(parsed)
+        }
+        AppLogger.audit(.taskStats, category: "Worker", taskID: context.task.id, fields: [
+            "source": "copilot_session_state",
+            "session_id_prefix": String(metrics.sessionID.prefix(8)),
+            "tokens_total": String(metrics.totalTokens),
+            "tokens_input": String(metrics.inputTokens),
+            "tokens_output": String(metrics.outputTokens),
+            "turns": metrics.turns.map(String.init) ?? "unknown",
+            "duration_ms": metrics.durationMs.map(String.init) ?? "unknown"
+        ])
+    }
+
+    @MainActor
+    func logStreamTelemetry(
+        snapshot: AgentRuntimeStreamTelemetrySnapshot,
+        task: AgentTask,
+        run: TaskRun,
+        phase: String,
+        exitCode: Int
+    ) {
+        AgentRuntimeStreamDiagnostics.logCopilotStreamTelemetry(
+            snapshot: snapshot,
+            task: task,
+            run: run,
+            phase: phase,
+            exitCode: exitCode
+        )
     }
 
     private func copilotAccountDeferredCheck() -> RuntimeReadinessCheck {

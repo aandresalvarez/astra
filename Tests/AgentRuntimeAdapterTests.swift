@@ -61,6 +61,58 @@ struct AgentRuntimeAdapterTests {
         #expect(copilot.budgetProfile.launchOverheadTokens == 0)
     }
 
+    @Test("Adapters own session lifecycle policy")
+    @MainActor
+    func adaptersOwnSessionLifecyclePolicy() {
+        let workspace = Workspace(name: "Adapter", primaryPath: "/tmp/astra-adapter")
+        let task = AgentTask(
+            title: "Lifecycle",
+            goal: "Say hi",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let configuration = AgentRuntimeConfiguration(
+            claudePath: "/tmp/claude",
+            copilotPath: "/tmp/copilot",
+            copilotHome: "/tmp/copilot-home"
+        )
+        let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
+        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+
+        #expect(claude.launchSettings(configuration: configuration).executablePath == "/tmp/claude")
+        #expect(copilot.launchSettings(configuration: configuration).homeDirectory == "/tmp/copilot-home")
+        #expect(claude.recordsStreamTelemetry == false)
+        #expect(copilot.recordsStreamTelemetry)
+        #expect(claude.recordsInferredFileChanges == false)
+        #expect(copilot.recordsInferredFileChanges)
+
+        #expect(claude.shouldCheckWorkspaceDirectory(phase: "resume") == false)
+        #expect(copilot.shouldCheckWorkspaceDirectory(phase: "resume"))
+        #expect(claude.shouldPrepareIsolation(phase: "resume") == false)
+        #expect(copilot.shouldPrepareIsolation(phase: "resume"))
+        #expect(claude.shouldValidateSuccessfulRun(phase: "resume") == false)
+        #expect(copilot.shouldValidateSuccessfulRun(phase: "resume"))
+        #expect(claude.performsPostRunFollowUps(phase: "run"))
+        #expect(copilot.performsPostRunFollowUps(phase: "run") == false)
+
+        #expect(claude.defaultStartEventPayload(task: task) == "Agent started working on: Say hi")
+        #expect(copilot.defaultStartEventPayload(task: task) == "Copilot started working on: Say hi")
+        #expect(claude.sessionTurnMessage(
+            task: task,
+            promptOverride: "prompt",
+            startPayload: "start",
+            sessionMessage: "message",
+            phase: "resume"
+        ) == "message")
+        #expect(copilot.sessionTurnMessage(
+            task: task,
+            promptOverride: "prompt",
+            startPayload: "start",
+            sessionMessage: "message",
+            phase: "resume"
+        ) == "start")
+    }
+
     @Test("Adapter readiness check IDs match service reports")
     func adapterReadinessCheckIDsMatchServiceReports() async {
         let runner = StubBinaryRunner()

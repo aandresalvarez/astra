@@ -59,557 +59,17 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
-        switch selectedRuntime {
-        case .copilotCLI:
-            await executeCopilot(
-                task: task,
-                modelContext: modelContext,
-                onEvent: onEvent,
-                promptOverride: promptOverride,
-                startEventPayload: startEventPayload,
-                executionPolicy: executionPolicy
-            )
-            return
-        case .claudeCode:
-            break
-        }
-
-        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
-            "status": task.status.rawValue,
-            "model": task.model,
-            "workspace_id": task.workspace?.id.uuidString ?? "none"
-        ])
-        guard !isRunning else {
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-                "reason": "worker_already_running"
-            ], level: .warning)
-            return
-        }
-        guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
-            task,
+        await executeRuntimeSession(
+            task: task,
             modelContext: modelContext,
-            phase: "run"
-        ) else {
-            isRunning = false
-            return
-        }
-        isRunning = true
-        cancellationRequested = false
-
-        task.status = .running
-        task.updatedAt = Date()
-        task.markRead()
-
-        let run = TaskRun(task: task)
-        modelContext.insert(run)
-
-        let startEvent = TaskEvent(
-            task: task,
-            type: "task.started",
-            payload: startEventPayload ?? "Agent started working on: \(task.goal)",
-            run: run
+            selectedRuntime: selectedRuntime,
+            onEvent: onEvent,
+            promptOverride: promptOverride,
+            startEventPayload: startEventPayload,
+            auditPhase: "run",
+            recordingMode: .initial,
+            executionPolicy: executionPolicy
         )
-        modelContext.insert(startEvent)
-
-        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "run",
-            contextText: task.goal
-        ) else {
-            isRunning = false
-            return
-        }
-
-        // Verify CLI exists
-        guard FileManager.default.isExecutableFile(atPath: claudePath) else {
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": "provider_cli_not_found",
-                "runtime": selectedRuntime.rawValue
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
-                payload: "\(selectedRuntime.displayName) CLI not found at '\(claudePath)'. Check Settings.", run: run)
-            modelContext.insert(event)
-            isRunning = false
-            return
-        }
-
-        // Use codeWorkingDirectory — prefers additional paths (actual code repo) over the Astra workspace folder
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        // Verify workspace exists
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir), isDir.boolValue else {
-            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": "workspace_not_found"
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
-                payload: "Workspace directory not found: \(codeDir)", run: run)
-            modelContext.insert(event)
-            isRunning = false
-            return
-        }
-
-        // Prepare workspace isolation
-        let executionPath: String
-        do {
-            executionPath = try await IsolationService.prepare(task: task)
-            if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
-                let isoEvent = TaskEvent(task: task, type: "tool.use",
-                    payload: "Isolation: \(task.isolationStrategy.rawValue) → \(executionPath)", run: run)
-                modelContext.insert(isoEvent)
-            }
-        } catch {
-            AppLogger.audit(.isolationFailed, category: "Isolation", taskID: task.id, fields: [
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
-                payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
-            modelContext.insert(event)
-            isRunning = false
-            return
-        }
-
-        let prompt = promptOverride ?? buildPrompt(for: task)
-        logContextPromptDiagnostics(for: task, prompt: prompt, phase: "run")
-        let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
-            prompt: prompt,
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "run",
-            runtime: .claudeCode,
-            budgetEnforcementMode: budgetEnforcementMode
-        ) else {
-            isRunning = false
-            return
-        }
-        Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "run")
-        await logGitHubCLIPreflightIfNeeded(for: task, phase: "run")
-        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
-        let manifest = AgentPolicyManifestService.recordPreflightManifest(
-            task: task,
-            run: run,
-            runtime: .claudeCode,
-            model: task.model,
-            workspacePath: executionPath,
-            phase: "run",
-            permissionPolicy: runPermissionPolicy,
-            executionPolicy: executionPolicy,
-            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            modelContext: modelContext
-        )
-        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: "run") else {
-            IsolationService.cleanup(task: task, executionPath: executionPath)
-            return
-        }
-        let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
-        AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
-            "model": task.model,
-            "token_budget": String(task.tokenBudget),
-            "budget_enforcement": budgetEnforcementMode.rawValue,
-            "isolation": task.isolationStrategy.rawValue,
-            "workspace_changed": String(executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
-        ])
-
-        // Log active skills
-        if !task.skills.isEmpty {
-            let skillNames = task.skills.map(\.name).joined(separator: ", ")
-            let skillEvent = TaskEvent(task: task, type: "skill.active",
-                payload: "Active skills: \(skillNames)", run: run)
-            modelContext.insert(skillEvent)
-            AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
-                "skills_count": String(task.skills.count),
-                "allowed_tools_count": String(TaskCapabilityResolver(task: task).resolver.resolvedAllowedTools.count)
-            ])
-        }
-
-        // Collect in-flight @MainActor tasks so we can drain them before setting
-        // final status. Without this, fire-and-forget Task blocks race with the
-        // post-process code that reads task.tokensUsed, task.costUSD, etc.
-        let pendingEvents = OrderedMainActorTaskQueue()
-        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
-        let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
-        )
-        let recordingState = AgentEventRecordingState()
-        let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
-
-        let result = await processRunner.runClaudeProcess(
-            prompt: prompt,
-            task: task,
-            workspacePath: executionPath,
-            claudePath: claudePath,
-            permissionPolicy: runPermissionPolicy,
-            executionPolicy: launchExecutionPolicy,
-            permissionManifest: manifest,
-            budgetEnforcementMode: budgetEnforcementMode,
-            timeoutSeconds: timeoutSeconds,
-            onLine: { line in
-                PerformanceSignposts.processStreamLine {
-                    streamDebugCapture?.recordLine(line, parsesJSONLines: true)
-                    let parsedBatch = PerformanceSignposts.parseProviderStream {
-                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: true)
-                    }
-                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
-                    let emittedEvents = parsedBatch.events.flatMap {
-                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
-                    }
-                    AgentRuntimeStreamEventBatch(
-                        representation: parsedBatch.representation,
-                        events: emittedEvents
-                    ).recordEmitted(to: streamDebugCapture)
-                    for filtered in emittedEvents {
-                        pendingEvents.add { [weak self] in
-                            guard self != nil else { return }
-
-                            PerformanceSignposts.persistProviderEvent {
-                                runtimeAdapter.recordWorkerStreamEvent(
-                                    filtered,
-                                    mode: .initial,
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    recordingState: recordingState
-                                )
-                            }
-                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                                onEvent(parsed)
-                            }
-                        }
-                    }
-                }
-            }
-        )
-
-        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
-        flushedBatch.recordEmitted(to: streamDebugCapture)
-        for event in flushedBatch.events {
-            pendingEvents.add { [weak self] in
-                guard self != nil else { return }
-
-                PerformanceSignposts.persistProviderEvent {
-                    runtimeAdapter.recordWorkerStreamEvent(
-                        event,
-                        mode: .initial,
-                        task: task,
-                        run: run,
-                        modelContext: modelContext,
-                        recordingState: recordingState
-                    )
-                }
-                if let parsed = runtimeAdapter.callbackEvent(from: event) {
-                    onEvent(parsed)
-                }
-            }
-        }
-
-        // Drain all pending event-processing tasks before setting final status.
-        // This ensures tokensUsed, costUSD, and all SwiftData inserts are complete.
-        await pendingEvents.drainAll()
-
-        // Final status
-        run.completedAt = Date()
-        run.exitCode = result.exitCode
-        streamDebugCapture?.recordStderr(result.error)
-        if let streamDebugCapture {
-            AgentRuntimeStreamDiagnostics.logStreamDebug(
-                snapshot: streamDebugCapture.snapshot(),
-                runtime: .claudeCode,
-                task: task,
-                run: run,
-                phase: "run",
-                exitCode: result.exitCode
-            )
-        }
-
-        AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
-            "exit_code": String(result.exitCode),
-            "tokens_used": String(task.tokensUsed),
-            "token_budget": String(task.tokenBudget)
-        ], level: result.exitCode == 0 ? .info : .warning)
-
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
-            runtime: .claudeCode,
-            model: task.model,
-            exitCode: result.exitCode,
-            rawError: result.error,
-            providerVersion: run.providerVersion,
-            stream: nil,
-            timedOut: result.timedOut,
-            budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded
-        )
-
-        if let failureDiagnostic {
-            AppLogger.audit(
-                .runtimeFailureDiagnostic,
-                category: "Worker",
-                taskID: task.id,
-                fields: failureDiagnostic.auditFields(phase: "run", stream: nil),
-                level: .error
-            )
-        }
-
-        if cancellationRequested || task.status == .cancelled {
-            run.status = .cancelled
-            run.stopReason = "cancelled"
-            task.status = .cancelled
-        } else if result.timedOut {
-            run.status = .timeout
-            run.stopReason = "timeout"
-            task.status = .failed
-            let event = TaskEvent(task: task, type: "error",
-                                  payload: "Task idle timeout — no output for \(Int(timeoutSeconds))s. Process killed.", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: task.id, fields: [
-                "phase": "run"
-            ], level: .error)
-        } else if result.maxTurnsExceeded {
-            run.status = .budgetExceeded
-            run.stopReason = "max_turns_reached"
-            task.status = .budgetExceeded
-            let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-                "reason": "max_turns_reached",
-                "max_turns": String(task.maxTurns)
-            ], level: .error)
-        } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "run") {
-        } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "run") {
-        } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.stopReason = "permission_approval_required"
-            task.status = .pendingUser
-            let event = TaskEvent(
-                task: task,
-                type: "permission.approval.requested",
-                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
-                run: run
-            )
-            modelContext.insert(event)
-        } else if result.policyViolation {
-            run.status = .failed
-            run.stopReason = "policy_violation"
-            task.status = .pendingUser
-            let event = TaskEvent(
-                task: task,
-                type: "error",
-                payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
-                run: run
-            )
-            modelContext.insert(event)
-        } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
-            result: result,
-            task: task,
-            budgetEnforcementMode: budgetEnforcementMode
-        ) {
-            run.status = .budgetExceeded
-            run.stopReason = "max_budget_reached"
-            task.status = .budgetExceeded
-            let reason = "Token budget exceeded"
-            let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-            let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-                "reason": "max_budget_reached",
-                "tokens_used": String(task.tokensUsed),
-                "token_budget": String(task.tokenBudget)
-            ], level: .error)
-        } else if result.exitCode == 0 {
-            run.status = .completed
-            run.stopReason = "completed"
-            AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
-                result: result,
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                phase: "run",
-                budgetEnforcementMode: budgetEnforcementMode
-            )
-
-            // Run validation based on strategy
-            switch task.validationStrategy {
-            case .manual:
-                Self.applyManualCompletion(
-                    task: task,
-                    run: run,
-                    modelContext: modelContext,
-                    successPayload: "Agent finished."
-                )
-
-            case .runTests:
-                let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
-                modelContext.insert(testEvent)
-
-                let testResult = await ValidationService.runTests(task: task)
-                switch testResult {
-                case .passed(let details):
-                    task.status = .completed
-                    let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
-                    modelContext.insert(event)
-                case .failed(let details):
-                    task.status = .failed
-                    let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
-                    modelContext.insert(event)
-                case .error(let msg):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
-                    modelContext.insert(event)
-                }
-
-            case .aiCheck:
-                let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
-                modelContext.insert(checkEvent)
-
-                let aiResult = await ValidationService.aiCheck(
-                    task: task,
-                    claudePath: claudePath,
-                    model: validationModel,
-                    utilityRuntime: utilityRuntimeConfiguration(
-                        for: selectedRuntime,
-                        preferredModel: validationModel
-                    )
-                )
-                switch aiResult {
-                case .passed(let details):
-                    task.status = .completed
-                    let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
-                    modelContext.insert(event)
-                case .failed(let details):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
-                    modelContext.insert(event)
-                case .error(let msg):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
-                    modelContext.insert(event)
-                }
-            }
-        } else if Self.shouldPauseForRuntimePermissionApproval(
-            failureDiagnostic: failureDiagnostic,
-            task: task,
-            run: run
-        ) {
-            run.status = .failed
-            run.stopReason = "permission_approval_required"
-            task.status = .pendingUser
-            let payload = permissionApprovalRequestPayload(
-                diagnostic: failureDiagnostic,
-                result: result
-            )
-            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
-            modelContext.insert(event)
-        } else {
-            run.status = .failed
-            run.stopReason = "failed"
-            task.status = .failed
-            let payload = failureDiagnostic?.userFacingPayload(
-                prefix: "Agent exited with code \(result.exitCode)."
-            ) ?? AgentRuntimeFailurePayload.enriched(
-                prefix: "Agent exited with code \(result.exitCode).",
-                rawError: result.error,
-                task: task
-            )
-            let event = TaskEvent(task: task, type: "error",
-                                  payload: payload, run: run)
-            modelContext.insert(event)
-        }
-
-        AgentRuntimeRunPersistence.recordSessionTurn(
-            task: task,
-            run: run,
-            message: task.goal
-        )
-
-        // Chain: auto-create follow-up task if configured
-        if task.status == .completed,
-           !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let output = run.output
-            let nextTask = AgentTask(
-                title: String(task.chainedGoal.prefix(60)),
-                goal: task.chainedGoal,
-                workspace: task.workspace,
-                tokenBudget: task.tokenBudget,
-                model: task.model,
-                runtime: task.resolvedRuntimeID,
-                isolationStrategy: task.isolationStrategy,
-                validationStrategy: task.validationStrategy
-            )
-            nextTask.status = .queued
-            nextTask.chainedFromID = task.id
-            nextTask.runtimeID = task.runtimeID
-            // Pipe previous output as input context
-            if !output.isEmpty {
-                nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
-            }
-            nextTask.skills = task.skills
-            TaskCapabilitySnapshotter.capture(for: nextTask)
-            modelContext.insert(nextTask)
-
-            let chainEvent = TaskEvent(task: task, type: "task.chained",
-                payload: "Chained to next task: \(nextTask.title)")
-            modelContext.insert(chainEvent)
-            AppLogger.audit(.taskChained, category: "Worker", taskID: task.id, fields: [
-                "next_task_id": nextTask.id.uuidString
-            ])
-        }
-
-        // Auto-generate a short title after the first run if the title
-        // is still just the truncated goal text (i.e. user never set one).
-        if task.runs.count == 1,
-           task.title == String(task.goal.prefix(60)),
-           let ws = task.workspace {
-            let goalText = task.goal
-            let wsPath = ws.primaryPath
-            let titleRuntime = utilityRuntimeConfiguration(
-                for: selectedRuntime,
-                preferredModel: validationModel
-            )
-            let taskRef = task
-            Task.detached {
-                if let generated = await SpecEngine.generateTitle(
-                    goal: goalText,
-                    workspacePath: wsPath,
-                    utilityRuntime: titleRuntime
-                ) {
-                    await MainActor.run {
-                        taskRef.title = generated
-                        taskRef.updatedAt = Date()
-                    }
-                }
-            }
-        }
-
-        // Cleanup isolation
-        IsolationService.cleanup(task: task, executionPath: executionPath)
-
-        AgentRuntimeRunPersistence.finalizeAndPersist(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "run"
-        )
-
-        isRunning = false
     }
 
     @MainActor
@@ -789,395 +249,57 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
-        switch selectedRuntime {
-        case .copilotCLI:
-            let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        await executeRuntimeSession(
+            task: task,
+            modelContext: modelContext,
+            selectedRuntime: selectedRuntime,
+            onEvent: onEvent,
+            promptOverride: prompt,
+            startEventType: "user.message",
+            startEventPayload: message,
+            sessionMessage: message,
+            auditPhase: "resume",
+            recordingMode: .followUp,
+            executionPolicy: executionPolicy
+        )
+    }
+
+    @MainActor
+    private func executeRuntimeSession(
+        task: AgentTask,
+        modelContext: ModelContext,
+        selectedRuntime: AgentRuntimeID,
+        onEvent: @escaping (ParsedEvent) -> Void,
+        promptOverride: String? = nil,
+        startEventType: String = "task.started",
+        startEventPayload: String? = nil,
+        sessionMessage: String? = nil,
+        auditPhase: String = "run",
+        recordingMode: AgentRuntimeRecordingMode = .initial,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) async {
+        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
+        let launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
+            "status": task.status.rawValue,
+            "model": task.model,
+            "runtime": selectedRuntime.rawValue,
+            "phase": auditPhase,
+            "workspace_id": task.workspace?.id.uuidString ?? "none"
+        ])
+        if auditPhase == "resume" {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
-                "mode": "fresh_follow_up",
-                "runtime": AgentRuntimeID.copilotCLI.rawValue,
-                "message_length": String(message.count),
-                "prompt_chars": String(prompt.count),
+                "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
+                "runtime": selectedRuntime.rawValue,
+                "message_length": String(sessionMessage?.count ?? 0),
+                "prompt_chars": String(promptOverride?.count ?? 0),
                 "history_run_count": String(task.runs.count),
                 "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
                 "has_session_id": String(task.sessionId != nil),
                 "workspace_id": task.workspace?.id.uuidString ?? "none"
             ])
-            await executeCopilot(
-                task: task,
-                modelContext: modelContext,
-                onEvent: onEvent,
-                promptOverride: prompt,
-                startEventType: "user.message",
-                startEventPayload: message,
-                auditPhase: "resume",
-                executionPolicy: executionPolicy
-            )
-            return
-        case .claudeCode:
-            break
         }
-
-        guard !isRunning else {
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-                "reason": "worker_already_running"
-            ], level: .warning)
-            return
-        }
-        guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
-            task,
-            modelContext: modelContext,
-            phase: "resume"
-        ) else {
-            isRunning = false
-            return
-        }
-        isRunning = true
-        cancellationRequested = false
-
-        task.status = .running
-        task.updatedAt = Date()
-        task.markRead()
-
-        let run = TaskRun(task: task)
-        modelContext.insert(run)
-
-        let userEvent = TaskEvent(task: task, type: "user.message", payload: message, run: run)
-        modelContext.insert(userEvent)
-
-        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "resume",
-            contextText: message
-        ) else {
-            isRunning = false
-            return
-        }
-
-        // Build a fresh prompt with session history instead of --resume (which resends full conversation).
-        // This cuts input tokens by ~90% on follow-ups.
-        let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
-        logContextPromptDiagnostics(for: task, prompt: followUpPrompt, phase: "resume")
-        let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
-            prompt: followUpPrompt,
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "resume",
-            runtime: .claudeCode,
-            budgetEnforcementMode: budgetEnforcementMode
-        ) else {
-            isRunning = false
-            return
-        }
-        Self.logCapabilityResolution(for: task, runtime: .claudeCode, phase: "resume")
-        await logGitHubCLIPreflightIfNeeded(for: task, phase: "resume")
-        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
-        let manifest = AgentPolicyManifestService.recordPreflightManifest(
-            task: task,
-            run: run,
-            runtime: .claudeCode,
-            model: task.model,
-            workspacePath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
-            phase: "resume",
-            permissionPolicy: runPermissionPolicy,
-            executionPolicy: executionPolicy,
-            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            modelContext: modelContext
-        )
-        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: "resume") else {
-            return
-        }
-        let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
-
-        AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
-            "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
-            "runtime": AgentRuntimeID.claudeCode.rawValue,
-            "budget_enforcement": budgetEnforcementMode.rawValue,
-            "message_length": String(message.count),
-            "prompt_chars": String(followUpPrompt.count),
-            "history_run_count": String(task.runs.count),
-            "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
-            "has_session_id": String(task.sessionId != nil),
-            "workspace_id": task.workspace?.id.uuidString ?? "none"
-        ])
-
-        let pendingEvents = OrderedMainActorTaskQueue()
-        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
-        let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
-        )
-        let recordingState = AgentEventRecordingState()
-        let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
-
-        let result = await processRunner.runClaudeProcess(
-            prompt: followUpPrompt,
-            task: task,
-            workspacePath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
-            claudePath: claudePath,
-            permissionPolicy: runPermissionPolicy,
-            executionPolicy: launchExecutionPolicy,
-            permissionManifest: manifest,
-            budgetEnforcementMode: budgetEnforcementMode,
-            timeoutSeconds: timeoutSeconds,
-            onLine: { line in
-                PerformanceSignposts.processStreamLine {
-                    streamDebugCapture?.recordLine(line, parsesJSONLines: true)
-                    let parsedBatch = PerformanceSignposts.parseProviderStream {
-                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: true)
-                    }
-                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
-                    let emittedEvents = parsedBatch.events.flatMap {
-                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
-                    }
-                    AgentRuntimeStreamEventBatch(
-                        representation: parsedBatch.representation,
-                        events: emittedEvents
-                    ).recordEmitted(to: streamDebugCapture)
-                    for filtered in emittedEvents {
-                        pendingEvents.add {
-                            PerformanceSignposts.persistProviderEvent {
-                                runtimeAdapter.recordWorkerStreamEvent(
-                                    filtered,
-                                    mode: .followUp,
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    recordingState: recordingState
-                                )
-                            }
-                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                                onEvent(parsed)
-                            }
-                        }
-                    }
-                }
-            }
-        )
-
-        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
-        flushedBatch.recordEmitted(to: streamDebugCapture)
-        for event in flushedBatch.events {
-            pendingEvents.add {
-                PerformanceSignposts.persistProviderEvent {
-                    runtimeAdapter.recordWorkerStreamEvent(
-                        event,
-                        mode: .followUp,
-                        task: task,
-                        run: run,
-                        modelContext: modelContext,
-                        recordingState: recordingState
-                    )
-                }
-                if let parsed = runtimeAdapter.callbackEvent(from: event) {
-                    onEvent(parsed)
-                }
-            }
-        }
-
-        // Drain all pending event-processing tasks before setting final status
-        await pendingEvents.drainAll()
-
-        run.completedAt = Date()
-        run.exitCode = result.exitCode
-        streamDebugCapture?.recordStderr(result.error)
-        if let streamDebugCapture {
-            AgentRuntimeStreamDiagnostics.logStreamDebug(
-                snapshot: streamDebugCapture.snapshot(),
-                runtime: .claudeCode,
-                task: task,
-                run: run,
-                phase: "resume",
-                exitCode: result.exitCode
-            )
-        }
-
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
-            runtime: .claudeCode,
-            model: task.model,
-            exitCode: result.exitCode,
-            rawError: result.error,
-            providerVersion: run.providerVersion,
-            stream: nil,
-            timedOut: result.timedOut,
-            budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded
-        )
-
-        if let failureDiagnostic {
-            AppLogger.audit(
-                .runtimeFailureDiagnostic,
-                category: "Worker",
-                taskID: task.id,
-                fields: failureDiagnostic.auditFields(phase: "resume", stream: nil),
-                level: .error
-            )
-        }
-
-        if cancellationRequested || task.status == .cancelled {
-            run.status = .cancelled
-            run.stopReason = "cancelled"
-            task.status = .cancelled
-        } else if result.timedOut {
-            run.status = .timeout
-            run.stopReason = "timeout"
-            task.status = .failed
-            let event = TaskEvent(task: task, type: "error",
-                                  payload: "Resume idle timeout — no output for \(Int(timeoutSeconds))s. Process killed.", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: task.id, fields: [
-                "phase": "resume"
-            ], level: .error)
-        } else if result.maxTurnsExceeded {
-            run.status = .budgetExceeded
-            run.stopReason = "max_turns_reached"
-            task.status = .budgetExceeded
-            let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "Max turns reached (\(task.maxTurns)) during resume. Process killed.", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-                "phase": "resume",
-                "reason": "max_turns_reached",
-                "max_turns": String(task.maxTurns)
-            ], level: .error)
-        } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "resume") {
-        } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: "resume") {
-        } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.stopReason = "permission_approval_required"
-            task.status = .pendingUser
-            let event = TaskEvent(
-                task: task,
-                type: "permission.approval.requested",
-                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
-                run: run
-            )
-            modelContext.insert(event)
-        } else if result.policyViolation {
-            run.status = .failed
-            run.stopReason = "policy_violation"
-            task.status = .pendingUser
-            let event = TaskEvent(
-                task: task,
-                type: "error",
-                payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
-                run: run
-            )
-            modelContext.insert(event)
-        } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
-            result: result,
-            task: task,
-            budgetEnforcementMode: budgetEnforcementMode
-        ) {
-            run.status = .budgetExceeded
-            run.stopReason = "max_budget_reached"
-            task.status = .budgetExceeded
-            let reason = "Token budget exceeded"
-            let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-            let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
-            modelContext.insert(event)
-            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-                "phase": "resume",
-                "reason": "max_budget_reached",
-                "tokens_used": String(task.tokensUsed),
-                "token_budget": String(task.tokenBudget)
-            ], level: .error)
-        } else if result.exitCode == 0 {
-            run.status = .completed
-            run.stopReason = "completed"
-            AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
-                result: result,
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                phase: "resume",
-                budgetEnforcementMode: budgetEnforcementMode
-            )
-            Self.applyManualCompletion(
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                successPayload: "Follow-up completed."
-            )
-        } else if Self.shouldPauseForRuntimePermissionApproval(
-            failureDiagnostic: failureDiagnostic,
-            task: task,
-            run: run
-        ) {
-            run.status = .failed
-            run.stopReason = "permission_approval_required"
-            task.status = .pendingUser
-            let payload = permissionApprovalRequestPayload(
-                diagnostic: failureDiagnostic,
-                result: result
-            )
-            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
-            modelContext.insert(event)
-        } else {
-            run.status = .failed
-            run.stopReason = "failed"
-            // Check for stale session ID (Claude exits non-zero when session not found)
-            let isStaleSession = result.error?.contains("session") == true || result.error?.contains("not found") == true
-            if isStaleSession {
-                task.sessionId = nil  // Clear stale session so user can retry fresh
-                let event = TaskEvent(task: task, type: "error",
-                                      payload: "Session expired or not found. Session cleared — retry will start fresh.", run: run)
-                modelContext.insert(event)
-                AppLogger.audit(.workerSessionCleared, category: "Worker", taskID: task.id, fields: [
-                    "reason": "stale_session"
-                ], level: .warning)
-            } else {
-                let payload = failureDiagnostic?.userFacingPayload(
-                    prefix: "Follow-up failed (exit \(result.exitCode))."
-                ) ?? AgentRuntimeFailurePayload.enriched(
-                    prefix: "Follow-up failed (exit \(result.exitCode)).",
-                    rawError: result.error,
-                    task: task
-                )
-                let event = TaskEvent(task: task, type: "error",
-                                      payload: payload, run: run)
-                modelContext.insert(event)
-            }
-            task.status = .failed
-        }
-
-        AgentRuntimeRunPersistence.recordSessionTurn(
-            task: task,
-            run: run,
-            message: message
-        )
-
-        AgentRuntimeRunPersistence.finalizeAndPersist(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: "resume"
-        )
-
-        isRunning = false
-    }
-
-    @MainActor
-    private func executeCopilot(
-        task: AgentTask,
-        modelContext: ModelContext,
-        onEvent: @escaping (ParsedEvent) -> Void,
-        promptOverride: String? = nil,
-        startEventType: String = "task.started",
-        startEventPayload: String? = nil,
-        auditPhase: String = "run",
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
-    ) async {
-        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
-            "status": task.status.rawValue,
-            "model": task.model,
-            "runtime": AgentRuntimeID.copilotCLI.rawValue,
-            "phase": auditPhase,
-            "workspace_id": task.workspace?.id.uuidString ?? "none"
-        ])
         guard !isRunning else {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "worker_already_running"
@@ -1194,16 +316,18 @@ final class AgentRuntimeWorker {
         isRunning = true
         cancellationRequested = false
 
-        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        if task.runtimeID == nil {
+            task.runtimeID = selectedRuntime.rawValue
+        }
         task.status = .running
         task.updatedAt = Date()
         task.markRead()
 
         let run = TaskRun(task: task)
-        run.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
 
-        let startPayload = startEventPayload ?? "Copilot started working on: \(task.goal)"
+        let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
 
@@ -1212,25 +336,33 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            contextText: promptOverride ?? startPayload
+            contextText: runtimeAdapter.connectorPreflightContextText(
+                task: task,
+                promptOverride: promptOverride,
+                startPayload: startPayload,
+                sessionMessage: sessionMessage,
+                phase: auditPhase
+            )
         ) else {
             isRunning = false
             return
         }
 
-        let copilotPath = runtimeConfiguration.resolvedCopilotPath()
-        guard FileManager.default.isExecutableFile(atPath: copilotPath) else {
+        guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
-                "reason": "copilot_cli_not_found"
+                "reason": runtimeAdapter.missingExecutableAuditReason(),
+                "runtime": selectedRuntime.rawValue
             ], level: .error)
             run.status = .failed
             run.completedAt = Date()
-            run.stopReason = "missing_copilot"
+            if let stopReason = runtimeAdapter.missingExecutableStopReason() {
+                run.stopReason = stopReason
+            }
             task.status = .failed
             task.updatedAt = Date()
             task.markUnreadForCurrentStatus(at: task.updatedAt)
             let event = TaskEvent(task: task, type: "error",
-                payload: "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`.", run: run)
+                payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
             isRunning = false
             return
@@ -1238,10 +370,12 @@ final class AgentRuntimeWorker {
 
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir), isDir.boolValue else {
+        let workspaceExists = FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir) && isDir.boolValue
+        if runtimeAdapter.shouldCheckWorkspaceDirectory(phase: auditPhase),
+           !workspaceExists {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
                 "reason": "workspace_not_found",
-                "runtime": AgentRuntimeID.copilotCLI.rawValue
+                "runtime": selectedRuntime.rawValue
             ], level: .error)
             run.status = .failed
             run.completedAt = Date()
@@ -1257,29 +391,36 @@ final class AgentRuntimeWorker {
         }
 
         let executionPath: String
-        do {
-            executionPath = try await IsolationService.prepare(task: task)
-            if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
-                let isoEvent = TaskEvent(task: task, type: "tool.use",
-                    payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
-                modelContext.insert(isoEvent)
+        let shouldCleanupIsolation: Bool
+        if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
+            do {
+                executionPath = try await IsolationService.prepare(task: task)
+                shouldCleanupIsolation = true
+                if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
+                    let isoEvent = TaskEvent(task: task, type: "tool.use",
+                        payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
+                    modelContext.insert(isoEvent)
+                }
+            } catch {
+                AppLogger.audit(.isolationFailed, category: "Isolation", taskID: task.id, fields: [
+                    "error_type": String(describing: type(of: error)),
+                    "runtime": selectedRuntime.rawValue
+                ], level: .error)
+                run.status = .failed
+                run.completedAt = Date()
+                run.stopReason = "isolation_failed"
+                task.status = .failed
+                task.updatedAt = Date()
+                task.markUnreadForCurrentStatus(at: task.updatedAt)
+                let event = TaskEvent(task: task, type: "error",
+                    payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
+                modelContext.insert(event)
+                isRunning = false
+                return
             }
-        } catch {
-            AppLogger.audit(.isolationFailed, category: "Isolation", taskID: task.id, fields: [
-                "error_type": String(describing: type(of: error)),
-                "runtime": AgentRuntimeID.copilotCLI.rawValue
-            ], level: .error)
-            run.status = .failed
-            run.completedAt = Date()
-            run.stopReason = "isolation_failed"
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
-                payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
-            modelContext.insert(event)
-            isRunning = false
-            return
+        } else {
+            executionPath = codeDir
+            shouldCleanupIsolation = false
         }
 
         let prompt = promptOverride ?? buildPrompt(for: task)
@@ -1291,39 +432,45 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            runtime: .copilotCLI,
+            runtime: selectedRuntime,
             budgetEnforcementMode: budgetEnforcementMode
         ) else {
             isRunning = false
             return
         }
-        Self.logCapabilityResolution(for: task, runtime: .copilotCLI, phase: auditPhase)
+        Self.logCapabilityResolution(for: task, runtime: selectedRuntime, phase: auditPhase)
         await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
-        let copilotCapabilities = CopilotCLIRuntime.capabilities(executablePath: copilotPath)
+        let policyCapabilities = runtimeAdapter.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
             run: run,
-            runtime: .copilotCLI,
+            runtime: selectedRuntime,
             model: task.model,
             workspacePath: executionPath,
             phase: auditPhase,
             permissionPolicy: runPermissionPolicy,
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            copilotCapabilities: copilotCapabilities,
+            copilotCapabilities: policyCapabilities,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
-            IsolationService.cleanup(task: task, executionPath: executionPath)
+            if shouldCleanupIsolation {
+                IsolationService.cleanup(task: task, executionPath: executionPath)
+            }
             return
         }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
-        let beforeGitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
-        let beforeDirtyFingerprints = AgentFileChangeDetector.fileFingerprints(
-            for: AgentFileChangeDetector.absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: executionPath)
-        )
+        let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
+            ? AgentFileChangeDetector.gitStatusSnapshot(workspacePath: executionPath)
+            : nil
+        let beforeDirtyFingerprints = beforeGitStatus.map {
+            AgentFileChangeDetector.fileFingerprints(
+                for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath)
+            )
+        }
         if !task.skills.isEmpty {
             let skillNames = task.skills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, type: "skill.active",
@@ -1332,19 +479,19 @@ final class AgentRuntimeWorker {
         }
 
         let pendingEvents = OrderedMainActorTaskQueue()
-        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
-        let streamTelemetry = AgentRuntimeStreamTelemetry()
+        let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
-        let result = await processRunner.runCopilotProcess(
+        let result = await processRunner.runRuntimeProcess(
+            adapter: runtimeAdapter,
             prompt: prompt,
             task: task,
             workspacePath: executionPath,
-            copilotPath: copilotPath,
-            copilotHome: copilotHome,
+            executablePath: launchSettings.executablePath,
+            homeDirectory: launchSettings.homeDirectory,
             permissionPolicy: runPermissionPolicy,
             executionPolicy: launchExecutionPolicy,
             permissionManifest: manifest,
@@ -1352,7 +499,7 @@ final class AgentRuntimeWorker {
             timeoutSeconds: timeoutSeconds,
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
-                    streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
+                    streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
                     streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
                     let parsedBatch = PerformanceSignposts.parseProviderStream {
                         runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
@@ -1374,7 +521,7 @@ final class AgentRuntimeWorker {
                             PerformanceSignposts.persistProviderEvent {
                                 runtimeAdapter.recordWorkerStreamEvent(
                                     filtered,
-                                    mode: .initial,
+                                    mode: recordingMode,
                                     task: task,
                                     run: run,
                                     modelContext: modelContext,
@@ -1398,7 +545,7 @@ final class AgentRuntimeWorker {
                 PerformanceSignposts.persistProviderEvent {
                     runtimeAdapter.recordWorkerStreamEvent(
                         event,
-                        mode: .initial,
+                        mode: recordingMode,
                         task: task,
                         run: run,
                         modelContext: modelContext,
@@ -1411,42 +558,46 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
-        recordCopilotSessionMetricsIfNeeded(
-            copilotHome: copilotHome,
+        runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
+            homeDirectory: launchSettings.homeDirectory,
             task: task,
             run: run,
             runStartedAt: startTime,
             modelContext: modelContext,
             recordingState: recordingState,
             onEvent: onEvent
-        )
-        let streamSnapshot = streamTelemetry.snapshot()
+        ))
+        let streamSnapshot = streamTelemetry?.snapshot()
 
-        AgentFileChangeDetector.appendInferredFileChanges(
-            to: run,
-            task: task,
-            modelContext: modelContext,
-            workspacePath: executionPath,
-            beforeGitStatus: beforeGitStatus,
-            beforeDirtyFingerprints: beforeDirtyFingerprints,
-            runStart: startTime
-        )
+        if let beforeGitStatus, let beforeDirtyFingerprints {
+            AgentFileChangeDetector.appendInferredFileChanges(
+                to: run,
+                task: task,
+                modelContext: modelContext,
+                workspacePath: executionPath,
+                beforeGitStatus: beforeGitStatus,
+                beforeDirtyFingerprints: beforeDirtyFingerprints,
+                runStart: startTime
+            )
+        }
 
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
         streamDebugCapture?.recordStderr(result.error)
-        AgentRuntimeStreamDiagnostics.logCopilotStreamTelemetry(
-            snapshot: streamSnapshot,
-            task: task,
-            run: run,
-            phase: auditPhase,
-            exitCode: result.exitCode
-        )
+        if let streamSnapshot {
+            runtimeAdapter.logStreamTelemetry(
+                snapshot: streamSnapshot,
+                task: task,
+                run: run,
+                phase: auditPhase,
+                exitCode: result.exitCode
+            )
+        }
         if let streamDebugCapture {
             AgentRuntimeStreamDiagnostics.logStreamDebug(
                 snapshot: streamDebugCapture.snapshot(),
-                runtime: .copilotCLI,
+                runtime: selectedRuntime,
                 task: task,
                 run: run,
                 phase: auditPhase,
@@ -1454,7 +605,7 @@ final class AgentRuntimeWorker {
             )
         }
         let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
-            runtime: .copilotCLI,
+            runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
             rawError: result.error,
@@ -1475,7 +626,7 @@ final class AgentRuntimeWorker {
         }
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
-            "runtime": AgentRuntimeID.copilotCLI.rawValue,
+            "runtime": selectedRuntime.rawValue,
             "phase": auditPhase
         ], level: result.exitCode == 0 ? .info : .warning)
 
@@ -1488,14 +639,17 @@ final class AgentRuntimeWorker {
             run.stopReason = "timeout"
             task.status = .failed
             let event = TaskEvent(task: task, type: "error",
-                                  payload: "Task idle timeout — no output for \(Int(timeoutSeconds))s. Process killed.", run: run)
+                                  payload: runtimeAdapter.timeoutPayload(
+                                    phase: auditPhase,
+                                    timeoutSeconds: timeoutSeconds
+                                  ), run: run)
             modelContext.insert(event)
         } else if result.maxTurnsExceeded {
             run.status = .budgetExceeded
             run.stopReason = "max_turns_reached"
             task.status = .budgetExceeded
             let event = TaskEvent(task: task, type: "budget.exceeded",
-                                  payload: "Max turns reached (\(task.maxTurns)). Process killed.", run: run)
+                                  payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
@@ -1545,58 +699,67 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            switch task.validationStrategy {
-            case .manual:
+            if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
+                switch task.validationStrategy {
+                case .manual:
+                    Self.applyManualCompletion(
+                        task: task,
+                        run: run,
+                        modelContext: modelContext,
+                        successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                    )
+                case .runTests:
+                    let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
+                    modelContext.insert(testEvent)
+                    let testResult = await ValidationService.runTests(task: task)
+                    switch testResult {
+                    case .passed(let details):
+                        task.status = .completed
+                        let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                        modelContext.insert(event)
+                    case .failed(let details):
+                        task.status = .failed
+                        let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                        modelContext.insert(event)
+                    case .error(let msg):
+                        task.status = .pendingUser
+                        let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
+                        modelContext.insert(event)
+                    }
+                case .aiCheck:
+                    let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
+                    modelContext.insert(checkEvent)
+                    let aiResult = await ValidationService.aiCheck(
+                        task: task,
+                        claudePath: claudePath,
+                        model: validationModel,
+                        utilityRuntime: utilityRuntimeConfiguration(
+                            for: selectedRuntime,
+                            preferredModel: validationModel
+                        )
+                    )
+                    switch aiResult {
+                    case .passed(let details):
+                        task.status = .completed
+                        let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                        modelContext.insert(event)
+                    case .failed(let details):
+                        task.status = .pendingUser
+                        let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                        modelContext.insert(event)
+                    case .error(let msg):
+                        task.status = .pendingUser
+                        let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
+                        modelContext.insert(event)
+                    }
+                }
+            } else {
                 Self.applyManualCompletion(
                     task: task,
                     run: run,
                     modelContext: modelContext,
-                    successPayload: "Copilot finished."
+                    successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
                 )
-            case .runTests:
-                let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
-                modelContext.insert(testEvent)
-                let testResult = await ValidationService.runTests(task: task)
-                switch testResult {
-                case .passed(let details):
-                    task.status = .completed
-                    let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
-                    modelContext.insert(event)
-                case .failed(let details):
-                    task.status = .failed
-                    let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
-                    modelContext.insert(event)
-                case .error(let msg):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
-                    modelContext.insert(event)
-                }
-            case .aiCheck:
-                let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
-                modelContext.insert(checkEvent)
-                let aiResult = await ValidationService.aiCheck(
-                    task: task,
-                    claudePath: claudePath,
-                    model: validationModel,
-                    utilityRuntime: utilityRuntimeConfiguration(
-                        for: .copilotCLI,
-                        preferredModel: validationModel
-                    )
-                )
-                switch aiResult {
-                case .passed(let details):
-                    task.status = .completed
-                    let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
-                    modelContext.insert(event)
-                case .failed(let details):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
-                    modelContext.insert(event)
-                case .error(let msg):
-                    task.status = .pendingUser
-                    let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
-                    modelContext.insert(event)
-                }
             }
         } else if Self.shouldPauseForRuntimePermissionApproval(
             failureDiagnostic: failureDiagnostic,
@@ -1615,25 +778,56 @@ final class AgentRuntimeWorker {
         } else {
             run.status = .failed
             run.stopReason = "failed"
+            if runtimeAdapter.shouldClearStaleSessionOnFailure(phase: auditPhase, result: result) {
+                task.sessionId = nil
+                let event = TaskEvent(task: task, type: "error",
+                                      payload: "Session expired or not found. Session cleared - retry will start fresh.", run: run)
+                modelContext.insert(event)
+                AppLogger.audit(.workerSessionCleared, category: "Worker", taskID: task.id, fields: [
+                    "reason": "stale_session",
+                    "runtime": selectedRuntime.rawValue
+                ], level: .warning)
+            } else {
+                let prefix = runtimeAdapter.failurePayloadPrefix(phase: auditPhase, exitCode: result.exitCode)
+                let payload = failureDiagnostic?.userFacingPayload(
+                    prefix: prefix
+                ) ?? AgentRuntimeFailurePayload.enriched(
+                    prefix: prefix,
+                    rawError: result.error,
+                    task: task
+                )
+                let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+                modelContext.insert(event)
+            }
             task.status = .failed
-            let payload = failureDiagnostic?.userFacingPayload(
-                prefix: "Copilot exited with code \(result.exitCode)."
-            ) ?? AgentRuntimeFailurePayload.enriched(
-                prefix: "Copilot exited with code \(result.exitCode).",
-                rawError: result.error,
-                task: task
-            )
-            let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
-            modelContext.insert(event)
         }
 
         AgentRuntimeRunPersistence.recordSessionTurn(
             task: task,
             run: run,
-            message: promptOverride == nil ? task.goal : (startEventPayload ?? task.goal)
+            message: runtimeAdapter.sessionTurnMessage(
+                task: task,
+                promptOverride: promptOverride,
+                startPayload: startEventPayload,
+                sessionMessage: sessionMessage,
+                phase: auditPhase
+            )
         )
 
-        IsolationService.cleanup(task: task, executionPath: executionPath)
+        if auditPhase == "run",
+           task.status == .completed,
+           runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
+           !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            createChainedTask(from: task, run: run, modelContext: modelContext)
+        }
+
+        if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
+            scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime)
+        }
+
+        if shouldCleanupIsolation {
+            IsolationService.cleanup(task: task, executionPath: executionPath)
+        }
         AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
@@ -1709,43 +903,70 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private func recordCopilotSessionMetricsIfNeeded(
-        copilotHome: String,
-        task: AgentTask,
+    private func createChainedTask(
+        from task: AgentTask,
         run: TaskRun,
-        runStartedAt: Date,
-        modelContext: ModelContext,
-        recordingState: AgentEventRecordingState,
-        onEvent: @escaping (ParsedEvent) -> Void
+        modelContext: ModelContext
     ) {
-        guard run.tokensUsed == 0,
-              let metrics = CopilotSessionMetricsReader.finalMetrics(
-                copilotHome: copilotHome,
-                taskID: task.id,
-                runStartedAt: runStartedAt
-              ) else {
+        let output = run.output
+        let nextTask = AgentTask(
+            title: String(task.chainedGoal.prefix(60)),
+            goal: task.chainedGoal,
+            workspace: task.workspace,
+            tokenBudget: task.tokenBudget,
+            model: task.model,
+            runtime: task.resolvedRuntimeID,
+            isolationStrategy: task.isolationStrategy,
+            validationStrategy: task.validationStrategy
+        )
+        nextTask.status = .queued
+        nextTask.chainedFromID = task.id
+        nextTask.runtimeID = task.runtimeID
+        if !output.isEmpty {
+            nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
+        }
+        nextTask.skills = task.skills
+        TaskCapabilitySnapshotter.capture(for: nextTask)
+        modelContext.insert(nextTask)
+
+        let chainEvent = TaskEvent(task: task, type: "task.chained",
+            payload: "Chained to next task: \(nextTask.title)")
+        modelContext.insert(chainEvent)
+        AppLogger.audit(.taskChained, category: "Worker", taskID: task.id, fields: [
+            "next_task_id": nextTask.id.uuidString
+        ])
+    }
+
+    @MainActor
+    private func scheduleGeneratedTitleIfNeeded(
+        for task: AgentTask,
+        selectedRuntime: AgentRuntimeID
+    ) {
+        guard task.runs.count == 1,
+              task.title == String(task.goal.prefix(60)),
+              let ws = task.workspace else {
             return
         }
 
-        AgentEventRecorder.recordCopilotEvent(
-            metrics.event,
-            to: task,
-            run: run,
-            modelContext: modelContext,
-            recordingState: recordingState
+        let goalText = task.goal
+        let wsPath = ws.primaryPath
+        let titleRuntime = utilityRuntimeConfiguration(
+            for: selectedRuntime,
+            preferredModel: validationModel
         )
-        if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {
-            onEvent(parsed)
+        let taskRef = task
+        Task.detached {
+            if let generated = await SpecEngine.generateTitle(
+                goal: goalText,
+                workspacePath: wsPath,
+                utilityRuntime: titleRuntime
+            ) {
+                await MainActor.run {
+                    taskRef.title = generated
+                    taskRef.updatedAt = Date()
+                }
+            }
         }
-        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-            "source": "copilot_session_state",
-            "session_id_prefix": String(metrics.sessionID.prefix(8)),
-            "tokens_total": String(metrics.totalTokens),
-            "tokens_input": String(metrics.inputTokens),
-            "tokens_output": String(metrics.outputTokens),
-            "turns": metrics.turns.map(String.init) ?? "unknown",
-            "duration_ms": metrics.durationMs.map(String.init) ?? "unknown"
-        ])
     }
 
     private func permissionApprovalRequestPayload(
