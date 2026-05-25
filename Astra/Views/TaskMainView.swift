@@ -83,7 +83,7 @@ struct TaskMainView: View {
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
     @State private var cachedPlanState = TaskPlanState.empty
-    @State private var cachedPlanStateSignature = ""
+    @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -157,47 +157,8 @@ struct TaskMainView: View {
             : TaskPlanService.reconstruct(for: task)
     }
 
-    private var taskPlanStateSignature: String {
-        [
-            task.id.uuidString,
-            task.status.rawValue,
-            taskPlanEventMutationSignature,
-            taskPlanRunMutationSignature
-        ].joined(separator: ":")
-    }
-
-    private var taskPlanEventMutationSignature: String {
-        task.events
-            .map { event in
-                [
-                    event.id.uuidString,
-                    event.type,
-                    String(event.timestamp.timeIntervalSinceReferenceDate),
-                    String(event.payload.utf8.count)
-                ].joined(separator: ",")
-            }
-            .sorted()
-            .joined(separator: "|")
-    }
-
-    private var taskPlanRunMutationSignature: String {
-        task.runs
-            .map { run in
-                [
-                    run.id.uuidString,
-                    run.status.rawValue,
-                    String(run.startedAt.timeIntervalSinceReferenceDate),
-                    String(run.completedAt?.timeIntervalSinceReferenceDate ?? 0),
-                    String(run.tokensUsed),
-                    String(run.inputTokens),
-                    String(run.outputTokens),
-                    String(run.output.utf8.count),
-                    String(run.fileChangesJSON.utf8.count),
-                    run.stopReason
-                ].joined(separator: ",")
-            }
-            .sorted()
-            .joined(separator: "|")
+    private var taskPlanStateSignature: TaskPlanStateCacheSignature {
+        TaskPlanStateCacheSignature(task: task)
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {

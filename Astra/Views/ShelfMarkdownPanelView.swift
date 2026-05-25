@@ -46,6 +46,7 @@ struct ShelfMarkdownPanelView: View {
     @State private var fileNavigatorScope: FileNavigatorScope = .task
     @State private var fileSearchText = ""
     @State private var isFileSearchVisible = false
+    @State private var isFileSearchCollapsed = false
     @State private var expandedRootIDs: Set<String> = []
     @State private var expandedDirectoryIDs: Set<String> = []
     @State private var fileIndexTask: Task<Void, Never>?
@@ -265,20 +266,22 @@ struct ShelfMarkdownPanelView: View {
 
                     Button {
                         withAnimation(fileNavigatorAnimation) {
-                            isFileSearchVisible.toggle()
-                            if !isFileSearchVisible {
+                            let shouldHideSearch = shouldShowFileSearchField
+                            isFileSearchVisible = !shouldHideSearch
+                            isFileSearchCollapsed = shouldHideSearch
+                            if shouldHideSearch {
                                 fileSearchText = ""
                             }
                         }
                     } label: {
-                        Image(systemName: isFileSearchVisible || isSearchingFiles ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                        Image(systemName: shouldShowFileSearchField ? "magnifyingglass.circle.fill" : "magnifyingglass")
                             .font(Stanford.ui(11, weight: .semibold))
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(isFileSearchVisible || isSearchingFiles ? Stanford.lagunita : .secondary)
-                    .help(isFileSearchVisible || isSearchingFiles ? "Hide search" : "Search files")
-                    .accessibilityLabel(isFileSearchVisible || isSearchingFiles ? "Hide search" : "Search files")
+                    .foregroundStyle(shouldShowFileSearchField ? Stanford.lagunita : .secondary)
+                    .help(shouldShowFileSearchField ? "Hide search" : "Search files")
+                    .accessibilityLabel(shouldShowFileSearchField ? "Hide search" : "Search files")
                     .accessibilityIdentifier("FilesShelfSearchToggle")
 
                     Button {
@@ -731,7 +734,7 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var shouldShowFileSearchField: Bool {
-        isFileSearchVisible || isSearchingFiles || browsableFileCount > 8
+        isFileSearchVisible || isSearchingFiles || (browsableFileCount > 8 && !isFileSearchCollapsed)
     }
 
     private var scopedFileRoots: [WorkspaceFileRoot] {
