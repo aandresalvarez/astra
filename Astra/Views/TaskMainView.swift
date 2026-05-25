@@ -196,17 +196,11 @@ struct TaskMainView: View {
     }
 
     private func alignTaskModelWithRuntime() {
-        let runtime = task.resolvedRuntimeID
-        let normalized = RuntimeModelAvailability.normalizedModel(
-            task.model,
-            for: runtime,
+        TaskRuntimeAvailabilityPolicy.alignModelWithCurrentRuntime(
+            task: task,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
-        if task.model != normalized {
-            task.model = normalized
-            task.updatedAt = Date()
-        }
     }
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
@@ -335,7 +329,7 @@ struct TaskMainView: View {
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
             loadSSHConnections()
-            alignTaskRuntimeWithAvailability()
+            alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
             refreshPlanStateCache()
         }
@@ -406,7 +400,7 @@ struct TaskMainView: View {
             configuration: runtimeAvailabilityConfiguration
         )
         runtimeReadinessStates = states
-        alignTaskRuntimeWithAvailability()
+        alignTaskAfterRuntimeAvailabilityRefresh()
     }
 
     private func refreshPlanStateCache() {
@@ -425,16 +419,13 @@ struct TaskMainView: View {
         }
     }
 
-    private func alignTaskRuntimeWithAvailability() {
-        guard task.status != .running else { return }
-        let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
-        if !readyRuntimes.isEmpty {
-            if !readyRuntimes.contains(task.resolvedRuntimeID), let replacement = readyRuntimes.first {
-                task.runtimeID = replacement.rawValue
-                task.updatedAt = Date()
-            }
-        }
-        alignTaskModelWithRuntime()
+    private func alignTaskAfterRuntimeAvailabilityRefresh() {
+        TaskRuntimeAvailabilityPolicy.alignAfterReadinessRefresh(
+            task: task,
+            runtimeReadinessStates: runtimeReadinessStates,
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     // MARK: - Header Actions
