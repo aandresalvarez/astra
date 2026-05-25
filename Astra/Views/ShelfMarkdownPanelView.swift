@@ -942,7 +942,7 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var fileNavigatorAnimation: Animation? {
-        reduceMotion ? nil : .easeInOut(duration: 0.16)
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
     }
 
     private func expandFileNavigator(to path: String, isFile: Bool) {

@@ -6,6 +6,7 @@ struct ShelfBrowserPanelView: View {
     @Binding var isPresented: Bool
     @Binding var isPinnedToTask: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var addressText = ""
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
@@ -43,9 +44,6 @@ struct ShelfBrowserPanelView: View {
                 engineHintDismissed = true
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: session.engine)
-        .animation(.easeInOut(duration: 0.16), value: session.isLoading)
-        .animation(.easeInOut(duration: 0.16), value: session.controlledBrowser.runState)
     }
 
     private var overflowMenu: some View {
@@ -222,14 +220,12 @@ struct ShelfBrowserPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear address")
-                .transition(.opacity)
             }
 
             // Trailing agent indicator — only when Agent control is on. Replaces the
             // separate status row that used to live below the toolbar.
             if session.isAgentBridgeEnabled {
                 BridgeStatusDot(isReady: session.bridgeEndpoint != nil)
-                    .transition(.opacity.combined(with: .scale))
             }
         }
         .padding(.horizontal, 10)
@@ -341,10 +337,8 @@ struct ShelfBrowserPanelView: View {
         ZStack(alignment: .top) {
             if session.isUsingControlledBrowser {
                 controlledBrowserBody
-                    .transition(engineTransition)
             } else {
                 embeddedBrowserBody
-                    .transition(engineTransition)
             }
 
             // Thin top progress bar replaces the old status-row linear progress.
@@ -354,7 +348,6 @@ struct ShelfBrowserPanelView: View {
                     .tint(Stanford.lagunita)
                     .frame(height: 2)
                     .frame(maxWidth: .infinity, alignment: .top)
-                    .transition(.opacity)
                     .zIndex(1)
             }
 
@@ -362,7 +355,6 @@ struct ShelfBrowserPanelView: View {
                 googleEditorEmbeddedWarning
                     .padding(.top, 10)
                     .padding(.horizontal, 14)
-                    .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
             }
         }
@@ -375,15 +367,8 @@ struct ShelfBrowserPanelView: View {
             ZStack {
                 Stanford.panelBackground
                 emptyBrowserStartView
-                    .transition(
-                        .asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .center)),
-                            removal: .opacity
-                        )
-                    )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .animation(.smooth(duration: 0.32, extraBounce: 0.05), value: hasDisplayablePage)
         } else {
             ShelfBrowserWebView(session: session)
                 .id(ObjectIdentifier(session))
@@ -429,12 +414,10 @@ struct ShelfBrowserPanelView: View {
 
             if !engineHintDismissed {
                 engineComparisonHint
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: 420)
-        .animation(.easeInOut(duration: 0.2), value: engineHintDismissed)
     }
 
     /// Inline first-run explanation of the two browser engines. Dismissible,
@@ -493,11 +476,8 @@ struct ShelfBrowserPanelView: View {
         }
     }
 
-    private var engineTransition: AnyTransition {
-        .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.992, anchor: .top)),
-            removal: .opacity.combined(with: .scale(scale: 0.998, anchor: .top))
-        )
+    private var disclosureAnimation: Animation? {
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
     }
 
     private var googleEditorEmbeddedWarning: some View {
@@ -545,7 +525,6 @@ struct ShelfBrowserPanelView: View {
                 controlledBrowserActions
                 if shouldShowControlledLaunchProgress {
                     controlledLaunchProgress
-                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 if let error = session.controlledBrowser.lastErrorMessage {
@@ -656,7 +635,6 @@ struct ShelfBrowserPanelView: View {
 
             if let issue = session.agentControlPermissionIssue {
                 controlledAgentControlPermissionGuide(issue: issue)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(12)
@@ -1051,7 +1029,7 @@ struct ShelfBrowserPanelView: View {
     private var controlledTechnicalDetails: some View {
         VStack(spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(disclosureAnimation) {
                     isControlledTechnicalDetailsExpanded.toggle()
                 }
             } label: {
@@ -1061,7 +1039,6 @@ struct ShelfBrowserPanelView: View {
 
             if isControlledTechnicalDetailsExpanded {
                 controlledBrowserDiagnostics
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }

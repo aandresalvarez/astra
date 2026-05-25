@@ -6,6 +6,7 @@ struct WorkspaceCanvasPanelView: View {
     @Binding var isPresented: Bool
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @State private var draftPlan: TaskPlan?
     @State private var lastPlanSignature = ""
@@ -62,6 +63,10 @@ struct WorkspaceCanvasPanelView: View {
 
     private var permissionMode: String {
         skipPermissions ? "Auto mode" : "Ask mode"
+    }
+
+    private var stepDisclosureAnimation: Animation? {
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
     }
 
     private var canEditPlan: Bool {
@@ -314,7 +319,7 @@ struct WorkspaceCanvasPanelView: View {
                 planStepRow(index: index, step: step, isExpanded: step.id == expandedID)
             }
         }
-        .animation(.snappy(duration: 0.18), value: expandedID)
+        .animation(stepDisclosureAnimation, value: expandedID)
     }
 
     private func planStepRow(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {

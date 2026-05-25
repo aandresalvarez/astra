@@ -88,6 +88,8 @@ struct TaskMainView: View {
     @State private var isPlanning = false
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
+    @State private var cachedPlanState = TaskPlanState.empty
+    @State private var cachedPlanStateSignature = ""
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -156,7 +158,18 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        TaskPlanService.reconstruct(for: task)
+        cachedPlanStateSignature == taskPlanStateSignature
+            ? cachedPlanState
+            : TaskPlanService.reconstruct(for: task)
+    }
+
+    private var taskPlanStateSignature: String {
+        [
+            task.id.uuidString,
+            task.status.rawValue,
+            String(task.events.count),
+            String(task.runs.count)
+        ].joined(separator: ":")
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -322,6 +335,9 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
+        .task(id: taskPlanStateSignature) {
+            refreshPlanStateCache()
+        }
         .onChange(of: task.id) {
             selectedTab = .summary
             isChatAtBottom = true
@@ -334,6 +350,7 @@ struct TaskMainView: View {
             loadSSHConnections()
             alignTaskRuntimeWithAvailability()
             initializeTaskPolicySelection()
+            refreshPlanStateCache()
         }
         .onAppear {
             alignTaskModelWithRuntime()
@@ -342,6 +359,7 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
         }
@@ -354,6 +372,7 @@ struct TaskMainView: View {
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
+            refreshPlanStateCache()
             runtimeHealthNow = Date()
             logRuntimeHealthIfNeeded(reason: "snapshot")
         }
@@ -400,6 +419,13 @@ struct TaskMainView: View {
         )
         runtimeReadinessStates = states
         alignTaskRuntimeWithAvailability()
+    }
+
+    private func refreshPlanStateCache() {
+        let signature = taskPlanStateSignature
+        guard cachedPlanStateSignature != signature else { return }
+        cachedPlanState = TaskPlanService.reconstruct(for: task)
+        cachedPlanStateSignature = signature
     }
 
     private func alignTaskRuntimeWithAvailability() {

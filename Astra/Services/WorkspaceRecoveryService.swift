@@ -4,6 +4,14 @@ import SwiftData
 
 enum WorkspaceRecoveryService {
     static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"
+    private static let maxRecoveryScanDirectories = 2_500
+    private static let skippedRecoveryDirectoryNames: Set<String> = [
+        "node_modules",
+        "DerivedData",
+        "Pods",
+        "target",
+        "venv"
+    ]
 
     struct LegacyStoreRepairResult: Equatable {
         var validationStrategyGoalCheckRows = 0
@@ -243,6 +251,33 @@ enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true
     ) -> Int {
         let configs = discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+        return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
+    }
+
+    static func recoverMissingWorkspacesAfterLaunch(
+        modelContext: ModelContext,
+        extraRoots: [String] = [],
+        includeDefaultRoots: Bool = true
+    ) {
+        Task { @MainActor in
+            if extraRoots.isEmpty,
+               includeDefaultRoots,
+               !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
+                return
+            }
+            let configs = await Task.detached(priority: .utility) {
+                discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+            }.value
+            guard !Task.isCancelled else { return }
+            _ = recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
+        }
+    }
+
+    @discardableResult
+    private static func recoverMissingWorkspaces(
+        modelContext: ModelContext,
+        configFiles configs: [URL]
+    ) -> Int {
         guard !configs.isEmpty else { return 0 }
 
         var imported = 0
@@ -418,7 +453,19 @@ enum WorkspaceRecoveryService {
     }
 
     private static func scanForWorkspaceConfigs(root: URL, maxDepth: Int) -> [URL] {
+        var remainingBudget = maxRecoveryScanDirectories
+        return scanForWorkspaceConfigs(root: root, maxDepth: maxDepth, remainingBudget: &remainingBudget)
+    }
+
+    private static func scanForWorkspaceConfigs(
+        root: URL,
+        maxDepth: Int,
+        remainingBudget: inout Int
+    ) -> [URL] {
         guard maxDepth >= 0 else { return [] }
+        guard remainingBudget > 0 else { return [] }
+        remainingBudget -= 1
+
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
@@ -435,15 +482,27 @@ enum WorkspaceRecoveryService {
         guard maxDepth > 0,
               let children = try? fileManager.contentsOfDirectory(
                 at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey]
+                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey]
               ) else {
             return results
         }
 
         for child in children {
-            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey])
-            guard values?.isDirectory == true, values?.isHidden != true else { continue }
-            results.append(contentsOf: scanForWorkspaceConfigs(root: child, maxDepth: maxDepth - 1))
+            guard remainingBudget > 0 else { break }
+            guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
+            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])
+            guard values?.isDirectory == true,
+                  values?.isHidden != true,
+                  values?.isPackage != true else {
+                continue
+            }
+            results.append(
+                contentsOf: scanForWorkspaceConfigs(
+                    root: child,
+                    maxDepth: maxDepth - 1,
+                    remainingBudget: &remainingBudget
+                )
+            )
         }
         return results
     }

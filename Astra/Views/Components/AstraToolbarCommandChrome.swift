@@ -71,6 +71,7 @@ struct AstraToolbarCommandLabel: View {
     let text: String
     var isActive = false
     var showsMenuIndicator = false
+    var showsActiveBackground = true
 
     private var controlWidth: CGFloat {
         showsMenuIndicator
@@ -99,7 +100,7 @@ struct AstraToolbarCommandLabel: View {
         )
         .fixedSize(horizontal: true, vertical: false)
         .background {
-            if isActive {
+            if isActive && showsActiveBackground {
                 Capsule()
                     .fill(Stanford.lagunita.opacity(AstraToolbarCommandMetrics.activeFillOpacity))
             }

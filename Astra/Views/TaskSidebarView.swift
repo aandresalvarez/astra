@@ -203,6 +203,18 @@ struct TaskSidebarView: View {
     @State private var taskIndex = SidebarTaskIndex(tasks: [], searchText: "")
     @State private var allSchedules: [TaskSchedule] = []
 
+    private var disclosureAnimation: Animation? {
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
+    }
+
+    private var hoverAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.12)
+    }
+
+    private var fastHoverAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.10)
+    }
+
     private func rebuildTaskIndex() {
         taskIndex = SidebarTaskIndex(tasks: tasks, searchText: searchText)
     }
@@ -345,7 +357,7 @@ struct TaskSidebarView: View {
 
                         if isPinnedDropTargeted {
                             pinnedInlineDropTarget
-                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                                .transition(.opacity)
                         }
                     }
                 }
@@ -363,7 +375,7 @@ struct TaskSidebarView: View {
                       let uuid = UUID(uuidString: idString) else { return }
                 DispatchQueue.main.async {
                     if let task = tasks.first(where: { $0.id == uuid }) {
-                        withAnimation {
+                        withAnimation(disclosureAnimation) {
                             setPinned(true, for: task)
                         }
                     }
@@ -376,7 +388,7 @@ struct TaskSidebarView: View {
     private var pinnedHeader: some View {
         HStack(spacing: 10) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                withAnimation(disclosureAnimation) {
                     isPinnedExpanded.toggle()
                 }
             } label: {
@@ -389,8 +401,8 @@ struct TaskSidebarView: View {
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(isPinnedExpanded ? 90 : 0))
                         .opacity(isPinnedHeaderHovered ? 1 : 0)
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isPinnedExpanded)
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPinnedHeaderHovered)
+                        .animation(disclosureAnimation, value: isPinnedExpanded)
+                        .animation(hoverAnimation, value: isPinnedHeaderHovered)
                 }
                 .contentShape(Rectangle())
             }
@@ -440,7 +452,7 @@ struct TaskSidebarView: View {
                 style: dashStyle
             )
         )
-        .animation(.easeInOut(duration: 0.18), value: isPinnedDropTargeted)
+        .animation(disclosureAnimation, value: isPinnedDropTargeted)
     }
 
     private var pinnedInlineDropTarget: some View {
@@ -490,7 +502,7 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
 
             Button {
-                withAnimation {
+                withAnimation(disclosureAnimation) {
                     setPinned(false, for: task)
                 }
             } label: {
@@ -505,13 +517,13 @@ struct TaskSidebarView: View {
             .padding(.trailing, 8)
             .opacity(isHovered ? 1 : 0)
             .allowsHitTesting(isHovered)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isHovered)
+            .animation(hoverAnimation, value: isHovered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .contextMenu {
             Button {
-                withAnimation {
+                withAnimation(disclosureAnimation) {
                     setPinned(false, for: task)
                 }
             } label: {
@@ -705,7 +717,7 @@ struct TaskSidebarView: View {
         } header: {
             HStack(spacing: 10) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                    withAnimation(disclosureAnimation) {
                         isSchedulesExpanded.toggle()
                     }
                 } label: {
@@ -718,8 +730,8 @@ struct TaskSidebarView: View {
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(isSchedulesExpanded ? 90 : 0))
                             .opacity(isSchedulesHeaderHovered ? 1 : 0)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isSchedulesExpanded)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSchedulesHeaderHovered)
+                            .animation(disclosureAnimation, value: isSchedulesExpanded)
+                            .animation(hoverAnimation, value: isSchedulesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
@@ -803,7 +815,7 @@ struct TaskSidebarView: View {
         } header: {
             HStack(spacing: 10) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                    withAnimation(disclosureAnimation) {
                         isWorkspacesExpanded.toggle()
                     }
                 } label: {
@@ -823,8 +835,8 @@ struct TaskSidebarView: View {
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(isWorkspacesExpanded ? 90 : 0))
                             .opacity(isWorkspacesHeaderHovered ? 1 : 0)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isWorkspacesExpanded)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isWorkspacesHeaderHovered)
+                            .animation(disclosureAnimation, value: isWorkspacesExpanded)
+                            .animation(hoverAnimation, value: isWorkspacesHeaderHovered)
                     }
                     .contentShape(Rectangle())
                 }
@@ -834,7 +846,7 @@ struct TaskSidebarView: View {
                 Spacer()
 
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                    withAnimation(disclosureAnimation) {
                         showStarredWorkspacesOnly.toggle()
                     }
                 } label: {
@@ -926,7 +938,7 @@ struct TaskSidebarView: View {
                         }
                         if workspaceTaskGroups.count > visibleTaskGroups.count {
                             Button {
-                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                                withAnimation(disclosureAnimation) {
                                     _ = expandedWorkspaceTaskLists.insert(workspace.id)
                                 }
                             } label: {
@@ -980,7 +992,7 @@ struct TaskSidebarView: View {
         // use for selection chrome.
         .padding(.horizontal, 10)
         .padding(.vertical, 1)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: isExpanded)
+        .animation(disclosureAnimation, value: isExpanded)
     }
 
     @State private var hoveredWorkspaceID: UUID?
@@ -1007,7 +1019,7 @@ struct TaskSidebarView: View {
 
         return HStack(alignment: .center, spacing: 7) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                withAnimation(disclosureAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
@@ -1021,7 +1033,7 @@ struct TaskSidebarView: View {
             .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                withAnimation(disclosureAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
@@ -1061,14 +1073,14 @@ struct TaskSidebarView: View {
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .fill(workspaceRowFill(isSelected: isSelected, isHovered: isHovered))
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
+                .animation(hoverAnimation, value: isSelected)
+                .animation(fastHoverAnimation, value: isHovered)
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(workspaceRowStroke(isSelected: isSelected, isHovered: isHovered), lineWidth: 1)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
+                .animation(hoverAnimation, value: isSelected)
+                .animation(fastHoverAnimation, value: isHovered)
         )
         .contextMenu {
             Button {
@@ -1275,7 +1287,7 @@ struct TaskSidebarView: View {
         }
         .contextMenu {
             Button {
-                withAnimation {
+                withAnimation(disclosureAnimation) {
                     togglePinned(for: task)
                 }
             } label: {
@@ -1296,7 +1308,7 @@ struct TaskSidebarView: View {
         Menu {
             if includePinToggle {
                 Button {
-                    withAnimation {
+                    withAnimation(disclosureAnimation) {
                         togglePinned(for: task)
                     }
                 } label: {
@@ -1321,7 +1333,7 @@ struct TaskSidebarView: View {
         .opacity(isHovered ? 1 : 0)
         .allowsHitTesting(isHovered)
         .accessibilityHidden(!isHovered)
-        .animation(.easeOut(duration: 0.14), value: isHovered)
+        .animation(hoverAnimation, value: isHovered)
         .help("Task options")
     }
 
@@ -1378,7 +1390,7 @@ struct TaskSidebarView: View {
                 if let onToggleDone {
                     onToggleDone(task)
                 } else {
-                    withAnimation {
+                    withAnimation(disclosureAnimation) {
                         task.isDone.toggle()
                         task.updatedAt = Date()
                         try? modelContext.save()
@@ -1584,6 +1596,12 @@ private struct WorkspaceRowActions: View {
     @State private var isEllipsisHovered = false
     @State private var isNewTaskHovered = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var hoverAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.10)
+    }
+
     var body: some View {
         HStack(spacing: 2) {
             Menu {
@@ -1644,7 +1662,7 @@ private struct WorkspaceRowActions: View {
                     .fill(Stanford.lagunita.opacity(isHovered ? 0.14 : 0))
             )
             .contentShape(Rectangle())
-            .animation(.easeOut(duration: 0.10), value: isHovered)
+            .animation(hoverAnimation, value: isHovered)
     }
 }
 
@@ -1707,6 +1725,12 @@ private struct SidebarCountBadge: View {
 private struct SectionAddIcon: View {
     let isHovered: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var hoverAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.12)
+    }
+
     var body: some View {
         Image(systemName: "plus")
             .font(Stanford.ui(12, weight: .medium))
@@ -1717,7 +1741,7 @@ private struct SectionAddIcon: View {
                     .fill(isHovered ? Stanford.lagunita : Color.clear)
             )
             .contentShape(Rectangle())
-            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(hoverAnimation, value: isHovered)
     }
 }
 
@@ -1745,6 +1769,20 @@ private struct SidebarThreadRow: View {
     /// had to fight the timestamp for the same x-position) and gives
     /// pinned titles more room before they truncate.
     var showsTimestamp: Bool = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var selectionAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.12)
+    }
+
+    private var hoverAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.10)
+    }
+
+    private var metadataAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.14)
+    }
 
     private var titleWeight: Font.Weight {
         if task.shouldShowUnread { return .semibold }
@@ -1856,7 +1894,7 @@ private struct SidebarThreadRow: View {
                 // hover-only overlay buttons (`unpin`, `taskOptionsMenu`)
                 // fade in, so the right gutter swaps smoothly instead of
                 // one element snapping while the other animates.
-                .animation(.easeOut(duration: 0.14), value: isHovered)
+                .animation(metadataAnimation, value: isHovered)
             }
         }
         .padding(.horizontal, 8)
@@ -1866,14 +1904,14 @@ private struct SidebarThreadRow: View {
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
                 .fill(rowFill)
-                .animation(.easeOut(duration: 0.12), value: isSelected)
-                .animation(.easeOut(duration: 0.10), value: isHovered)
+                .animation(selectionAnimation, value: isSelected)
+                .animation(hoverAnimation, value: isHovered)
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
                 .stroke(rowStroke, lineWidth: 1)
-                .animation(.easeOut(duration: 0.12), value: isSelected)
-                .animation(.easeOut(duration: 0.10), value: isHovered)
+                .animation(selectionAnimation, value: isSelected)
+                .animation(hoverAnimation, value: isHovered)
         )
         .contentShape(Rectangle())
         .accessibilityIdentifier("TaskRow_\(task.title)")
@@ -1992,12 +2030,17 @@ struct SearchPanelOverlay: View {
     @Binding var selectedWorkspace: Workspace?
     @Binding var isActive: Bool
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText = ""
     @FocusState private var isFocused: Bool
     @State private var selectedIndex = 0
 
+    private var presentationAnimation: Animation? {
+        AstraMotion.disclosure(reduceMotion: reduceMotion)
+    }
+
     private func dismiss() {
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(presentationAnimation) {
             isActive = false
             searchText = ""
         }
