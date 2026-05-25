@@ -152,13 +152,7 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        cachedPlanStateSignature == taskPlanStateSignature
-            ? cachedPlanState
-            : TaskPlanService.reconstruct(for: task)
-    }
-
-    private var taskPlanStateSignature: TaskPlanStateCacheSignature {
-        TaskPlanStateCacheSignature(task: task)
+        cachedPlanState
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -324,7 +318,7 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .task(id: taskPlanStateSignature) {
+        .task(id: task.id) {
             refreshPlanStateCache()
         }
         .onChange(of: task.id) {
@@ -358,6 +352,9 @@ struct TaskMainView: View {
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
+        .onChange(of: task.updatedAt) {
+            refreshPlanStateCache()
+        }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
             refreshPlanStateCache()
@@ -410,7 +407,7 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        let signature = taskPlanStateSignature
+        let signature = TaskPlanStateCacheSignature(task: task)
         guard cachedPlanStateSignature != signature else { return }
         cachedPlanState = TaskPlanService.reconstruct(for: task)
         cachedPlanStateSignature = signature

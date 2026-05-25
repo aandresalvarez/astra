@@ -1246,6 +1246,9 @@ struct ShelfMarkdownPanelView: View {
     private func relativePath(for path: String, rootPath: String) -> String {
         let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let standardizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        if standardizedPath == standardizedRoot {
+            return ""
+        }
         guard standardizedPath.hasPrefix(standardizedRoot + "/") else {
             return URL(fileURLWithPath: path).lastPathComponent
         }
