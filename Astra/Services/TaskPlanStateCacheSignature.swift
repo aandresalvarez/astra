@@ -30,7 +30,7 @@ struct TaskPlanStateCacheSignature: Equatable {
             eventAccumulator.include(event.id)
             eventAccumulator.include(event.timestamp)
             eventAccumulator.include(event.payload.utf8.count)
-            eventAccumulator.includeBytes(event.payload.utf8)
+            eventAccumulator.includeBoundedSample(event.payload)
         }
 
         var runAccumulator = FingerprintAccumulator()
@@ -87,11 +87,18 @@ struct TaskPlanStateCacheSignature: Equatable {
     }
 
     private static func protocolOutputFingerprint(for output: String) -> UInt64? {
-        guard output.contains("ASTRA_EVENT") else { return nil }
+        guard var markerRange = output.range(of: "ASTRA_EVENT") else { return nil }
         var accumulator = FingerprintAccumulator()
-        for line in output.split(whereSeparator: \.isNewline) where line.contains("ASTRA_EVENT") {
-            accumulator.include(line.utf8.count)
-            accumulator.includeBytes(line.utf8)
+        while true {
+            let lineStart = output[..<markerRange.lowerBound].lastIndex(of: "\n").map { output.index(after: $0) } ?? output.startIndex
+            let lineEnd = output[markerRange.upperBound...].firstIndex(of: "\n") ?? output.endIndex
+            accumulator.include(output.distance(from: lineStart, to: lineEnd))
+            accumulator.includeBoundedSample(output[lineStart..<lineEnd])
+
+            guard let next = output[markerRange.upperBound...].range(of: "ASTRA_EVENT") else {
+                break
+            }
+            markerRange = next
         }
         return accumulator.value
     }
@@ -125,8 +132,28 @@ private struct FingerprintAccumulator {
         include(date?.timeIntervalSinceReferenceDate.bitPattern ?? 0)
     }
 
-    mutating func includeBytes<Bytes: Sequence>(_ bytes: Bytes) where Bytes.Element == UInt8 {
-        for byte in bytes {
+    mutating func includeBoundedSample<S: StringProtocol>(_ value: S, edgeByteLimit: Int = 128) {
+        let text = String(value)
+        let utf8 = text.utf8
+        include(utf8.count)
+
+        var prefixCount = 0
+        for byte in utf8 {
+            include(UInt64(byte))
+            prefixCount += 1
+            if prefixCount >= edgeByteLimit { break }
+        }
+
+        guard utf8.count > edgeByteLimit else { return }
+
+        var suffixBytes: [UInt8] = []
+        suffixBytes.reserveCapacity(edgeByteLimit)
+        for byte in utf8.reversed() {
+            suffixBytes.append(byte)
+            if suffixBytes.count >= edgeByteLimit { break }
+        }
+        include(suffixBytes.count)
+        for byte in suffixBytes.reversed() {
             include(UInt64(byte))
         }
     }

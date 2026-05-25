@@ -84,6 +84,7 @@ struct TaskMainView: View {
     @State private var isThreadStatusExpanded = false
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
+    @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -346,18 +347,16 @@ struct TaskMainView: View {
             installPasteMonitor()
         }
         .onDisappear {
+            pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
-        .onChange(of: task.updatedAt) {
-            refreshPlanStateCache()
-        }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
-            refreshPlanStateCache()
+            schedulePlanStateCacheRefresh()
             runtimeHealthNow = Date()
             logRuntimeHealthIfNeeded(reason: "snapshot")
         }
@@ -411,6 +410,15 @@ struct TaskMainView: View {
         guard cachedPlanStateSignature != signature else { return }
         cachedPlanState = TaskPlanService.reconstruct(for: task)
         cachedPlanStateSignature = signature
+    }
+
+    private func schedulePlanStateCacheRefresh() {
+        pendingPlanStateRefreshTask?.cancel()
+        pendingPlanStateRefreshTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            refreshPlanStateCache()
+        }
     }
 
     private func alignTaskRuntimeWithAvailability() {

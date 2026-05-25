@@ -13,6 +13,10 @@ enum WorkspaceRecoveryService {
         "venv"
     ]
 
+    private struct LoadedWorkspaceConfig: @unchecked Sendable {
+        var config: WorkspaceConfigManager.WorkspaceConfig
+    }
+
     struct LegacyStoreRepairResult: Equatable {
         var validationStrategyGoalCheckRows = 0
         var validationStrategyDefaultedRows = 0
@@ -272,8 +276,44 @@ enum WorkspaceRecoveryService {
                 }
                 return await group.next() ?? []
             }
+            let loadedConfigs = await loadWorkspaceConfigs(configs)
             guard !Task.isCancelled else { return }
-            _ = recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
+            _ = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs)
+        }
+    }
+
+    private static func loadWorkspaceConfigs(_ configFiles: [URL]) async -> [LoadedWorkspaceConfig] {
+        await withTaskGroup(of: LoadedWorkspaceConfig?.self, returning: [LoadedWorkspaceConfig].self) { group in
+            for configURL in configFiles {
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled else { return nil }
+                    do {
+                        var config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                        config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                        return LoadedWorkspaceConfig(config: config)
+                    } catch {
+                        AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                            "config_file": configURL.lastPathComponent,
+                            "error_type": String(describing: type(of: error))
+                        ], level: .error)
+                        return nil
+                    }
+                }
+            }
+
+            var loadedConfigs: [LoadedWorkspaceConfig] = []
+            for await loaded in group {
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    group.cancelAll()
+                    return loadedConfigs
+                }
+                if let loaded {
+                    loadedConfigs.append(loaded)
+                }
+            }
+            return loadedConfigs
         }
     }
 
@@ -313,22 +353,58 @@ enum WorkspaceRecoveryService {
             }
         }
 
-        if imported > 0 {
-            do {
-                try modelContext.save()
-            } catch {
-                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
-                    "operation": "save_recovered_workspaces",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
-            let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
-            UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
-            AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
-                "imported_count": String(imported)
-            ])
-        }
+        saveRecoveryImportCount(imported, modelContext: modelContext)
         return imported
+    }
+
+    @discardableResult
+    private static func recoverMissingWorkspaces(
+        modelContext: ModelContext,
+        loadedConfigs configs: [LoadedWorkspaceConfig]
+    ) -> Int {
+        guard !configs.isEmpty else { return 0 }
+
+        var imported = 0
+        let existing = fetchExistingWorkspaces(modelContext: modelContext)
+        var existingIDs = Set(existing.map { $0.id.uuidString })
+        var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
+
+        for loaded in configs {
+            let config = loaded.config
+            let configID = config.id
+            let configPath = normalizePath(config.primaryPath)
+            if let configID, existingIDs.contains(configID) {
+                continue
+            }
+            if !configPath.isEmpty, existingPaths.contains(configPath) {
+                continue
+            }
+            let workspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+            existingIDs.insert(workspace.id.uuidString)
+            existingPaths.insert(normalizePath(workspace.primaryPath))
+            imported += 1
+        }
+
+        saveRecoveryImportCount(imported, modelContext: modelContext)
+        return imported
+    }
+
+    private static func saveRecoveryImportCount(_ imported: Int, modelContext: ModelContext) {
+        guard imported > 0 else { return }
+
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "save_recovered_workspaces",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+        let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
+        UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
+        AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
+            "imported_count": String(imported)
+        ])
     }
 
     static func discoverWorkspaceConfigFiles(
