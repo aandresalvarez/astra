@@ -144,6 +144,10 @@ struct TaskMainView: View {
         TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
     }
 
+    private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
+        TaskPlanStateCacheSignature(task: task)
+    }
+
     private var runtimeHealth: TaskRuntimeHealth {
         TaskRuntimeHealth.evaluate(
             taskStatus: task.status,
@@ -319,7 +323,7 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .task(id: task.id) {
+        .task(id: planStateCacheRefreshTrigger) {
             refreshPlanStateCache()
         }
         .onChange(of: task.id) {
