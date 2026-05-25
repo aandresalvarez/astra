@@ -208,11 +208,63 @@ extension AgentRuntimeAdapter {
     }
 }
 
+protocol AgentRuntimeAdapterProvider {
+    var providerID: String { get }
+    var runtimeAdapters: [any AgentRuntimeAdapter] { get }
+}
+
+struct StaticAgentRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
+    let providerID: String
+    let runtimeAdapters: [any AgentRuntimeAdapter]
+
+    init(providerID: String, runtimeAdapters: [any AgentRuntimeAdapter]) {
+        self.providerID = providerID
+        self.runtimeAdapters = runtimeAdapters
+    }
+}
+
+struct AgentRuntimeAdapterRegistrationIssue: Equatable, Sendable {
+    let runtimeID: AgentRuntimeID
+    let providerID: String
+    let message: String
+}
+
 struct AgentRuntimeAdapterCatalog {
     let adapters: [any AgentRuntimeAdapter]
+    let registrationIssues: [AgentRuntimeAdapterRegistrationIssue]
 
     init(adapters: [any AgentRuntimeAdapter]) {
-        self.adapters = adapters
+        self.init(providers: [
+            StaticAgentRuntimeAdapterProvider(
+                providerID: "direct",
+                runtimeAdapters: adapters
+            )
+        ])
+    }
+
+    init(providers: [any AgentRuntimeAdapterProvider]) {
+        var registeredAdapters: [any AgentRuntimeAdapter] = []
+        var registeredProviderIDsByRuntime: [AgentRuntimeID: String] = [:]
+        var issues: [AgentRuntimeAdapterRegistrationIssue] = []
+
+        for provider in providers {
+            for adapter in provider.runtimeAdapters {
+                if let existingProviderID = registeredProviderIDsByRuntime[adapter.id] {
+                    issues.append(AgentRuntimeAdapterRegistrationIssue(
+                        runtimeID: adapter.id,
+                        providerID: provider.providerID,
+                        message: "Runtime '\(adapter.id.rawValue)' is already registered by provider '\(existingProviderID)'."
+                    ))
+                    continue
+                }
+
+                registeredProviderIDsByRuntime[adapter.id] = provider.providerID
+                registeredAdapters.append(adapter)
+            }
+        }
+
+        self.adapters = registeredAdapters
+        self.registrationIssues = issues
     }
 
     var runtimeIDs: [AgentRuntimeID] {
@@ -282,13 +334,31 @@ struct AgentRuntimeAdapterCatalog {
     }
 }
 
-enum AgentRuntimeAdapterRegistry {
-    private static let liveCatalog = AgentRuntimeAdapterCatalog(
-        adapters: [
-            ClaudeCodeRuntimeAdapter(),
-            CopilotCLIRuntimeAdapter()
+struct ClaudeCodeRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
+    let providerID = "claude-code"
+    var runtimeAdapters: [any AgentRuntimeAdapter] {
+        [ClaudeCodeRuntimeAdapter()]
+    }
+}
+
+struct CopilotCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
+    let providerID = "copilot-cli"
+    var runtimeAdapters: [any AgentRuntimeAdapter] {
+        [CopilotCLIRuntimeAdapter()]
+    }
+}
+
+enum BuiltInAgentRuntimeAdapterProviders {
+    static var all: [any AgentRuntimeAdapterProvider] {
+        [
+            ClaudeCodeRuntimeAdapterProvider(),
+            CopilotCLIRuntimeAdapterProvider()
         ]
-    )
+    }
+}
+
+enum AgentRuntimeAdapterRegistry {
+    private static let liveCatalog = AgentRuntimeAdapterCatalog(providers: BuiltInAgentRuntimeAdapterProviders.all)
 
     static var runtimeIDs: [AgentRuntimeID] {
         liveCatalog.runtimeIDs
@@ -300,6 +370,10 @@ enum AgentRuntimeAdapterRegistry {
 
     static var allAdapters: [any AgentRuntimeAdapter] {
         liveCatalog.adapters
+    }
+
+    static var registrationIssues: [AgentRuntimeAdapterRegistrationIssue] {
+        liveCatalog.registrationIssues
     }
 
     static func hasAdapter(for runtime: AgentRuntimeID) -> Bool {

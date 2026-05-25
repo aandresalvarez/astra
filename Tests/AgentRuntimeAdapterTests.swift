@@ -10,6 +10,7 @@ struct AgentRuntimeAdapterTests {
 
         #expect(Set(registeredIDs) == Set(AgentRuntimeAdapterRegistry.descriptors.map(\.id)))
         #expect(registeredIDs.count == AgentRuntimeAdapterRegistry.allAdapters.count)
+        #expect(AgentRuntimeAdapterRegistry.registrationIssues.isEmpty)
 
         for runtime in registeredIDs {
             let adapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
@@ -22,16 +23,48 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Adapter catalogs can be composed without the global provider list")
     func adapterCatalogsCanBeComposedWithoutGlobalProviderList() throws {
-        let catalog = AgentRuntimeAdapterCatalog(adapters: [CopilotCLIRuntimeAdapter()])
+        let catalog = AgentRuntimeAdapterCatalog(providers: [
+            StaticAgentRuntimeAdapterProvider(
+                providerID: "test-copilot-provider",
+                runtimeAdapters: [CopilotCLIRuntimeAdapter()]
+            )
+        ])
         let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
 
         #expect(catalog.runtimeIDs == [.copilotCLI])
+        #expect(catalog.registrationIssues.isEmpty)
         #expect(catalog.hasAdapter(for: .copilotCLI))
         #expect(catalog.hasAdapter(for: .claudeCode) == false)
         #expect(catalog.registeredRuntime(rawValue: AgentRuntimeID.claudeCode.rawValue, fallback: .copilotCLI) == .copilotCLI)
         #expect(catalog.descriptor(for: futureRuntime).defaultModel == "default")
         #expect(catalog.descriptor(for: futureRuntime).defaultModels == ["default"])
         #expect(catalog.supportsAstraRunProtocol(for: futureRuntime) == false)
+    }
+
+    @Test("Adapter catalogs report duplicate provider registrations")
+    func adapterCatalogsReportDuplicateProviderRegistrations() {
+        let catalog = AgentRuntimeAdapterCatalog(providers: [
+            StaticAgentRuntimeAdapterProvider(
+                providerID: "primary-claude-provider",
+                runtimeAdapters: [ClaudeCodeRuntimeAdapter()]
+            ),
+            StaticAgentRuntimeAdapterProvider(
+                providerID: "duplicate-claude-provider",
+                runtimeAdapters: [
+                    ClaudeCodeRuntimeAdapter(),
+                    CopilotCLIRuntimeAdapter()
+                ]
+            )
+        ])
+
+        #expect(catalog.runtimeIDs == [.claudeCode, .copilotCLI])
+        #expect(catalog.registrationIssues == [
+            AgentRuntimeAdapterRegistrationIssue(
+                runtimeID: .claudeCode,
+                providerID: "duplicate-claude-provider",
+                message: "Runtime 'claude_code' is already registered by provider 'primary-claude-provider'."
+            )
+        ])
     }
 
     @Test("Adapters own model cache storage keys")
