@@ -13,6 +13,38 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
         self.rawValue = staticRawValue
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let rawValue = try? decoder.singleValueContainer().decode(String.self) {
+            guard let runtime = AgentRuntimeID(rawValue: rawValue) else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "Agent runtime ID cannot be empty.")
+                )
+            }
+            self = runtime
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawValue = try container.decode(String.self, forKey: .rawValue)
+        guard let runtime = AgentRuntimeID(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .rawValue,
+                in: container,
+                debugDescription: "Agent runtime ID cannot be empty."
+            )
+        }
+        self = runtime
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
     public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
 

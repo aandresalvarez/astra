@@ -309,7 +309,7 @@ struct SettingsView: View {
             HStack(alignment: .center, spacing: 12) {
                 Text(title)
                 Spacer()
-                TextField(prompt, text: path, prompt: Text(prompt))
+                TextField(title, text: path, prompt: Text(prompt))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(minWidth: 280, maxWidth: 420)

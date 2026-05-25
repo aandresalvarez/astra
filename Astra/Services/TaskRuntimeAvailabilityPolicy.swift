@@ -28,6 +28,8 @@ enum TaskRuntimeAvailabilityPolicy {
         guard task.status != .running else { return }
 
         let runtime = task.resolvedRuntimeID
+        guard AgentRuntimeAdapterRegistry.hasAdapter(for: runtime) else { return }
+
         let normalized = RuntimeModelAvailability.normalizedModel(
             task.model,
             for: runtime,

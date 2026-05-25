@@ -58,4 +58,32 @@ struct TaskRuntimeAvailabilityPolicyTests {
         #expect(task.model == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
         #expect(task.updatedAt == updatedAt)
     }
+
+    @Test("Readiness refresh preserves model for unknown provider")
+    func readinessRefreshPreservesModelForUnknownProvider() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let task = AgentTask(
+            title: "Keep future provider",
+            goal: "Preserve unknown provider metadata",
+            model: "future-sonnet"
+        )
+        task.runtimeID = futureRuntime.rawValue
+        let originalUpdatedAt = Date(timeIntervalSince1970: 400)
+        task.updatedAt = originalUpdatedAt
+
+        TaskRuntimeAvailabilityPolicy.alignAfterReadinessRefresh(
+            task: task,
+            runtimeReadinessStates: [
+                .claudeCode: .ready,
+                .copilotCLI: .ready
+            ],
+            cachedClaudeModelsJSON: "",
+            cachedCopilotModelsJSON: "",
+            now: { Date(timeIntervalSince1970: 500) }
+        )
+
+        #expect(task.runtimeID == futureRuntime.rawValue)
+        #expect(task.model == "future-sonnet")
+        #expect(task.updatedAt == originalUpdatedAt)
+    }
 }

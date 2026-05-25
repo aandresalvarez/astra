@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -20,6 +21,18 @@ struct AgentRuntimeAdapterRegistryTests {
         #expect(runtime.displayName == "Future Provider")
         #expect(AgentRuntimeAdapterRegistry.defaultModels(for: runtime) == ["default"])
         #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: runtime) == false)
+    }
+
+    @Test("Runtime IDs encode as strings and decode legacy keyed payloads")
+    func runtimeIDsEncodeAsStringsAndDecodeLegacyKeyedPayloads() throws {
+        let encoded = try JSONEncoder().encode(AgentRuntimeID.copilotCLI)
+        #expect(String(data: encoded, encoding: .utf8) == #""copilot_cli""#)
+
+        let decodedString = try JSONDecoder().decode(AgentRuntimeID.self, from: Data(#""future_provider""#.utf8))
+        #expect(decodedString.rawValue == "future_provider")
+
+        let decodedKeyed = try JSONDecoder().decode(AgentRuntimeID.self, from: Data(#"{"rawValue":"claude_code"}"#.utf8))
+        #expect(decodedKeyed == .claudeCode)
     }
 
     @Test("Provider descriptors carry install, auth, and model metadata")
