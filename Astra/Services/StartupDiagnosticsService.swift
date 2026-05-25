@@ -36,7 +36,10 @@ enum StartupDiagnosticsService {
         let process = ProcessInfo.processInfo
         let bundle = Bundle.main
         let appSupportDirectory = WorkspaceRecoveryService.applicationSupportDirectory
-        let workspaceRoot = URL(fileURLWithPath: AppChannel.current.defaultWorkspacesRoot, isDirectory: true)
+        let workspaceRoot = URL(
+            fileURLWithPath: AppChannel.current.defaultWorkspacesRoot(fileManager: fileManager),
+            isDirectory: true
+        )
         let logDirectory = AppLogger.mainLogFile.deletingLastPathComponent()
         let latestCrash = crashReports.first
 
@@ -96,15 +99,15 @@ enum StartupDiagnosticsService {
     }
 
     private static func startupSafeExists(at url: URL, fileManager: FileManager) -> String {
-        if isProtectedUserContentPath(url) {
+        if isProtectedUserContentPath(url, fileManager: fileManager) {
             return "not_checked_protected_location"
         }
         return String(fileManager.fileExists(atPath: url.path))
     }
 
-    private static func isProtectedUserContentPath(_ url: URL) -> Bool {
+    private static func isProtectedUserContentPath(_ url: URL, fileManager: FileManager) -> Bool {
         let path = url.standardizedFileURL.path
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let home = fileManager.homeDirectoryForCurrentUser.standardizedFileURL
         let protectedRoots = ["Desktop", "Documents", "Downloads"].map {
             home.appendingPathComponent($0, isDirectory: true).path
         }

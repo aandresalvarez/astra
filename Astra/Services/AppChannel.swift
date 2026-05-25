@@ -38,7 +38,11 @@ enum AppChannel: String {
     }
 
     var defaultWorkspacesRoot: String {
-        let documents = FileManager.default.homeDirectoryForCurrentUser
+        defaultWorkspacesRoot(fileManager: .default)
+    }
+
+    func defaultWorkspacesRoot(fileManager: FileManager) -> String {
+        let documents = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents", isDirectory: true)
         switch self {
         case .production:

@@ -161,9 +161,39 @@ struct TaskMainView: View {
         [
             task.id.uuidString,
             task.status.rawValue,
-            String(task.events.count),
-            String(task.runs.count)
+            taskPlanEventMutationSignature,
+            taskPlanRunMutationSignature
         ].joined(separator: ":")
+    }
+
+    private var taskPlanEventMutationSignature: String {
+        task.events
+            .map { event in
+                [
+                    event.id.uuidString,
+                    event.type,
+                    String(event.timestamp.timeIntervalSinceReferenceDate),
+                    String(event.payload.count)
+                ].joined(separator: ",")
+            }
+            .sorted()
+            .joined(separator: "|")
+    }
+
+    private var taskPlanRunMutationSignature: String {
+        task.runs
+            .map { run in
+                [
+                    run.id.uuidString,
+                    run.status.rawValue,
+                    String(run.startedAt.timeIntervalSinceReferenceDate),
+                    String(run.completedAt?.timeIntervalSinceReferenceDate ?? 0),
+                    String(run.output.count),
+                    String(run.fileChangesJSON.count)
+                ].joined(separator: ",")
+            }
+            .sorted()
+            .joined(separator: "|")
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
