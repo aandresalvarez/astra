@@ -265,9 +265,13 @@ enum WorkspaceRecoveryService {
                !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
                 return
             }
-            let configs = await Task.detached(priority: .utility) {
-                discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
-            }.value
+            let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled else { return [] }
+                    return discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                }
+                return await group.next() ?? []
+            }
             guard !Task.isCancelled else { return }
             _ = recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
         }
@@ -343,8 +347,10 @@ enum WorkspaceRecoveryService {
         var seen = Set<String>()
         var configs: [URL] = []
         for root in roots {
+            guard !Task.isCancelled else { break }
             let url = URL(fileURLWithPath: expandTilde(root))
             for config in scanForWorkspaceConfigs(root: url, maxDepth: 4) {
+                guard !Task.isCancelled else { break }
                 let path = normalizePath(config.path)
                 guard !seen.contains(path) else { continue }
                 seen.insert(path)
@@ -462,6 +468,7 @@ enum WorkspaceRecoveryService {
         maxDepth: Int,
         remainingBudget: inout Int
     ) -> [URL] {
+        guard !Task.isCancelled else { return [] }
         guard maxDepth >= 0 else { return [] }
         guard remainingBudget > 0 else { return [] }
         remainingBudget -= 1
@@ -488,6 +495,7 @@ enum WorkspaceRecoveryService {
         }
 
         for child in children {
+            guard !Task.isCancelled else { break }
             guard remainingBudget > 0 else { break }
             guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
             let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])

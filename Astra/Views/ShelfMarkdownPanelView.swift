@@ -478,13 +478,7 @@ struct ShelfMarkdownPanelView: View {
 
                 if isExpanded {
                     let displayedNodes = visibleNodes(in: rootNodes)
-                    if rootNodes.isEmpty {
-                        Text(fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No files" : "No matches")
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 38)
-                            .padding(.vertical, 7)
-                    } else if displayedNodes.isEmpty {
+                    if displayedNodes.isEmpty {
                         Text("No visible files in expanded folders")
                             .font(Stanford.caption(11))
                             .foregroundStyle(.secondary)
