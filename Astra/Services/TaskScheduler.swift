@@ -57,6 +57,7 @@ final class TaskScheduler {
     @MainActor
     func fireSchedule(_ schedule: TaskSchedule, modelContext: ModelContext, taskQueue: TaskQueue) {
         let task: AgentTask
+        let runtime = schedule.resolvedRuntimeID
 
         if let templateID = schedule.templateID,
            let template = schedule.workspace?.templates.first(where: { $0.id == templateID }) {
@@ -67,7 +68,8 @@ final class TaskScheduler {
                 goal: resolvedGoal,
                 workspace: schedule.workspace,
                 tokenBudget: schedule.tokenBudget,
-                model: schedule.model
+                model: schedule.model,
+                runtime: runtime
             )
         } else {
             task = AgentTask(
@@ -75,7 +77,8 @@ final class TaskScheduler {
                 goal: schedule.effectiveGoal,
                 workspace: schedule.workspace,
                 tokenBudget: schedule.tokenBudget,
-                model: schedule.model
+                model: schedule.model,
+                runtime: runtime
             )
         }
 
@@ -83,7 +86,6 @@ final class TaskScheduler {
             task.inputs.append(path)
         }
 
-        task.runtimeID = schedule.resolvedRuntimeID.rawValue
         task.status = .queued
         task.originScheduleID = schedule.id
         modelContext.insert(task)

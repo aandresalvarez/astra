@@ -33,7 +33,7 @@ final class AppRuntimeController {
         skipPermissions: Bool,
         defaultPolicyLevelRaw: String
     ) {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         taskQueue.applySettings(
             claudePath: claudePath.isEmpty ? nil : claudePath,
             copilotPath: copilotPath.isEmpty ? nil : copilotPath,

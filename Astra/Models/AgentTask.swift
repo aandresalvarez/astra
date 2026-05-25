@@ -84,6 +84,7 @@ final class AgentTask {
         workspace: Workspace? = nil,
         tokenBudget: Int = TaskExecutionDefaults.tokenBudget,
         model: String = TaskExecutionDefaults.model,
+        runtime: AgentRuntimeID = TaskExecutionDefaults.runtime,
         isolationStrategy: IsolationStrategy = .sameDirectory,
         validationStrategy: ValidationStrategy = .manual
     ) {
@@ -100,7 +101,7 @@ final class AgentTask {
         self.tokenBudget = tokenBudget
         self.tokensUsed = 0
         self.model = model
-        self.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        self.runtimeID = runtime.rawValue
         self.testCommand = ""
         self.costUSD = 0
         self.queuePosition = 0

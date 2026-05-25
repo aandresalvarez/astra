@@ -1978,6 +1978,8 @@ private final class HeadlessChatHarness {
         case .copilotCLI:
             worker.copilotPath = executablePath
             worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
+        default:
+            worker.setExecutablePath(executablePath, for: runtime)
         }
         return worker
     }

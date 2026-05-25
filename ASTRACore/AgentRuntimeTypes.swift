@@ -1,8 +1,52 @@
 import Foundation
 
-public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiable {
-    case claudeCode = "claude_code"
-    case copilotCLI = "copilot_cli"
+public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Identifiable {
+    public let rawValue: String
+
+    public init?(rawValue: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        self.rawValue = trimmed
+    }
+
+    private init(staticRawValue: String) {
+        self.rawValue = staticRawValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let rawValue = try? decoder.singleValueContainer().decode(String.self) {
+            guard let runtime = AgentRuntimeID(rawValue: rawValue) else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "Agent runtime ID cannot be empty.")
+                )
+            }
+            self = runtime
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawValue = try container.decode(String.self, forKey: .rawValue)
+        guard let runtime = AgentRuntimeID(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .rawValue,
+                in: container,
+                debugDescription: "Agent runtime ID cannot be empty."
+            )
+        }
+        self = runtime
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
+    public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
 
     public var id: String { rawValue }
 
@@ -10,40 +54,15 @@ public enum AgentRuntimeID: String, Codable, Sendable, CaseIterable, Identifiabl
         switch self {
         case .claudeCode: "Claude Code"
         case .copilotCLI: "GitHub Copilot CLI"
-        }
-    }
-
-    public var defaultModel: String {
-        switch self {
-        case .claudeCode: "claude-sonnet-4-6"
-        case .copilotCLI: "claude-sonnet-4.6"
-        }
-    }
-
-    public var defaultModels: [String] {
-        switch self {
-        case .claudeCode:
-            ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
-        case .copilotCLI:
-            [
-                "claude-sonnet-4.6",
-                "claude-sonnet-4.5",
-                "claude-haiku-4.5",
-                "claude-opus-4.7",
-                "claude-opus-4.6",
-                "claude-opus-4.5",
-                "gpt-5.2-codex",
-                "gpt-5.2",
-                "gpt-5-mini",
-                "gpt-4.1"
-            ]
-        }
-    }
-
-    public var supportsAstraRunProtocol: Bool {
-        switch self {
-        case .claudeCode, .copilotCLI:
-            true
+        default: rawValue
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { word in
+                guard let first = word.first else { return "" }
+                return first.uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
         }
     }
 }
@@ -55,6 +74,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let installHint: String
     public let authHint: String
     public let prerequisite: CLIPrerequisite
+    public let defaultModel: String
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
 
@@ -65,6 +85,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         installHint: String,
         authHint: String,
         prerequisite: CLIPrerequisite? = nil,
+        defaultModel: String? = nil,
         defaultModels: [String],
         supportsAstraRunProtocol: Bool
     ) {
@@ -80,50 +101,11 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
             installHint: installHint,
             authHint: authHint
         )
+        self.defaultModel = defaultModel ?? defaultModels.first ?? "default"
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
     }
 
-    public static let claudeCode = AgentRuntimeDescriptor(
-        id: .claudeCode,
-        displayName: AgentRuntimeID.claudeCode.displayName,
-        executableName: "claude",
-        installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
-        authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
-        prerequisite: CommonCLIPrerequisites.claude,
-        defaultModels: AgentRuntimeID.claudeCode.defaultModels,
-        supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
-    )
-
-    public static let copilotCLI = AgentRuntimeDescriptor(
-        id: .copilotCLI,
-        displayName: AgentRuntimeID.copilotCLI.displayName,
-        executableName: "copilot",
-        installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
-        authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
-        prerequisite: CommonCLIPrerequisites.copilot,
-        defaultModels: AgentRuntimeID.copilotCLI.defaultModels,
-        supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
-    )
-}
-
-public enum AgentRuntimeRegistry {
-    public static let builtInDescriptors: [AgentRuntimeDescriptor] = [
-        .claudeCode,
-        .copilotCLI
-    ]
-
-    public static func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
-        builtInDescriptors.first { $0.id == runtime } ?? AgentRuntimeDescriptor(
-            id: runtime,
-            displayName: runtime.displayName,
-            executableName: runtime.rawValue,
-            installHint: "",
-            authHint: "",
-            defaultModels: runtime.defaultModels,
-            supportsAstraRunProtocol: runtime.supportsAstraRunProtocol
-        )
-    }
 }
 
 public enum AgentEvent: Sendable, Equatable {

@@ -318,14 +318,14 @@ struct ScheduleEditorView: View {
                                 Text("Provider").foregroundStyle(Stanford.coolGrey)
                                 Spacer()
                                 Picker("", selection: $runtimeID) {
-                                    ForEach(AgentRuntimeID.allCases) { runtime in
+                                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                                         Text(runtime.displayName).tag(runtime.rawValue)
                                     }
                                 }
                                 .labelsHidden()
                                 .frame(width: 180)
                                 .onChange(of: runtimeID) {
-                                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+                                    let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
                                     model = RuntimeModelAvailability.modelForRuntimeSwitch(
                                         currentModel: model,
                                         to: runtime,
@@ -490,7 +490,7 @@ struct ScheduleEditorView: View {
                 if let m = prefillModel {
                     model = m
                 } else {
-                    let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+                    let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
                     model = RuntimeModelAvailability.normalizedModel(
                         defaultModel,
                         for: runtime,
@@ -538,7 +538,7 @@ struct ScheduleEditorView: View {
 
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
-            for: AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime,
+            for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -575,7 +575,7 @@ struct ScheduleEditorView: View {
     }
 
     private func alignModelWithRuntime() {
-        let runtime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
         model = RuntimeModelAvailability.normalizedModel(
             model,
             for: runtime,
@@ -662,7 +662,7 @@ struct ScheduleEditorView: View {
         s.name = name.trimmingCharacters(in: .whitespaces)
         s.routineDescription = routineDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         s.routineInstructions = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedRuntime = AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        let resolvedRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
         s.runtimeID = resolvedRuntime.rawValue
         s.model = RuntimeModelAvailability.normalizedModel(
             model,

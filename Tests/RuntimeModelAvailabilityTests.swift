@@ -11,7 +11,8 @@ struct RuntimeModelAvailabilityTests {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(RuntimeModelAvailability.models(for: .copilotCLI, defaults: defaults) == AgentRuntimeID.copilotCLI.defaultModels)
+        #expect(RuntimeModelAvailability.models(for: .copilotCLI, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModels(for: .copilotCLI))
+        #expect(RuntimeModelAvailability.defaultModel(for: .claudeCode, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
         #expect(RuntimeModelAvailability.defaultModel(for: .copilotCLI, defaults: defaults) == "claude-sonnet-4.6")
     }
 
@@ -66,8 +67,8 @@ struct RuntimeModelAvailabilityTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         #expect(RuntimeModelAvailability.normalizedModel("custom-provider-model", for: .claudeCode, defaults: defaults) == "custom-provider-model")
-        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == AgentRuntimeID.claudeCode.defaultModel)
-        #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4-6", for: .copilotCLI, defaults: defaults) == AgentRuntimeID.copilotCLI.defaultModel)
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
+        #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4-6", for: .copilotCLI, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI))
     }
 
     @Test("Runtime switches choose a provider suggestion")
@@ -161,7 +162,7 @@ struct RuntimeModelAvailabilityTests {
         context.insert(workspace)
 
         let template = TaskTemplate(name: "Template", mainGoal: "Do it", workspace: workspace)
-        template.mainModel = AgentRuntimeID.claudeCode.defaultModel
+        template.mainModel = AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode)
         context.insert(template)
 
         let creation = WorkspaceCommandService.createTemplateTasks(
@@ -169,7 +170,7 @@ struct RuntimeModelAvailabilityTests {
             taskTitle: "Run template",
             variables: [:],
             selectedSkills: [],
-            defaultModel: AgentRuntimeID.claudeCode.defaultModel,
+            defaultModel: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
             defaultRuntimeID: AgentRuntimeID.copilotCLI.rawValue,
             workspace: workspace,
             modelContext: context,
@@ -177,7 +178,7 @@ struct RuntimeModelAvailabilityTests {
         )
 
         #expect(creation.mainTask.resolvedRuntimeID == .copilotCLI)
-        #expect(creation.mainTask.model == AgentRuntimeID.copilotCLI.defaultModel)
+        #expect(creation.mainTask.model == AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI))
     }
 
     private func makeDefaults() -> (UserDefaults, String) {

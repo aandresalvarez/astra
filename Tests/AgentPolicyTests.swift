@@ -20,7 +20,7 @@ private func policyRenderContext(
 ) -> PolicyRenderContext {
     PolicyRenderContext(
         runtimeID: runtime,
-        model: runtime.defaultModel,
+        model: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
         workspacePath: "/tmp/astra-policy-tests",
         additionalPaths: [],
         requestedAllowedTools: requestedAllowedTools,

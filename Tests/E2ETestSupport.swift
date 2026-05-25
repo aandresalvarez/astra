@@ -22,7 +22,7 @@ enum E2ETestSupport {
         [
             RuntimeCase(
                 runtimeID: .claudeCode,
-                model: ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeID.claudeCode.defaultModel,
+                model: ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
                 directoryNameComponent: "claude",
                 expectsSessionID: true,
                 expectsUsageStats: true,
@@ -31,7 +31,7 @@ enum E2ETestSupport {
             ),
             RuntimeCase(
                 runtimeID: .copilotCLI,
-                model: ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeID.copilotCLI.defaultModel,
+                model: ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
                 directoryNameComponent: "copilot",
                 expectsSessionID: false,
                 expectsUsageStats: false,
@@ -83,6 +83,8 @@ enum E2ETestSupport {
             if let temporaryRootPath {
                 worker.copilotHome = copilotHomePath(forTemporaryRootPath: temporaryRootPath)
             }
+        default:
+            throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
     }
 

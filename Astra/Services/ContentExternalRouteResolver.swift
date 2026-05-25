@@ -60,15 +60,15 @@ struct ContentExternalRouteResolver {
             return nil
         }
 
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let task = AgentTask(
             title: AstraTaskIntentSupport.title(for: trimmedGoal),
             goal: trimmedGoal,
             workspace: workspace,
             tokenBudget: defaultBudget,
-            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
+            model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime),
+            runtime: runtime
         )
-        task.runtimeID = runtime.rawValue
         task.status = shouldRun ? .queued : .draft
         modelContext.insert(task)
 

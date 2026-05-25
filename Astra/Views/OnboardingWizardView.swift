@@ -293,7 +293,7 @@ struct OnboardingWizardView: View {
     }
 
     static func runtimePrerequisite(for runtime: AgentRuntimeID) -> CLIPrerequisite {
-        AgentRuntimeRegistry.descriptor(for: runtime).prerequisite
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).prerequisite
     }
 
     /// Optional hook for testing — force a step on init.
@@ -718,8 +718,9 @@ struct OnboardingWizardView: View {
                 .textCase(.uppercase)
 
             HStack(spacing: 8) {
-                runtimeChoiceCard(.claudeCode)
-                runtimeChoiceCard(.copilotCLI)
+                ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
+                    runtimeChoiceCard(runtime)
+                }
             }
 
             cliInstallStatusView
@@ -932,13 +933,14 @@ struct OnboardingWizardView: View {
     }
 
     private var selectedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
     }
 
     private var selectedRuntimeStatus: HealthStatus? {
         switch selectedRuntime {
         case .claudeCode: claudeStatus
         case .copilotCLI: copilotStatus
+        default: nil
         }
     }
 
@@ -946,6 +948,7 @@ struct OnboardingWizardView: View {
         switch selectedRuntime {
         case .claudeCode: isProbingClaude
         case .copilotCLI: isProbingCopilot
+        default: false
         }
     }
 
@@ -965,6 +968,7 @@ struct OnboardingWizardView: View {
         switch runtime {
         case .claudeCode: claudeStatus
         case .copilotCLI: copilotStatus
+        default: nil
         }
     }
 
@@ -991,16 +995,14 @@ struct OnboardingWizardView: View {
     }
 
     private func runtimeInstallHint(_ runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode: "npm install -g @anthropic-ai/claude-code"
-        case .copilotCLI: "brew install copilot-cli"
-        }
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).installHint
     }
 
     private func isProbingRuntime(_ runtime: AgentRuntimeID) -> Bool {
         switch runtime {
         case .claudeCode: isProbingClaude
         case .copilotCLI: isProbingCopilot
+        default: false
         }
     }
 
@@ -1866,6 +1868,8 @@ struct OnboardingWizardView: View {
             await probeClaude(forceRefresh: true)
         case .copilotCLI:
             await probeCopilot(forceRefresh: true)
+        default:
+            break
         }
         installingRuntime = nil
 

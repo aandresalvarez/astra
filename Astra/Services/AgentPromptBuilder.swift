@@ -63,7 +63,7 @@ enum AgentPromptBuilder {
         appendToolContext(from: capabilityScope, to: &parts)
         appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
         appendDocumentReaderContext(to: &parts)
-        if task.resolvedRuntimeID.supportsAstraRunProtocol {
+        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
             appendAstraRunProtocolInstructions(to: &parts)
         }
 
@@ -610,7 +610,7 @@ enum AgentPromptBuilder {
             parts.append(memoriesBlock)
         }
 
-        if task.resolvedRuntimeID.supportsAstraRunProtocol {
+        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
             appendAstraRunProtocolInstructions(to: &parts)
         }
 

@@ -37,7 +37,7 @@ struct RuntimeProviderAvailabilityService {
         configuration: RuntimeProviderAvailabilityConfiguration
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         var states: [AgentRuntimeID: RuntimeReadinessState] = [:]
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             let report = await readinessService.check(
                 configuration: configuration.readinessConfiguration(for: runtime)
             )
@@ -49,6 +49,6 @@ struct RuntimeProviderAvailabilityService {
     static func readyRuntimes(
         from states: [AgentRuntimeID: RuntimeReadinessState]
     ) -> [AgentRuntimeID] {
-        AgentRuntimeID.allCases.filter { states[$0] == .ready }
+        AgentRuntimeAdapterRegistry.runtimeIDs.filter { states[$0] == .ready }
     }
 }

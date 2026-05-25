@@ -25,46 +25,26 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     }
 
     static func approvedPlan(
-        runtime: AgentRuntimeID,
+        runtime _: AgentRuntimeID,
         currentPermissionPolicy: PermissionPolicy,
         allowedTools: [String]
     ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedPlan(
-                current: currentPermissionPolicy
-            ),
+            permissionPolicyOverride: currentPermissionPolicy,
             allowedToolsOverride: allowedTools,
             permissionGrantsOverride: nil
         )
     }
 
     static func approvedRuntimePermission(
-        runtime: AgentRuntimeID,
+        runtime _: AgentRuntimeID,
         allowedTools: [String],
         grants: [PermissionGrant] = []
     ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: runtime.permissionPolicyAfterUserApprovedRuntimePermission(),
+            permissionPolicyOverride: .restricted,
             allowedToolsOverride: allowedTools,
             permissionGrantsOverride: grants
         )
-    }
-}
-
-private extension AgentRuntimeID {
-    func permissionPolicyAfterUserApprovedPlan(current: PermissionPolicy) -> PermissionPolicy {
-        switch self {
-        case .claudeCode:
-            return current
-        case .copilotCLI:
-            return current
-        }
-    }
-
-    func permissionPolicyAfterUserApprovedRuntimePermission() -> PermissionPolicy {
-        switch self {
-        case .claudeCode, .copilotCLI:
-            return .restricted
-        }
     }
 }

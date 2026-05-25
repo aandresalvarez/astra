@@ -9,6 +9,7 @@ enum AgentTaskForkService {
             workspace: source.workspace,
             tokenBudget: source.tokenBudget,
             model: source.model,
+            runtime: source.resolvedRuntimeID,
             isolationStrategy: source.isolationStrategy,
             validationStrategy: source.validationStrategy
         )

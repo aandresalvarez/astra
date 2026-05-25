@@ -832,7 +832,7 @@ struct ComposerToolbar: View {
     }
 
     private var resolvedRuntime: AgentRuntimeID {
-        AgentRuntimeID(rawValue: runtimeID) ?? TaskExecutionDefaults.runtime
+        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
     }
 
     private var canSubmit: Bool {
@@ -877,6 +877,7 @@ struct ComposerToolbar: View {
         switch runtime {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
+        default: runtime.displayName
         }
     }
 

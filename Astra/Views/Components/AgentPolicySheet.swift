@@ -487,21 +487,15 @@ struct AgentPolicySheet: View {
     }
 
     private var providerConfigOwnership: PolicyConfigOwnership {
-        switch runtime {
-        case .claudeCode:
-            ClaudeSettingsStore.configOwnership(at: workspacePath)
-        case .copilotCLI:
-            .generated
-        }
+        AgentRuntimeAdapterRegistry
+            .adapterIfRegistered(for: runtime)?
+            .providerConfigOwnership(workspacePath: workspacePath) ?? .generated
     }
 
     private var existingProviderConfigSummary: String? {
-        switch runtime {
-        case .claudeCode:
-            ClaudeSettingsStore.existingConfigSummary(at: workspacePath)
-        case .copilotCLI:
-            nil
-        }
+        AgentRuntimeAdapterRegistry
+            .adapterIfRegistered(for: runtime)?
+            .existingProviderConfigSummary(workspacePath: workspacePath)
     }
 
     private func select(level: AgentPolicyLevel) {
@@ -746,6 +740,8 @@ struct AgentPolicySheet: View {
             urlString = "https://code.claude.com/docs/en/settings#settings-files"
         case .copilotCLI:
             urlString = "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference"
+        default:
+            return
         }
         guard let url = URL(string: urlString) else { return }
         NSWorkspace.shared.open(url)

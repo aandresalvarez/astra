@@ -1975,7 +1975,7 @@ struct BudgetEnforcementPreferenceTests {
 struct RuntimeBudgetProfileTests {
     @Test("Every provider has a budget profile")
     func everyProviderHasBudgetProfile() {
-        for runtime in AgentRuntimeID.allCases {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             let profile = AgentRuntimeBudgetProfile.profile(for: runtime)
             #expect(profile.runtime == runtime)
             #expect(profile.launchOverheadTokens >= 0)

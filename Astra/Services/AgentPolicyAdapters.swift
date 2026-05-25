@@ -371,12 +371,9 @@ enum ProviderPolicyAdapterRegistry {
         for runtime: AgentRuntimeID,
         copilotCapabilities: CopilotCLICapabilities = .conservative
     ) -> any ProviderPolicyAdapter {
-        switch runtime {
-        case .claudeCode:
-            return ClaudePolicyAdapter()
-        case .copilotCLI:
-            return CopilotPolicyAdapter(capabilities: copilotCapabilities)
-        }
+        AgentRuntimeAdapterRegistry
+            .adapter(for: runtime)
+            .policyAdapter(copilotCapabilities: copilotCapabilities)
     }
 }
 
@@ -533,7 +530,9 @@ enum AgentPolicyManifestService {
             permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
         )
         let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
-        let configOwnership = providerConfigOwnership(for: runtime, workspacePath: workspacePath)
+        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+        let providerPolicyAdapter = runtimeAdapter.policyAdapter(copilotCapabilities: copilotCapabilities)
+        let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
@@ -543,13 +542,12 @@ enum AgentPolicyManifestService {
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
-            providerFeatures: providerFeatures(for: runtime, copilotCapabilities: copilotCapabilities),
+            providerFeatures: providerPolicyAdapter.supportedFeatures,
             providerConfigOwnership: configOwnership,
-            existingProviderConfigSummary: existingProviderConfigSummary(for: runtime, workspacePath: workspacePath)
+            existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
-        let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime, copilotCapabilities: copilotCapabilities)
-        var render = adapter.render(policy: policy, context: context)
-        render.diagnostics = adapter.validate(render: render, context: context)
+        var render = providerPolicyAdapter.render(policy: policy, context: context)
+        render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
         let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {
             AgentPolicyScope.oneRunEscalation
@@ -622,42 +620,6 @@ enum AgentPolicyManifestService {
         )
         let payload = (try? summary.encodedString()) ?? "{}"
         modelContext.insert(TaskEvent(task: task, type: summaryEventType, payload: payload, run: run))
-    }
-
-    private static func providerFeatures(
-        for runtime: AgentRuntimeID,
-        copilotCapabilities: CopilotCLICapabilities
-    ) -> ProviderPolicyFeatures {
-        switch runtime {
-        case .claudeCode:
-            return ClaudePolicyAdapter().supportedFeatures
-        case .copilotCLI:
-            return CopilotPolicyAdapter(capabilities: copilotCapabilities).supportedFeatures
-        }
-    }
-
-    private static func providerConfigOwnership(
-        for runtime: AgentRuntimeID,
-        workspacePath: String
-    ) -> PolicyConfigOwnership {
-        switch runtime {
-        case .claudeCode:
-            return ClaudeSettingsStore.configOwnership(at: workspacePath)
-        case .copilotCLI:
-            return .generated
-        }
-    }
-
-    private static func existingProviderConfigSummary(
-        for runtime: AgentRuntimeID,
-        workspacePath: String
-    ) -> String? {
-        switch runtime {
-        case .claudeCode:
-            return ClaudeSettingsStore.existingConfigSummary(at: workspacePath)
-        case .copilotCLI:
-            return nil
-        }
     }
 
     @MainActor

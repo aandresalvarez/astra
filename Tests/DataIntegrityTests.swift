@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import ASTRA
+import ASTRACore
 
 // MARK: - Phase 1A: Dictionary duplicate-key crash prevention
 
@@ -107,6 +108,19 @@ struct AgentTaskDefaultTests {
         #expect(task.tokenBudget == TaskExecutionDefaults.tokenBudget)
         #expect(task.model == TaskExecutionDefaults.model)
         #expect(task.resolvedRuntimeID == TaskExecutionDefaults.runtime)
+    }
+
+    @Test("New AgentTask stores explicit runtime")
+    func taskInitializerStoresExplicitRuntime() {
+        let task = AgentTask(
+            title: "Test",
+            goal: "test",
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
+            runtime: .copilotCLI
+        )
+
+        #expect(task.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(task.resolvedRuntimeID == .copilotCLI)
     }
 
     @Test("New TaskTemplate phases default to shared token budget")

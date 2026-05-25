@@ -61,7 +61,8 @@ enum SessionScanner {
                 goal: session.goal,
                 workspace: workspace,
                 tokenBudget: session.totalTokens,
-                model: session.model ?? TaskExecutionDefaults.model
+                model: session.model ?? TaskExecutionDefaults.model,
+                runtime: .claudeCode
             )
             task.status = .completed
             task.isDone = true

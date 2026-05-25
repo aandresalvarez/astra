@@ -377,7 +377,10 @@ enum SpecEngine {
         Task: \(String(goal.prefix(500)))
         """
 
-        let modelCandidates = [baseRuntime.model, baseRuntime.runtime.defaultModel].reduce(into: [String]()) { result, candidate in
+        let modelCandidates = [
+            baseRuntime.model,
+            AgentRuntimeAdapterRegistry.defaultModel(for: baseRuntime.runtime)
+        ].reduce(into: [String]()) { result, candidate in
             if !result.contains(candidate) {
                 result.append(candidate)
             }

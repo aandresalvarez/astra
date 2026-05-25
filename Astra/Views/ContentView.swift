@@ -411,9 +411,11 @@ struct ContentView: View {
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        let runtime = selectedTask?.resolvedRuntimeID
-            ?? AgentRuntimeID(rawValue: defaultRuntimeID)
-            ?? TaskExecutionDefaults.runtime
+        let fallbackRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: selectedTask?.runtimeID,
+            fallback: fallbackRuntime
+        )
         let preferredModel = selectedTask?.model ?? RuntimeModelAvailability.defaultModel(for: runtime)
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
@@ -2232,12 +2234,14 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
 
         if args.contains("--uitesting-seed") {
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
             let task = AgentTask(
                 title: "Seeded Task",
                 goal: "UI test task",
                 workspace: ws,
                 tokenBudget: TaskExecutionDefaults.tokenBudget,
-                model: TaskExecutionDefaults.model
+                model: RuntimeModelAvailability.defaultModel(for: runtime),
+                runtime: runtime
             )
             task.status = .queued
             modelContext.insert(task)

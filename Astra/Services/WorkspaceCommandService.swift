@@ -110,7 +110,7 @@ enum WorkspaceCommandService {
         modelContext: ModelContext,
         source: String
     ) -> TemplateTaskCreation {
-        let runtime = AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
             for: runtime
@@ -125,9 +125,9 @@ enum WorkspaceCommandService {
             goal: mainGoal,
             workspace: workspace,
             tokenBudget: template.mainBudget,
-            model: mainModel
+            model: mainModel,
+            runtime: runtime
         )
-        mainTask.runtimeID = runtime.rawValue
         mainTask.status = .queued
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
@@ -153,9 +153,9 @@ enum WorkspaceCommandService {
                 goal: beforeGoal,
                 workspace: workspace,
                 tokenBudget: template.beforeBudget,
-                model: beforeModel
+                model: beforeModel,
+                runtime: runtime
             )
-            task.runtimeID = runtime.rawValue
             task.status = .queued
             task.templateID = template.id
             task.templateHooksJSON = template.hooksJSON
