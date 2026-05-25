@@ -107,4 +107,80 @@ struct AgentRuntimeAdapterTests {
             })
         }
     }
+
+    @Test("Adapters own process command planning")
+    @MainActor
+    func adaptersOwnProcessCommandPlanning() {
+        let workspace = Workspace(name: "Adapter", primaryPath: "/tmp/astra-adapter")
+        let claudeTask = AgentTask(
+            title: "Claude",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let copilotTask = AgentTask(
+            title: "Copilot",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+
+        let claudePlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: claudeTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                copilotHome: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+        let copilotPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: copilotTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                copilotHome: "/tmp/astra-copilot-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+
+        #expect(claudePlan.runtime == .claudeCode)
+        #expect(claudePlan.executablePath == "/bin/claude")
+        #expect(claudePlan.arguments.contains("--output-format"))
+        #expect(claudePlan.arguments.contains("stream-json"))
+        #expect(claudePlan.parsesJSONLines)
+        #expect(claudePlan.providerVersion == nil)
+
+        #expect(copilotPlan.runtime == .copilotCLI)
+        #expect(copilotPlan.executablePath == "/bin/copilot-not-present")
+        #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
+        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-copilot-home"])
+        #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
+    }
+
+    @Test("Adapters own provider stream parsing")
+    func adaptersOwnProviderStreamParsing() {
+        let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
+        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let claudeLine = #"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#
+        let copilotLine = #"{"type":"agent.message.delta","data":{"text":"hello"}}"#
+        let permissionPrompt = "Allow access to these paths? (y/n):"
+
+        #expect(claude.parseProcessEvents(line: claudeLine, parsesJSONLines: true).count == 1)
+        #expect(claude.parseWorkerStreamEvents(line: claudeLine, parsesJSONLines: true).parsedEvents.count == 1)
+        #expect(copilot.parseProcessEvents(line: copilotLine, parsesJSONLines: true).isEmpty == false)
+        #expect(copilot.parseWorkerStreamEvents(line: copilotLine, parsesJSONLines: true).agentEvents.isEmpty == false)
+        #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
+        #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
+    }
 }

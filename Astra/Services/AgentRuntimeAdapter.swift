@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRACore
 
 protocol AgentRuntimeAdapter {
@@ -21,6 +22,32 @@ protocol AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessReport
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent]
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String?
+    func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch
+    func processWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        pipeline: AgentRuntimeEventPipelineBox
+    ) -> [AgentRuntimeRecordedEvent]
+    func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch
+    @MainActor
+    func recordWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        mode: AgentRuntimeRecordingMode,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    )
+    func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent?
+    func runUtilityPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult
 }
 
 extension AgentRuntimeAdapter {
@@ -56,6 +83,115 @@ struct RuntimeExecutableCheckResult {
     let check: RuntimeReadinessCheck
 
     var isReady: Bool { executable != nil && check.state == .ready }
+}
+
+struct AgentRuntimeProcessLaunchContext {
+    let prompt: String
+    let task: AgentTask
+    let workspacePath: String
+    let executablePath: String
+    let copilotHome: String
+    let permissionPolicy: PermissionPolicy
+    let executionPolicy: AgentRuntimeExecutionPolicy
+    let permissionManifest: RunPermissionManifest?
+    let timeoutSeconds: TimeInterval
+}
+
+struct AgentRuntimeProcessLaunchPlan {
+    let runtime: AgentRuntimeID
+    let executablePath: String
+    let arguments: [String]
+    let currentDirectory: String
+    let environment: [String: String]
+    let browserShimDirectory: String?
+    let providerVersion: String?
+    let parsesJSONLines: Bool
+    let directoriesToCreate: [String]
+    let providerDetectedFields: [String: String]
+    let commandPlannedFields: [String: String]
+}
+
+enum AgentRuntimeRecordingMode {
+    case initial
+    case followUp
+}
+
+enum AgentRuntimeRecordedEvent {
+    case parsed(ParsedEvent)
+    case agent(AgentEvent)
+
+    var parsedEvent: ParsedEvent? {
+        if case .parsed(let event) = self {
+            return event
+        }
+        return nil
+    }
+
+    var agentEvent: AgentEvent? {
+        if case .agent(let event) = self {
+            return event
+        }
+        return nil
+    }
+}
+
+enum AgentRuntimeStreamEventRepresentation {
+    case parsed
+    case agent
+}
+
+struct AgentRuntimeStreamEventBatch {
+    let representation: AgentRuntimeStreamEventRepresentation
+    let events: [AgentRuntimeRecordedEvent]
+
+    init(representation: AgentRuntimeStreamEventRepresentation, events: [AgentRuntimeRecordedEvent]) {
+        self.representation = representation
+        self.events = events
+    }
+
+    init(parsedEvents: [ParsedEvent]) {
+        representation = .parsed
+        events = parsedEvents.map(AgentRuntimeRecordedEvent.parsed)
+    }
+
+    init(agentEvents: [AgentEvent]) {
+        representation = .agent
+        events = agentEvents.map(AgentRuntimeRecordedEvent.agent)
+    }
+
+    var parsedEvents: [ParsedEvent] {
+        events.compactMap(\.parsedEvent)
+    }
+
+    var agentEvents: [AgentEvent] {
+        events.compactMap(\.agentEvent)
+    }
+
+    func recordParsed(to capture: AgentRuntimeStreamDebugCapture?, rawLine: String) {
+        switch representation {
+        case .parsed:
+            capture?.recordParsed(parsedEvents, rawLine: rawLine)
+        case .agent:
+            capture?.recordParsed(agentEvents, rawLine: rawLine)
+        }
+    }
+
+    func recordEmitted(to capture: AgentRuntimeStreamDebugCapture?) {
+        switch representation {
+        case .parsed:
+            capture?.recordEmitted(parsedEvents)
+        case .agent:
+            capture?.recordEmitted(agentEvents)
+        }
+    }
+
+    func recordParsed(to telemetry: AgentRuntimeStreamTelemetry?) {
+        telemetry?.recordParsed(agentEvents)
+    }
+
+    func recordEmitted(to telemetry: AgentRuntimeStreamTelemetry?) {
+        telemetry?.recordEmitted(agentEvents)
+    }
 }
 
 struct RuntimeReadinessProbeContext {
@@ -282,6 +418,176 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
     }
 
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
+            for: context.task,
+            taskEnv: taskEnv
+        )
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let allowed = context.executionPolicy.allowedTools(
+            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+        )
+        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+            for: id,
+            baseAllowedTools: allowed,
+            permissionManifest: context.permissionManifest
+        )
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        var args = [
+            "-p",
+            context.prompt,
+            "--model",
+            AgentRuntimeProcessRunner.translatedModelForProvider(model),
+            "--output-format",
+            "stream-json",
+            "--verbose"
+        ]
+        args += effectivePermissionPolicy.cliArguments
+        AgentRuntimeProcessRunner.ensureSubAgentPermissions(
+            at: context.workspacePath,
+            policy: effectivePermissionPolicy,
+            allowedTools: providerAllowed
+        )
+        if context.task.maxTurns > 0 {
+            args += ["--max-turns", String(context.task.maxTurns)]
+        }
+        if !providerAllowed.isEmpty {
+            args += ["--allowedTools"] + providerAllowed
+        }
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: context.executablePath,
+            arguments: args,
+            currentDirectory: context.workspacePath,
+            environment: AgentRuntimeProcessRunner.environment(
+                phase: "run",
+                task: context.task,
+                taskEnv: taskEnv,
+                includeClaudeTeamFlag: true
+            ),
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: nil,
+            parsesJSONLines: true,
+            directoriesToCreate: [],
+            providerDetectedFields: [
+                "runtime": id.rawValue,
+                "executable_configured": String(!context.executablePath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: context.executablePath)),
+                "executable_path": context.executablePath,
+                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(context.executablePath)
+            ],
+            commandPlannedFields: [
+                "runtime": id.rawValue,
+                "phase": "run",
+                "model": model,
+                "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
+                "permission_policy": effectivePermissionPolicy.rawValue,
+                "allowed_tools_count": String(providerAllowed.count),
+                "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
+                "task_env_count": String(taskEnv.count),
+                "max_turns": String(context.task.maxTurns)
+            ]
+        )
+    }
+
+    func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
+        StreamEventParser.parseAll(line: line)
+    }
+
+    func blockingProcessPermissionMessage(line _: String, parsesJSONLines _: Bool) -> String? {
+        nil
+    }
+
+    func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(parsedEvents: StreamEventParser.parseAll(line: line))
+    }
+
+    func processWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        pipeline: AgentRuntimeEventPipelineBox
+    ) -> [AgentRuntimeRecordedEvent] {
+        guard case .parsed(let parsed) = event else { return [] }
+        return pipeline.process(parsed).map(AgentRuntimeRecordedEvent.parsed)
+    }
+
+    func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(parsedEvents: pipeline.flushParsedEvents())
+    }
+
+    @MainActor
+    func recordWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        mode: AgentRuntimeRecordingMode,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    ) {
+        guard case .parsed(let parsed) = event else { return }
+        switch mode {
+        case .initial:
+            AgentEventRecorder.recordClaudeRunEvent(
+                parsed,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        case .followUp:
+            AgentEventRecorder.recordClaudeFollowUpEvent(
+                parsed,
+                to: task,
+                run: run,
+                modelContext: modelContext,
+                recordingState: recordingState
+            )
+        }
+    }
+
+    func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
+        event.parsedEvent
+    }
+
+    func runUtilityPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        let executable = configuration.claudePath.isEmpty
+            ? RuntimePathResolver.detectClaudePath()
+            : configuration.claudePath
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        var args = [
+            "-p",
+            prompt,
+            "--model",
+            AgentRuntimeProcessRunner.translatedModelForProvider(configuration.model)
+        ]
+        if toolMode == .readOnly {
+            args += [
+                "--allowedTools",
+                "Read,Glob,Grep",
+                "--disallowedTools",
+                "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+            ]
+        }
+        process.arguments = args
+        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+        process.environment = claudeUtilityEnvironment()
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+    }
+
     private func checkClaudeAuth(
         executable: String,
         configuration: RuntimeReadinessConfiguration,
@@ -442,6 +748,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     private func trimmed(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func claudeUtilityEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
+            env[key] = value
+        }
+        return env
+    }
 }
 
 struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
@@ -517,6 +832,202 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
     }
 
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
+            for: context.task,
+            taskEnv: taskEnv
+        )
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let allowed = context.executionPolicy.allowedTools(
+            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+        )
+        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+            for: id,
+            baseAllowedTools: allowed,
+            permissionManifest: context.permissionManifest
+        )
+        let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
+        let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
+        let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
+        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
+        if taskEnv["ASTRA_BROWSER_URL"] != nil {
+            localToolCommands.append("astra-browser")
+        }
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: context.prompt,
+            model: model,
+            workspacePath: context.workspacePath,
+            additionalPaths: additionalPaths,
+            permissionPolicy: effectivePermissionPolicy,
+            allowedTools: providerAllowed,
+            timeoutSeconds: context.timeoutSeconds,
+            capabilities: capabilities,
+            taskEnvironment: taskEnv,
+            copilotHome: context.copilotHome,
+            pathPrefix: pathPrefix,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            localToolCommands: localToolCommands
+        )
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: context.workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: providerVersion,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: [context.copilotHome],
+            providerDetectedFields: [
+                "runtime": id.rawValue,
+                "provider_version": providerVersion ?? "unknown",
+                "executable_configured": String(!context.executablePath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
+                "executable_path": executable,
+                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
+            ],
+            commandPlannedFields: [
+                "runtime": id.rawValue,
+                "phase": "run",
+                "model": model,
+                "parses_json_lines": String(plan.parsesJSONLines),
+                "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
+                "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
+                "supports_no_ask_user": String(capabilities.supportsNoAskUser),
+                "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
+                "supports_allow_all": String(capabilities.supportsAllowAll),
+                "supports_silent": String(capabilities.supportsSilent),
+                "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
+                "supports_allow_all_paths": String(capabilities.supportsAllowAllPaths),
+                "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
+                "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
+                "permission_policy": effectivePermissionPolicy.rawValue,
+                "allowed_tools_count": String(providerAllowed.count),
+                "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
+                "local_tool_commands_count": String(localToolCommands.count),
+                "additional_paths_count": String(additionalPaths.count),
+                "task_env_count": String(taskEnv.count),
+                "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
+                "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
+                "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
+                "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
+                "uses_silent": String(plan.arguments.contains("--silent")),
+                "uses_allow_all": String(plan.arguments.contains("--allow-all")),
+                "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
+                "uses_allow_all_paths": String(plan.arguments.contains("--allow-all-paths")),
+                "uses_allow_all_urls": String(plan.arguments.contains("--allow-all-urls")),
+                "uses_allow_tool": String(plan.arguments.contains("--allow-tool"))
+            ]
+        )
+    }
+
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        parsesJSONLines
+            ? CopilotStreamEventParser.parseAll(line: line)
+            : CopilotStreamEventParser.parsePlainText(line: line)
+    }
+
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines _: Bool) -> String? {
+        guard CopilotStreamEventParser.isBlockingPlainTextPermissionPrompt(line: line) else {
+            return nil
+        }
+        return "Copilot is waiting for a permission approval ASTRA cannot answer directly: \(line)\n"
+    }
+
+    func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
+        let events = parsesJSONLines
+            ? CopilotStreamEventParser.parseAgentEvents(line: line)
+            : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
+        return AgentRuntimeStreamEventBatch(agentEvents: events)
+    }
+
+    func processWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        pipeline: AgentRuntimeEventPipelineBox
+    ) -> [AgentRuntimeRecordedEvent] {
+        guard case .agent(let agentEvent) = event else { return [] }
+        return pipeline.process(agentEvent).map(AgentRuntimeRecordedEvent.agent)
+    }
+
+    func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: pipeline.flushAgentEvents())
+    }
+
+    @MainActor
+    func recordWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        mode _: AgentRuntimeRecordingMode,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    ) {
+        guard case .agent(let agentEvent) = event else { return }
+        AgentEventRecorder.recordCopilotEvent(
+            agentEvent,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
+        guard let agentEvent = event.agentEvent else { return nil }
+        return AgentEventRecorder.parsedEvent(from: agentEvent)
+    }
+
+    func runUtilityPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        let executable = configuration.copilotPath.isEmpty
+            ? CopilotCLIRuntime.detectPath()
+            : configuration.copilotPath
+        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: prompt,
+            model: AgentRuntimeProcessRunner.model(configuration.model, for: id),
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: allowedTools,
+            timeoutSeconds: 120,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: configuration.copilotHome
+        )
+
+        try? FileManager.default.createDirectory(atPath: configuration.copilotHome, withIntermediateDirectories: true)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: plan.executablePath)
+        process.arguments = plan.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+        process.environment = plan.environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let output = plan.parsesJSONLines
+            ? extractCopilotUtilityText(from: result.stdout)
+            : result.stdout
+        return AgentUtilityRunResult(exitCode: result.exitCode, output: output, error: result.stderr)
+    }
+
     private func copilotAccountDeferredCheck() -> RuntimeReadinessCheck {
         let tokenKeys = ["GH_TOKEN", "GITHUB_TOKEN"]
         let hasToken = tokenKeys.contains { key in
@@ -533,6 +1044,28 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             state: .ready,
             remediation: nil
         )
+    }
+
+    private func extractCopilotUtilityText(from output: String) -> String {
+        var pieces: [String] = []
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
+                switch event {
+                case .text(let text):
+                    pieces.append(text)
+                case .completed(let summary):
+                    if let summary, !summary.isEmpty {
+                        pieces.append(summary)
+                    }
+                case .failed(let message):
+                    pieces.append(message)
+                default:
+                    continue
+                }
+            }
+        }
+        let joined = pieces.joined()
+        return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

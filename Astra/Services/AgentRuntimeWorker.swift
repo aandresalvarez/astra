@@ -244,8 +244,9 @@ final class AgentRuntimeWorker {
         // final status. Without this, fire-and-forget Task blocks race with the
         // post-process code that reads task.tokensUsed, task.costUSD, etc.
         let pendingEvents = OrderedMainActorTaskQueue()
+        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
@@ -263,28 +264,33 @@ final class AgentRuntimeWorker {
             onLine: { line in
                 PerformanceSignposts.processStreamLine {
                     streamDebugCapture?.recordLine(line, parsesJSONLines: true)
-                    // Parse each JSON line into structured events
-                    let parsedEvents = PerformanceSignposts.parseProviderStream {
-                        StreamEventParser.parseAll(line: line)
+                    let parsedBatch = PerformanceSignposts.parseProviderStream {
+                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: true)
                     }
-                    streamDebugCapture?.recordParsed(parsedEvents, rawLine: line)
-                    for parsed in parsedEvents {
-                        let filteredEvents = eventPipeline.process(parsed)
-                        streamDebugCapture?.recordEmitted(filteredEvents)
-                        for filtered in filteredEvents {
-                            pendingEvents.add { [weak self] in
-                                guard self != nil else { return }
+                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
+                    let emittedEvents = parsedBatch.events.flatMap {
+                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
+                    }
+                    AgentRuntimeStreamEventBatch(
+                        representation: parsedBatch.representation,
+                        events: emittedEvents
+                    ).recordEmitted(to: streamDebugCapture)
+                    for filtered in emittedEvents {
+                        pendingEvents.add { [weak self] in
+                            guard self != nil else { return }
 
-                                PerformanceSignposts.persistProviderEvent {
-                                    AgentEventRecorder.recordClaudeRunEvent(
-                                        filtered,
-                                        to: task,
-                                        run: run,
-                                        modelContext: modelContext,
-                                        recordingState: recordingState
-                                    )
-                                }
-                                onEvent(filtered)
+                            PerformanceSignposts.persistProviderEvent {
+                                runtimeAdapter.recordWorkerStreamEvent(
+                                    filtered,
+                                    mode: .initial,
+                                    task: task,
+                                    run: run,
+                                    modelContext: modelContext,
+                                    recordingState: recordingState
+                                )
+                            }
+                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
+                                onEvent(parsed)
                             }
                         }
                     }
@@ -292,22 +298,25 @@ final class AgentRuntimeWorker {
             }
         )
 
-        let flushedEvents = eventPipeline.flushParsedEvents()
-        streamDebugCapture?.recordEmitted(flushedEvents)
-        for parsed in flushedEvents {
+        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
+        flushedBatch.recordEmitted(to: streamDebugCapture)
+        for event in flushedBatch.events {
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
 
                 PerformanceSignposts.persistProviderEvent {
-                    AgentEventRecorder.recordClaudeRunEvent(
-                        parsed,
-                        to: task,
+                    runtimeAdapter.recordWorkerStreamEvent(
+                        event,
+                        mode: .initial,
+                        task: task,
                         run: run,
                         modelContext: modelContext,
                         recordingState: recordingState
                     )
                 }
-                onEvent(parsed)
+                if let parsed = runtimeAdapter.callbackEvent(from: event) {
+                    onEvent(parsed)
+                }
             }
         }
 
@@ -896,8 +905,9 @@ final class AgentRuntimeWorker {
         ])
 
         let pendingEvents = OrderedMainActorTaskQueue()
+        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: AgentRuntimeID.claudeCode.supportsAstraRunProtocol
+            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
@@ -915,25 +925,31 @@ final class AgentRuntimeWorker {
             onLine: { line in
                 PerformanceSignposts.processStreamLine {
                     streamDebugCapture?.recordLine(line, parsesJSONLines: true)
-                    let parsedEvents = PerformanceSignposts.parseProviderStream {
-                        StreamEventParser.parseAll(line: line)
+                    let parsedBatch = PerformanceSignposts.parseProviderStream {
+                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: true)
                     }
-                    streamDebugCapture?.recordParsed(parsedEvents, rawLine: line)
-                    for parsed in parsedEvents {
-                        let filteredEvents = eventPipeline.process(parsed)
-                        streamDebugCapture?.recordEmitted(filteredEvents)
-                        for filtered in filteredEvents {
-                            pendingEvents.add {
-                                PerformanceSignposts.persistProviderEvent {
-                                    AgentEventRecorder.recordClaudeFollowUpEvent(
-                                        filtered,
-                                        to: task,
-                                        run: run,
-                                        modelContext: modelContext,
-                                        recordingState: recordingState
-                                    )
-                                }
-                                onEvent(filtered)
+                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
+                    let emittedEvents = parsedBatch.events.flatMap {
+                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
+                    }
+                    AgentRuntimeStreamEventBatch(
+                        representation: parsedBatch.representation,
+                        events: emittedEvents
+                    ).recordEmitted(to: streamDebugCapture)
+                    for filtered in emittedEvents {
+                        pendingEvents.add {
+                            PerformanceSignposts.persistProviderEvent {
+                                runtimeAdapter.recordWorkerStreamEvent(
+                                    filtered,
+                                    mode: .followUp,
+                                    task: task,
+                                    run: run,
+                                    modelContext: modelContext,
+                                    recordingState: recordingState
+                                )
+                            }
+                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
+                                onEvent(parsed)
                             }
                         }
                     }
@@ -941,20 +957,23 @@ final class AgentRuntimeWorker {
             }
         )
 
-        let flushedEvents = eventPipeline.flushParsedEvents()
-        streamDebugCapture?.recordEmitted(flushedEvents)
-        for parsed in flushedEvents {
+        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
+        flushedBatch.recordEmitted(to: streamDebugCapture)
+        for event in flushedBatch.events {
             pendingEvents.add {
                 PerformanceSignposts.persistProviderEvent {
-                    AgentEventRecorder.recordClaudeFollowUpEvent(
-                        parsed,
-                        to: task,
+                    runtimeAdapter.recordWorkerStreamEvent(
+                        event,
+                        mode: .followUp,
+                        task: task,
                         run: run,
                         modelContext: modelContext,
                         recordingState: recordingState
                     )
                 }
-                onEvent(parsed)
+                if let parsed = runtimeAdapter.callbackEvent(from: event) {
+                    onEvent(parsed)
+                }
             }
         }
 
@@ -1313,8 +1332,9 @@ final class AgentRuntimeWorker {
         }
 
         let pendingEvents = OrderedMainActorTaskQueue()
+        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: AgentRuntimeID.copilotCLI.supportsAstraRunProtocol
+            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
         let streamTelemetry = AgentRuntimeStreamTelemetry()
@@ -1334,54 +1354,58 @@ final class AgentRuntimeWorker {
                 PerformanceSignposts.processStreamLine {
                     streamTelemetry.recordRawLine(parsesJSONLines: parsesJSONLines)
                     streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
-                    let events: [AgentEvent] = PerformanceSignposts.parseProviderStream {
-                        parsesJSONLines
-                            ? CopilotStreamEventParser.parseAgentEvents(line: line)
-                            : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
+                    let parsedBatch = PerformanceSignposts.parseProviderStream {
+                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
                     }
-                    streamTelemetry.recordParsed(events)
-                    streamDebugCapture?.recordParsed(events, rawLine: line)
-                    for event in events {
-                        let filteredEvents = eventPipeline.process(event)
-                        streamTelemetry.recordEmitted(filteredEvents)
-                        streamDebugCapture?.recordEmitted(filteredEvents)
-                        for filtered in filteredEvents {
-                            pendingEvents.add { [weak self] in
-                                guard self != nil else { return }
-                                PerformanceSignposts.persistProviderEvent {
-                                    AgentEventRecorder.recordCopilotEvent(
-                                        filtered,
-                                        to: task,
-                                        run: run,
-                                        modelContext: modelContext,
-                                        recordingState: recordingState
-                                    )
-                                }
-                                if let parsed = AgentEventRecorder.parsedEvent(from: filtered) {
-                                    onEvent(parsed)
-                                }
+                    parsedBatch.recordParsed(to: streamTelemetry)
+                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
+                    let emittedEvents = parsedBatch.events.flatMap {
+                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
+                    }
+                    let emittedBatch = AgentRuntimeStreamEventBatch(
+                        representation: parsedBatch.representation,
+                        events: emittedEvents
+                    )
+                    emittedBatch.recordEmitted(to: streamTelemetry)
+                    emittedBatch.recordEmitted(to: streamDebugCapture)
+                    for filtered in emittedEvents {
+                        pendingEvents.add { [weak self] in
+                            guard self != nil else { return }
+                            PerformanceSignposts.persistProviderEvent {
+                                runtimeAdapter.recordWorkerStreamEvent(
+                                    filtered,
+                                    mode: .initial,
+                                    task: task,
+                                    run: run,
+                                    modelContext: modelContext,
+                                    recordingState: recordingState
+                                )
+                            }
+                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
+                                onEvent(parsed)
                             }
                         }
                     }
                 }
             }
         )
-        let flushedEvents = eventPipeline.flushAgentEvents()
-        streamTelemetry.recordEmitted(flushedEvents)
-        streamDebugCapture?.recordEmitted(flushedEvents)
-        for event in flushedEvents {
+        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
+        flushedBatch.recordEmitted(to: streamTelemetry)
+        flushedBatch.recordEmitted(to: streamDebugCapture)
+        for event in flushedBatch.events {
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
                 PerformanceSignposts.persistProviderEvent {
-                    AgentEventRecorder.recordCopilotEvent(
+                    runtimeAdapter.recordWorkerStreamEvent(
                         event,
-                        to: task,
+                        mode: .initial,
+                        task: task,
                         run: run,
                         modelContext: modelContext,
                         recordingState: recordingState
                     )
                 }
-                if let parsed = AgentEventRecorder.parsedEvent(from: event) {
+                if let parsed = runtimeAdapter.callbackEvent(from: event) {
                     onEvent(parsed)
                 }
             }
