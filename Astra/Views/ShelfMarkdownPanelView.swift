@@ -821,8 +821,6 @@ struct ShelfMarkdownPanelView: View {
     private func normalizeFileNavigatorScope() {
         if task == nil {
             fileNavigatorScope = .workspace
-        } else if fileNavigatorScope == .workspace {
-            fileNavigatorScope = .task
         }
     }
 
