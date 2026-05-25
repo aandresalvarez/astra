@@ -293,7 +293,7 @@ struct OnboardingWizardView: View {
     }
 
     static func runtimePrerequisite(for runtime: AgentRuntimeID) -> CLIPrerequisite {
-        AgentRuntimeRegistry.descriptor(for: runtime).prerequisite
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).prerequisite
     }
 
     /// Optional hook for testing — force a step on init.
@@ -998,7 +998,7 @@ struct OnboardingWizardView: View {
         switch runtime {
         case .claudeCode: "npm install -g @anthropic-ai/claude-code"
         case .copilotCLI: "brew install copilot-cli"
-        default: AgentRuntimeRegistry.descriptor(for: runtime).installHint
+        default: AgentRuntimeAdapterRegistry.descriptor(for: runtime).installHint
         }
     }
 

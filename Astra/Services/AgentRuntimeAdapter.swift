@@ -92,10 +92,6 @@ protocol AgentRuntimeAdapter {
 }
 
 extension AgentRuntimeAdapter {
-    var descriptor: AgentRuntimeDescriptor {
-        AgentRuntimeRegistry.descriptor(for: id)
-    }
-
     var recordsStreamTelemetry: Bool { false }
 
     var recordsInferredFileChanges: Bool { false }
@@ -207,6 +203,10 @@ enum AgentRuntimeAdapterRegistry {
         allAdapters.map(\.id)
     }
 
+    static var descriptors: [AgentRuntimeDescriptor] {
+        allAdapters.map(\.descriptor)
+    }
+
     static var allAdapters: [any AgentRuntimeAdapter] {
         [
             ClaudeCodeRuntimeAdapter(),
@@ -234,6 +234,21 @@ enum AgentRuntimeAdapterRegistry {
 
     static func adapterIfRegistered(for runtime: AgentRuntimeID) -> (any AgentRuntimeAdapter)? {
         allAdapters.first { $0.id == runtime }
+    }
+
+    static func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
+        if let adapter = adapterIfRegistered(for: runtime) {
+            return adapter.descriptor
+        }
+        return AgentRuntimeDescriptor(
+            id: runtime,
+            displayName: runtime.displayName,
+            executableName: runtime.rawValue,
+            installHint: "",
+            authHint: "",
+            defaultModels: runtime.defaultModels,
+            supportsAstraRunProtocol: runtime.supportsAstraRunProtocol
+        )
     }
 
     static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
@@ -491,7 +506,21 @@ struct RuntimeReadinessProbeContext {
 }
 
 struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
-    let id: AgentRuntimeID = .claudeCode
+    var id: AgentRuntimeID { descriptor.id }
+    let descriptor = AgentRuntimeDescriptor(
+        id: .claudeCode,
+        displayName: "Claude Code",
+        executableName: "claude",
+        installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
+        authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
+        prerequisite: CommonCLIPrerequisites.claude,
+        defaultModels: [
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5-20251001"
+        ],
+        supportsAstraRunProtocol: true
+    )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
     let modelsCheckedAtStorageKey = AppStorageKeys.claudeModelsCheckedAt
@@ -954,7 +983,28 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
 }
 
 struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
-    let id: AgentRuntimeID = .copilotCLI
+    var id: AgentRuntimeID { descriptor.id }
+    let descriptor = AgentRuntimeDescriptor(
+        id: .copilotCLI,
+        displayName: "GitHub Copilot CLI",
+        executableName: "copilot",
+        installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
+        authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
+        prerequisite: CommonCLIPrerequisites.copilot,
+        defaultModels: [
+            "claude-sonnet-4.6",
+            "claude-sonnet-4.5",
+            "claude-haiku-4.5",
+            "claude-opus-4.7",
+            "claude-opus-4.6",
+            "claude-opus-4.5",
+            "gpt-5.2-codex",
+            "gpt-5.2",
+            "gpt-5-mini",
+            "gpt-4.1"
+        ],
+        supportsAstraRunProtocol: true
+    )
     let readinessCheckID = "copilot-cli"
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
     let modelsCheckedAtStorageKey = AppStorageKeys.copilotModelsCheckedAt

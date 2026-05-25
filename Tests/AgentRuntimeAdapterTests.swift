@@ -8,7 +8,7 @@ struct AgentRuntimeAdapterTests {
     func everyRuntimeHasOneRegisteredAdapter() {
         let registeredIDs = AgentRuntimeAdapterRegistry.runtimeIDs
 
-        #expect(Set(registeredIDs) == Set(AgentRuntimeRegistry.builtInDescriptors.map(\.id)))
+        #expect(Set(registeredIDs) == Set(AgentRuntimeAdapterRegistry.descriptors.map(\.id)))
         #expect(registeredIDs.count == AgentRuntimeAdapterRegistry.allAdapters.count)
 
         for runtime in registeredIDs {
@@ -45,9 +45,12 @@ struct AgentRuntimeAdapterTests {
             runtime: futureRuntime
         )
         let configuration = AgentRuntimeConfiguration(defaultRuntimeID: .copilotCLI)
+        let fallbackDescriptor = AgentRuntimeAdapterRegistry.descriptor(for: futureRuntime)
 
         #expect(futureRuntime.rawValue == "future_cli")
         #expect(AgentRuntimeAdapterRegistry.adapterIfRegistered(for: futureRuntime) == nil)
+        #expect(fallbackDescriptor.id == futureRuntime)
+        #expect(fallbackDescriptor.executableName == "future_cli")
         #expect(configuration.selectedRuntime(for: task) == .copilotCLI)
     }
 

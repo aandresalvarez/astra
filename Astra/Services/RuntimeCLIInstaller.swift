@@ -127,7 +127,7 @@ struct RuntimeCLIInstaller: Sendable {
         case .copilotCLI:
             return "Install Homebrew or Node/npm, then run: brew install copilot-cli"
         default:
-            let descriptor = AgentRuntimeRegistry.descriptor(for: runtime)
+            let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
             return descriptor.installHint.isEmpty
                 ? "Install \(runtime.displayName), then configure its executable path in Settings."
                 : descriptor.installHint

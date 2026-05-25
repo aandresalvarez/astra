@@ -2,11 +2,11 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Agent Runtime Registry")
-struct AgentRuntimeRegistryTests {
+@Suite("Agent Runtime Adapter Registry")
+struct AgentRuntimeAdapterRegistryTests {
     @Test("Every runtime has a concrete provider descriptor")
     func everyRuntimeHasAConcreteProviderDescriptor() {
-        let descriptorIDs = AgentRuntimeRegistry.builtInDescriptors.map(\.id)
+        let descriptorIDs = AgentRuntimeAdapterRegistry.descriptors.map(\.id)
 
         #expect(Set(descriptorIDs).count == descriptorIDs.count)
         #expect(Set(descriptorIDs) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
@@ -25,7 +25,7 @@ struct AgentRuntimeRegistryTests {
     @Test("Provider descriptors carry install, auth, and model metadata")
     func providerDescriptorsCarryRequiredMetadata() {
         for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
-            let descriptor = AgentRuntimeRegistry.descriptor(for: runtime)
+            let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
 
             #expect(!descriptor.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(!descriptor.executableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

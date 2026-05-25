@@ -333,7 +333,7 @@ enum RuntimeModelAvailability {
     }
 
     private static func isKnownModel(_ model: String, outside runtime: AgentRuntimeID) -> Bool {
-        AgentRuntimeRegistry.builtInDescriptors.contains { descriptor in
+        AgentRuntimeAdapterRegistry.descriptors.contains { descriptor in
             descriptor.id != runtime && descriptor.defaultModels.contains(model)
         }
     }
