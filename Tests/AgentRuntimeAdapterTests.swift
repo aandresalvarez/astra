@@ -20,6 +20,20 @@ struct AgentRuntimeAdapterTests {
         }
     }
 
+    @Test("Adapter catalogs can be composed without the global provider list")
+    func adapterCatalogsCanBeComposedWithoutGlobalProviderList() throws {
+        let catalog = AgentRuntimeAdapterCatalog(adapters: [CopilotCLIRuntimeAdapter()])
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+
+        #expect(catalog.runtimeIDs == [.copilotCLI])
+        #expect(catalog.hasAdapter(for: .copilotCLI))
+        #expect(catalog.hasAdapter(for: .claudeCode) == false)
+        #expect(catalog.registeredRuntime(rawValue: AgentRuntimeID.claudeCode.rawValue, fallback: .copilotCLI) == .copilotCLI)
+        #expect(catalog.descriptor(for: futureRuntime).defaultModel == "default")
+        #expect(catalog.descriptor(for: futureRuntime).defaultModels == ["default"])
+        #expect(catalog.supportsAstraRunProtocol(for: futureRuntime) == false)
+    }
+
     @Test("Adapters own model cache storage keys")
     func adaptersOwnModelCacheStorageKeys() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
@@ -80,6 +94,21 @@ struct AgentRuntimeAdapterTests {
         #expect(copilot.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .copilotCLI))
         #expect(claude.budgetProfile.launchOverheadTokens == 120_000)
         #expect(copilot.budgetProfile.launchOverheadTokens == 0)
+    }
+
+    @Test("Adapters own CLI install planning")
+    func adaptersOwnCLIInstallPlanning() {
+        let claudePlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .installPlan { binary in binary == "npm" ? "/opt/homebrew/bin/npm" : "" }
+        let copilotPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .installPlan { binary in binary == "brew" ? "/opt/homebrew/bin/brew" : "" }
+
+        #expect(claudePlan?.runtime == .claudeCode)
+        #expect(claudePlan?.displayCommand == "npm install -g @anthropic-ai/claude-code")
+        #expect(copilotPlan?.runtime == .copilotCLI)
+        #expect(copilotPlan?.displayCommand == "brew install copilot-cli")
     }
 
     @Test("Adapters own session lifecycle policy")

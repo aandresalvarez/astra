@@ -333,7 +333,7 @@ struct WorkspacePersistenceTests {
         schedule.routineDescription = "Daily ticket watcher"
         schedule.routinePaths = ["/tmp/routine-docs"]
         schedule.runtimeID = AgentRuntimeID.copilotCLI.rawValue
-        schedule.model = AgentRuntimeID.copilotCLI.defaultModel
+        schedule.model = AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
         schedule.conversationContext = "User asked for a concise summary."
         schedule.resultMode = .scheduleLog
         schedule.sourceTaskID = sourceTask.id

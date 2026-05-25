@@ -113,7 +113,7 @@ final class AgentRuntimeProcessRunner {
             let errorOutput = AgentLockedBuffer()
             let lineBuffer = AgentLockedBuffer()
             let eventPipeline = AgentRuntimeEventPipelineBox(
-                supportsAstraRunProtocol: plan.runtime.supportsAstraRunProtocol
+                supportsAstraRunProtocol: AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: plan.runtime)
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,

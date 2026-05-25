@@ -115,7 +115,7 @@ struct AgentTaskDefaultTests {
         let task = AgentTask(
             title: "Test",
             goal: "test",
-            model: AgentRuntimeID.copilotCLI.defaultModel,
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
             runtime: .copilotCLI
         )
 

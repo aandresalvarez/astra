@@ -35,37 +35,8 @@ struct RuntimeCLIInstaller: Sendable {
     }
 
     func plan(for runtime: AgentRuntimeID) -> RuntimeCLIInstallPlan? {
-        switch runtime {
-        case .claudeCode:
-            guard let npm = executable(named: "npm") else { return nil }
-            return RuntimeCLIInstallPlan(
-                runtime: runtime,
-                installerName: "npm",
-                executablePath: npm,
-                arguments: ["install", "-g", "@anthropic-ai/claude-code"],
-                displayCommand: "npm install -g @anthropic-ai/claude-code"
-            )
-        case .copilotCLI:
-            if let brew = executable(named: "brew") {
-                return RuntimeCLIInstallPlan(
-                    runtime: runtime,
-                    installerName: "Homebrew",
-                    executablePath: brew,
-                    arguments: ["install", "copilot-cli"],
-                    displayCommand: "brew install copilot-cli"
-                )
-            }
-            guard let npm = executable(named: "npm") else { return nil }
-            return RuntimeCLIInstallPlan(
-                runtime: runtime,
-                installerName: "npm",
-                executablePath: npm,
-                arguments: ["install", "-g", "@github/copilot"],
-                displayCommand: "npm install -g @github/copilot"
-            )
-        default:
-            return nil
-        }
+        AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?
+            .installPlan(detectExecutable: detectExecutable)
     }
 
     func install(runtime: AgentRuntimeID) async -> RuntimeCLIInstallResult {
@@ -105,11 +76,6 @@ struct RuntimeCLIInstaller: Sendable {
         )
     }
 
-    private func executable(named binary: String) -> String? {
-        let path = detectExecutable(binary).trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : path
-    }
-
     private func installEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
@@ -121,17 +87,10 @@ struct RuntimeCLIInstaller: Sendable {
     }
 
     private func fallbackInstallHint(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode:
-            return "Install Node/npm, then run: npm install -g @anthropic-ai/claude-code"
-        case .copilotCLI:
-            return "Install Homebrew or Node/npm, then run: brew install copilot-cli"
-        default:
-            let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-            return descriptor.installHint.isEmpty
-                ? "Install \(runtime.displayName), then configure its executable path in Settings."
-                : descriptor.installHint
-        }
+        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+        return descriptor.installHint.isEmpty
+            ? "Install \(runtime.displayName), then configure its executable path in Settings."
+            : descriptor.installHint
     }
 
     private func installFailureDetail(_ result: RunResult) -> String {

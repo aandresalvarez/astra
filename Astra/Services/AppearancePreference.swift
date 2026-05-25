@@ -80,7 +80,7 @@ enum LoggingPreferences {
 
 enum TaskExecutionDefaults {
     static let runtime = AgentRuntimeID.claudeCode
-    static let model = AgentRuntimeID.claudeCode.defaultModel
+    static let model = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
     static let tokenBudget = 100_000
     static let budgetEnforcementMode = BudgetEnforcementMode.warning
     static let budgetPresets = [10_000, 25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 0]

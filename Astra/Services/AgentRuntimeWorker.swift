@@ -488,7 +488,7 @@ final class AgentRuntimeWorker {
 
         let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: runtimeAdapter.id.supportsAstraRunProtocol
+            supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil

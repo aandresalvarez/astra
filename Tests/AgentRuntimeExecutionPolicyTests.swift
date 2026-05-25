@@ -18,8 +18,8 @@ struct AgentRuntimeAdapterRegistryTests {
 
         #expect(runtime.rawValue == "future_provider")
         #expect(runtime.displayName == "Future Provider")
-        #expect(runtime.defaultModels == ["default"])
-        #expect(runtime.supportsAstraRunProtocol == false)
+        #expect(AgentRuntimeAdapterRegistry.defaultModels(for: runtime) == ["default"])
+        #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: runtime) == false)
     }
 
     @Test("Provider descriptors carry install, auth, and model metadata")
@@ -33,8 +33,10 @@ struct AgentRuntimeAdapterRegistryTests {
             #expect(!descriptor.authHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(descriptor.prerequisite.binary == descriptor.executableName)
             #expect(descriptor.prerequisite.livenessArgs.isEmpty == false)
-            #expect(descriptor.defaultModels == runtime.defaultModels)
-            #expect(descriptor.supportsAstraRunProtocol == runtime.supportsAstraRunProtocol)
+            #expect(descriptor.defaultModels.contains(descriptor.defaultModel))
+            #expect(descriptor.defaultModels == AgentRuntimeAdapterRegistry.defaultModels(for: runtime))
+            #expect(descriptor.defaultModel == AgentRuntimeAdapterRegistry.defaultModel(for: runtime))
+            #expect(descriptor.supportsAstraRunProtocol == AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: runtime))
         }
     }
 }

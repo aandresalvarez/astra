@@ -24,6 +24,7 @@ protocol AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessReport
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan?
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
     func missingExecutableAuditReason() -> String
     func missingExecutableStopReason() -> String?
@@ -95,6 +96,10 @@ extension AgentRuntimeAdapter {
     var recordsStreamTelemetry: Bool { false }
 
     var recordsInferredFileChanges: Bool { false }
+
+    func installPlan(detectExecutable _: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        nil
+    }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         AgentRuntimeLaunchSettings(
@@ -196,29 +201,33 @@ extension AgentRuntimeAdapter {
         exitCode _: Int
     ) {
     }
+
+    func detectedExecutable(named binary: String, detectExecutable: @Sendable (String) -> String) -> String? {
+        let path = detectExecutable(binary).trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
+    }
 }
 
-enum AgentRuntimeAdapterRegistry {
-    static var runtimeIDs: [AgentRuntimeID] {
-        allAdapters.map(\.id)
+struct AgentRuntimeAdapterCatalog {
+    let adapters: [any AgentRuntimeAdapter]
+
+    init(adapters: [any AgentRuntimeAdapter]) {
+        self.adapters = adapters
     }
 
-    static var descriptors: [AgentRuntimeDescriptor] {
-        allAdapters.map(\.descriptor)
+    var runtimeIDs: [AgentRuntimeID] {
+        adapters.map(\.id)
     }
 
-    static var allAdapters: [any AgentRuntimeAdapter] {
-        [
-            ClaudeCodeRuntimeAdapter(),
-            CopilotCLIRuntimeAdapter()
-        ]
+    var descriptors: [AgentRuntimeDescriptor] {
+        adapters.map(\.descriptor)
     }
 
-    static func hasAdapter(for runtime: AgentRuntimeID) -> Bool {
+    func hasAdapter(for runtime: AgentRuntimeID) -> Bool {
         adapterIfRegistered(for: runtime) != nil
     }
 
-    static func registeredRuntime(
+    func registeredRuntime(
         rawValue: String?,
         fallback: AgentRuntimeID = TaskExecutionDefaults.runtime
     ) -> AgentRuntimeID {
@@ -232,30 +241,100 @@ enum AgentRuntimeAdapterRegistry {
         return runtimeIDs.first ?? fallback
     }
 
-    static func adapterIfRegistered(for runtime: AgentRuntimeID) -> (any AgentRuntimeAdapter)? {
-        allAdapters.first { $0.id == runtime }
+    func adapterIfRegistered(for runtime: AgentRuntimeID) -> (any AgentRuntimeAdapter)? {
+        adapters.first { $0.id == runtime }
     }
 
-    static func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
-        if let adapter = adapterIfRegistered(for: runtime) {
-            return adapter.descriptor
+    func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
+        adapterIfRegistered(for: runtime)?.descriptor ?? fallbackDescriptor(for: runtime)
+    }
+
+    func defaultModels(for runtime: AgentRuntimeID) -> [String] {
+        descriptor(for: runtime).defaultModels
+    }
+
+    func defaultModel(for runtime: AgentRuntimeID) -> String {
+        descriptor(for: runtime).defaultModel
+    }
+
+    func supportsAstraRunProtocol(for runtime: AgentRuntimeID) -> Bool {
+        descriptor(for: runtime).supportsAstraRunProtocol
+    }
+
+    func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
+        guard let adapter = adapterIfRegistered(for: runtime) else {
+            preconditionFailure("No AgentRuntimeAdapter registered for runtime '\(runtime.rawValue)'")
         }
-        return AgentRuntimeDescriptor(
+        return adapter
+    }
+
+    private func fallbackDescriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
+        AgentRuntimeDescriptor(
             id: runtime,
             displayName: runtime.displayName,
             executableName: runtime.rawValue,
             installHint: "",
             authHint: "",
-            defaultModels: runtime.defaultModels,
-            supportsAstraRunProtocol: runtime.supportsAstraRunProtocol
+            defaultModel: "default",
+            defaultModels: ["default"],
+            supportsAstraRunProtocol: false
         )
+    }
+}
+
+enum AgentRuntimeAdapterRegistry {
+    private static let liveCatalog = AgentRuntimeAdapterCatalog(
+        adapters: [
+            ClaudeCodeRuntimeAdapter(),
+            CopilotCLIRuntimeAdapter()
+        ]
+    )
+
+    static var runtimeIDs: [AgentRuntimeID] {
+        liveCatalog.runtimeIDs
+    }
+
+    static var descriptors: [AgentRuntimeDescriptor] {
+        liveCatalog.descriptors
+    }
+
+    static var allAdapters: [any AgentRuntimeAdapter] {
+        liveCatalog.adapters
+    }
+
+    static func hasAdapter(for runtime: AgentRuntimeID) -> Bool {
+        liveCatalog.hasAdapter(for: runtime)
+    }
+
+    static func registeredRuntime(
+        rawValue: String?,
+        fallback: AgentRuntimeID = TaskExecutionDefaults.runtime
+    ) -> AgentRuntimeID {
+        liveCatalog.registeredRuntime(rawValue: rawValue, fallback: fallback)
+    }
+
+    static func adapterIfRegistered(for runtime: AgentRuntimeID) -> (any AgentRuntimeAdapter)? {
+        liveCatalog.adapterIfRegistered(for: runtime)
+    }
+
+    static func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
+        liveCatalog.descriptor(for: runtime)
+    }
+
+    static func defaultModels(for runtime: AgentRuntimeID) -> [String] {
+        liveCatalog.defaultModels(for: runtime)
+    }
+
+    static func defaultModel(for runtime: AgentRuntimeID) -> String {
+        liveCatalog.defaultModel(for: runtime)
+    }
+
+    static func supportsAstraRunProtocol(for runtime: AgentRuntimeID) -> Bool {
+        liveCatalog.supportsAstraRunProtocol(for: runtime)
     }
 
     static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
-        guard let adapter = adapterIfRegistered(for: runtime) else {
-            preconditionFailure("No AgentRuntimeAdapter registered for runtime '\(runtime.rawValue)'")
-        }
-        return adapter
+        liveCatalog.adapter(for: runtime)
     }
 }
 
@@ -514,6 +593,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         installHint: "Install via npm: `npm install -g @anthropic-ai/claude-code`",
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
         prerequisite: CommonCLIPrerequisites.claude,
+        defaultModel: "claude-sonnet-4-6",
         defaultModels: [
             "claude-opus-4-6",
             "claude-sonnet-4-6",
@@ -639,6 +719,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 remediation: reason
             )
         }
+    }
+
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        guard let npm = detectedExecutable(named: "npm", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "npm",
+            executablePath: npm,
+            arguments: ["install", "-g", "@anthropic-ai/claude-code"],
+            displayCommand: "npm install -g @anthropic-ai/claude-code"
+        )
     }
 
     @MainActor
@@ -991,6 +1084,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
         prerequisite: CommonCLIPrerequisites.copilot,
+        defaultModel: "claude-sonnet-4.6",
         defaultModels: [
             "claude-sonnet-4.6",
             "claude-sonnet-4.5",
@@ -1148,6 +1242,28 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 remediation: reason
             )
         }
+    }
+
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        if let brew = detectedExecutable(named: "brew", detectExecutable: detectExecutable) {
+            return RuntimeCLIInstallPlan(
+                runtime: id,
+                installerName: "Homebrew",
+                executablePath: brew,
+                arguments: ["install", "copilot-cli"],
+                displayCommand: "brew install copilot-cli"
+            )
+        }
+        guard let npm = detectedExecutable(named: "npm", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "npm",
+            executablePath: npm,
+            arguments: ["install", "-g", "@github/copilot"],
+            displayCommand: "npm install -g @github/copilot"
+        )
     }
 
     @MainActor

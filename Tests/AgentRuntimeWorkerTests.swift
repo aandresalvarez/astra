@@ -553,7 +553,7 @@ struct BuildPromptTests {
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
-        #expect(AgentRuntimeID.copilotCLI.supportsAstraRunProtocol)
+        #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .copilotCLI))
         #expect(prompt.contains("Astra Run Protocol v1:"))
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))

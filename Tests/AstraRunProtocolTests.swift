@@ -376,10 +376,10 @@ struct AstraRunProtocolTests {
 
     @Test("Runtime metadata advertises ARP support for promptable text runtimes")
     func runtimeMetadataAdvertisesARP() {
-        #expect(AgentRuntimeID.claudeCode.supportsAstraRunProtocol)
-        #expect(AgentRuntimeID.copilotCLI.supportsAstraRunProtocol)
-        #expect(AgentRuntimeDescriptor.claudeCode.supportsAstraRunProtocol)
-        #expect(AgentRuntimeDescriptor.copilotCLI.supportsAstraRunProtocol)
+        #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .claudeCode))
+        #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .copilotCLI))
+        #expect(AgentRuntimeAdapterRegistry.descriptor(for: .claudeCode).supportsAstraRunProtocol)
+        #expect(AgentRuntimeAdapterRegistry.descriptor(for: .copilotCLI).supportsAstraRunProtocol)
     }
 }
 

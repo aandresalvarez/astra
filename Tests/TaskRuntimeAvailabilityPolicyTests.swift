@@ -11,7 +11,7 @@ struct TaskRuntimeAvailabilityPolicyTests {
         let task = AgentTask(
             title: "Keep Claude",
             goal: "Continue with the original provider",
-            model: AgentRuntimeID.claudeCode.defaultModel
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode)
         )
         task.runtimeID = AgentRuntimeID.claudeCode.rawValue
         let originalUpdatedAt = Date(timeIntervalSince1970: 100)
@@ -29,7 +29,7 @@ struct TaskRuntimeAvailabilityPolicyTests {
         )
 
         #expect(task.runtimeID == AgentRuntimeID.claudeCode.rawValue)
-        #expect(task.model == AgentRuntimeID.claudeCode.defaultModel)
+        #expect(task.model == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
         #expect(task.updatedAt == originalUpdatedAt)
     }
 
@@ -38,7 +38,7 @@ struct TaskRuntimeAvailabilityPolicyTests {
         let task = AgentTask(
             title: "Keep Claude",
             goal: "Normalize model for the original provider",
-            model: AgentRuntimeID.copilotCLI.defaultModel
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
         )
         task.runtimeID = AgentRuntimeID.claudeCode.rawValue
         let updatedAt = Date(timeIntervalSince1970: 300)
@@ -55,7 +55,7 @@ struct TaskRuntimeAvailabilityPolicyTests {
         )
 
         #expect(task.runtimeID == AgentRuntimeID.claudeCode.rawValue)
-        #expect(task.model == AgentRuntimeID.claudeCode.defaultModel)
+        #expect(task.model == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
         #expect(task.updatedAt == updatedAt)
     }
 }

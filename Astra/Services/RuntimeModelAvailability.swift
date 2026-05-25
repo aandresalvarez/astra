@@ -30,7 +30,7 @@ struct RuntimeModelResolution: Equatable, Sendable {
             "selection_source": source,
             "selection_reason": reason,
             "available_model_count": String(availableModelCount),
-            "runtime_default_model": runtime.defaultModel
+            "runtime_default_model": AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
         ]
         if let checkedAt {
             fields["availability_checked_at"] = String(Int(checkedAt.timeIntervalSince1970))
@@ -43,7 +43,7 @@ struct RuntimeModelResolution: Equatable, Sendable {
 
 enum RuntimeModelAvailability {
     static func models(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> [String] {
-        cachedModels(for: runtime, defaults: defaults) ?? runtime.defaultModels
+        cachedModels(for: runtime, defaults: defaults) ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
     }
 
     static func models(
@@ -55,11 +55,11 @@ enum RuntimeModelAvailability {
             for: runtime,
             cachedClaudeModelsJSON: cachedClaudeModelsJSON,
             cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        ) ?? runtime.defaultModels
+        ) ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
     }
 
     static func defaultModel(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> String {
-        models(for: runtime, defaults: defaults).first ?? runtime.defaultModel
+        defaultSuggestion(for: runtime, suggestions: models(for: runtime, defaults: defaults))
     }
 
     static func defaultModel(
@@ -67,11 +67,11 @@ enum RuntimeModelAvailability {
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> String {
-        models(
+        defaultSuggestion(for: runtime, suggestions: models(
             for: runtime,
             cachedClaudeModelsJSON: cachedClaudeModelsJSON,
             cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        ).first ?? runtime.defaultModel
+        ))
     }
 
     static func hasCachedModels(
@@ -129,7 +129,7 @@ enum RuntimeModelAvailability {
 
     static func cacheSummary(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> (count: Int, checkedAt: Date?) {
         guard let snapshot = cachedSnapshot(for: runtime, defaults: defaults) else {
-            return (runtime.defaultModels.count, nil)
+            return (AgentRuntimeAdapterRegistry.defaultModels(for: runtime).count, nil)
         }
         return (snapshot.models.count, snapshot.checkedAt)
     }
@@ -149,10 +149,11 @@ enum RuntimeModelAvailability {
         if suggestions.contains(trimmed) {
             return trimmed
         }
-        if suggestions.contains(runtime.defaultModel) {
-            return runtime.defaultModel
+        let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
+        if suggestions.contains(runtimeDefaultModel) {
+            return runtimeDefaultModel
         }
-        return suggestions.first ?? runtime.defaultModel
+        return suggestions.first ?? runtimeDefaultModel
     }
 
     static func persistAvailableModels(
@@ -236,12 +237,13 @@ enum RuntimeModelAvailability {
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> RuntimeModelAvailabilitySnapshot? {
-        let raw = AgentRuntimeAdapterRegistry
-            .adapter(for: runtime)
-            .cachedModelsJSON(
-                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-                cachedCopilotModelsJSON: cachedCopilotModelsJSON
-            )
+        guard let adapter = AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime) else {
+            return nil
+        }
+        let raw = adapter.cachedModelsJSON(
+            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+            cachedCopilotModelsJSON: cachedCopilotModelsJSON
+        )
         return cachedSnapshot(from: raw, for: runtime)
     }
 
@@ -256,14 +258,14 @@ enum RuntimeModelAvailability {
         // providers. If the selected runtime has a cached account/CLI model
         // list, that provider-specific list becomes authoritative.
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let suggestions = cachedSnapshot?.models ?? runtime.defaultModels
+        let suggestions = cachedSnapshot?.models ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
         let source = cachedSnapshot == nil ? "built_in_defaults" : "cached_provider_models"
         let checkedAt = cachedSnapshot?.checkedAt
         guard !suggestions.isEmpty else {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
-                resolvedModel: runtime.defaultModel,
+                resolvedModel: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
                 source: source,
                 reason: "empty_suggestion_list",
                 availableModelCount: 0,
@@ -326,10 +328,11 @@ enum RuntimeModelAvailability {
     }
 
     private static func defaultSuggestion(for runtime: AgentRuntimeID, suggestions: [String]) -> String {
-        if suggestions.contains(runtime.defaultModel) {
-            return runtime.defaultModel
+        let runtimeDefaultModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
+        if suggestions.contains(runtimeDefaultModel) {
+            return runtimeDefaultModel
         }
-        return suggestions.first ?? runtime.defaultModel
+        return suggestions.first ?? runtimeDefaultModel
     }
 
     private static func isKnownModel(_ model: String, outside runtime: AgentRuntimeID) -> Bool {
@@ -339,10 +342,12 @@ enum RuntimeModelAvailability {
     }
 
     private static func availableModelsKey(for runtime: AgentRuntimeID) -> String {
-        AgentRuntimeAdapterRegistry.adapter(for: runtime).availableModelsStorageKey
+        AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.availableModelsStorageKey
+            ?? "astra.runtime.\(runtime.rawValue).availableModels.v1"
     }
 
     private static func checkedAtKey(for runtime: AgentRuntimeID) -> String {
-        AgentRuntimeAdapterRegistry.adapter(for: runtime).modelsCheckedAtStorageKey
+        AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.modelsCheckedAtStorageKey
+            ?? "astra.runtime.\(runtime.rawValue).modelsCheckedAt.v1"
     }
 }

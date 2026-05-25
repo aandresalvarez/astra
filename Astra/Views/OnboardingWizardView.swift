@@ -995,11 +995,7 @@ struct OnboardingWizardView: View {
     }
 
     private func runtimeInstallHint(_ runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode: "npm install -g @anthropic-ai/claude-code"
-        case .copilotCLI: "brew install copilot-cli"
-        default: AgentRuntimeAdapterRegistry.descriptor(for: runtime).installHint
-        }
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).installHint
     }
 
     private func isProbingRuntime(_ runtime: AgentRuntimeID) -> Bool {
