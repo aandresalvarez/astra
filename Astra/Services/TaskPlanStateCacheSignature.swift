@@ -20,12 +20,12 @@ struct TaskPlanStateCacheSignature: Equatable {
     init(task: AgentTask) {
         var eventAccumulator = FingerprintAccumulator()
         var planEventCount = 0
-        for (index, event) in task.events.enumerated() {
+        for event in task.events {
             guard let eventCode = TaskPlanService.stateMutationCode(for: event.type) else {
                 continue
             }
+            eventAccumulator.include(planEventCount)
             planEventCount += 1
-            eventAccumulator.include(index)
             eventAccumulator.include(eventCode)
             eventAccumulator.include(event.id)
             eventAccumulator.include(event.timestamp)
