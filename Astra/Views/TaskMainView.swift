@@ -270,12 +270,14 @@ struct TaskMainView: View {
     }
 
     private static func chatHorizontalPadding(for width: CGFloat) -> CGFloat {
-        width < 760 ? 20 : 32
+        if width < 520 { return 12 }
+        if width < 760 { return 16 }
+        return 32
     }
 
     private static func chatColumnMaxWidth(for width: CGFloat) -> CGFloat {
         let horizontalPadding = chatHorizontalPadding(for: width) * 2
-        let usableWidth = max(320, width - horizontalPadding)
+        let usableWidth = max(240, width - horizontalPadding)
         guard usableWidth >= 860 else { return usableWidth }
 
         let proportionalWidth = max(900, usableWidth * 0.78)
@@ -3565,52 +3567,31 @@ struct TaskMainView: View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
         let hasSupportingRows = modeLabel != nil || scope != nil || commandPreview != nil || detailLineLimit > 1
 
-        return HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
-            Image(systemName: icon)
-                .font(Stanford.ui(20, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 24, height: 24)
-                .padding(.top, hasSupportingRows ? 1 : 0)
+        return ViewThatFits(in: .horizontal) {
+            taskDecisionHorizontalLayout(
+                icon: icon,
+                color: color,
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview,
+                hasSupportingRows: hasSupportingRows,
+                actions: actions
+            )
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(Stanford.body(14).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(detail)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(detailLineLimit)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let modeLabel {
-                    Text(modeLabel)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                if let scope {
-                    Text(scope)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(Stanford.coolGrey.opacity(0.85))
-                        .lineLimit(1)
-                }
-
-                if let commandPreview {
-                    Label(commandPreview, systemImage: "terminal")
-                        .font(Stanford.caption(11).monospaced())
-                        .foregroundStyle(Stanford.readingText.opacity(0.82))
-                        .lineLimit(1)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.035))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            actions()
+            taskDecisionStackedLayout(
+                icon: icon,
+                color: color,
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview,
+                actions: actions
+            )
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -3625,6 +3606,126 @@ struct TaskMainView: View {
                 .frame(width: 3)
                 .padding(.vertical, 10)
                 .padding(.leading, 1)
+        }
+    }
+
+    private func taskDecisionHorizontalLayout<Actions: View>(
+        icon: String,
+        color: Color,
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?,
+        hasSupportingRows: Bool,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
+            Image(systemName: icon)
+                .font(Stanford.ui(20, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 24, height: 24)
+                .padding(.top, hasSupportingRows ? 1 : 0)
+
+            taskDecisionTextStack(
+                title: title,
+                detail: detail,
+                detailLineLimit: detailLineLimit,
+                modeLabel: modeLabel,
+                scope: scope,
+                commandPreview: commandPreview
+            )
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            actions()
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func taskDecisionStackedLayout<Actions: View>(
+        icon: String,
+        color: Color,
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(20, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 24, height: 24)
+
+                taskDecisionTextStack(
+                    title: title,
+                    detail: detail,
+                    detailLineLimit: detailLineLimit,
+                    modeLabel: modeLabel,
+                    scope: scope,
+                    commandPreview: commandPreview
+                )
+
+                Spacer(minLength: 0)
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                actions()
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    private func taskDecisionTextStack(
+        title: String,
+        detail: String,
+        detailLineLimit: Int,
+        modeLabel: String?,
+        scope: String?,
+        commandPreview: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(Stanford.body(14).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+                .lineLimit(1)
+            Text(detail)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+                .lineLimit(detailLineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let modeLabel {
+                Text(modeLabel)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let scope {
+                Text(scope)
+                    .font(Stanford.chatMeta())
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.85))
+                    .lineLimit(1)
+            }
+
+            if let commandPreview {
+                Label(commandPreview, systemImage: "terminal")
+                    .font(Stanford.caption(11).monospaced())
+                    .foregroundStyle(Stanford.readingText.opacity(0.82))
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.035))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
         }
     }
 
