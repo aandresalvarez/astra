@@ -278,6 +278,8 @@ struct ShelfMarkdownPanelView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(isFileSearchVisible || isSearchingFiles ? Stanford.lagunita : .secondary)
                     .help(isFileSearchVisible || isSearchingFiles ? "Hide search" : "Search files")
+                    .accessibilityLabel(isFileSearchVisible || isSearchingFiles ? "Hide search" : "Search files")
+                    .accessibilityIdentifier("FilesShelfSearchToggle")
 
                     Button {
                         refreshFileIndex()

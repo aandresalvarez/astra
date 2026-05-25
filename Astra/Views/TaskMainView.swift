@@ -173,7 +173,7 @@ struct TaskMainView: View {
                     event.id.uuidString,
                     event.type,
                     String(event.timestamp.timeIntervalSinceReferenceDate),
-                    Self.stringFingerprint(event.payload)
+                    String(event.payload.utf8.count)
                 ].joined(separator: ",")
             }
             .sorted()
@@ -188,21 +188,16 @@ struct TaskMainView: View {
                     run.status.rawValue,
                     String(run.startedAt.timeIntervalSinceReferenceDate),
                     String(run.completedAt?.timeIntervalSinceReferenceDate ?? 0),
-                    Self.stringFingerprint(run.output),
-                    Self.stringFingerprint(run.fileChangesJSON)
+                    String(run.tokensUsed),
+                    String(run.inputTokens),
+                    String(run.outputTokens),
+                    String(run.output.utf8.count),
+                    String(run.fileChangesJSON.utf8.count),
+                    run.stopReason
                 ].joined(separator: ",")
             }
             .sorted()
             .joined(separator: "|")
-    }
-
-    private static func stringFingerprint(_ value: String) -> String {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in value.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return "\(value.utf8.count)-\(String(hash, radix: 16))"
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
