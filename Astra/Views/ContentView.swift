@@ -411,8 +411,10 @@ struct ContentView: View {
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
+        let fallbackRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
-            rawValue: selectedTask?.runtimeID ?? defaultRuntimeID
+            rawValue: selectedTask?.runtimeID,
+            fallback: fallbackRuntime
         )
         let preferredModel = selectedTask?.model ?? RuntimeModelAvailability.defaultModel(for: runtime)
         return AgentUtilityRuntimeConfiguration(
