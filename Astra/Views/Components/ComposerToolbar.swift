@@ -8,6 +8,34 @@ struct ComposerTaskStatusPresentation {
     let help: String
 }
 
+enum ComposerToolbarPresentation {
+    static let horizontalPadding: CGFloat = 10
+    static let verticalPadding: CGFloat = 7
+    static let controlSpacing: CGFloat = 8
+    static let addButtonSize: CGFloat = 30
+    static let addButtonFrameSize: CGFloat = 32
+    static let addButtonCornerRadius: CGFloat = 9
+    static let addIconSize: CGFloat = 14
+    static let addButtonUsesRoundedSquare = true
+    static let addButtonUsesBorderedChrome = true
+    static let addButtonUsesBackgroundFill = false
+    static let chipHorizontalPadding: CGFloat = 10
+    static let chipVerticalPadding: CGFloat = 6
+    static let chipCornerRadius: CGFloat = 10
+    static let chipFontSize: CGFloat = 12
+    static let chipIconSize: CGFloat = 11
+    static let runtimePillUsesBorderedChrome = true
+    static let runtimePillUsesBackgroundFill = false
+    static let taskStatusPillUsesBorderedChrome = true
+    static let menuControlsUsePlainButtonStyle = true
+    static let permissionHorizontalPadding: CGFloat = 10
+    static let permissionFontSize: CGFloat = 13
+    static let permissionIconSize: CGFloat = 12
+    static let submitButtonSize: CGFloat = 30
+    static let submitIconSize: CGFloat = 13
+    static let permissionModeUsesFlatChrome = true
+}
+
 /// Shared bottom toolbar for both new-task and follow-up composers.
 struct ComposerToolbar: View {
     // MARK: - Required
@@ -68,21 +96,21 @@ struct ComposerToolbar: View {
     @State private var isPolicySheetPresented = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ComposerToolbarPresentation.controlSpacing) {
             plusMenu
 
             if showSecurityGate || showPermissionControls {
                 permissionModeButton
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: ComposerToolbarPresentation.controlSpacing)
 
             taskStatusPill
             runtimeStatusPill
             submitArea
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, ComposerToolbarPresentation.horizontalPadding)
+        .padding(.vertical, ComposerToolbarPresentation.verticalPadding)
         .sheet(isPresented: $isPolicySheetPresented) {
             AgentPolicySheet(
                 runtime: resolvedRuntime,
@@ -100,7 +128,12 @@ struct ComposerToolbar: View {
     // MARK: - Plus Menu
 
     private var plusMenu: some View {
-        Menu {
+        let shape = RoundedRectangle(
+            cornerRadius: ComposerToolbarPresentation.addButtonCornerRadius,
+            style: .continuous
+        )
+
+        return Menu {
             Button {
                 onAttachFile()
             } label: {
@@ -187,20 +220,27 @@ struct ComposerToolbar: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(Stanford.ui(14, weight: .semibold))
+                .font(Stanford.ui(ComposerToolbarPresentation.addIconSize, weight: .semibold))
                 .foregroundStyle(isPlusHovered ? Stanford.black : Stanford.coolGrey)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(Color.primary.opacity(isPlusHovered ? 0.075 : 0.035)))
-                .overlay(
-                    Circle()
-                        .stroke(Color.primary.opacity(isPlusHovered ? 0.13 : 0.08), lineWidth: 1)
+                .frame(
+                    width: ComposerToolbarPresentation.addButtonSize,
+                    height: ComposerToolbarPresentation.addButtonSize
                 )
                 .animation(.easeInOut(duration: 0.15), value: isPlusHovered)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 32, height: 32)
-        .contentShape(Circle())
+        .buttonStyle(.plain)
+        .frame(
+            width: ComposerToolbarPresentation.addButtonFrameSize,
+            height: ComposerToolbarPresentation.addButtonFrameSize
+        )
+        .background(shape.fill(Color.clear))
+        .overlay(
+            shape
+                .stroke(Color.primary.opacity(isPlusHovered ? 0.16 : 0.12), lineWidth: 1)
+        )
+        .contentShape(shape)
         .onHover { isPlusHovered = $0 }
         .help("Add files, paste from clipboard, or adjust task options")
         .accessibilityLabel("Composer actions")
@@ -215,21 +255,24 @@ struct ComposerToolbar: View {
     @ViewBuilder
     private var taskStatusPill: some View {
         if let presentation = resolvedTaskStatusPresentation {
+            let shape = RoundedRectangle(
+                cornerRadius: ComposerToolbarPresentation.chipCornerRadius,
+                style: .continuous
+            )
             HStack(spacing: 5) {
                 Image(systemName: presentation.icon)
-                    .font(Stanford.ui(11))
+                    .font(Stanford.ui(ComposerToolbarPresentation.chipIconSize))
                 Text(presentation.label)
-                    .font(Stanford.chatMeta(12))
+                    .font(Stanford.chatMeta(ComposerToolbarPresentation.chipFontSize))
                     .lineLimit(1)
             }
             .foregroundStyle(presentation.color)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(Color.primary.opacity(0.045))
-            .clipShape(Capsule())
+            .padding(.horizontal, ComposerToolbarPresentation.chipHorizontalPadding)
+            .padding(.vertical, ComposerToolbarPresentation.chipVerticalPadding)
+            .background(presentation.color.opacity(0.075))
+            .clipShape(shape)
             .overlay(
-                Capsule()
-                    .stroke(presentation.color.opacity(0.13), lineWidth: 1)
+                shape.stroke(presentation.color.opacity(0.16), lineWidth: 1)
             )
             .help(presentation.help)
             .accessibilityLabel("Task status")
@@ -244,7 +287,12 @@ struct ComposerToolbar: View {
     }
 
     private func providerModelPill(compact: Bool) -> some View {
-        Menu {
+        let shape = RoundedRectangle(
+            cornerRadius: ComposerToolbarPresentation.chipCornerRadius,
+            style: .continuous
+        )
+
+        return Menu {
             Menu {
                 let runtimes = selectableRuntimes
                 if runtimes.isEmpty {
@@ -331,19 +379,43 @@ struct ComposerToolbar: View {
             }
         } label: {
             runtimeStatusLabel(style: .full)
-            .foregroundStyle(isRunning ? Stanford.lagunita : Stanford.coolGrey)
-            .padding(.horizontal, compact ? 8 : 10)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(isRunning ? 0.06 : 0.04))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke((isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.15 : 0.08), lineWidth: 1)
-            )
+                .foregroundStyle(runtimePillColor)
         }
-        .help(runtimeStatusHelp)
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .padding(.horizontal, compact ? 9 : ComposerToolbarPresentation.chipHorizontalPadding)
+        .padding(.vertical, ComposerToolbarPresentation.chipVerticalPadding)
+        .background(runtimePillBackground)
+        .clipShape(shape)
+        .overlay(
+            shape.stroke(runtimePillStroke, lineWidth: 1)
+        )
+        .help(runtimeStatusHelp)
+    }
+
+    private var runtimePillColor: Color {
+        switch taskStatus {
+        case .some(.failed), .some(.budgetExceeded):
+            return Stanford.failed
+        case .some(.pendingUser):
+            return Stanford.poppy
+        default:
+            return isRunning ? Stanford.lagunita : Stanford.coolGrey
+        }
+    }
+
+    private var runtimePillBackground: Color {
+        Color.clear
+    }
+
+    private var runtimePillStroke: Color {
+        switch taskStatus {
+        case .some(.failed), .some(.budgetExceeded), .some(.pendingUser):
+            return runtimePillColor.opacity(0.16)
+        default:
+            return (isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.15 : 0.08)
+        }
     }
 
     private enum RuntimeStatusLabelStyle {
@@ -360,19 +432,19 @@ struct ComposerToolbar: View {
                     .frame(width: 14, height: 14)
             } else {
                 Image(systemName: "cpu")
-                    .font(Stanford.ui(11))
+                    .font(Stanford.ui(ComposerToolbarPresentation.chipIconSize))
             }
 
             switch style {
             case .full:
                 Text(runtimeStatusText(includeRuntime: true))
-                    .font(Stanford.chatMeta(12))
+                    .font(Stanford.chatMeta(ComposerToolbarPresentation.chipFontSize))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 260, alignment: .trailing)
             case .medium:
                 Text(runtimeStatusText(includeRuntime: false))
-                    .font(Stanford.chatMeta(12))
+                    .font(Stanford.chatMeta(ComposerToolbarPresentation.chipFontSize))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 180, alignment: .trailing)
@@ -415,23 +487,17 @@ struct ComposerToolbar: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     Image(systemName: currentPolicyLevel.userFacingLevel.symbolName)
-                        .font(Stanford.ui(12))
+                        .font(Stanford.ui(ComposerToolbarPresentation.permissionIconSize))
                     Text(currentPolicyLevel.userFacingLevel.displayName)
-                        .font(Stanford.chatMeta(13))
+                        .font(Stanford.chatMeta(ComposerToolbarPresentation.permissionFontSize))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
                         .font(Stanford.ui(9))
                 }
             }
             .foregroundStyle(policyColor(currentPolicyLevel.userFacingLevel))
-            .padding(.horizontal, compact ? 8 : 10)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.04))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(policyColor(currentPolicyLevel.userFacingLevel).opacity(0.13), lineWidth: 1)
-            )
+            .padding(.horizontal, compact ? 8 : ComposerToolbarPresentation.permissionHorizontalPadding)
+            .padding(.vertical, ComposerToolbarPresentation.chipVerticalPadding)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -723,9 +789,12 @@ struct ComposerToolbar: View {
                     onStop()
                 } label: {
                     Image(systemName: "stop.fill")
-                        .font(Stanford.ui(12, weight: .semibold))
+                        .font(Stanford.ui(ComposerToolbarPresentation.submitIconSize, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
+                        .frame(
+                            width: ComposerToolbarPresentation.submitButtonSize,
+                            height: ComposerToolbarPresentation.submitButtonSize
+                        )
                         .background(Circle().fill(Stanford.cardinalRed))
                 }
                 .buttonStyle(.plain)
@@ -740,9 +809,12 @@ struct ComposerToolbar: View {
                 onSend()
             } label: {
                 Image(systemName: submitSymbolName)
-                    .font(Stanford.ui(13, weight: .semibold))
+                    .font(Stanford.ui(ComposerToolbarPresentation.submitIconSize, weight: .semibold))
                     .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.38))
-                    .frame(width: 30, height: 30)
+                    .frame(
+                        width: ComposerToolbarPresentation.submitButtonSize,
+                        height: ComposerToolbarPresentation.submitButtonSize
+                    )
                     .background(
                         Circle()
                             .fill(canSubmit ? submitColor : Color.primary.opacity(0.065))
@@ -763,9 +835,12 @@ struct ComposerToolbar: View {
                 onSend()
             } label: {
                 Image(systemName: submitSymbolName)
-                    .font(Stanford.ui(13, weight: .semibold))
+                    .font(Stanford.ui(ComposerToolbarPresentation.submitIconSize, weight: .semibold))
                     .foregroundStyle(canSubmit ? .white : Color.primary.opacity(0.38))
-                    .frame(width: 30, height: 30)
+                    .frame(
+                        width: ComposerToolbarPresentation.submitButtonSize,
+                        height: ComposerToolbarPresentation.submitButtonSize
+                    )
                     .background(
                         Circle()
                             .fill(canSubmit ? submitColor : Color.primary.opacity(0.065))

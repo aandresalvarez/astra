@@ -1,6 +1,45 @@
 import SwiftUI
 import WebKit
 
+enum ShelfBrowserToolbarLayout: Equatable {
+    case regular
+    case compact
+    case stacked
+
+    static let regularMinimumWidth: CGFloat = 560
+    static let compactMinimumWidth: CGFloat = 280
+    static let regularAddressMinimumWidth: CGFloat = 170
+    static let compactAddressMinimumWidth: CGFloat = 108
+
+    var height: CGFloat {
+        switch self {
+        case .regular, .compact:
+            46
+        case .stacked:
+            84
+        }
+    }
+
+    static func resolve(width: CGFloat) -> ShelfBrowserToolbarLayout {
+        if width >= regularMinimumWidth { return .regular }
+        if width >= compactMinimumWidth { return .compact }
+        return .stacked
+    }
+}
+
+private enum ShelfBrowserToolbarNavigationStyle {
+    case full
+    case primaryOnly
+}
+
+private struct ShelfBrowserToolbarWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct ShelfBrowserPanelView: View {
     @ObservedObject var session: ShelfBrowserSession
     @Binding var isPresented: Bool
@@ -11,6 +50,7 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
+    @State private var toolbarLayout = ShelfBrowserToolbarLayout.compact
     // Tracks whether the user has seen the Embedded vs Controlled explanation
     // on the empty browser screen. Persists across sessions so the hint only
     // teaches once per install, not every time the shelf is empty.
@@ -111,23 +151,98 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 6) {
-            navigationButtonGroup
-            engineSwitcher
-            addressField
-                .frame(minWidth: 60)
-                .layoutPriority(1)
-            // The Open button drops its label to icon-only at very narrow widths so
-            // the URL field is the one that gives up space first, not the toolbar.
-            ViewThatFits(in: .horizontal) {
-                goButton(isCompact: false)
-                goButton(isCompact: true)
-            }
-            overflowMenu
-        }
+        toolbarContent(layout: toolbarLayout)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .frame(height: toolbarLayout.height)
+        .frame(maxWidth: .infinity)
         .background(.bar)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ShelfBrowserToolbarWidthPreferenceKey.self,
+                    value: proxy.size.width
+                )
+            }
+        }
+        .onPreferenceChange(ShelfBrowserToolbarWidthPreferenceKey.self) { width in
+            guard width.isFinite && width > 0 else { return }
+            let nextLayout = ShelfBrowserToolbarLayout.resolve(width: width)
+            guard toolbarLayout != nextLayout else { return }
+            toolbarLayout = nextLayout
+        }
+    }
+
+    @ViewBuilder
+    private func toolbarContent(layout: ShelfBrowserToolbarLayout) -> some View {
+        switch layout {
+        case .regular:
+            toolbarRow(
+                navigationStyle: .full,
+                showsFullEngineSwitcher: true,
+                showsModeBadgeInAddress: true,
+                usesCompactGoButton: false,
+                addressMinWidth: ShelfBrowserToolbarLayout.regularAddressMinimumWidth
+            )
+        case .compact:
+            toolbarRow(
+                navigationStyle: .primaryOnly,
+                showsFullEngineSwitcher: false,
+                showsModeBadgeInAddress: false,
+                usesCompactGoButton: true,
+                addressMinWidth: ShelfBrowserToolbarLayout.compactAddressMinimumWidth
+            )
+        case .stacked:
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    primaryNavigationButton
+                    compactEngineMenu
+                    Spacer(minLength: 0)
+                    goButton(isCompact: true)
+                    overflowMenu
+                }
+
+                HStack(spacing: 6) {
+                    addressField(showsModeBadge: false)
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                        .layoutPriority(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func toolbarRow(
+        navigationStyle: ShelfBrowserToolbarNavigationStyle,
+        showsFullEngineSwitcher: Bool,
+        showsModeBadgeInAddress: Bool,
+        usesCompactGoButton: Bool,
+        addressMinWidth: CGFloat
+    ) -> some View {
+        HStack(spacing: 6) {
+            navigationControls(style: navigationStyle)
+            if showsFullEngineSwitcher {
+                engineSwitcher
+            } else {
+                compactEngineMenu
+            }
+            addressField(showsModeBadge: showsModeBadgeInAddress)
+                .frame(minWidth: addressMinWidth, maxWidth: .infinity)
+                .layoutPriority(1)
+            goButton(isCompact: usesCompactGoButton)
+            overflowMenu
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func navigationControls(style: ShelfBrowserToolbarNavigationStyle) -> some View {
+        switch style {
+        case .full:
+            navigationButtonGroup
+        case .primaryOnly:
+            primaryNavigationButton
+        }
     }
 
     private var engineSwitcher: some View {
@@ -163,6 +278,27 @@ struct ShelfBrowserPanelView: View {
         .fixedSize()
     }
 
+    private var compactEngineMenu: some View {
+        Menu {
+            Picker("Browser engine", selection: $session.engine) {
+                ForEach(ShelfBrowserEngine.allCases) { engine in
+                    Label(engine.label, systemImage: engineIcon(for: engine))
+                        .tag(engine)
+                }
+            }
+        } label: {
+            Label(compactEngineLabel(for: session.engine), systemImage: engineIcon(for: session.engine))
+                .labelStyle(.titleAndIcon)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(engineModeTint)
+        }
+        .menuStyle(.button)
+        .buttonStyle(BrowserEngineMenuButtonStyle(tint: engineModeTint))
+        .fixedSize()
+        .help("Browser engine: \(session.engine.label)")
+        .accessibilityLabel("Browser engine: \(session.engine.label)")
+    }
+
     private var navigationButtonGroup: some View {
         HStack(spacing: 1) {
             browserButton("chevron.left", help: session.canGoBack ? "Back" : "No previous page", disabled: !session.canGoBack) {
@@ -183,6 +319,18 @@ struct ShelfBrowserPanelView: View {
         .fixedSize()
     }
 
+    private var primaryNavigationButton: some View {
+        browserButton(
+            navigationControlIcon,
+            help: navigationControlHelp,
+            disabled: navigationControlDisabled,
+            accent: session.isLoading ? Stanford.statusError : nil
+        ) {
+            performNavigationControl()
+        }
+        .fixedSize()
+    }
+
     private var externalBrowserButton: some View {
         browserButton(
             "arrow.up.forward.square",
@@ -193,7 +341,7 @@ struct ShelfBrowserPanelView: View {
         }
     }
 
-    private var addressField: some View {
+    private func addressField(showsModeBadge: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
         return HStack(spacing: 8) {
             Image(systemName: addressFieldIcon)
@@ -202,7 +350,9 @@ struct ShelfBrowserPanelView: View {
                 .frame(width: 14)
                 .animation(.easeOut(duration: 0.18), value: addressFieldIcon)
 
-            engineModeBadge
+            if showsModeBadge {
+                engineModeBadge
+            }
 
             TextField("Search or enter website", text: $addressText)
                 .textFieldStyle(.plain)
@@ -1672,6 +1822,29 @@ private struct BrowserBarButtonContent: View {
         if configuration.isPressed { return Color.primary.opacity(0.14) }
         if isHovered { return Color.primary.opacity(0.07) }
         return .clear
+    }
+}
+
+private struct BrowserEngineMenuButtonStyle: ButtonStyle {
+    let tint: Color
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
+        configuration.label
+            .padding(.horizontal, 9)
+            .frame(minHeight: 30)
+            .background(shape.fill(backgroundFill(isPressed: configuration.isPressed)))
+            .overlay(shape.stroke(tint.opacity(0.16), lineWidth: 1))
+            .contentShape(shape)
+            .opacity(isEnabled ? 1 : 0.55)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+
+    private func backgroundFill(isPressed: Bool) -> Color {
+        if isPressed { return tint.opacity(0.16) }
+        return tint.opacity(0.10)
     }
 }
 

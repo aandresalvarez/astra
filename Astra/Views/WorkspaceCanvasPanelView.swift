@@ -1,6 +1,76 @@
 import SwiftData
 import SwiftUI
 
+enum PlanShelfPresentation {
+    static let showsTopSummaryChips = false
+    static let metadataIsInlineUnderTitle = true
+    static let usesCardChromeForCollapsedStepRows = false
+    static let usesRowDividers = true
+    static let showsStepActionsOnlyWhenExpanded = true
+    static let showsStatusBadgesOnlyForExceptionalStates = true
+    static let addStepUsesBorderedChrome = false
+    static let approvalNoticeUsesCardChrome = false
+    static let footerUsesBarBackground = false
+
+    static func showsRowDivider(
+        rowIndex: Int,
+        groupCount: Int,
+        usesRowDividers: Bool = Self.usesRowDividers
+    ) -> Bool {
+        usesRowDividers && rowIndex < groupCount - 1
+    }
+}
+
+enum PlanShelfStepGroupKind: String, CaseIterable, Identifiable, Equatable {
+    case current
+    case next
+    case done
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .current:
+            return "Current"
+        case .next:
+            return "Next"
+        case .done:
+            return "Done"
+        }
+    }
+}
+
+struct PlanShelfGroupedStep: Identifiable, Equatable {
+    let originalIndex: Int
+    let step: TaskPlanStep
+
+    var id: String { step.id }
+}
+
+struct PlanShelfStepGroup: Identifiable, Equatable {
+    let kind: PlanShelfStepGroupKind
+    let steps: [PlanShelfGroupedStep]
+
+    var id: PlanShelfStepGroupKind { kind }
+}
+
+enum PlanShelfStepGrouping {
+    static func groups(for steps: [TaskPlanStep]) -> [PlanShelfStepGroup] {
+        let indexed = steps.enumerated().map { index, step in
+            PlanShelfGroupedStep(originalIndex: index, step: step)
+        }
+        let current = indexed.filter { $0.step.status == .running || $0.step.status == .blocked }
+        let next = indexed.filter { $0.step.status == .pending }
+        let done = indexed.filter { $0.step.status == .done || $0.step.status == .skipped }
+
+        return [
+            PlanShelfStepGroup(kind: .current, steps: current),
+            PlanShelfStepGroup(kind: .next, steps: next),
+            PlanShelfStepGroup(kind: .done, steps: done)
+        ].filter { !$0.steps.isEmpty }
+    }
+}
+
 struct WorkspaceCanvasPanelView: View {
     let selectedTask: AgentTask?
     @Binding var isPresented: Bool
@@ -95,8 +165,10 @@ struct WorkspaceCanvasPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            if PlanShelfPresentation.showsTopSummaryChips {
+                header
+                Divider()
+            }
             if let sourcePlan {
                 planCanvas(sourcePlan)
             } else if shouldShowPlanLoadingState {
@@ -170,7 +242,7 @@ struct WorkspaceCanvasPanelView: View {
             }
 
             // Footer only appears in edit mode where local edit actions are useful.
-            // Read-only states inline their status text under the plan header chips
+            // Read-only states inline their status text under the plan metadata
             // so the bottom bar isn't just informational chrome.
             if canEditPlan {
                 Divider()
@@ -181,7 +253,7 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var planHeader: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             if canEditPlan {
                 TextField("Plan title", text: planTitleBinding)
                     .textFieldStyle(.plain)
@@ -205,19 +277,13 @@ struct WorkspaceCanvasPanelView: View {
                 }
             }
 
-            HStack(spacing: 6) {
-                permissionModePill
-                if isTaskRunning {
-                    canvasChip("Running", color: Stanford.poppy)
-                } else {
-                    canvasChip(planState.lifecycleStatus.rawValue.capitalized)
-                }
-                if isReadOnlyAndTerminal, !readOnlyFooterMessage.isEmpty {
-                    Text(readOnlyFooterMessage)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+            planMetaLine
+
+            if isReadOnlyAndTerminal, !readOnlyFooterMessage.isEmpty {
+                Text(readOnlyFooterMessage)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
     }
@@ -248,21 +314,64 @@ struct WorkspaceCanvasPanelView: View {
                     .font(Stanford.ui(8, weight: .bold))
                     .opacity(0.7)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
             .foregroundStyle(Stanford.lagunita)
-            .background(Stanford.lagunita.opacity(0.12))
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Stanford.lagunita.opacity(Stanford.strokeRest), lineWidth: 1))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .buttonStyle(.plain)
         .fixedSize()
         .help("Choose whether the plan runs automatically or pauses for review.")
     }
 
+    private var planMetaLine: some View {
+        HStack(spacing: 6) {
+            if let draft = currentDraft {
+                Label(stepCountLabel(for: draft.steps.count), systemImage: "list.number")
+                    .labelStyle(.titleAndIcon)
+            }
+            metaSeparator
+            permissionModePill
+            metaSeparator
+            Text(planLifecycleLabel)
+                .font(Stanford.caption(10).weight(.semibold))
+        }
+        .font(Stanford.caption(10).weight(.semibold))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    private var metaSeparator: some View {
+        Text("·")
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(.secondary.opacity(0.65))
+    }
+
+    private func stepCountLabel(for count: Int) -> String {
+        count == 1 ? "1 step" : "\(count) steps"
+    }
+
+    private var planLifecycleLabel: String {
+        if isTaskRunning { return "In progress" }
+        switch planState.lifecycleStatus {
+        case .none:
+            return "No plan"
+        case .draft:
+            return "Draft"
+        case .approved:
+            return "Approved"
+        case .executing:
+            return "In progress"
+        case .completed:
+            return "Completed"
+        case .failed:
+            return "Needs retry"
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+
     // True when the plan is in a state where the old footer's read-only message used to
-    // appear. Used to inline that message under the status chip instead of taking a
+    // appear. Used to inline that message under the plan metadata instead of taking a
     // dedicated footer row.
     private var isReadOnlyAndTerminal: Bool {
         if isTaskRunning { return true }
@@ -294,9 +403,9 @@ struct WorkspaceCanvasPanelView: View {
     private func approvalNotice(text: String) -> some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: "checkmark.seal.fill")
-                .font(Stanford.ui(14, weight: .semibold))
+                .font(Stanford.ui(12, weight: .semibold))
                 .foregroundStyle(Stanford.paloAltoGreen)
-                .frame(width: 18, height: 18)
+                .frame(width: 16, height: 16)
 
             Text(text)
                 .font(Stanford.caption(12))
@@ -305,21 +414,44 @@ struct WorkspaceCanvasPanelView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(10)
-        .background(stepRowShape.fill(Stanford.cardBackground.opacity(0.36)))
-        .overlay(stepRowShape.strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+        .padding(.vertical, 2)
     }
 
     private var stepList: some View {
         let steps = currentDraft?.steps ?? []
         let expandedID = effectiveExpandedStepID(for: steps)
+        let groups = PlanShelfStepGrouping.groups(for: steps)
 
-        return VStack(spacing: 5) {
-            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                planStepRow(index: index, step: step, isExpanded: step.id == expandedID)
+        return VStack(alignment: .leading, spacing: 12) {
+            ForEach(groups) { group in
+                planStepGroup(group, expandedID: expandedID)
             }
         }
         .animation(stepDisclosureAnimation, value: expandedID)
+    }
+
+    private func planStepGroup(_ group: PlanShelfStepGroup, expandedID: String?) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(group.kind.title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
+
+            ForEach(Array(group.steps.enumerated()), id: \.element.id) { rowIndex, groupedStep in
+                planStepRow(
+                    index: groupedStep.originalIndex,
+                    step: groupedStep.step,
+                    isExpanded: groupedStep.step.id == expandedID
+                )
+
+                if PlanShelfPresentation.showsRowDivider(rowIndex: rowIndex, groupCount: group.steps.count) {
+                    Divider()
+                        .overlay(Color.primary.opacity(0.055))
+                        .padding(.leading, 42)
+                }
+            }
+        }
     }
 
     private func planStepRow(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {
@@ -339,14 +471,10 @@ struct WorkspaceCanvasPanelView: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, isExpanded ? 9 : 7)
-        .background(stepRowShape.fill(stepRowFill(for: step, isExpanded: isExpanded)))
-        .overlay(
-            stepRowShape
-                .strokeBorder(stepRowStroke(for: step, isExpanded: isExpanded), lineWidth: 1)
-        )
+        .padding(.vertical, isExpanded ? 10 : 8)
+        .background(stepRowBackground(for: step, isExpanded: isExpanded))
         .overlay(alignment: .leading) {
-            if isExpanded, step.status != .pending {
+            if shouldShowStepAccent(step, isExpanded: isExpanded) {
                 Capsule()
                     .fill(color(for: step.status))
                     .frame(width: 3)
@@ -370,7 +498,9 @@ struct WorkspaceCanvasPanelView: View {
                                 .font(Stanford.caption(13).weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            statusBadge(for: step.status)
+                            if shouldShowStatusBadge(for: step.status) {
+                                statusBadge(for: step.status)
+                            }
                         }
 
                         HStack(spacing: 5) {
@@ -394,7 +524,7 @@ struct WorkspaceCanvasPanelView: View {
             }
             .buttonStyle(.plain)
 
-            if isStepEditable(step) {
+            if isExpanded, isStepEditable(step) {
                 stepActionsMenu(index: index, step: step)
             }
         }
@@ -410,7 +540,9 @@ struct WorkspaceCanvasPanelView: View {
                 .lineLimit(2)
 
             Spacer(minLength: 8)
-            statusBadge(for: step.status)
+            if shouldShowStatusBadge(for: step.status) {
+                statusBadge(for: step.status)
+            }
             stepActionsMenu(index: index, step: step)
         }
     }
@@ -473,20 +605,17 @@ struct WorkspaceCanvasPanelView: View {
             addStep()
         } label: {
             HStack(spacing: 7) {
-                Spacer(minLength: 0)
                 Image(systemName: "plus")
                     .font(Stanford.caption(12).weight(.semibold))
                 Text("Add step")
                     .font(Stanford.caption(12).weight(.semibold))
-                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .contentShape(stepRowShape)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(Stanford.lagunita)
-        .background(stepRowShape.fill(Stanford.cardBackground.opacity(0.26)))
-        .overlay(stepRowShape.strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
         .disabled(!canEditPlan)
     }
 
@@ -512,8 +641,7 @@ struct WorkspaceCanvasPanelView: View {
         }
         .controlSize(.small)
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(.bar)
+        .padding(.vertical, 10)
     }
 
     private var readOnlyFooterMessage: String {
@@ -638,26 +766,33 @@ struct WorkspaceCanvasPanelView: View {
         return step.likelyTools.joined(separator: ", ")
     }
 
-    private var stepRowShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-    }
-
     private var fieldShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
     }
 
-    private func stepRowFill(for step: TaskPlanStep, isExpanded: Bool) -> Color {
-        if step.status == .blocked {
-            return isExpanded ? Stanford.cardBackground.opacity(0.62) : Stanford.cardBackground.opacity(0.38)
+    private func stepRowBackground(for step: TaskPlanStep, isExpanded: Bool) -> Color {
+        guard isExpanded else { return Color.clear }
+        switch step.status {
+        case .running:
+            return Stanford.lagunita.opacity(0.035)
+        case .blocked:
+            return Stanford.poppy.opacity(0.035)
+        case .pending, .done, .skipped:
+            return Color.primary.opacity(0.018)
         }
-        return isExpanded ? Stanford.cardBackground.opacity(0.72) : Stanford.cardBackground.opacity(0.42)
     }
 
-    private func stepRowStroke(for step: TaskPlanStep, isExpanded: Bool) -> Color {
-        if step.status == .blocked {
-            return Stanford.poppy.opacity(isExpanded ? 0.28 : 0.16)
+    private func shouldShowStepAccent(_ step: TaskPlanStep, isExpanded: Bool) -> Bool {
+        isExpanded && (step.status == .running || step.status == .blocked)
+    }
+
+    private func shouldShowStatusBadge(for status: TaskPlanStepStatus) -> Bool {
+        switch status {
+        case .running, .blocked:
+            true
+        case .pending, .done, .skipped:
+            false
         }
-        return Color.primary.opacity(isExpanded ? 0.16 : 0.08)
     }
 
     private func stepNumberBadge(index: Int, step: TaskPlanStep, isExpanded: Bool) -> some View {

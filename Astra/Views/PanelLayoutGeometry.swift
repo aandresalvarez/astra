@@ -31,6 +31,7 @@ enum PanelLayoutGeometry {
     static let filesShelfMinimumPreviewWidth: CGFloat = 260
     static let filesShelfMinReadableWidth: CGFloat =
         filesShelfNavigatorDefaultWidth + filesShelfResizeHandleWidth + filesShelfMinimumPreviewWidth
+    static let browserShelfMinWidth: CGFloat = 360
 
     /// Returns true when the window is narrow enough that having both the sidebar
     /// AND a right-side panel open at once would cramp the detail area.

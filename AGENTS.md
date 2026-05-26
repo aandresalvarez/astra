@@ -54,6 +54,12 @@ Keep changes focused. Prefer the app's existing SwiftUI and service patterns.
 After implementing, run the narrowest meaningful test first, then broaden as
 risk increases.
 
+For UI and design work, read `docs/design-system/lean-ui-system.md` first. It
+captures ASTRA's lean operational design language: one card boundary, grouped
+status, scan-first rows, progressive disclosure, and inline editing only after
+expansion. Use it as the baseline unless the target surface clearly needs a
+different pattern.
+
 Common checks:
 
 ```bash

@@ -86,6 +86,104 @@ struct CapabilityRailPresentationTests {
     func compactRowsReserveSpaceForTitleAndSubtitle() {
         #expect(CapabilityRailLayout.minimumTwoLineRowHeight > 34)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
-        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) > 34)
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= 64)
+        #expect(CapabilityRailLayout.summaryRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
+        #expect(CapabilityRailLayout.setupRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
+    }
+
+    @Test("capability groups use full section width without nested table chrome")
+    func capabilityGroupsUseFullSectionWidthWithoutNestedTableChrome() {
+        #expect(CapabilityRailLayout.usesNestedGroupChrome == false)
+        #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: true) == 0)
+        #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: false) == 0)
+    }
+
+    @Test("workspace context panel uses simple semantic icons")
+    func workspaceContextPanelUsesSimpleSemanticIcons() {
+        #expect(WorkspaceContextIconography.headerIcon == "info.circle")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Bigquery Analyst", fallback: "puzzlepiece") == "cylinder.split.1x2")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Read-Only", fallback: "lock.shield") == "eye")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Safe Bash", fallback: "shield") == "terminal")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Google Cloud", fallback: "cloud") == "cloud")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Untitled Capability", fallback: "  ") == "puzzlepiece.extension")
+    }
+
+    @Test("capability rail treats adding as an action, not an available-count section")
+    func capabilityRailTreatsAddingAsActionNotAvailableCountSection() {
+        #expect(CapabilityRailSectionPresentation.sectionTitle == "Capabilities")
+        #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
+        #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
+        #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
+        #expect(CapabilityRailSectionPresentation.addActionShowsPlusIcon == false)
+        #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
+        #expect(CapabilityRailSectionPresentation.showsBrowseLibraryFooter == false)
+        #expect(!CapabilityRailSectionPresentation.addActionSubtitle.localizedCaseInsensitiveContains("available"))
+    }
+
+    @Test("capability rail summarizes ready capabilities without expanding the inventory")
+    func capabilityRailSummarizesReadyCapabilitiesWithoutExpandingInventory() {
+        #expect(CapabilityRailSectionPresentation.readySummaryTitle(count: 1) == "1 ready capability")
+        #expect(CapabilityRailSectionPresentation.readySummaryTitle(count: 6) == "6 ready capabilities")
+        #expect(
+            CapabilityRailSectionPresentation.previewList([
+                "Google Cloud",
+                "Bigquery Analyst",
+                "Code Reviewer",
+                "Read-Only",
+                "Safe Bash",
+                "Test Runner"
+            ]) == "Google Cloud, Bigquery Analyst, Code Reviewer +3"
+        )
+    }
+
+    @Test("capability health omits low value top summary metrics")
+    func capabilityHealthOmitsLowValueTopSummaryMetrics() {
+        #expect(CapabilityRailSectionPresentation.showsTopHealthSummaryMetrics == false)
+    }
+
+    @Test("attention group header stays neutral because row pill carries setup state")
+    func attentionGroupHeaderStaysNeutralBecauseRowPillCarriesSetupState() {
+        #expect(CapabilityRailSectionPresentation.attentionGroupShowsWarningIcon == false)
+        #expect(CapabilityRailSectionPresentation.attentionGroupUsesWarningTint == false)
+    }
+
+    @Test("workspace setup checklist summary stays compact")
+    func workspaceSetupChecklistSummaryStaysCompact() {
+        #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
+        #expect(WorkspaceSetupChecklistPresentation.summary(configured: 1, total: 4) == "1 of 4 configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.configured.label == "Configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.missing.label == "Missing")
+    }
+
+    @Test("workspace setup rows disclose configuration details inline")
+    func workspaceSetupRowsDiscloseConfigurationDetailsInline() {
+        #expect(WorkspaceSetupChecklistPresentation.sectionTitle == "Workspace setup")
+        #expect(WorkspaceSetupChecklistPresentation.missingGroupTitle == "Needs setup")
+        #expect(WorkspaceSetupChecklistPresentation.configuredGroupTitle == "Configured")
+        #expect(WorkspaceSetupChecklistPresentation.supportsInlineExpansion == true)
+        #expect(WorkspaceSetupChecklistPresentation.supportsInlineEditing == true)
+        #expect(WorkspaceSetupChecklistPresentation.supportsMemoryRemoval == true)
+        #expect(WorkspaceSetupChecklistPresentation.supportsFolderRemoval == true)
+        #expect(WorkspaceSetupChecklistPresentation.usesCapabilitySummaryRowPattern == true)
+        #expect(WorkspaceSetupChecklistPresentation.showsPerRowStatusInCollapsedState == false)
+        #expect(WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon == "chevron.right")
+        #expect(WorkspaceSetupChecklistPresentation.expandedDisclosureIcon == "chevron.down")
+        #expect(WorkspaceSetupChecklistPresentation.detailPreviewLimit == 4)
+        #expect(
+            WorkspaceSetupChecklistPresentation.overflowSummary(
+                total: 6,
+                visible: 4,
+                singular: "folder",
+                plural: "folders"
+            ) == "2 more folders"
+        )
+        #expect(
+            WorkspaceSetupChecklistPresentation.overflowSummary(
+                total: 1,
+                visible: 1,
+                singular: "folder",
+                plural: "folders"
+            ) == nil
+        )
     }
 }
