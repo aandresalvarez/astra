@@ -95,4 +95,14 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: true) == 0)
         #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: false) == 0)
     }
+
+    @Test("workspace context panel uses simple semantic icons")
+    func workspaceContextPanelUsesSimpleSemanticIcons() {
+        #expect(WorkspaceContextIconography.headerIcon == "info.circle")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Bigquery Analyst", fallback: "puzzlepiece") == "cylinder.split.1x2")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Read-Only", fallback: "lock.shield") == "eye")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Safe Bash", fallback: "shield") == "terminal")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Google Cloud", fallback: "cloud") == "cloud")
+        #expect(WorkspaceContextIconography.capabilityIcon(name: "Untitled Capability", fallback: "  ") == "puzzlepiece.extension")
+    }
 }

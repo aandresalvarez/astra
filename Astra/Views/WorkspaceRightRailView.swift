@@ -59,6 +59,26 @@ enum CapabilityRailLayout {
     }
 }
 
+enum WorkspaceContextIconography {
+    static let headerIcon = "info.circle"
+
+    static func capabilityIcon(name: String, fallback: String) -> String {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("bigquery") {
+            return "cylinder.split.1x2"
+        }
+        if normalized.contains("read-only") || normalized.contains("read only") {
+            return "eye"
+        }
+        if normalized.contains("safe bash") {
+            return "terminal"
+        }
+        return fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "puzzlepiece.extension"
+            : fallback
+    }
+}
+
 struct WorkspaceRightRailView: View {
     let workspace: Workspace
     let onConfigure: () -> Void
@@ -250,7 +270,7 @@ struct WorkspaceRightRailView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "rectangle.stack.badge.person.crop")
+            Image(systemName: WorkspaceContextIconography.headerIcon)
                 .font(Stanford.ui(14, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
@@ -658,7 +678,7 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityRow(_ item: RailCapabilityItem) -> some View {
         CapabilityRailRow(
-            icon: item.icon,
+            icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
             color: item.color,

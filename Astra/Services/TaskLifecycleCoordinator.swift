@@ -502,7 +502,7 @@ final class TaskLifecycleCoordinator {
         for (sName, sIcon, sAllowed, sBlocked, sBehavior) in [
             ("Read-Only", "eye", ["Read", "Glob", "Grep"], ["Write", "Edit", "Bash"],
              "Do not create, modify, or delete any files."),
-            ("Safe Bash", "shield", Skill.defaultAllowed, [String](),
+            ("Safe Bash", "terminal", Skill.defaultAllowed, [String](),
              "Never run rm, sudo, curl, pip install, npm install, or any destructive/network commands."),
             ("Test Runner", "checkmark.seal", ["Read", "Bash", "Glob", "Grep"], ["Write", "Edit"],
              "Use Bash only to run test commands. Do not modify source code.")
@@ -660,7 +660,7 @@ final class TaskLifecycleCoordinator {
             disallowedTools: ["Write", "Edit", "Bash"],
             behaviorInstructions: "You must not create, modify, or delete any files. Only read and analyze."
         )
-        readOnly.icon = "lock.shield"
+        readOnly.icon = "eye"
         readOnly.skillDescription = "Restricts agent to read-only file access"
         readOnly.workspace = workspace
 
@@ -680,7 +680,7 @@ final class TaskLifecycleCoordinator {
             disallowedTools: [],
             behaviorInstructions: "Never run rm, sudo, curl, pip install, npm install, or any destructive/network commands in Bash."
         )
-        safeBash.icon = "shield"
+        safeBash.icon = "terminal"
         safeBash.skillDescription = "Allows all tools but restricts dangerous Bash commands"
         safeBash.workspace = workspace
 
