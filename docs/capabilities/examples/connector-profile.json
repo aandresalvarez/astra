@@ -1,0 +1,87 @@
+{
+  "author": "Local",
+  "browserAdapters": [],
+  "category": "Data",
+  "connectors": [
+    {
+      "authMethod": "bearer",
+      "baseURL": "https://api.example.com",
+      "configHints": [
+        {
+          "hint": "Default project or workspace identifier.",
+          "isList": false,
+          "key": "EXAMPLE_PROJECT"
+        }
+      ],
+      "credentialHints": [
+        {
+          "hint": "API token stored in Keychain after setup.",
+          "key": "EXAMPLE_API_TOKEN"
+        }
+      ],
+      "description": "Example HTTPS API connector profile.",
+      "icon": "network",
+      "name": "Example API",
+      "notes": "Credentials are entered during capability setup, not stored in JSON.",
+      "serviceType": "example_api"
+    }
+  ],
+  "description": "Example connector-backed capability.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "connectorCredentials",
+      "network",
+      "externalService"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Connector package pending local review.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "medium",
+    "visibility": "adminOnly"
+  },
+  "icon": "network",
+  "id": "local.example-api",
+  "localTools": [],
+  "mcpServers": [],
+  "name": "Example API",
+  "prerequisites": [],
+  "setupGuide": "Enter the API token and project value when enabling this package.",
+  "skills": [
+    {
+      "allowedTools": [
+        "Read",
+        "Bash"
+      ],
+      "behaviorInstructions": "Use the connector environment shown by ASTRA. Never print or save the API token.",
+      "customTools": [],
+      "description": "Example API behavior.",
+      "disallowedTools": [],
+      "environmentKeys": [],
+      "environmentValues": [],
+      "icon": "network",
+      "name": "Example API"
+    }
+  ],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "api",
+    "connector"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

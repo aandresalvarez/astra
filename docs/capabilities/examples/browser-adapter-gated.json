@@ -1,0 +1,49 @@
+{
+  "author": "Local",
+  "browserAdapters": [
+    "github"
+  ],
+  "category": "Browser",
+  "connectors": [],
+  "description": "Enable ASTRA's built-in GitHub browser adapter for a workspace.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "authenticatedBrowserContent"
+    ],
+    "externalEffects": [
+      "browserNavigation"
+    ],
+    "policyNotes": "Browser adapter package pending local review.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "high",
+    "visibility": "adminOnly"
+  },
+  "icon": "globe",
+  "id": "local.github-browser-adapter",
+  "localTools": [],
+  "mcpServers": [],
+  "name": "GitHub Browser Adapter",
+  "prerequisites": [],
+  "setupGuide": "This package gates an ASTRA-known browser adapter. It does not define new native browser behavior.",
+  "skills": [],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "browser",
+    "github"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

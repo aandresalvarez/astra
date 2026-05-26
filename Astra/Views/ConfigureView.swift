@@ -413,7 +413,7 @@ struct CapabilityCreationWizardView: View {
     }
 
     var workspace: Workspace
-    var onCreated: (PluginPackage, Bool) -> Void
+    var onCreated: (PluginPackage, Bool, URL?) -> Void
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
@@ -439,6 +439,7 @@ struct CapabilityCreationWizardView: View {
     @State private var draftConnectorConfigLines = ""
     @State private var allowedTools = "Read, Grep"
     @State private var installEnabled = true
+    @State private var saveSourceJSON = true
 
     private var availableTools: [LocalTool] {
         uniqueTools(workspace.localTools + globalTools)
@@ -459,6 +460,10 @@ struct CapabilityCreationWizardView: View {
          !selectedDetectedCLIIDs.isEmpty ||
          !selectedConnectorIDs.isEmpty ||
          !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var sourceExportDirectory: URL? {
+        CapabilityPackageSourceExporter.defaultSourceDirectory()
     }
 
     var body: some View {
@@ -712,9 +717,19 @@ struct CapabilityCreationWizardView: View {
             Toggle("Install in app-local capability library", isOn: .constant(true))
                 .disabled(true)
             Toggle("Enable in this workspace", isOn: $installEnabled)
+            Toggle("Save source JSON", isOn: Binding(
+                get: { saveSourceJSON && sourceExportDirectory != nil },
+                set: { saveSourceJSON = $0 }
+            ))
+            .disabled(sourceExportDirectory == nil)
             HStack(spacing: 6) {
                 ConfigureCardChip(title: CapabilityLibrary.capabilitiesDirectory().lastPathComponent, color: ConfigureTab.capabilities.color)
                 ConfigureCardChip(title: workspace.name)
+                if let sourceExportDirectory {
+                    ConfigureCardChip(title: sourceExportDirectory.lastPathComponent, color: ConfigureTab.capabilities.color)
+                } else {
+                    ConfigureCardChip(title: "No source library", color: Stanford.poppy)
+                }
             }
         }
     }
@@ -731,6 +746,7 @@ struct CapabilityCreationWizardView: View {
             validationRow("Connectors", "\(selectedConnectorIDs.count) selected")
             validationRow("Behavior", behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "None" : "Ready")
             validationRow("Scope", installEnabled ? "Install and enable here" : "Install only")
+            validationRow("Source JSON", sourceExportDirectory == nil ? "Unavailable" : (saveSourceJSON ? "Save" : "Skip"))
         }
     }
 
@@ -850,7 +866,14 @@ struct CapabilityCreationWizardView: View {
             prerequisites: prerequisites
         )
 
-        onCreated(package, installEnabled)
+        let sourceURL: URL?
+        if saveSourceJSON, let sourceExportDirectory {
+            sourceURL = CapabilityPackageSourceExporter.packageURL(for: package, in: sourceExportDirectory)
+        } else {
+            sourceURL = nil
+        }
+
+        onCreated(package, installEnabled, sourceURL)
         dismiss()
     }
 

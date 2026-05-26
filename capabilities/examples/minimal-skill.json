@@ -1,0 +1,67 @@
+{
+  "author": "Local",
+  "browserAdapters": [],
+  "category": "Custom",
+  "connectors": [],
+  "description": "Read-only behavior instructions for local review work.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "workspaceFiles"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Local read-only skill package pending review.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "low",
+    "visibility": "adminOnly"
+  },
+  "icon": "eye",
+  "id": "local.library-minimal-skill",
+  "localTools": [],
+  "mcpServers": [],
+  "name": "Library Minimal Skill",
+  "prerequisites": [],
+  "setupGuide": "Review and approve this package before enabling it in a workspace.",
+  "skills": [
+    {
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ],
+      "behaviorInstructions": "Stay read-only. Summarize findings with file paths and avoid editing files.",
+      "customTools": [],
+      "description": "Read-only workspace review behavior.",
+      "disallowedTools": [
+        "Write",
+        "Edit",
+        "MultiEdit"
+      ],
+      "environmentKeys": [],
+      "environmentValues": [],
+      "icon": "eye",
+      "name": "Library Minimal Skill"
+    }
+  ],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "read-only",
+    "review"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}
