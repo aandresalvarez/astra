@@ -88,4 +88,11 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) > 34)
     }
+
+    @Test("capability groups use full section width without nested table chrome")
+    func capabilityGroupsUseFullSectionWidthWithoutNestedTableChrome() {
+        #expect(CapabilityRailLayout.usesNestedGroupChrome == false)
+        #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: true) == 0)
+        #expect(CapabilityRailLayout.groupHorizontalPadding(isCompact: false) == 0)
+    }
 }

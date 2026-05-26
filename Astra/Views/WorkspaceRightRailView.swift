@@ -32,6 +32,7 @@ private enum CapabilityRailGroupStyle: Equatable {
 enum CapabilityRailLayout {
     static let compactRowMinHeight: CGFloat = 48
     static let regularRowMinHeight: CGFloat = 50
+    static let usesNestedGroupChrome = false
     static let titleLineHeight: CGFloat = 17
     static let subtitleLineHeight: CGFloat = 16
     static let titleSubtitleSpacing: CGFloat = 2
@@ -43,6 +44,18 @@ enum CapabilityRailLayout {
 
     static func rowMinHeight(isCompact: Bool) -> CGFloat {
         isCompact ? compactRowMinHeight : regularRowMinHeight
+    }
+
+    static func groupHorizontalPadding(isCompact _: Bool) -> CGFloat {
+        0
+    }
+
+    static func dividerLeadingPadding(isCompact _: Bool) -> CGFloat {
+        25
+    }
+
+    static func dividerTrailingPadding(isCompact _: Bool) -> CGFloat {
+        0
     }
 }
 
@@ -402,6 +415,7 @@ struct WorkspaceRightRailView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func capabilityAvailabilitySummary(_ snapshot: CapabilityRailSnapshot) -> some View {
@@ -578,6 +592,7 @@ struct WorkspaceRightRailView: View {
             capabilityGroupHeader(title, count: count, style: style)
             capabilityRows(items, style: style)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func capabilityRows(_ items: [RailCapabilityItem], style: CapabilityRailGroupStyle) -> some View {
@@ -590,18 +605,22 @@ struct WorkspaceRightRailView: View {
                 if index < items.count - 1 {
                     Divider()
                         .opacity(0.34)
-                        .padding(.leading, isCompact ? 34 : 38)
-                        .padding(.trailing, isCompact ? 8 : 10)
+                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                        .padding(.trailing, CapabilityRailLayout.dividerTrailingPadding(isCompact: isCompact))
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            shape.fill(capabilityGroupFill(style))
+            if CapabilityRailLayout.usesNestedGroupChrome {
+                shape.fill(capabilityGroupFill(style))
+            }
         }
         .overlay {
-            shape.stroke(capabilityGroupStroke(style), lineWidth: 1)
+            if CapabilityRailLayout.usesNestedGroupChrome {
+                shape.stroke(capabilityGroupStroke(style), lineWidth: 1)
+            }
         }
-        .clipShape(shape)
     }
 
     private func capabilityGroupTint(_ style: CapabilityRailGroupStyle) -> Color {
@@ -650,7 +669,8 @@ struct WorkspaceRightRailView: View {
             isCompact: isCompact,
             onOpen: { openCapabilityConfiguration(item) }
         )
-        .padding(.horizontal, isCompact ? 8 : 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, CapabilityRailLayout.groupHorizontalPadding(isCompact: isCompact))
         .padding(.vertical, isCompact ? 1 : 2)
     }
 
@@ -2592,7 +2612,11 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
-            .frame(minHeight: CapabilityRailLayout.rowMinHeight(isCompact: isCompact), alignment: .leading)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: CapabilityRailLayout.rowMinHeight(isCompact: isCompact),
+                alignment: .leading
+            )
         }
         .buttonStyle(.plain)
         .help(subtitle.isEmpty ? "Open details" : subtitle)
