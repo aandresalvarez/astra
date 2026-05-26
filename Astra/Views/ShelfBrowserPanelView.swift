@@ -25,6 +25,14 @@ enum ShelfBrowserToolbarLayout: Equatable {
     }
 }
 
+private struct ShelfBrowserToolbarWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct ShelfBrowserPanelView: View {
     @ObservedObject var session: ShelfBrowserSession
     @Binding var isPresented: Bool
@@ -35,6 +43,7 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
+    @State private var toolbarLayout = ShelfBrowserToolbarLayout.regular
     // Tracks whether the user has seen the Embedded vs Controlled explanation
     // on the empty browser screen. Persists across sessions so the hint only
     // teaches once per install, not every time the shelf is empty.
@@ -135,17 +144,25 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var toolbar: some View {
-        ViewThatFits(in: .horizontal) {
-            toolbarContent(layout: .regular)
-                .frame(minWidth: ShelfBrowserToolbarLayout.regularMinimumWidth)
-            toolbarContent(layout: .compact)
-                .frame(minWidth: ShelfBrowserToolbarLayout.compactMinimumWidth)
-            toolbarContent(layout: .stacked)
-                .frame(minWidth: 260)
-        }
+        toolbarContent(layout: toolbarLayout)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .frame(height: toolbarLayout.height)
+        .frame(maxWidth: .infinity)
         .background(.bar)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ShelfBrowserToolbarWidthPreferenceKey.self,
+                    value: proxy.size.width
+                )
+            }
+        }
+        .onPreferenceChange(ShelfBrowserToolbarWidthPreferenceKey.self) { width in
+            let nextLayout = ShelfBrowserToolbarLayout.resolve(width: width)
+            guard toolbarLayout != nextLayout else { return }
+            toolbarLayout = nextLayout
+        }
     }
 
     @ViewBuilder
@@ -181,6 +198,7 @@ struct ShelfBrowserPanelView: View {
                         .layoutPriority(1)
                 }
             }
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -198,11 +216,12 @@ struct ShelfBrowserPanelView: View {
                 compactEngineMenu
             }
             addressField(showsModeBadge: showsModeBadgeInAddress)
-                .frame(minWidth: addressMinWidth)
+                .frame(minWidth: addressMinWidth, maxWidth: .infinity)
                 .layoutPriority(1)
             goButton(isCompact: usesCompactGoButton)
             overflowMenu
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var engineSwitcher: some View {
