@@ -30,13 +30,15 @@ private enum CapabilityRailGroupStyle: Equatable {
 }
 
 enum CapabilityRailLayout {
-    static let compactRowMinHeight: CGFloat = 48
-    static let regularRowMinHeight: CGFloat = 50
+    static let compactRowMinHeight: CGFloat = 64
+    static let regularRowMinHeight: CGFloat = 68
+    static let summaryRowMinHeight: CGFloat = 72
+    static let setupRowMinHeight: CGFloat = 64
     static let usesNestedGroupChrome = false
-    static let titleLineHeight: CGFloat = 17
-    static let subtitleLineHeight: CGFloat = 16
-    static let titleSubtitleSpacing: CGFloat = 2
-    static let textVerticalBreathingRoom: CGFloat = 8
+    static let titleLineHeight: CGFloat = 20
+    static let subtitleLineHeight: CGFloat = 17
+    static let titleSubtitleSpacing: CGFloat = 3
+    static let textVerticalBreathingRoom: CGFloat = 14
 
     static var minimumTwoLineRowHeight: CGFloat {
         titleLineHeight + subtitleLineHeight + titleSubtitleSpacing + textVerticalBreathingRoom
@@ -51,7 +53,7 @@ enum CapabilityRailLayout {
     }
 
     static func dividerLeadingPadding(isCompact _: Bool) -> CGFloat {
-        25
+        40
     }
 
     static func dividerTrailingPadding(isCompact _: Bool) -> CGFloat {
@@ -60,9 +62,10 @@ enum CapabilityRailLayout {
 }
 
 enum CapabilityRailSectionPresentation {
-    static let addActionTitle = "+ Add"
+    static let addActionTitle = "Add"
+    static let addActionSubtitle = "Browse library"
     static let addActionHelp = "Browse capability library"
-    static let browseLibraryCommandTitle = "+ Browse capability library"
+    static let browseLibraryCommandTitle = "Browse capability library"
     static let showsAvailableToAddCount = false
 
     static func readySummaryTitle(count: Int) -> String {
@@ -268,23 +271,23 @@ struct WorkspaceRightRailView: View {
     }
 
     private var contentPadding: CGFloat {
-        isCompact ? 12 : Stanford.railContentPadding
+        isCompact ? 16 : Stanford.railContentPadding
     }
 
     private var contentListSpacing: CGFloat {
-        isCompact ? 4 : Stanford.railListSpacing
+        isCompact ? 8 : Stanford.railListSpacing
     }
 
     private var capabilityGroupSpacing: CGFloat {
-        isCompact ? 8 : 10
+        isCompact ? 16 : 18
     }
 
     private var panelSpacing: CGFloat {
-        isCompact ? 12 : Stanford.railPanelSpacing
+        isCompact ? 16 : Stanford.railPanelSpacing
     }
 
     private var sectionContentSpacing: CGFloat {
-        isCompact ? 8 : Stanford.railSectionContentSpacing
+        isCompact ? 14 : Stanford.railSectionContentSpacing
     }
 
     private var disclosureAnimation: Animation? {
@@ -315,18 +318,18 @@ struct WorkspaceRightRailView: View {
     // MARK: - Workspace Identity Anchor
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: WorkspaceContextIconography.headerIcon)
-                .font(Stanford.ui(14, weight: .semibold))
+                .font(Stanford.ui(18, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+                .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Workspace Context")
-                    .font(Stanford.ui(13, weight: .semibold))
+                    .font(Stanford.ui(18, weight: .semibold))
                     .lineLimit(1)
                 Text(workspace.name)
-                    .font(Stanford.caption(11))
+                    .font(Stanford.caption(13))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -346,9 +349,9 @@ struct WorkspaceRightRailView: View {
                 .accessibilityLabel("Close Workspace Context")
             }
         }
-        .padding(.top, isCompact ? 9 : 10)
-        .padding(.horizontal, isCompact ? 12 : 14)
-        .padding(.bottom, isCompact ? 8 : 9)
+        .padding(.top, isCompact ? 14 : 16)
+        .padding(.horizontal, isCompact ? 18 : 20)
+        .padding(.bottom, isCompact ? 14 : 16)
     }
 
     // MARK: - Unified Configure Panel
@@ -393,7 +396,7 @@ struct WorkspaceRightRailView: View {
         let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
 
         return content()
-            .padding(isCompact ? 12 : 14)
+            .padding(isCompact ? 18 : 20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(shape.fill(floatingSectionFill))
             .overlay {
@@ -434,19 +437,21 @@ struct WorkspaceRightRailView: View {
         summary: String? = nil,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .top, spacing: 10) {
             Text(title)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(Stanford.ui(17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .layoutPriority(1)
 
             if let summary {
                 Text(summary)
-                    .font(Stanford.caption(10).weight(.medium))
+                    .font(Stanford.caption(12).weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.05))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.055))
                     .clipShape(Capsule())
             }
 
@@ -459,9 +464,23 @@ struct WorkspaceRightRailView: View {
     private var capabilityAddButton: some View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
-                Text(CapabilityRailSectionPresentation.addActionTitle)
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(Stanford.ui(17, weight: .medium))
+                        .frame(width: 18, alignment: .center)
+
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(CapabilityRailSectionPresentation.addActionTitle)
+                            .font(Stanford.ui(15, weight: .semibold))
+                            .lineLimit(1)
+
+                        Text(CapabilityRailSectionPresentation.addActionSubtitle)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .foregroundStyle(Stanford.lagunita)
             }
             .buttonStyle(.plain)
             .help(CapabilityRailSectionPresentation.addActionHelp)
@@ -472,14 +491,19 @@ struct WorkspaceRightRailView: View {
     private func capabilityHealthSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
         HStack(spacing: 8) {
             CapabilityHealthMetric(
+                icon: "exclamationmark.triangle.fill",
                 title: "\(snapshot.needsSetupCount) needs setup",
                 color: snapshot.needsSetupCount > 0 ? Stanford.poppy : .secondary
             )
+            CapabilityHealthDivider()
             CapabilityHealthMetric(
-                title: CapabilityRailSectionPresentation.readySummaryTitle(count: snapshot.readyItems.count),
+                icon: "checkmark.circle",
+                title: "\(snapshot.readyItems.count) ready",
                 color: .secondary
             )
+            CapabilityHealthDivider()
             CapabilityHealthMetric(
+                icon: "doc.text",
                 title: "\(snapshot.draftItems.count) \(snapshot.draftItems.count == 1 ? "draft" : "drafts")",
                 color: .secondary
             )
@@ -539,6 +563,26 @@ struct WorkspaceRightRailView: View {
         CapabilityRailSectionPresentation.previewList(items.map { capabilityDisplayName($0.name) })
     }
 
+    private func capabilitySummaryIcon(for style: CapabilityRailGroupStyle) -> String {
+        switch style {
+        case .attention:
+            return "exclamationmark.triangle.fill"
+        case .ready:
+            return "cloud"
+        case .draft:
+            return "doc.text"
+        }
+    }
+
+    private func capabilitySummaryTint(for style: CapabilityRailGroupStyle) -> Color {
+        switch style {
+        case .attention:
+            return Stanford.poppy
+        case .ready, .draft:
+            return Stanford.lagunita
+        }
+    }
+
     private func capabilitySummaryGroup(
         _ title: String,
         items: [RailCapabilityItem],
@@ -547,7 +591,7 @@ struct WorkspaceRightRailView: View {
         summaryTitle: String,
         summarySubtitle: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 4 : 5) {
+        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             capabilityGroupHeader(title, count: items.count, style: style)
 
             if isExpanded.wrappedValue {
@@ -566,9 +610,11 @@ struct WorkspaceRightRailView: View {
                 .buttonStyle(.plain)
             } else {
                 CapabilitySummaryRow(
+                    icon: capabilitySummaryIcon(for: style),
+                    iconColor: capabilitySummaryTint(for: style),
                     title: summaryTitle,
                     subtitle: summarySubtitle,
-                    actionTitle: "Show all",
+                    actionTitle: style == .ready ? "Show all" : nil,
                     action: {
                         withAnimation(disclosureAnimation) {
                             isExpanded.wrappedValue = true
@@ -585,18 +631,18 @@ struct WorkspaceRightRailView: View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
                 HStack(spacing: 8) {
-                    Image(systemName: "plus.circle")
-                        .font(Stanford.ui(11, weight: .semibold))
+                    Image(systemName: "plus")
+                        .font(Stanford.ui(15, weight: .semibold))
                         .foregroundStyle(Stanford.lagunita)
-                        .frame(width: 16)
+                        .frame(width: 24)
 
                     Text(CapabilityRailSectionPresentation.browseLibraryCommandTitle)
-                        .font(Stanford.caption(11).weight(.medium))
+                        .font(Stanford.ui(14, weight: .semibold))
                         .foregroundStyle(Stanford.lagunita)
 
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 3)
+                .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -702,28 +748,25 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityGroupHeader(
         _ title: String,
-        count: Int,
+        count _: Int,
         style: CapabilityRailGroupStyle
     ) -> some View {
         let tint = capabilityGroupTint(style)
 
-        return HStack(spacing: 6) {
+        return HStack(spacing: 8) {
             if style == .attention {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(Stanford.ui(9, weight: .semibold))
+                    .font(Stanford.ui(12, weight: .semibold))
                     .foregroundStyle(tint)
             }
 
             Text(title)
-                .font(Stanford.caption(10).weight(.semibold))
+                .font(Stanford.caption(13).weight(.semibold))
                 .foregroundStyle(style == .attention ? tint : .secondary)
-
-            RailCountBadge(count: count)
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     private func capabilityGroup(
@@ -732,7 +775,7 @@ struct WorkspaceRightRailView: View {
         style: CapabilityRailGroupStyle,
         items: [RailCapabilityItem]
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 4 : 5) {
+        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             capabilityGroupHeader(title, count: count, style: style)
             capabilityRows(items, style: style)
         }
@@ -801,7 +844,9 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityRow(_ item: RailCapabilityItem) -> some View {
-        CapabilityRailRow(
+        let isHighlighted = item.readiness.level == .needsAttention
+
+        return CapabilityRailRow(
             icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
@@ -815,7 +860,16 @@ struct WorkspaceRightRailView: View {
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, CapabilityRailLayout.groupHorizontalPadding(isCompact: isCompact))
-        .padding(.vertical, isCompact ? 1 : 2)
+        .padding(.leading, isHighlighted ? 14 : 0)
+        .padding(.vertical, isCompact ? 3 : 4)
+        .overlay(alignment: .leading) {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Stanford.poppy)
+                    .frame(width: 2, height: 52)
+                    .padding(.leading, 2)
+            }
+        }
     }
 
     private var enabledPackageCount: Int {
@@ -1561,60 +1615,64 @@ struct WorkspaceRightRailView: View {
         actionTitle: String?,
         action: (() -> Void)?
     ) -> some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .medium))
+                .font(Stanford.ui(16, weight: .medium))
                 .foregroundStyle(setupChecklistIconColor(for: state))
-                .frame(width: 16)
+                .frame(width: 26)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(Stanford.caption(12).weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Text(state.label)
-                        .font(Stanford.caption(10).weight(.medium))
-                        .foregroundStyle(setupChecklistStatusColor(for: state))
-                        .lineLimit(1)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
                 Text(subtitle)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.tertiary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .layoutPriority(1)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
+
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(setupChecklistStatusColor(for: state))
+                    .frame(width: 6, height: 6)
+
+                Text(state.label)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(setupChecklistStatusColor(for: state))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(minWidth: 68, alignment: .leading)
 
             if let actionTitle, let action {
                 Button(action: action) {
                     Text(actionTitle)
-                        .font(Stanford.caption(11).weight(.medium))
+                        .font(Stanford.caption(12).weight(.medium))
                         .foregroundStyle(Stanford.lagunita)
+                        .lineLimit(1)
                 }
                 .buttonStyle(.plain)
+                .frame(width: 28, alignment: .trailing)
             }
         }
-        .padding(.vertical, 7)
+        .frame(minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .center)
         .contentShape(Rectangle())
     }
 
     private func checklistDivider() -> some View {
         Divider()
             .opacity(0.22)
-            .padding(.leading, 24)
+            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
     }
 
-    private func setupChecklistIconColor(for state: WorkspaceSetupChecklistPresentation.State) -> Color {
-        switch state {
-        case .configured:
-            return Stanford.lagunita
-        case .missing:
-            return .secondary
-        }
+    private func setupChecklistIconColor(for _: WorkspaceSetupChecklistPresentation.State) -> Color {
+        Stanford.lagunita
     }
 
     private func setupChecklistStatusColor(for state: WorkspaceSetupChecklistPresentation.State) -> Color {
@@ -1622,7 +1680,7 @@ struct WorkspaceRightRailView: View {
         case .configured:
             return Stanford.paloAltoGreen
         case .missing:
-            return .secondary
+            return Stanford.poppy
         }
     }
 
@@ -2346,56 +2404,83 @@ private struct RailCountBadge: View {
 }
 
 private struct CapabilityHealthMetric: View {
+    let icon: String
     let title: String
     let color: Color
 
     var body: some View {
-        Text(title)
-            .font(Stanford.caption(10).weight(.semibold))
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.82)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.055))
-            .clipShape(Capsule())
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(Stanford.ui(14, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 17)
+
+            Text(title)
+                .font(Stanford.caption(13).weight(.semibold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+    }
+}
+
+private struct CapabilityHealthDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.18))
+            .frame(width: 1, height: 22)
     }
 }
 
 private struct CapabilitySummaryRow: View {
+    let icon: String
+    let iconColor: Color
     let title: String
     let subtitle: String
-    let actionTitle: String
+    let actionTitle: String?
     let action: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(20, weight: .medium))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 40)
 
-                Text(subtitle)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(Stanford.ui(16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(Stanford.caption(13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 10)
+
+                if let actionTitle {
+                    Text(actionTitle)
+                        .font(Stanford.caption(13).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(2)
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
-
-            Spacer(minLength: 8)
-
-            Button(action: action) {
-                Text(actionTitle)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: true))
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
     }
 }
 
@@ -2579,16 +2664,16 @@ private struct CapabilityRailRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 8) {
+            HStack(spacing: 14) {
                 Image(systemName: icon)
-                    .font(Stanford.ui(12, weight: .medium))
+                    .font(Stanford.ui(17, weight: .medium))
                     .foregroundStyle(isEnabled ? color : .secondary)
-                    .frame(width: 17)
+                    .frame(width: 34)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
                         Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.caption(12).weight(.medium))
+                            .font(Stanford.ui(16, weight: .semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .layoutPriority(1)
@@ -2603,7 +2688,7 @@ private struct CapabilityRailRow: View {
                     }
 
                     Text(subtitle.isEmpty ? "No details" : subtitle)
-                        .font(Stanford.caption(11))
+                        .font(Stanford.caption(13))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -2612,8 +2697,8 @@ private struct CapabilityRailRow: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "chevron.right")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.quaternary)
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Color.secondary.opacity(0.65))
             }
             .contentShape(Rectangle())
             .frame(
@@ -2633,12 +2718,12 @@ private struct CapabilityStatusBadge: View {
 
     var body: some View {
         Text(title)
-            .font(Stanford.caption(10).weight(.medium))
+            .font(Stanford.caption(12).weight(.medium))
             .foregroundStyle(color)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
             .background(color.opacity(0.07))
             .clipShape(Capsule())
     }

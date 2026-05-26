@@ -86,7 +86,9 @@ struct CapabilityRailPresentationTests {
     func compactRowsReserveSpaceForTitleAndSubtitle() {
         #expect(CapabilityRailLayout.minimumTwoLineRowHeight > 34)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
-        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) > 34)
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= 64)
+        #expect(CapabilityRailLayout.summaryRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
+        #expect(CapabilityRailLayout.setupRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
     }
 
     @Test("capability groups use full section width without nested table chrome")
@@ -108,9 +110,10 @@ struct CapabilityRailPresentationTests {
 
     @Test("capability rail treats adding as an action, not an available-count section")
     func capabilityRailTreatsAddingAsActionNotAvailableCountSection() {
-        #expect(CapabilityRailSectionPresentation.addActionTitle == "+ Add")
+        #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
+        #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
         #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
-        #expect(CapabilityRailSectionPresentation.browseLibraryCommandTitle == "+ Browse capability library")
+        #expect(CapabilityRailSectionPresentation.browseLibraryCommandTitle == "Browse capability library")
         #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
         #expect(!CapabilityRailSectionPresentation.browseLibraryCommandTitle.localizedCaseInsensitiveContains("available"))
     }
