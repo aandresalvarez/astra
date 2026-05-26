@@ -29,6 +29,23 @@ private enum CapabilityRailGroupStyle: Equatable {
     case draft
 }
 
+enum CapabilityRailLayout {
+    static let compactRowMinHeight: CGFloat = 48
+    static let regularRowMinHeight: CGFloat = 50
+    static let titleLineHeight: CGFloat = 17
+    static let subtitleLineHeight: CGFloat = 16
+    static let titleSubtitleSpacing: CGFloat = 2
+    static let textVerticalBreathingRoom: CGFloat = 8
+
+    static var minimumTwoLineRowHeight: CGFloat {
+        titleLineHeight + subtitleLineHeight + titleSubtitleSpacing + textVerticalBreathingRoom
+    }
+
+    static func rowMinHeight(isCompact: Bool) -> CGFloat {
+        isCompact ? compactRowMinHeight : regularRowMinHeight
+    }
+}
+
 struct WorkspaceRightRailView: View {
     let workspace: Workspace
     let onConfigure: () -> Void
@@ -2575,7 +2592,7 @@ private struct CapabilityRailRow: View {
                     .foregroundStyle(.quaternary)
             }
             .contentShape(Rectangle())
-            .frame(height: isCompact ? 34 : 37, alignment: .leading)
+            .frame(minHeight: CapabilityRailLayout.rowMinHeight(isCompact: isCompact), alignment: .leading)
         }
         .buttonStyle(.plain)
         .help(subtitle.isEmpty ? "Open details" : subtitle)

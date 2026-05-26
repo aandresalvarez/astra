@@ -81,4 +81,11 @@ struct CapabilityRailPresentationTests {
         #expect(presentation.scopeValues == ["Enabled for this workspace"])
         #expect(presentation.rowSubtitle == "Capability available to tasks")
     }
+
+    @Test("compact capability rows reserve space for title and subtitle")
+    func compactRowsReserveSpaceForTitleAndSubtitle() {
+        #expect(CapabilityRailLayout.minimumTwoLineRowHeight > 34)
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) > 34)
+    }
 }

@@ -24,6 +24,14 @@ enum PanelLayoutGeometry {
     /// Margin kept around the slide-over inspector on narrow detail areas.
     static let inspectorOverlayHorizontalMargin: CGFloat = 12
 
+    /// Default split inside the Files shelf. The shelf's outer minimum must
+    /// keep this navigator and the preview pane readable together.
+    static let filesShelfNavigatorDefaultWidth: CGFloat = 282
+    static let filesShelfResizeHandleWidth: CGFloat = 8
+    static let filesShelfMinimumPreviewWidth: CGFloat = 260
+    static let filesShelfMinReadableWidth: CGFloat =
+        filesShelfNavigatorDefaultWidth + filesShelfResizeHandleWidth + filesShelfMinimumPreviewWidth
+
     /// Returns true when the window is narrow enough that having both the sidebar
     /// AND a right-side panel open at once would cramp the detail area.
     static func isCompactPanelLayout(width: CGFloat) -> Bool {
@@ -101,6 +109,21 @@ enum PanelLayoutGeometry {
         let maximumUsableWidth = max(shelfMinWidth, availableWidth - minimumDetailWidth)
         let maximumWidth = min(shelfMaxWidth, maximumUsableWidth)
         return min(max(candidate, shelfMinWidth), maximumWidth)
+    }
+
+    static func shouldDismissShelfResize(
+        proposedWidth: CGFloat,
+        shelfMinWidth: CGFloat
+    ) -> Bool {
+        guard proposedWidth.isFinite, shelfMinWidth > 0 else { return false }
+        return proposedWidth < shelfMinWidth
+    }
+
+    static func filesShelfPreviewWidth(
+        shelfWidth: CGFloat,
+        navigatorWidth: CGFloat = filesShelfNavigatorDefaultWidth
+    ) -> CGFloat {
+        max(0, shelfWidth - navigatorWidth - filesShelfResizeHandleWidth)
     }
 
     /// Computes the detail area width left over after the shelf takes its clamped

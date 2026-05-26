@@ -189,6 +189,32 @@ struct PanelLayoutGeometryTests {
         #expect(clamped == 1_120)
     }
 
+    @Test("Files shelf minimum preserves navigator and preview")
+    func filesShelfMinimumPreservesNavigatorAndPreview() {
+        #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == 550)
+        #expect(PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: 360) < PanelLayoutGeometry.filesShelfMinimumPreviewWidth)
+        #expect(PanelLayoutGeometry.filesShelfPreviewWidth(
+            shelfWidth: PanelLayoutGeometry.filesShelfMinReadableWidth
+        ) == PanelLayoutGeometry.filesShelfMinimumPreviewWidth)
+    }
+
+    @Test("Files shelf drag below minimum dismisses instead of saving a smashed width")
+    func shelfResizeDismissesBelowMinimum() {
+        let minimum = PanelLayoutGeometry.filesShelfMinReadableWidth
+        #expect(PanelLayoutGeometry.shouldDismissShelfResize(
+            proposedWidth: minimum - 0.5,
+            shelfMinWidth: minimum
+        ) == true)
+        #expect(PanelLayoutGeometry.shouldDismissShelfResize(
+            proposedWidth: minimum,
+            shelfMinWidth: minimum
+        ) == false)
+        #expect(PanelLayoutGeometry.shouldDismissShelfResize(
+            proposedWidth: minimum + 40,
+            shelfMinWidth: minimum
+        ) == false)
+    }
+
     // MARK: - cannotFitShelfAndInspector (bug regression: don't pretend three columns fit when they don't)
 
     @Test("Three columns fit comfortably at wide widths")
