@@ -1,6 +1,33 @@
 import AppKit
 import SwiftUI
 
+enum ShelfFileNavigatorContentPresentation: Equatable {
+    case noWorkspacePaths
+    case emptyScope
+    case populatedList
+
+    static func resolve(
+        hasFileRoots: Bool,
+        hasVisibleFileRoots: Bool,
+        isSearchingFiles: Bool
+    ) -> ShelfFileNavigatorContentPresentation {
+        if !hasFileRoots {
+            return .noWorkspacePaths
+        }
+        if !hasVisibleFileRoots && !isSearchingFiles {
+            return .emptyScope
+        }
+        return .populatedList
+    }
+
+    var usesListSurface: Bool {
+        switch self {
+        case .noWorkspacePaths, .emptyScope, .populatedList:
+            true
+        }
+    }
+}
+
 struct ShelfMarkdownPanelView: View {
     private enum FileNavigatorScope: String, CaseIterable, Identifiable {
         case task
@@ -321,63 +348,105 @@ struct ShelfMarkdownPanelView: View {
 
             Divider()
 
-            if fileRoots.isEmpty {
-                ContentUnavailableView {
-                    Label("No workspace paths", systemImage: "folder.badge.questionmark")
-                } description: {
-                    Text("Configure a workspace folder to browse files.")
-                }
-                .font(Stanford.caption(12))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if visibleFileRoots.isEmpty && !isSearchingFiles {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(emptyScopeTitle, systemImage: "folder")
-                        .font(Stanford.caption(12).weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Text(emptyScopeMessage)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if isSearchingFiles {
-                            searchResultsSection
-                        } else {
-                            ForEach(visibleFileRoots) { root in
-                                fileRootSection(root)
-                            }
-                        }
-
-                        if fileIndexTruncated {
-                            Label("Scanned first \(fileNodes.count) items", systemImage: "exclamationmark.triangle")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(Stanford.poppy)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                        }
-
-                        ForEach(fileIndexErrors, id: \.self) { error in
-                            Label(error.message, systemImage: "exclamationmark.triangle")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(Stanford.poppy)
-                                .lineLimit(2)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .help(error.path)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
+            fileNavigatorContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Stanford.cardBackground.opacity(0.20))
+    }
+
+    private var fileNavigatorContent: some View {
+        fileNavigatorListSurface {
+            switch fileNavigatorContentPresentation {
+            case .noWorkspacePaths:
+                fileNavigatorEmptyState(
+                    title: "No workspace paths",
+                    message: "Configure a workspace folder to browse files.",
+                    systemImage: "folder.badge.questionmark"
+                )
+            case .emptyScope:
+                fileNavigatorEmptyState(
+                    title: emptyScopeTitle,
+                    message: emptyScopeMessage,
+                    systemImage: "folder"
+                )
+            case .populatedList:
+                if isSearchingFiles {
+                    searchResultsSection
+                } else {
+                    ForEach(visibleFileRoots) { root in
+                        fileRootSection(root)
+                    }
+                }
+
+                if fileIndexTruncated {
+                    Label("Scanned first \(fileNodes.count) items", systemImage: "exclamationmark.triangle")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.poppy)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+
+                ForEach(fileIndexErrors, id: \.self) { error in
+                    Label(error.message, systemImage: "exclamationmark.triangle")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.poppy)
+                        .lineLimit(2)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .help(error.path)
+                }
+            }
+        }
+    }
+
+    private var fileNavigatorContentPresentation: ShelfFileNavigatorContentPresentation {
+        ShelfFileNavigatorContentPresentation.resolve(
+            hasFileRoots: !fileRoots.isEmpty,
+            hasVisibleFileRoots: !visibleFileRoots.isEmpty,
+            isSearchingFiles: isSearchingFiles
+        )
+    }
+
+    private func fileNavigatorListSurface<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                content()
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func fileNavigatorEmptyState(
+        title: String,
+        message: String,
+        systemImage: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemImage)
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(message)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
     }
 
     private var searchResultsSection: some View {
