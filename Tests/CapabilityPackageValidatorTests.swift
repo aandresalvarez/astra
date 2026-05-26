@@ -29,6 +29,24 @@ struct CapabilityPackageValidatorTests {
         #expect(report.warnings.map(\.code).contains(.missingGovernance))
     }
 
+    @Test("local package with null governance imports as draft")
+    func localPackageWithNullGovernanceImportsAsDraft() throws {
+        var object = try JSONSerialization.jsonObject(
+            with: encodedData(makePackage(governance: nil))
+        ) as! [String: Any]
+        object["governance"] = NSNull()
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+
+        let report = CapabilityPackageValidator.validate(data: data, checkPrerequisites: false)
+
+        let package = try #require(report.package)
+        #expect(report.canInstall)
+        #expect(package.governance.approvalStatus == .draft)
+        #expect(package.governance.visibility == .adminOnly)
+        #expect(package.governance.requiresAdminApproval)
+        #expect(report.warnings.map(\.code).contains(.missingGovernance))
+    }
+
     @Test("local import resets self approved governance")
     func localImportResetsSelfApprovedGovernance() throws {
         let data = try encodedData(makePackage(
@@ -269,6 +287,24 @@ struct CapabilityPackageImporterTests {
         #expect(files?.filter { $0.pathExtension == "json" }.isEmpty ?? true)
     }
 
+    @Test("unreadable import reports unreadable file")
+    func unreadableImportReportsUnreadableFile() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-import-unreadable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let missingURL = root.appendingPathComponent("missing.json")
+
+        let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+        let importer = CapabilityPackageImporter(library: CapabilityLibrary(directory: libraryRoot))
+
+        let report = importer.validateFile(at: missingURL, checkPrerequisites: false)
+
+        #expect(report.package == nil)
+        #expect(!report.canInstall)
+        #expect(report.blockers.map(\.code) == [.unreadableFile])
+    }
+
     @Test("valid import writes normalized local package")
     func validImportWritesNormalizedLocalPackage() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -462,6 +498,68 @@ struct CapabilityPackageImporterTests {
             includingPropertiesForKeys: nil
         )
         #expect(installedFiles?.isEmpty ?? true)
+    }
+
+    @Test("developer script rejects malformed collection fields without traceback")
+    func developerScriptRejectsMalformedCollectionFieldsWithoutTraceback() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-malformed-collections-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        var object = try JSONSerialization.jsonObject(
+            with: encodedData(makePackage(id: "local.script-malformed-collections-\(UUID().uuidString)", governance: nil))
+        ) as! [String: Any]
+        object["localTools"] = ["not an object"]
+        object["connectors"] = ["not an object"]
+        object["browserAdapters"] = [["not": "a string"]]
+        object["mcpServers"] = ["not an object"]
+        let packageURL = root.appendingPathComponent("package.json")
+        try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            .write(to: packageURL)
+
+        let result = try runCapabilityPackageScript(arguments: ["validate", packageURL.path])
+
+        #expect(result.status != 0)
+        #expect(result.output.contains("malformedJSON"))
+        #expect(!result.output.contains("Traceback"))
+    }
+
+    @Test("developer script reports installed filename collision distinctly")
+    func developerScriptReportsInstalledFilenameCollisionDistinctly() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-installed-collision-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let homeRoot = root.appendingPathComponent("home", isDirectory: true)
+        let devLibrary = homeRoot
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("AstraDev")
+            .appendingPathComponent("Capabilities")
+        try FileManager.default.createDirectory(at: devLibrary, withIntermediateDirectories: true)
+
+        let suffix = UUID().uuidString.lowercased()
+        let existingID = "local-script-collision-\(suffix)"
+        let candidateID = "local.script.collision-\(suffix)"
+        try encodedData(makePackage(id: existingID, governance: nil))
+            .write(to: devLibrary.appendingPathComponent("\(existingID).json"))
+        let candidateURL = root.appendingPathComponent("candidate.json")
+        try encodedData(makePackage(id: candidateID, governance: nil))
+            .write(to: candidateURL)
+
+        let result = try runCapabilityPackageScript(
+            arguments: ["install-dev", candidateURL.path],
+            home: homeRoot
+        )
+
+        #expect(result.status != 0)
+        #expect(result.output.contains("duplicatePackageFilename"))
+        #expect(!result.output.contains("duplicatePackageID"))
+        let installed = try JSONDecoder().decode(
+            PluginPackage.self,
+            from: Data(contentsOf: devLibrary.appendingPathComponent("\(existingID).json"))
+        )
+        #expect(installed.id == existingID)
     }
 
     @Test("developer script install directory rejects duplicate package IDs without partial writes")

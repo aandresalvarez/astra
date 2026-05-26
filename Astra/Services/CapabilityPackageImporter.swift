@@ -38,7 +38,7 @@ struct CapabilityPackageImporter {
                 issues: [
                     CapabilityPackageValidationIssue(
                         severity: .blocker,
-                        code: .malformedJSON,
+                        code: .unreadableFile,
                         title: "Unreadable package",
                         message: "ASTRA could not read \(url.lastPathComponent).",
                         component: url.lastPathComponent

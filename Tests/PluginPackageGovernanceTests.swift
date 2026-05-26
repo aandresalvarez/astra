@@ -151,6 +151,59 @@ struct PluginPackageGovernanceTests {
         #expect(fields["requires_explicit_user_consent"] == "false")
     }
 
+    @Test("Import failure audit fields include package and source context")
+    @MainActor
+    func importFailureAuditFieldsIncludePackageAndSourceContext() {
+        let workspace = Workspace(name: "Audit Import", primaryPath: "/tmp/audit-import")
+        let package = PluginPackage(
+            id: "local.audit-import",
+            name: "Audit Import",
+            icon: "puzzlepiece.extension",
+            description: "Package for import audit tests",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.2.3",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        let report = CapabilityPackageValidationReport(
+            package: package,
+            sourceURL: URL(fileURLWithPath: "/tmp/audit-import/source.json"),
+            issues: [
+                CapabilityPackageValidationIssue(
+                    severity: .blocker,
+                    code: .duplicatePackageID,
+                    title: "Package already installed",
+                    message: "Duplicate package",
+                    component: package.id
+                )
+            ]
+        )
+
+        let fields = CapabilityAudit.importJSONFailureFields(
+            report: report,
+            workspace: workspace,
+            traceID: "trace-123",
+            result: "validation_blocked",
+            errorType: "CapabilityPackageImportError"
+        )
+
+        #expect(fields["source"] == "import_json")
+        #expect(fields["trace_id"] == "trace-123")
+        #expect(fields["result"] == "validation_blocked")
+        #expect(fields["package_id"] == package.id)
+        #expect(fields["package_name"] == package.name)
+        #expect(fields["package_version"] == package.version)
+        #expect(fields["source_json_file"] == "source.json")
+        #expect(fields["source_json_path"] == "/tmp/audit-import/source.json")
+        #expect(fields["blocker_count"] == "1")
+        #expect(fields["error_type"] == "CapabilityPackageImportError")
+    }
+
     @Test("Approved built-in resources declare explicit governance")
     @MainActor
     func approvedBuiltInResourcesDeclareGovernance() throws {

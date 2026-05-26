@@ -440,6 +440,7 @@ struct CapabilityCreationWizardView: View {
     @State private var allowedTools = "Read, Grep"
     @State private var installEnabled = true
     @State private var saveSourceJSON = true
+    @State private var sourceExportDirectory: URL? = CapabilityPackageSourceExporter.defaultSourceDirectory()
 
     private var availableTools: [LocalTool] {
         uniqueTools(workspace.localTools + globalTools)
@@ -460,10 +461,6 @@ struct CapabilityCreationWizardView: View {
          !selectedDetectedCLIIDs.isEmpty ||
          !selectedConnectorIDs.isEmpty ||
          !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    }
-
-    private var sourceExportDirectory: URL? {
-        CapabilityPackageSourceExporter.defaultSourceDirectory()
     }
 
     var body: some View {

@@ -76,6 +76,44 @@ def issue(severity: str, code: str, message: str) -> dict:
     return {"severity": severity, "code": code, "message": message}
 
 
+def list_field(package: dict, key: str, issues: list[dict]) -> list:
+    value = package.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        issues.append(issue("BLOCKER", "malformedJSON", f"{key} must be a list."))
+        return []
+    return value
+
+
+def object_items(items: list, key: str, issues: list[dict]):
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            issues.append(issue("BLOCKER", "malformedJSON", f"{key}[{index}] must be an object."))
+            continue
+        yield item
+
+
+def string_items(items: list, key: str, issues: list[dict]):
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            issues.append(issue("BLOCKER", "malformedJSON", f"{key}[{index}] must be a string."))
+            continue
+        yield item
+
+
+def installed_collision_issue(target: Path, package_id: str) -> dict:
+    try:
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        existing_id = existing.get("id") if isinstance(existing, dict) else None
+    except (OSError, json.JSONDecodeError):
+        existing_id = None
+
+    if existing_id == package_id:
+        return issue("BLOCKER", "duplicatePackageID", f"{package_id} is already installed in the development capability library.")
+    return issue("BLOCKER", "duplicatePackageFilename", f"{package_id} maps to an installed capability filename already owned by {existing_id or 'an unreadable package'}.")
+
+
 def discover_package_paths(path: Path) -> list[Path]:
     if directory_mode:
         if not path.is_dir():
@@ -147,22 +185,30 @@ def validate_package(path: Path) -> dict:
     if not isinstance(raw_version, str) or raw_version != version or not SEMVER.match(version):
         issues.append(issue("BLOCKER", "invalidVersion", f"Package version {version or '<empty>'} is not semantic."))
 
-    if "governance" not in package:
+    if "governance" not in package or package.get("governance") is None:
         issues.append(issue("WARNING", "missingGovernance", "Package will be imported as draft, admin-only, and requiring local review."))
     else:
-        governance = package.get("governance") or {}
-        if governance.get("approvalStatus") != "draft" or governance.get("visibility") != "adminOnly" or governance.get("requiresAdminApproval") is not True:
+        governance = package.get("governance")
+        if not isinstance(governance, dict):
+            issues.append(issue("BLOCKER", "malformedJSON", "governance must be an object."))
+        elif governance.get("approvalStatus") != "draft" or governance.get("visibility") != "adminOnly" or governance.get("requiresAdminApproval") is not True:
             issues.append(issue("WARNING", "approvalReset", "Local imports cannot approve themselves; approval will be reset to draft."))
 
     source = package.get("sourceMetadata")
     if source != {"id": "local", "displayName": "Local Capability Library", "kind": "local", "trustLevel": "local"}:
         issues.append(issue("WARNING", "localSourceNormalized", "Imported package source will be set to local."))
 
-    payload_count = sum(len(package.get(key) or []) for key in ("skills", "connectors", "localTools", "mcpServers", "templates", "browserAdapters"))
+    skills = list_field(package, "skills", issues)
+    connectors = list_field(package, "connectors", issues)
+    local_tools = list_field(package, "localTools", issues)
+    mcp_servers = list_field(package, "mcpServers", issues)
+    templates = list_field(package, "templates", issues)
+    browser_adapters = list_field(package, "browserAdapters", issues)
+    payload_count = sum(len(items) for items in (skills, connectors, local_tools, mcp_servers, templates, browser_adapters))
     if payload_count == 0:
         issues.append(issue("WARNING", "emptyPayload", "Package declares no installable payload."))
 
-    for tool in package.get("localTools") or []:
+    for tool in object_items(local_tools, "localTools", issues):
         name = str(tool.get("name") or tool.get("command") or "local tool")
         command = str(tool.get("command") or "").strip()
         arguments = str(tool.get("arguments") or "").strip()
@@ -177,8 +223,11 @@ def validate_package(path: Path) -> dict:
         if arguments and has_shell_meta(arguments, SHELL_META_ARGUMENTS):
             issues.append(issue("BLOCKER", "unsafeLocalTool", f"{name} arguments contain shell metacharacters."))
 
-    for connector in package.get("connectors") or []:
+    for connector in object_items(connectors, "connectors", issues):
         credential_hints = connector.get("credentialHints") or []
+        if credential_hints and not isinstance(credential_hints, list):
+            issues.append(issue("BLOCKER", "malformedJSON", f"{connector.get('name') or 'connector'} credentialHints must be a list."))
+            continue
         if not credential_hints:
             continue
         base_url = str(connector.get("baseURL") or "").strip()
@@ -189,17 +238,21 @@ def validate_package(path: Path) -> dict:
             name = str(connector.get("name") or connector.get("serviceType") or "connector")
             issues.append(issue("BLOCKER", "unsafeConnector", f"{name} cannot use credentials over remote cleartext HTTP."))
 
-    for adapter in package.get("browserAdapters") or []:
+    for adapter in string_items(browser_adapters, "browserAdapters", issues):
         compact = str(adapter).strip().lower().replace("-", "").replace("_", "").replace(".", "")
         if compact not in KNOWN_BROWSER_ADAPTERS:
             issues.append(issue("BLOCKER", "unknownBrowserAdapter", f"{adapter} is not a known ASTRA browser adapter ID."))
 
-    for server in package.get("mcpServers") or []:
+    for server in object_items(mcp_servers, "mcpServers", issues):
         name = str(server.get("displayName") or server.get("id") or "MCP server")
         transport = str(server.get("transport") or "").lower()
         if transport == "stdio":
             command = str(server.get("command") or "").strip()
-            args = " ".join(str(arg) for arg in (server.get("arguments") or []))
+            raw_args = server.get("arguments") or []
+            if not isinstance(raw_args, list):
+                issues.append(issue("BLOCKER", "malformedJSON", f"{name} arguments must be a list."))
+                raw_args = []
+            args = " ".join(str(arg) for arg in raw_args)
             if not command:
                 issues.append(issue("BLOCKER", "unsafeMCPServer", f"{name} command is missing."))
             elif any(ch.isspace() for ch in command) or has_shell_meta(command, SHELL_META_COMMAND):
@@ -215,7 +268,7 @@ def validate_package(path: Path) -> dict:
     if package_id and install_mode:
         target = DEV_LIBRARY / f"{safe_name}.json"
         if target.exists():
-            issues.append(issue("BLOCKER", "duplicatePackageID", f"{package_id} is already installed in the development capability library."))
+            issues.append(installed_collision_issue(target, package_id))
 
     return {
         "path": path,

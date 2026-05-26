@@ -9,6 +9,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
 
     enum Code: String {
         case malformedJSON
+        case unreadableFile
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
@@ -459,7 +460,7 @@ enum CapabilityPackageValidator {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
         }
-        return object["governance"] == nil
+        return object["governance"] == nil || object["governance"] is NSNull
     }
 
     private static func issue(

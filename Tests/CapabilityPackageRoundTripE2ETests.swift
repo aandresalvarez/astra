@@ -260,6 +260,48 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(approvalStore.records().isEmpty)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
     }
+
+    @Test("create flow does not persist approval if install fails")
+    func createFlowDoesNotPersistApprovalIfInstallFails() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-install-failure-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blockedLibraryURL = root.appendingPathComponent("blocked-library")
+        try Data("not a directory".utf8).write(to: blockedLibraryURL)
+        let library = CapabilityLibrary(directory: blockedLibraryURL)
+        let approvalStore = CapabilityApprovalStore(directory: root.appendingPathComponent("approvals", isDirectory: true))
+        let container = try makeRoundTripContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Install Failure Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        context.insert(workspace)
+
+        let package = roundTripPackage(name: "Install Failure Round Trip")
+        let service = CapabilityPackageCreationService(
+            library: library,
+            sourceExporter: CapabilityPackageSourceExporter(),
+            approvalStore: approvalStore,
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        do {
+            _ = try service.create(
+                package,
+                enableHere: true,
+                sourceURL: nil,
+                workspace: workspace,
+                modelContext: context,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace,
+                    isAdmin: true,
+                    currentAppVersion: SemanticVersion(1, 0, 0),
+                    approvalRecords: []
+                )
+            )
+            Issue.record("Create flow should surface the failed package install.")
+        } catch {
+            #expect(approvalStore.records().isEmpty)
+            #expect(workspace.enabledCapabilityIDs.isEmpty)
+        }
+    }
 }
 
 private func makeRoundTripContainer() throws -> ModelContainer {

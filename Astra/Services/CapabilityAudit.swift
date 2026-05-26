@@ -31,6 +31,39 @@ enum CapabilityAudit {
         return fields
     }
 
+    static func importJSONFailureFields(
+        report: CapabilityPackageValidationReport,
+        workspace: Workspace,
+        traceID: String,
+        result: String,
+        errorType: String? = nil
+    ) -> [String: String] {
+        var fields = workspaceFields(workspace)
+        fields["source"] = "import_json"
+        fields["trace_id"] = traceID
+        fields["result"] = result
+        fields["blocker_count"] = String(report.blockers.count)
+        fields["warning_count"] = String(report.warnings.count)
+        if let sourceURL = report.sourceURL {
+            fields["source_json_path"] = sourceURL.path
+            fields["source_json_file"] = sourceURL.lastPathComponent
+        }
+        if let package = report.package {
+            fields["package_id"] = package.id
+            fields["package_name"] = package.name
+            fields["package_version"] = package.version
+            fields["skills_count"] = String(package.skills.count)
+            fields["connectors_count"] = String(package.connectors.count)
+            fields["tools_count"] = String(package.localTools.count)
+            fields["templates_count"] = String(package.templates.count)
+            fields.merge(governanceFields(package.governance), uniquingKeysWith: { _, new in new })
+        }
+        if let errorType {
+            fields["error_type"] = errorType
+        }
+        return fields
+    }
+
     static func governanceFields(_ governance: CapabilityGovernance) -> [String: String] {
         [
             "approval_status": governance.approvalStatus.rawValue,

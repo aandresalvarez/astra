@@ -1066,6 +1066,17 @@ struct PluginCatalogView: View {
         let traceID = AuditTrace.make("capability-import")
         guard report.canInstall else {
             importError = report.summary
+            AppLogger.audit(
+                .capabilityEnableFailed,
+                category: "Capabilities",
+                fields: CapabilityAudit.importJSONFailureFields(
+                    report: report,
+                    workspace: workspace,
+                    traceID: traceID,
+                    result: "validation_blocked"
+                ),
+                level: .warning
+            )
             return
         }
         do {
@@ -1085,12 +1096,18 @@ struct PluginCatalogView: View {
             ])
         } catch {
             importError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": "import_json",
-                "trace_id": traceID,
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+            AppLogger.audit(
+                .capabilityEnableFailed,
+                category: "Capabilities",
+                fields: CapabilityAudit.importJSONFailureFields(
+                    report: report,
+                    workspace: workspace,
+                    traceID: traceID,
+                    result: "import_failed",
+                    errorType: String(describing: type(of: error))
+                ),
+                level: .error
+            )
         }
     }
 
@@ -1545,8 +1562,16 @@ struct PluginCatalogView: View {
     private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
         let approvalStore = CapabilityApprovalStore()
-        let record = approvalStore.record(for: package)
-        let hasVersionRecord = approvalStore.records().contains {
+        let records = approvalStore.records()
+        let digest = try? CapabilityApprovalDigest.digest(for: package)
+        let record = digest.flatMap { digest in
+            records.last {
+                $0.packageID == package.id &&
+                $0.packageVersion == package.version &&
+                $0.sourceDigest == digest
+            }
+        }
+        let hasVersionRecord = records.contains {
             $0.packageID == package.id && $0.packageVersion == package.version
         }
         let digestLabel = record != nil ? "Digest current" : (hasVersionRecord ? "Changed since approval" : "No local record")

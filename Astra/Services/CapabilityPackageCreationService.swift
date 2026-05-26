@@ -69,7 +69,7 @@ struct CapabilityPackageCreationService {
         }
 
         if enableHere {
-            let approvalRecord = try approvalRecordForImmediateEnablement(
+            let pendingApprovalRecord = try pendingApprovalRecordForImmediateEnablement(
                 package: validatedPackage,
                 workspace: workspace,
                 policyContext: policyContext
@@ -79,9 +79,9 @@ struct CapabilityPackageCreationService {
                 isAdmin: true,
                 approvalRecords: approvalStore.records()
             )
-            if let approvalRecord,
-               !enablePolicyContext.approvalRecords.contains(approvalRecord) {
-                enablePolicyContext.approvalRecords.append(approvalRecord)
+            if let pendingApprovalRecord,
+               !enablePolicyContext.approvalRecords.contains(pendingApprovalRecord) {
+                enablePolicyContext.approvalRecords.append(pendingApprovalRecord)
             }
 
             let installationResult = try installer.install(
@@ -93,6 +93,10 @@ struct CapabilityPackageCreationService {
                 baseURLOverrides: baseURLOverrides,
                 policyContext: enablePolicyContext,
                 traceID: traceID
+            )
+            let approvalRecord = try saveApprovalRecordIfNeeded(
+                pendingApprovalRecord,
+                package: validatedPackage
             )
             return CapabilityPackageCreationResult(
                 package: validatedPackage,
@@ -111,7 +115,7 @@ struct CapabilityPackageCreationService {
         )
     }
 
-    private func approvalRecordForImmediateEnablement(
+    private func pendingApprovalRecordForImmediateEnablement(
         package: PluginPackage,
         workspace: Workspace,
         policyContext: CapabilityCatalogPolicyContext?
@@ -142,12 +146,20 @@ struct CapabilityPackageCreationService {
             throw CapabilityInstaller.InstallationError.blocked(decision.blockerMessages)
         }
 
+        return pendingRecord
+    }
+
+    private func saveApprovalRecordIfNeeded(
+        _ pendingRecord: CapabilityApprovalRecord?,
+        package: PluginPackage
+    ) throws -> CapabilityApprovalRecord? {
+        guard let pendingRecord else { return nil }
         return try approvalStore.save(
             package: package,
-            status: .approved,
+            status: pendingRecord.status,
             approvedBy: pendingRecord.approvedBy,
             reviewNotes: pendingRecord.reviewNotes,
-            approvedAt: approvedAt
+            approvedAt: pendingRecord.approvedAt
         )
     }
 }
