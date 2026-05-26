@@ -303,6 +303,29 @@ struct CapabilityPackageImporterTests {
         #expect(report.package == nil)
         #expect(!report.canInstall)
         #expect(report.blockers.map(\.code) == [.unreadableFile])
+        #expect(report.blockers.first?.message.contains(missingURL.path) == true)
+        #expect(report.blockers.first?.message != "ASTRA could not read \(missingURL.lastPathComponent).")
+    }
+
+    @Test("import overview avoids duplicate summary fallback")
+    func importOverviewAvoidsDuplicateSummaryFallback() {
+        var emptyDescription = makePackage(governance: nil)
+        emptyDescription.description = ""
+        let summary = emptyDescription.contentSummary
+
+        #expect(CapabilityImportPresentation.overviewDescription(
+            for: emptyDescription,
+            contentSummary: summary
+        ) == "No description provided.")
+        #expect(!CapabilityImportPresentation.shouldShowContentSummary(for: emptyDescription))
+
+        var described = emptyDescription
+        described.description = "Human-authored package description."
+        #expect(CapabilityImportPresentation.overviewDescription(
+            for: described,
+            contentSummary: summary
+        ) == "Human-authored package description.")
+        #expect(CapabilityImportPresentation.shouldShowContentSummary(for: described))
     }
 
     @Test("valid import writes normalized local package")

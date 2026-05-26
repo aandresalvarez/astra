@@ -31,7 +31,10 @@ struct CapabilityPackageImporter {
         at url: URL,
         checkPrerequisites: Bool = true
     ) -> CapabilityPackageValidationReport {
-        guard let data = try? Data(contentsOf: url) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
             return CapabilityPackageValidationReport(
                 package: nil,
                 sourceURL: url,
@@ -40,7 +43,7 @@ struct CapabilityPackageImporter {
                         severity: .blocker,
                         code: .unreadableFile,
                         title: "Unreadable package",
-                        message: "ASTRA could not read \(url.lastPathComponent).",
+                        message: "ASTRA could not read \(url.path): \(error.localizedDescription)",
                         component: url.lastPathComponent
                     )
                 ]

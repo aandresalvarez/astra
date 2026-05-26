@@ -192,6 +192,17 @@ private struct CapabilityImportReview: Identifiable {
     }
 }
 
+enum CapabilityImportPresentation {
+    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
+        let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? "No description provided." : description
+    }
+
+    static func shouldShowContentSummary(for package: PluginPackage) -> Bool {
+        !package.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
@@ -2032,7 +2043,10 @@ private struct CapabilityImportReviewSheet: View {
                     Text(package.id)
                         .font(Stanford.ui(12, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    Text(package.description.isEmpty ? importContentSummary(package) : package.description)
+                    Text(CapabilityImportPresentation.overviewDescription(
+                        for: package,
+                        contentSummary: importContentSummary(package)
+                    ))
                         .font(Stanford.body(13))
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2042,9 +2056,11 @@ private struct CapabilityImportReviewSheet: View {
                 importChip(package.governance.approvalStatus.rawValue.capitalized, color: Stanford.poppy)
             }
 
-            Text(importContentSummary(package))
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
+            if CapabilityImportPresentation.shouldShowContentSummary(for: package) {
+                Text(importContentSummary(package))
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
         .background(Color.primary.opacity(0.025))
