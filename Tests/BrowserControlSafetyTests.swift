@@ -442,15 +442,31 @@ struct BrowserControlSafetyTests {
             activeAdapterCount: 1,
             lastFailure: "stale_analysis"
         )
+        let disabled = BrowserBridgeStatusSummary.build(
+            bridgeEnabled: false,
+            hasEndpoint: false,
+            backend: "embedded WebKit",
+            controlledState: "stopped",
+            controlledRunning: false,
+            hasDebugPort: false,
+            activeAdapterCount: 0,
+            lastFailure: "stale_analysis"
+        )
 
         #expect(ready["readiness"] as? String == "ready")
         #expect(ready["debugPort"] as? String == "available")
         #expect(failing["readiness"] as? String == "needs_attention")
         #expect(failing["lastFailure"] as? String == "stale_analysis")
+        #expect(disabled["readiness"] as? String == "disabled")
+        #expect(disabled["bridge"] as? String == "disabled")
     }
 
     @Test("Browser recovery hints attach top-level next command")
     func browserRecoveryHintsAttachTopLevelNextCommand() {
+        let failedAction = BrowserBridgeRecoveryHints.failedActionName(
+            method: "POST",
+            path: "/click"
+        )
         var response: [String: Any] = [
             "ok": false,
             "error": "browser_action_budget_exceeded"
@@ -459,11 +475,12 @@ struct BrowserControlSafetyTests {
         BrowserBridgeRecoveryHints.attach(
             to: &response,
             error: "browser_action_budget_exceeded",
-            action: "POST /click"
+            action: failedAction
         )
 
         #expect(response["nextCommand"] as? String == "astra-browser trace")
         let recovery = response["recovery"] as? [String: Any]
         #expect(recovery?["kind"] as? String == "inspect-trace")
+        #expect(recovery?["failedAction"] as? String == "POST /click")
     }
 }

@@ -1598,8 +1598,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func browserRunGuardResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
         guard isRunGuardedBridgeRequest(request) else { return nil }
+        let path = BrowserBridgeRecoveryHints.failedActionName(
+            method: request.method,
+            path: request.path
+        )
         let decision = browserRunGuard.record(
-            path: "\(request.method) \(request.path)",
+            path: path,
             currentURL: currentURL,
             currentTitle: pageTitle,
             pageType: currentPageTypeLabel()
@@ -1614,7 +1618,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         BrowserBridgeRecoveryHints.attach(
             to: &response,
             error: "browser_action_budget_exceeded",
-            action: request.path
+            action: path
         )
         return response
     }
@@ -1626,7 +1630,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     ) -> [String: Any]? {
         guard isRunGuardedBridgeRequest(request),
               let result else { return nil }
-        let path = "\(request.method) \(request.path)"
+        let path = BrowserBridgeRecoveryHints.failedActionName(
+            method: request.method,
+            path: request.path
+        )
         let after = browserFlightPageSnapshot(result: result)
         let decision = browserRunGuard.recordOutcome(
             path: path,

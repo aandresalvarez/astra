@@ -89,6 +89,10 @@ enum BrowserBridgeActionMetadata {
 }
 
 enum BrowserBridgeRecoveryHints {
+    static func failedActionName(method: String, path: String) -> String {
+        "\(method) \(path)"
+    }
+
     static func attach(
         to response: inout [String: Any],
         error code: String,
@@ -281,12 +285,12 @@ enum BrowserBridgeStatusSummary {
         }
 
         let readiness: String
-        if let lastFailure, !lastFailure.isEmpty {
+        if bridgeState == "disabled" {
+            readiness = "disabled"
+        } else if let lastFailure, !lastFailure.isEmpty {
             readiness = "needs_attention"
         } else if bridgeState == "connected" && (!backend.lowercased().contains("controlled") || controlledRunning) {
             readiness = "ready"
-        } else if bridgeState == "disabled" {
-            readiness = "disabled"
         } else {
             readiness = "degraded"
         }
