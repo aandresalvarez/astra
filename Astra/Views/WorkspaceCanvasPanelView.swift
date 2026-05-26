@@ -11,6 +11,14 @@ enum PlanShelfPresentation {
     static let addStepUsesBorderedChrome = false
     static let approvalNoticeUsesCardChrome = false
     static let footerUsesBarBackground = false
+
+    static func showsRowDivider(
+        rowIndex: Int,
+        groupCount: Int,
+        usesRowDividers: Bool = Self.usesRowDividers
+    ) -> Bool {
+        usesRowDividers && rowIndex < groupCount - 1
+    }
 }
 
 enum PlanShelfStepGroupKind: String, CaseIterable, Identifiable, Equatable {
@@ -437,7 +445,7 @@ struct WorkspaceCanvasPanelView: View {
                     isExpanded: groupedStep.step.id == expandedID
                 )
 
-                if rowIndex < group.steps.count - 1 {
+                if PlanShelfPresentation.showsRowDivider(rowIndex: rowIndex, groupCount: group.steps.count) {
                     Divider()
                         .overlay(Color.primary.opacity(0.055))
                         .padding(.leading, 42)

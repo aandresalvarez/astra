@@ -14,6 +14,14 @@ struct WorkspaceCanvasPanelPresentationTests {
         #expect(PlanShelfPresentation.footerUsesBarBackground == false)
     }
 
+    @Test("plan shelf row dividers follow presentation policy")
+    func planShelfRowDividersFollowPresentationPolicy() {
+        #expect(PlanShelfPresentation.showsRowDivider(rowIndex: 0, groupCount: 3) == true)
+        #expect(PlanShelfPresentation.showsRowDivider(rowIndex: 1, groupCount: 3) == true)
+        #expect(PlanShelfPresentation.showsRowDivider(rowIndex: 2, groupCount: 3) == false)
+        #expect(PlanShelfPresentation.showsRowDivider(rowIndex: 0, groupCount: 3, usesRowDividers: false) == false)
+    }
+
     @Test("plan shelf hides secondary controls until expansion")
     func planShelfHidesSecondaryControlsUntilExpansion() {
         #expect(PlanShelfPresentation.showsStepActionsOnlyWhenExpanded == true)

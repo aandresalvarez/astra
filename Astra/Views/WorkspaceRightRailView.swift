@@ -1691,7 +1691,7 @@ struct WorkspaceRightRailView: View {
 
                         Spacer(minLength: 10)
                     }
-                    .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
