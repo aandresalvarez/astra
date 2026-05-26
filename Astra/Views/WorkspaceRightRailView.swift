@@ -76,6 +76,20 @@ enum CapabilityRailSectionPresentation {
         "\(count) draft \(count == 1 ? "capability" : "capabilities")"
     }
 
+    static func healthSummaryMetrics(
+        needsSetupCount _: Int,
+        readyCount: Int,
+        draftCount: Int
+    ) -> [CapabilityHealthSummaryMetricDescriptor] {
+        [
+            CapabilityHealthSummaryMetricDescriptor(icon: "checkmark.circle", title: "\(readyCount) ready"),
+            CapabilityHealthSummaryMetricDescriptor(
+                icon: "doc.text",
+                title: "\(draftCount) \(draftCount == 1 ? "draft" : "drafts")"
+            )
+        ]
+    }
+
     static func previewList(_ names: [String], limit: Int = 3) -> String {
         let displayNames = names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -87,6 +101,11 @@ enum CapabilityRailSectionPresentation {
         let prefix = visible.joined(separator: ", ")
         return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
     }
+}
+
+struct CapabilityHealthSummaryMetricDescriptor: Equatable {
+    let icon: String
+    let title: String
 }
 
 enum WorkspaceSetupChecklistPresentation {
@@ -489,29 +508,29 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityHealthSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
-        HStack(spacing: 8) {
-            CapabilityHealthMetric(
-                icon: "exclamationmark.triangle.fill",
-                title: "\(snapshot.needsSetupCount) needs setup",
-                color: snapshot.needsSetupCount > 0 ? Stanford.poppy : .secondary
-            )
-            CapabilityHealthDivider()
-            CapabilityHealthMetric(
-                icon: "checkmark.circle",
-                title: "\(snapshot.readyItems.count) ready",
-                color: .secondary
-            )
-            CapabilityHealthDivider()
-            CapabilityHealthMetric(
-                icon: "doc.text",
-                title: "\(snapshot.draftItems.count) \(snapshot.draftItems.count == 1 ? "draft" : "drafts")",
-                color: .secondary
-            )
+        let metrics = CapabilityRailSectionPresentation.healthSummaryMetrics(
+            needsSetupCount: snapshot.needsSetupCount,
+            readyCount: snapshot.readyItems.count,
+            draftCount: snapshot.draftItems.count
+        )
+
+        return HStack(spacing: 8) {
+            ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                if index > 0 {
+                    CapabilityHealthDivider()
+                }
+
+                CapabilityHealthMetric(
+                    icon: metric.icon,
+                    title: metric.title,
+                    color: .secondary
+                )
+            }
 
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(snapshot.needsSetupCount) capabilities need setup, \(snapshot.readyItems.count) ready capabilities, \(snapshot.draftItems.count) draft capabilities")
+        .accessibilityLabel("\(snapshot.needsSetupCount) capabilities require action, \(snapshot.readyItems.count) ready capabilities, \(snapshot.draftItems.count) draft capabilities")
     }
 
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {

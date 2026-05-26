@@ -134,6 +134,19 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("capability health summary does not repeat setup warning")
+    func capabilityHealthSummaryDoesNotRepeatSetupWarning() {
+        let metricTitles = CapabilityRailSectionPresentation.healthSummaryMetrics(
+            needsSetupCount: 1,
+            readyCount: 6,
+            draftCount: 1
+        ).map(\.title)
+
+        #expect(metricTitles == ["6 ready", "1 draft"])
+        #expect(!metricTitles.contains { $0.localizedCaseInsensitiveContains("setup") })
+        #expect(!metricTitles.contains { $0.localizedCaseInsensitiveContains("attention") })
+    }
+
     @Test("workspace setup checklist summary stays compact")
     func workspaceSetupChecklistSummaryStaysCompact() {
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
