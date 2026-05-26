@@ -105,4 +105,37 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceContextIconography.capabilityIcon(name: "Google Cloud", fallback: "cloud") == "cloud")
         #expect(WorkspaceContextIconography.capabilityIcon(name: "Untitled Capability", fallback: "  ") == "puzzlepiece.extension")
     }
+
+    @Test("capability rail treats adding as an action, not an available-count section")
+    func capabilityRailTreatsAddingAsActionNotAvailableCountSection() {
+        #expect(CapabilityRailSectionPresentation.addActionTitle == "+ Add")
+        #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
+        #expect(CapabilityRailSectionPresentation.browseLibraryCommandTitle == "+ Browse capability library")
+        #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
+        #expect(!CapabilityRailSectionPresentation.browseLibraryCommandTitle.localizedCaseInsensitiveContains("available"))
+    }
+
+    @Test("capability rail summarizes ready capabilities without expanding the inventory")
+    func capabilityRailSummarizesReadyCapabilitiesWithoutExpandingInventory() {
+        #expect(CapabilityRailSectionPresentation.readySummaryTitle(count: 1) == "1 ready capability")
+        #expect(CapabilityRailSectionPresentation.readySummaryTitle(count: 6) == "6 ready capabilities")
+        #expect(
+            CapabilityRailSectionPresentation.previewList([
+                "Google Cloud",
+                "Bigquery Analyst",
+                "Code Reviewer",
+                "Read-Only",
+                "Safe Bash",
+                "Test Runner"
+            ]) == "Google Cloud, Bigquery Analyst, Code Reviewer +3"
+        )
+    }
+
+    @Test("workspace setup checklist summary stays compact")
+    func workspaceSetupChecklistSummaryStaysCompact() {
+        #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
+        #expect(WorkspaceSetupChecklistPresentation.summary(configured: 1, total: 4) == "1 of 4 configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.configured.label == "Configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.missing.label == "Missing")
+    }
 }

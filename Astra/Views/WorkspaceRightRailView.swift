@@ -59,6 +59,51 @@ enum CapabilityRailLayout {
     }
 }
 
+enum CapabilityRailSectionPresentation {
+    static let addActionTitle = "+ Add"
+    static let addActionHelp = "Browse capability library"
+    static let browseLibraryCommandTitle = "+ Browse capability library"
+    static let showsAvailableToAddCount = false
+
+    static func readySummaryTitle(count: Int) -> String {
+        "\(count) ready \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    static func draftSummaryTitle(count: Int) -> String {
+        "\(count) draft \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    static func previewList(_ names: [String], limit: Int = 3) -> String {
+        let displayNames = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !displayNames.isEmpty else { return "No details" }
+
+        let visible = displayNames.prefix(limit)
+        let remaining = displayNames.count - visible.count
+        let prefix = visible.joined(separator: ", ")
+        return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
+    }
+}
+
+enum WorkspaceSetupChecklistPresentation {
+    enum State: Equatable {
+        case configured
+        case missing
+
+        var label: String {
+            switch self {
+            case .configured: "Configured"
+            case .missing: "Missing"
+            }
+        }
+    }
+
+    static func summary(configured: Int, total: Int) -> String {
+        configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+}
+
 enum WorkspaceContextIconography {
     static let headerIcon = "info.circle"
 
@@ -117,10 +162,11 @@ struct WorkspaceRightRailView: View {
     @State private var isTemplatesExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
-    @State private var editingMemoryIndex: Int?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
     @State private var scrollMetrics = RightRailScrollMetrics()
+    @State private var isReadyCapabilitiesExpanded = false
+    @State private var isDraftCapabilitiesExpanded = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -311,44 +357,10 @@ struct WorkspaceRightRailView: View {
         let snapshot = capabilityRailSnapshot
 
         return VStack(alignment: .leading, spacing: panelSpacing) {
-            floatingContextSection {
-                collapsibleSectionWithTrailing("Capabilities", isCollapsed: $isCapabilitiesCollapsed) {
-                    HStack(spacing: 10) {
-                        if let onManageCapabilities {
-                            Button {
-                                onManageCapabilities()
-                            } label: {
-                                if isCompact {
-                                    Image(systemName: "slider.horizontal.3")
-                                        .font(Stanford.ui(12, weight: .medium))
-                                        .foregroundStyle(Stanford.lagunita)
-                                        .frame(width: 20, height: 20)
-                                        .contentShape(Rectangle())
-                                } else {
-                                    Label("Manage", systemImage: "slider.horizontal.3")
-                                        .font(Stanford.caption(11).weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                        .labelStyle(.titleAndIcon)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open the capability package library")
-                        }
-                    }
-                } content: {
-                    capabilityAvailabilitySummary(snapshot)
-                    capabilityList(snapshot)
-                }
-            }
+            capabilityHealthPanel(snapshot)
 
             floatingContextSection {
-                collapsibleSection(
-                    "Workspace setup",
-                    summary: workspaceSetupSummary,
-                    isCollapsed: $isContextCollapsed
-                ) {
-                    workspaceContextPanel
-                }
+                workspaceSetupChecklistPanel
             }
 
         }
@@ -399,17 +411,98 @@ struct WorkspaceRightRailView: View {
         Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.085)
     }
 
+    private func capabilityHealthPanel(_ snapshot: CapabilityRailSnapshot) -> some View {
+        floatingContextSection {
+            VStack(alignment: .leading, spacing: sectionContentSpacing) {
+                rightRailSectionHeader("Capability health") {
+                    capabilityAddButton
+                }
+
+                capabilityHealthSummary(snapshot)
+                capabilityList(snapshot)
+
+                if onManageCapabilities != nil {
+                    Divider().opacity(0.22)
+                    capabilityLibraryCommand
+                }
+            }
+        }
+    }
+
+    private func rightRailSectionHeader<Trailing: View>(
+        _ title: String,
+        summary: String? = nil,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if let summary {
+                Text(summary)
+                    .font(Stanford.caption(10).weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(Capsule())
+            }
+
+            Spacer(minLength: 0)
+            trailing()
+        }
+    }
+
+    @ViewBuilder
+    private var capabilityAddButton: some View {
+        if let onManageCapabilities {
+            Button(action: onManageCapabilities) {
+                Text(CapabilityRailSectionPresentation.addActionTitle)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
+            .help(CapabilityRailSectionPresentation.addActionHelp)
+            .accessibilityLabel("Add capability")
+        }
+    }
+
+    private func capabilityHealthSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
+        HStack(spacing: 8) {
+            CapabilityHealthMetric(
+                title: "\(snapshot.needsSetupCount) needs setup",
+                color: snapshot.needsSetupCount > 0 ? Stanford.poppy : .secondary
+            )
+            CapabilityHealthMetric(
+                title: CapabilityRailSectionPresentation.readySummaryTitle(count: snapshot.readyItems.count),
+                color: .secondary
+            )
+            CapabilityHealthMetric(
+                title: "\(snapshot.draftItems.count) \(snapshot.draftItems.count == 1 ? "draft" : "drafts")",
+                color: .secondary
+            )
+
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(snapshot.needsSetupCount) capabilities need setup, \(snapshot.readyItems.count) ready capabilities, \(snapshot.draftItems.count) draft capabilities")
+    }
+
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: capabilityGroupSpacing) {
+        VStack(alignment: .leading, spacing: capabilityGroupSpacing + 2) {
             if snapshot.items.isEmpty {
-                EmptyRailState(
+                CapabilityEmptyPrompt(
                     title: "No active capabilities",
-                    description: "Manage the library to choose what the agent can use in this workspace."
+                    description: "Add skills, tools, and connectors from the library.",
+                    actionTitle: "Add capability",
+                    action: onManageCapabilities
                 )
             } else {
                 if !snapshot.attentionItems.isEmpty {
                     capabilityGroup(
-                        "Needs attention",
+                        "Action needed",
                         count: snapshot.attentionItems.count,
                         style: .attention,
                         items: snapshot.attentionItems
@@ -417,20 +510,24 @@ struct WorkspaceRightRailView: View {
                 }
 
                 if !snapshot.readyItems.isEmpty {
-                    capabilityGroup(
+                    capabilitySummaryGroup(
                         "Ready",
-                        count: snapshot.readyItems.count,
+                        items: snapshot.readyItems,
                         style: .ready,
-                        items: snapshot.readyItems
+                        isExpanded: $isReadyCapabilitiesExpanded,
+                        summaryTitle: CapabilityRailSectionPresentation.readySummaryTitle(count: snapshot.readyItems.count),
+                        summarySubtitle: capabilityPreview(snapshot.readyItems)
                     )
                 }
 
                 if !snapshot.draftItems.isEmpty {
-                    capabilityGroup(
+                    capabilitySummaryGroup(
                         "Drafts",
-                        count: snapshot.draftItems.count,
+                        items: snapshot.draftItems,
                         style: .draft,
-                        items: snapshot.draftItems
+                        isExpanded: $isDraftCapabilitiesExpanded,
+                        summaryTitle: CapabilityRailSectionPresentation.draftSummaryTitle(count: snapshot.draftItems.count),
+                        summarySubtitle: capabilityPreview(snapshot.draftItems)
                     )
                 }
             }
@@ -438,45 +535,72 @@ struct WorkspaceRightRailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func capabilityAvailabilitySummary(_ snapshot: CapabilityRailSnapshot) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "checkmark.shield")
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
+    private func capabilityPreview(_ items: [RailCapabilityItem]) -> String {
+        CapabilityRailSectionPresentation.previewList(items.map { capabilityDisplayName($0.name) })
+    }
 
-            Text("\(snapshot.enabledCount) active")
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(Stanford.lagunita)
+    private func capabilitySummaryGroup(
+        _ title: String,
+        items: [RailCapabilityItem],
+        style: CapabilityRailGroupStyle,
+        isExpanded: Binding<Bool>,
+        summaryTitle: String,
+        summarySubtitle: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: isCompact ? 4 : 5) {
+            capabilityGroupHeader(title, count: items.count, style: style)
 
-            Text("·")
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-
-            availableToAddSummary(snapshot)
-
-            Spacer(minLength: 0)
+            if isExpanded.wrappedValue {
+                capabilityRows(items, style: style)
+                Button {
+                    withAnimation(disclosureAnimation) {
+                        isExpanded.wrappedValue = false
+                    }
+                } label: {
+                    Text("Hide")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                        .padding(.vertical, 2)
+                }
+                .buttonStyle(.plain)
+            } else {
+                CapabilitySummaryRow(
+                    title: summaryTitle,
+                    subtitle: summarySubtitle,
+                    actionTitle: "Show all",
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            isExpanded.wrappedValue = true
+                        }
+                    }
+                )
+            }
         }
-        .lineLimit(1)
-        .minimumScaleFactor(0.82)
-        .accessibilityLabel("\(snapshot.enabledCount) active capabilities, \(snapshot.availableToAddCount) available to add")
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private func availableToAddSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
-        let label = "\(snapshot.availableToAddCount) available to add"
+    private var capabilityLibraryCommand: some View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
-                Text(label)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.lagunita)
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle")
+                        .font(Stanford.ui(11, weight: .semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .frame(width: 16)
+
+                    Text(CapabilityRailSectionPresentation.browseLibraryCommandTitle)
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Open available capabilities")
-            .accessibilityLabel(label)
-        } else {
-            Text(label)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
+            .help(CapabilityRailSectionPresentation.addActionHelp)
         }
     }
 
@@ -702,23 +826,6 @@ struct WorkspaceRightRailView: View {
         railCapabilityItems.filter { $0.readiness.level == .needsAttention }.count
     }
 
-    private var availableToAddCapabilityCount: Int {
-        libraryCapabilityPackages.filter { package in
-            !CapabilityPackageState(
-                package: package,
-                workspace: workspace,
-                capabilities: capabilities
-            ).isEnabled
-        }.count
-    }
-
-    private var libraryCapabilityPackages: [PluginPackage] {
-        CapabilityGalleryInventory.packages(
-            catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
-            policyContext: catalogPolicyContext
-        )
-    }
-
     private var attentionCapabilityItems: [RailCapabilityItem] {
         railCapabilityItems.filter { $0.readiness.level == .needsAttention }
     }
@@ -851,19 +958,8 @@ struct WorkspaceRightRailView: View {
                 }
                 .sorted(by: sortRailCapabilityItems)
 
-            let libraryPackages = CapabilityGalleryInventory.packages(
-                catalogPackages: approvedCapabilityPackages + PluginCatalog.builtInPackages,
-                policyContext: catalogPolicyContext
-            )
-            let availableToAddCount = libraryPackages.reduce(into: 0) { count, package in
-                if !state(for: package).isEnabled {
-                    count += 1
-                }
-            }
-
             return CapabilityRailSnapshot(
                 items: items,
-                availableToAddCount: availableToAddCount,
                 isDraft: isDraftCapability
             )
         }
@@ -1372,160 +1468,161 @@ struct WorkspaceRightRailView: View {
 
     // MARK: - Context Section
 
-    private var workspaceContextPanel: some View {
+    private var workspaceSetupChecklistPanel: some View {
         VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            instructionsContextSection
-
-            Divider().opacity(0.3)
-
-            memoryContextSection
-
-            Divider().opacity(0.3)
-
-            foldersContextSection
-
-            Divider().opacity(0.3)
-
-            sshContextSection
-
-            if !workspace.schedules.isEmpty {
-                Divider().opacity(0.3)
-                routinesContextSection
-            }
-        }
-    }
-
-    private var instructionsContextSection: some View {
-        VStack(alignment: .leading, spacing: contentListSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "text.quote")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Main Instructions")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                RailCountBadge(count: hasWorkspaceInstructions ? 1 : 0)
-                Spacer()
-                Button { onEditWorkspace() } label: {
-                    Text(hasWorkspaceInstructions ? "Edit" : "Add")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
+            rightRailSectionHeader(
+                "Workspace setup",
+                summary: workspaceSetupSummary
+            ) {
+                EmptyView()
             }
 
-            if !hasWorkspaceInstructions {
-                Button { onEditWorkspace() } label: {
-                    Text("Add guidance for how tasks should run")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button { onEditWorkspace() } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(instructionsPreview)
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.primary)
-                            .lineSpacing(2)
-                            .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 0) {
+                workspaceSetupChecklistRow(
+                    icon: "text.quote",
+                    title: "Instructions",
+                    subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Add guidance for how tasks should run",
+                    state: hasWorkspaceInstructions ? .configured : .missing,
+                    actionTitle: hasWorkspaceInstructions ? "Edit" : "Add",
+                    action: onEditWorkspace
+                )
 
-                        if instructionsPreviewNeedsMore {
-                            Text("Show more")
-                                .font(Stanford.caption(11).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
+                checklistDivider()
+
+                workspaceSetupChecklistRow(
+                    icon: "text.badge.checkmark",
+                    title: "Memory",
+                    subtitle: workspace.memories.isEmpty
+                        ? "Save details the agent should remember"
+                        : "\(workspace.memories.count) saved \(workspace.memories.count == 1 ? "detail" : "details")",
+                    state: workspace.memories.isEmpty ? .missing : .configured,
+                    actionTitle: "Add",
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            isMemoryComposerVisible = true
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var memoryContextSection: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "text.badge.checkmark")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Memory")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                RailCountBadge(count: workspace.memories.count)
-                Spacer(minLength: 0)
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isMemoryComposerVisible = true
-                    }
-                } label: {
-                    Text("Add")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if workspace.memories.isEmpty && !isMemoryComposerVisible {
-                Text("Save details the agent should remember")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(Array(workspace.memories.enumerated()), id: \.offset) { idx, memory in
-                    memoryRow(memory: memory, index: idx)
-                }
+                )
 
                 if isMemoryComposerVisible {
                     memoryComposer
+                        .padding(.leading, 24)
+                        .padding(.trailing, 2)
+                        .padding(.bottom, 7)
+                }
+
+                checklistDivider()
+
+                workspaceSetupChecklistRow(
+                    icon: "folder",
+                    title: "Folders",
+                    subtitle: workspace.primaryPath.isEmpty
+                        ? "No folder selected"
+                        : "Primary \(compactPath(workspace.primaryPath))",
+                    state: workspaceFolderCount > 0 ? .configured : .missing,
+                    actionTitle: "Add",
+                    action: addExtraFolder
+                )
+
+                checklistDivider()
+
+                workspaceSetupChecklistRow(
+                    icon: "network",
+                    title: "Remote access",
+                    subtitle: sshConnections.isEmpty
+                        ? "Add remote servers the agent can access"
+                        : "\(sshConnections.count) configured \(sshConnections.count == 1 ? "server" : "servers")",
+                    state: sshConnections.isEmpty ? .missing : .configured,
+                    actionTitle: "Add",
+                    action: onNewSSHConnection
+                )
+
+                if !workspace.schedules.isEmpty {
+                    checklistDivider()
+
+                    workspaceSetupChecklistRow(
+                        icon: "arrow.triangle.2.circlepath",
+                        title: "Routines",
+                        subtitle: "\(workspace.schedules.count) scheduled \(workspace.schedules.count == 1 ? "routine" : "routines")",
+                        state: .configured,
+                        actionTitle: "Add",
+                        action: onNewSchedule
+                    )
                 }
             }
         }
     }
 
-    private var foldersContextSection: some View {
-        VStack(alignment: .leading, spacing: contentListSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "folder")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.sky)
-                Text("Folders")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                RailCountBadge(count: workspaceFolderCount)
-                Spacer(minLength: 0)
-                Button { addExtraFolder() } label: {
-                    Text("Add")
+    private func workspaceSetupChecklistRow(
+        icon: String,
+        title: String,
+        subtitle: String,
+        state: WorkspaceSetupChecklistPresentation.State,
+        actionTitle: String?,
+        action: (() -> Void)?
+    ) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .medium))
+                .foregroundStyle(setupChecklistIconColor(for: state))
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(state.label)
+                        .font(Stanford.caption(10).weight(.medium))
+                        .foregroundStyle(setupChecklistStatusColor(for: state))
+                        .lineLimit(1)
+                }
+
+                Text(subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    Text(actionTitle)
                         .font(Stanford.caption(11).weight(.medium))
                         .foregroundStyle(Stanford.lagunita)
                 }
                 .buttonStyle(.plain)
             }
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
 
-            contextAccessRow(
-                icon: "folder.fill",
-                title: "Primary",
-                subtitle: workspace.primaryPath.isEmpty ? "No folder selected" : compactPath(workspace.primaryPath),
-                color: Stanford.sky,
-                help: workspace.primaryPath
-            )
+    private func checklistDivider() -> some View {
+        Divider()
+            .opacity(0.22)
+            .padding(.leading, 24)
+    }
 
-            ForEach(Array(workspace.additionalPaths.prefix(2).enumerated()), id: \.offset) { _, path in
-                contextAccessRow(
-                    icon: "folder",
-                    title: URL(fileURLWithPath: path).lastPathComponent,
-                    subtitle: compactPath(path),
-                    color: Stanford.sky,
-                    help: path
-                )
-            }
+    private func setupChecklistIconColor(for state: WorkspaceSetupChecklistPresentation.State) -> Color {
+        switch state {
+        case .configured:
+            return Stanford.lagunita
+        case .missing:
+            return .secondary
+        }
+    }
 
-            if workspace.additionalPaths.count > 2 {
-                Text("+ \(workspace.additionalPaths.count - 2) more folders")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.tertiary)
-            }
+    private func setupChecklistStatusColor(for state: WorkspaceSetupChecklistPresentation.State) -> Color {
+        switch state {
+        case .configured:
+            return Stanford.paloAltoGreen
+        case .missing:
+            return .secondary
         }
     }
 
@@ -1535,10 +1632,10 @@ struct WorkspaceRightRailView: View {
     }
 
     private var workspaceSetupSummary: String {
-        let configured = workspaceSetupConfiguredCount
-        let total = workspaceSetupTotalCount
-        if configured == 0 { return "Empty" }
-        return "\(configured) of \(total) configured"
+        WorkspaceSetupChecklistPresentation.summary(
+            configured: workspaceSetupConfiguredCount,
+            total: workspaceSetupTotalCount
+        )
     }
 
     private var workspaceSetupConfiguredCount: Int {
@@ -1553,120 +1650,6 @@ struct WorkspaceRightRailView: View {
 
     private var workspaceSetupTotalCount: Int {
         4 + (workspace.schedules.isEmpty ? 0 : 1)
-    }
-
-    private var sshContextSection: some View {
-        VStack(alignment: .leading, spacing: contentListSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "network")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.paloAltoGreen)
-                Text("Remote Access")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                RailCountBadge(count: sshConnections.count)
-                Spacer(minLength: 0)
-                Button { onNewSSHConnection?() } label: {
-                    Text("Add")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if sshConnections.isEmpty {
-                Text("Add remote servers the agent can access")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(sshConnections.prefix(3)) { conn in
-                    Button { onEditSSHConnection?(conn) } label: {
-                        contextAccessRow(
-                            icon: "terminal",
-                            title: conn.name.isEmpty ? conn.host : conn.name,
-                            subtitle: "\(conn.user)@\(conn.host):\(conn.port)",
-                            color: conn.lastTestResult == false ? Stanford.failed : Stanford.paloAltoGreen,
-                            help: "\(conn.sshTarget):\(conn.remotePath)",
-                            showsChevron: true
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    private var routinesContextSection: some View {
-        VStack(alignment: .leading, spacing: contentListSpacing) {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.poppy)
-                Text("Routines")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                RailCountBadge(count: workspace.schedules.count)
-                Spacer(minLength: 0)
-                Button { onNewSchedule?() } label: {
-                    Text("Add")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            ForEach(workspace.schedules.sorted { $0.name < $1.name }.prefix(3)) { schedule in
-                Button { onEditSchedule?(schedule) } label: {
-                    contextAccessRow(
-                        icon: schedule.isEnabled ? "clock.arrow.circlepath" : "pause.circle",
-                        title: schedule.name,
-                        subtitle: schedule.frequencySummary,
-                        color: schedule.isEnabled ? Stanford.poppy : .secondary,
-                        help: schedule.routineDescription.isEmpty ? schedule.goal : schedule.routineDescription,
-                        showsChevron: true
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func contextAccessRow(
-        icon: String,
-        title: String,
-        subtitle: String,
-        color: Color,
-        help: String? = nil,
-        showsChevron: Bool = false
-    ) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: 16)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(subtitle.isEmpty ? "No details" : subtitle)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-            }
-        }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .help(help ?? subtitle)
     }
 
     // MARK: - Access Section
@@ -1965,7 +1948,6 @@ struct WorkspaceRightRailView: View {
         workspace.updatedAt = Date()
         newMemoryText = ""
         isMemoryComposerVisible = false
-        editingMemoryIndex = nil
     }
 
     private var memoryComposer: some View {
@@ -1998,87 +1980,8 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    @ViewBuilder
-    private func memoryRow(memory: String, index: Int) -> some View {
-        if editingMemoryIndex == index {
-            HStack(spacing: 6) {
-                TextField("Memory", text: Binding(
-                    get: { workspace.memories[index] },
-                    set: { workspace.memories[index] = $0 }
-                ), axis: .vertical)
-                .font(Stanford.caption(12))
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
-
-                Button {
-                    editingMemoryIndex = nil
-                    workspace.updatedAt = Date()
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(Stanford.ui(10, weight: .bold))
-                        .foregroundStyle(Stanford.paloAltoGreen)
-                }
-                .buttonStyle(.plain)
-            }
-        } else {
-            HStack(alignment: .top, spacing: 8) {
-                Circle()
-                    .fill(Stanford.plum.opacity(0.55))
-                    .frame(width: 5, height: 5)
-                    .padding(.top, 6)
-
-                Text(memory)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: 5) {
-                    Button { editingMemoryIndex = index } label: {
-                        Image(systemName: "pencil")
-                            .font(Stanford.ui(10))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        workspace.memories.remove(at: index)
-                        workspace.updatedAt = Date()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(Stanford.ui(10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 3)
-        }
-    }
-
     private var hasWorkspaceInstructions: Bool {
         !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var instructionsPreview: String {
-        workspace.instructions
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { line in
-                line
-                    .replacingOccurrences(of: "#", with: "")
-                    .replacingOccurrences(of: "*", with: "")
-                    .replacingOccurrences(of: "`", with: "")
-            }
-            .joined(separator: " ")
-    }
-
-    private var instructionsPreviewNeedsMore: Bool {
-        instructionsPreview.count > 180 || workspace.instructions.components(separatedBy: .newlines).filter {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.count > 3
     }
 
     private func abbreviatePath(_ path: String) -> String {
@@ -2442,6 +2345,92 @@ private struct RailCountBadge: View {
     }
 }
 
+private struct CapabilityHealthMetric: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(title)
+            .font(Stanford.caption(10).weight(.semibold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.055))
+            .clipShape(Capsule())
+    }
+}
+
+private struct CapabilitySummaryRow: View {
+    let title: String
+    let subtitle: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: action) {
+                Text(actionTitle)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: true))
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct CapabilityEmptyPrompt: View {
+    let title: String
+    let description: String
+    let actionTitle: String
+    let action: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(Stanford.caption(12).weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(description)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let action {
+                Button(action: action) {
+                    Text(actionTitle)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+    }
+}
+
 private struct CapabilityHierarchySummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -2539,22 +2528,17 @@ private struct CapabilityRailSnapshot {
     let attentionItems: [RailCapabilityItem]
     let readyItems: [RailCapabilityItem]
     let draftItems: [RailCapabilityItem]
-    let enabledCount: Int
     let needsSetupCount: Int
-    let availableToAddCount: Int
 
     init(
         items: [RailCapabilityItem],
-        availableToAddCount: Int,
         isDraft: (RailCapabilityItem) -> Bool
     ) {
         self.items = items
         attentionItems = items.filter { $0.readiness.level == .needsAttention }
         readyItems = items.filter { $0.readiness.level != .needsAttention && !isDraft($0) }
         draftItems = items.filter(isDraft)
-        enabledCount = items.filter(\.isEnabled).count
         needsSetupCount = attentionItems.count
-        self.availableToAddCount = availableToAddCount
     }
 }
 
