@@ -110,6 +110,7 @@ struct CapabilityRailPresentationTests {
 
     @Test("capability rail treats adding as an action, not an available-count section")
     func capabilityRailTreatsAddingAsActionNotAvailableCountSection() {
+        #expect(CapabilityRailSectionPresentation.sectionTitle == "Capabilities")
         #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
         #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
         #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")

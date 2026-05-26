@@ -70,6 +70,7 @@ enum CapabilityRailLayout {
 }
 
 enum CapabilityRailSectionPresentation {
+    static let sectionTitle = "Capabilities"
     static let addActionTitle = "Add"
     static let addActionSubtitle = "Browse library"
     static let addActionHelp = "Browse capability library"
@@ -449,7 +450,7 @@ struct WorkspaceRightRailView: View {
     private func capabilityHealthPanel(_ snapshot: CapabilityRailSnapshot) -> some View {
         floatingContextSection {
             VStack(alignment: .leading, spacing: sectionContentSpacing) {
-                rightRailSectionHeader("Capability health") {
+                rightRailSectionHeader(CapabilityRailSectionPresentation.sectionTitle) {
                     capabilityAddButton
                 }
 
