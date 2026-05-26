@@ -113,9 +113,9 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
         #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
         #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
-        #expect(CapabilityRailSectionPresentation.browseLibraryCommandTitle == "Browse capability library")
         #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
-        #expect(!CapabilityRailSectionPresentation.browseLibraryCommandTitle.localizedCaseInsensitiveContains("available"))
+        #expect(CapabilityRailSectionPresentation.showsBrowseLibraryFooter == false)
+        #expect(!CapabilityRailSectionPresentation.addActionSubtitle.localizedCaseInsensitiveContains("available"))
     }
 
     @Test("capability rail summarizes ready capabilities without expanding the inventory")

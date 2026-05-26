@@ -65,8 +65,8 @@ enum CapabilityRailSectionPresentation {
     static let addActionTitle = "Add"
     static let addActionSubtitle = "Browse library"
     static let addActionHelp = "Browse capability library"
-    static let browseLibraryCommandTitle = "Browse capability library"
     static let showsAvailableToAddCount = false
+    static let showsBrowseLibraryFooter = false
     static let attentionGroupShowsWarningIcon = false
     static let attentionGroupUsesWarningTint = false
 
@@ -444,11 +444,6 @@ struct WorkspaceRightRailView: View {
 
                 capabilityHealthSummary(snapshot)
                 capabilityList(snapshot)
-
-                if onManageCapabilities != nil {
-                    Divider().opacity(0.22)
-                    capabilityLibraryCommand
-                }
             }
         }
     }
@@ -645,30 +640,6 @@ struct WorkspaceRightRailView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var capabilityLibraryCommand: some View {
-        if let onManageCapabilities {
-            Button(action: onManageCapabilities) {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(Stanford.lagunita)
-                        .frame(width: 24)
-
-                    Text(CapabilityRailSectionPresentation.browseLibraryCommandTitle)
-                        .font(Stanford.ui(14, weight: .semibold))
-                        .foregroundStyle(Stanford.lagunita)
-
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(CapabilityRailSectionPresentation.addActionHelp)
-        }
     }
 
     private var capabilityArchitectureSummary: some View {
