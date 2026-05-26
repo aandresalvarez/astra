@@ -49,4 +49,27 @@ struct KanbanBoardToolbarTests {
                     "\(category) is missing an AX description")
         }
     }
+
+    @Test("Kanban board keeps the lean workspace-page presentation contract")
+    func leanWorkspacePresentationContract() {
+        #expect(KanbanBoardPresentation.toolbarUsesSingleRow == true)
+        #expect(KanbanBoardPresentation.columnsUseQuietLaneChrome == true)
+        #expect(KanbanBoardPresentation.columnHeaderUsesDotTitleCount == true)
+        #expect(KanbanBoardPresentation.taskCardsUseSingleMetadataLine == true)
+        #expect(KanbanBoardPresentation.taskCardsReserveTopMetadataRow == false)
+        #expect(KanbanBoardPresentation.visibleTrashIsQuietUntilDrag == true)
+        #expect(KanbanBoardPresentation.reviewCardsUseLeadingAccentOnly == true)
+    }
+
+    @Test("Kanban content width is shared with workspace page alignment")
+    func kanbanContentWidthIsSharedWithWorkspacePageAlignment() {
+        let categories: [KanbanCategory] = [.drafts, .review, .done]
+        let expected = KanbanBoardDensity.spacious.columnWidth(for: .drafts)
+            + KanbanBoardDensity.spacious.columnWidth(for: .review)
+            + KanbanBoardDensity.spacious.columnWidth(for: .done)
+            + (KanbanBoardLayout.columnSpacing * 2)
+
+        #expect(KanbanBoardLayout.outerPadding == 12)
+        #expect(KanbanBoardLayout.contentWidth(for: categories, density: .spacious) == expected)
+    }
 }

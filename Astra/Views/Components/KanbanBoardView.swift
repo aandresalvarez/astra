@@ -205,6 +205,34 @@ enum KanbanBoardDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum KanbanBoardPresentation {
+    static let toolbarUsesSingleRow = true
+    static let columnsUseQuietLaneChrome = true
+    static let columnHeaderUsesDotTitleCount = true
+    static let taskCardsUseSingleMetadataLine = true
+    static let taskCardsReserveTopMetadataRow = false
+    static let visibleTrashIsQuietUntilDrag = true
+    static let reviewCardsUseLeadingAccentOnly = true
+    static let columnBaseFillOpacity: Double = 0.012
+    static let persistentColumnFillOpacity: Double = 0.016
+    static let columnStrokeOpacity: Double = 0.045
+    static let cardBaseFillOpacity: Double = 0.018
+    static let cardHoverFillOpacity: Double = 0.032
+    static let cardStrokeOpacity: Double = 0.045
+    static let cardHoverStrokeOpacity: Double = 0.10
+}
+
+enum KanbanBoardLayout {
+    static let columnSpacing: CGFloat = 12
+    static let outerPadding: CGFloat = 12
+
+    static func contentWidth(for categories: [KanbanCategory], density: KanbanBoardDensity) -> CGFloat {
+        let totalColumns = categories.reduce(0) { $0 + density.columnWidth(for: $1) }
+        let totalSpacing = columnSpacing * CGFloat(max(0, categories.count - 1))
+        return totalColumns + totalSpacing
+    }
+}
+
 private let kanbanBoardCoordinateSpace = "kanbanBoardCoordinateSpace"
 
 private struct KanbanDragState: Equatable {
@@ -313,10 +341,7 @@ struct KanbanBoardView: View {
     /// trailing edge rather than floating off near the window edge when the
     /// board doesn't fill the available space.
     private var kanbanContentWidth: CGFloat {
-        let spacing: CGFloat = 12
-        let totalColumns = visibleCategories.reduce(0) { $0 + density.columnWidth(for: $1) }
-        let totalSpacing = spacing * CGFloat(max(0, visibleCategories.count - 1))
-        return totalColumns + totalSpacing
+        KanbanBoardLayout.contentWidth(for: visibleCategories, density: density)
     }
 
     private var collapsedEmptyCategories: [KanbanCategory] {
@@ -925,13 +950,19 @@ struct KanbanColumnView: View {
     @ViewBuilder
     private var columnSurface: some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-        let baseFill = Color.primary.opacity(isPersistentDropColumn ? 0.024 : 0.018)
+        let baseFill = Color.primary.opacity(
+            isPersistentDropColumn
+                ? KanbanBoardPresentation.persistentColumnFillOpacity
+                : KanbanBoardPresentation.columnBaseFillOpacity
+        )
 
         shape
             .fill(baseFill)
             .overlay {
                 shape.stroke(
-                    Color.primary.opacity(isActiveDropTarget ? 0.14 : 0.055),
+                    Color.primary.opacity(
+                        isActiveDropTarget ? 0.14 : KanbanBoardPresentation.columnStrokeOpacity
+                    ),
                     lineWidth: 1
                 )
             }
@@ -1260,7 +1291,7 @@ struct KanbanColumnView: View {
             .padding(.vertical, 10)
 
             Rectangle()
-                .fill(Color.primary.opacity(0.055))
+                .fill(Color.primary.opacity(KanbanBoardPresentation.columnStrokeOpacity))
                 .frame(height: 1)
         }
         .contentShape(Rectangle())
@@ -1324,12 +1355,18 @@ struct KanbanColumnView: View {
         .padding(isPersistentDropColumn ? 12 : 8)
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .fill(isActiveDropTarget ? category.color.opacity(0.07) : Color.primary.opacity(isPersistentDropColumn ? 0.016 : 0.02))
+                .fill(
+                    isActiveDropTarget
+                        ? category.color.opacity(0.07)
+                        : Color.primary.opacity(isPersistentDropColumn ? 0.012 : 0.014)
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .stroke(
-                    isActiveDropTarget ? category.color.opacity(0.36) : Color.primary.opacity(isPersistentDropColumn ? 0.055 : 0.065),
+                    isActiveDropTarget
+                        ? category.color.opacity(0.36)
+                        : Color.primary.opacity(isPersistentDropColumn ? 0.045 : 0.052),
                     style: StrokeStyle(lineWidth: isActiveDropTarget ? 1.5 : 1, dash: isPersistentDropColumn ? [] : [5, 4])
                 )
         )
@@ -1403,27 +1440,23 @@ struct KanbanDiscardToolbarTarget: View {
     var body: some View {
         Image(systemName: isActiveDropTarget ? "trash.fill" : "trash")
             .font(Stanford.ui(13, weight: .semibold))
-            .foregroundStyle(isActiveDropTarget ? Stanford.cardinalRed : .secondary)
+            .foregroundStyle(isActiveDropTarget ? Stanford.cardinalRed : Color.secondary.opacity(0.62))
             .frame(width: 26, height: 26)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isActiveDropTarget ? Stanford.cardinalRed.opacity(0.12) : Color.clear)
             }
             .overlay {
-                // Dashed border at rest signals "drop zone" — solid would
-                // read as a clickable button, which is misleading because
-                // this is drag-target-only. Solid red border kicks in when
-                // a task is hovering over it (an active drop target).
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(
-                        isActiveDropTarget ? Stanford.cardinalRed.opacity(0.55) : Color.primary.opacity(0.18),
+                        isActiveDropTarget ? Stanford.cardinalRed.opacity(0.55) : Color.primary.opacity(0.08),
                         style: StrokeStyle(
                             lineWidth: 1,
                             dash: isActiveDropTarget ? [] : [3, 3]
                         )
                     )
             }
-            .opacity(canDropDraggedTask ? 1 : 0.4)
+            .opacity(canDropDraggedTask ? 1 : 0.36)
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(
@@ -1615,8 +1648,19 @@ struct KanbanTaskCardView: View {
         return Self.shortenIdentifierTokens(base)
     }
 
-    private var reservesMetadataRow: Bool {
-        showDetails || titleBadge != nil || category == .review || category == .done
+    private var metadataLine: String? {
+        var parts: [String] = []
+        if let titleBadge {
+            parts.append(titleBadge)
+        }
+        if showDetails {
+            parts.append(threadMessageLabel)
+        }
+        if showDetails || category == .review || category == .done {
+            parts.append(Formatters.relativeShort(task.updatedAt))
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " · ")
     }
 
     /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
@@ -1646,10 +1690,18 @@ struct KanbanTaskCardView: View {
                 }
         } else {
             shape
-                .fill(Color.primary.opacity(isHovered ? 0.04 : 0.024))
+                .fill(Color.primary.opacity(
+                    isHovered
+                        ? KanbanBoardPresentation.cardHoverFillOpacity
+                        : KanbanBoardPresentation.cardBaseFillOpacity
+                ))
                 .overlay {
                     shape.stroke(
-                        Color.primary.opacity(isHovered ? 0.11 : 0.055),
+                        Color.primary.opacity(
+                            isHovered
+                                ? KanbanBoardPresentation.cardHoverStrokeOpacity
+                                : KanbanBoardPresentation.cardStrokeOpacity
+                        ),
                         lineWidth: 1
                     )
                 }
@@ -1657,46 +1709,21 @@ struct KanbanTaskCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: reservesMetadataRow || showDetails ? 8 : 0) {
-            if reservesMetadataRow {
-                HStack(spacing: 8) {
-                    if let titleBadge {
-                        Text(titleBadge)
-                            .font(Stanford.chatRaw(10).weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .help("Ticket \(titleBadge)")
-                    } else {
-                        Color.clear
-                            .frame(height: 12)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    if showDetails || category == .review || category == .done {
-                        // Compact relative date (3d / Apr 17 / Apr 17, 2025).
-                        // Full timestamp surfaces in the tooltip — avoids
-                        // every card spelling out the same long absolute
-                        // date when most cards are a day or two apart.
-                        Text(Formatters.relativeShort(task.updatedAt))
-                            .font(Stanford.caption(10).weight(.regular))
-                            .foregroundStyle(.tertiary)
-                            .help(Formatters.fullDate(task.updatedAt))
-                    }
-                }
-                .frame(height: 13)
-            }
-
+        let metadata = metadataLine
+        VStack(alignment: .leading, spacing: metadata == nil ? 0 : 6) {
             Text(displayTitle)
                 .font(Stanford.body(titleFontSize).weight(category == .done ? .medium : .semibold))
                 .foregroundStyle(category == .done ? .secondary : .primary)
                 .lineLimit(density.titleLineLimit)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if showDetails {
-                Text(threadMessageLabel)
+            if let metadata {
+                Text(metadata)
                     .font(Stanford.caption(11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(Formatters.fullDate(task.updatedAt))
             }
         }
         .padding(density.cardPadding)

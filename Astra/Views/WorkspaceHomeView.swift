@@ -3,9 +3,23 @@ import SwiftData
 import SwiftUI
 
 private enum WorkspaceHomeLayout {
-    static let contentMaxWidth: CGFloat = 1_060
     static let boardMaxWidth: CGFloat = 1_520
     static let pagePadding: CGFloat = 24
+}
+
+enum WorkspaceHomePresentation {
+    static let usesWorkspaceContextCard = true
+    static let usesKanbanMeasuredPageRail = true
+    static let contextRowsUseSummaryPattern = true
+    static let contextCardShowsCapabilitiesRow = true
+    static let contextCardAlignsWithBoardColumns = true
+    static let headerShowsPrimaryNewTaskAction = true
+    static let routinesUseSummaryRows = true
+    static let instructionEditorStaysInsideContextCard = true
+    static let rowIconFrame: CGFloat = 40
+    static let rowMinHeight: CGFloat = 72
+    static let rowSpacing: CGFloat = 14
+    static let cardCornerRadius: CGFloat = 12
 }
 
 struct WorkspaceHomeContainerView: View {
@@ -89,6 +103,7 @@ struct WorkspaceHomeView: View {
     @State private var isEditingInstructions = false
     @State private var editedInstructions = ""
     @State private var isInstructionsExpanded = false
+    @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
     @FocusState private var isInstructionsFocused: Bool
 
     // The skill/connector/tool aggregators previously rendered by the
@@ -96,24 +111,18 @@ struct WorkspaceHomeView: View {
     // entirely to the right rail. If you need them again, the right rail
     // (WorkspaceRightRailView) already computes the same aggregates.
 
-    private var allTemplates: [TaskTemplate] {
-        workspace.templates
-    }
-
     var body: some View {
         ScrollView {
-            VStack(alignment: .center, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Header
                     header
                         .padding(.bottom, 16)
 
-                    // Instructions — prominent, always visible
-                    instructionsCard
+                    workspaceContextCard
                         .padding(.bottom, 20)
                 }
-                .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
-                .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
+                .frame(maxWidth: alignedContentWidth, alignment: .leading)
+                .padding(.horizontal, KanbanBoardLayout.outerPadding)
 
                 KanbanBoardView(
                     tasks: tasks,
@@ -121,8 +130,7 @@ struct WorkspaceHomeView: View {
                     onDeleteTask: onDeleteTask,
                     onSetDoneState: onSetDoneState
                 )
-                .frame(maxWidth: WorkspaceHomeLayout.boardMaxWidth, alignment: .leading)
-                .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
+                .frame(maxWidth: pageRailWidth, alignment: .leading)
                 .padding(.bottom, 24)
 
                 // Workspace-scoped context such as Memories lives in the
@@ -141,15 +149,48 @@ struct WorkspaceHomeView: View {
                         onNew: { onNewSchedule?() }
                     )
                     .workspaceSectionPanel()
-                    .frame(maxWidth: WorkspaceHomeLayout.contentMaxWidth, alignment: .leading)
-                    .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
+                    .frame(maxWidth: alignedContentWidth, alignment: .leading)
+                    .padding(.horizontal, KanbanBoardLayout.outerPadding)
                     .padding(.bottom, 24)
                 }
             }
+            .frame(maxWidth: pageRailWidth, alignment: .leading)
+            .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
             .padding(.vertical, WorkspaceHomeLayout.pagePadding)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Stanford.panelBackground)
+    }
+
+    private var boardDensity: KanbanBoardDensity {
+        KanbanBoardDensity(rawValue: densityRaw) ?? .spacious
+    }
+
+    private var visibleBoardCategories: [KanbanCategory] {
+        let persistentDropCategories: Set<KanbanCategory> = [.review, .done]
+        guard !tasks.isEmpty else {
+            return KanbanCategory.allCases.filter { persistentDropCategories.contains($0) }
+        }
+
+        return KanbanCategory.allCases.filter { category in
+            persistentDropCategories.contains(category)
+                || tasks.contains { category.includes($0) }
+        }
+    }
+
+    private var boardContentWidth: CGFloat {
+        KanbanBoardLayout.contentWidth(for: visibleBoardCategories, density: boardDensity)
+    }
+
+    private var pageRailWidth: CGFloat {
+        min(
+            WorkspaceHomeLayout.boardMaxWidth,
+            boardContentWidth + (KanbanBoardLayout.outerPadding * 2)
+        )
+    }
+
+    private var alignedContentWidth: CGFloat {
+        max(0, pageRailWidth - (KanbanBoardLayout.outerPadding * 2))
     }
 
     // MARK: - Header
@@ -167,233 +208,288 @@ struct WorkspaceHomeView: View {
                 .font(Stanford.heading(22))
 
             Spacer()
-        }
-    }
 
-    // MARK: - Instructions
-
-    private var instructionsCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if isEditingInstructions {
-                // Editing mode
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "text.alignleft")
-                            .font(Stanford.ui(12))
-                            .foregroundStyle(.secondary)
-                        Text("Instructions")
-                            .font(Stanford.caption(13).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button {
-                            isEditingInstructions = false
-                        } label: {
-                            Text("Cancel")
-                                .font(Stanford.caption(12))
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        Button {
-                            workspace.instructions = editedInstructions
-                            isEditingInstructions = false
-                        } label: {
-                            Text("Save")
-                                .font(Stanford.caption(12).weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 4)
-                                .background(Stanford.lagunita)
-                                .clipShape(RoundedRectangle(cornerRadius: 5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    TextEditor(text: $editedInstructions)
-                        .font(Stanford.mono(13))
-                        .focused($isInstructionsFocused)
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 120, maxHeight: 300)
-                        .padding(10)
-                        .background(Color.primary.opacity(0.03))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.lagunita.opacity(0.4)))
-                        .onAppear { isInstructionsFocused = true }
-                }
-                .padding(14)
-                .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else if isInstructionsExpanded {
-                // Expanded mode
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "text.alignleft")
-                            .font(Stanford.ui(12))
-                            .foregroundStyle(.secondary)
-                        Text("Instructions")
-                            .font(Stanford.caption(13).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                isInstructionsExpanded = false
-                            }
-                        } label: {
-                            Text("Collapse")
-                                .font(Stanford.caption(12).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        Button {
-                            editedInstructions = workspace.instructions
-                            isEditingInstructions = true
-                        } label: {
-                            Text("Edit")
-                                .font(Stanford.caption(12).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Text(workspace.instructions)
-                        .font(Stanford.ui(13))
-                        .foregroundStyle(Stanford.black)
-                        .textSelection(.enabled)
-                        .lineSpacing(4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if !workspace.additionalPaths.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "folder.badge.plus")
-                                .font(Stanford.ui(10))
-                                .foregroundStyle(.tertiary)
-                            Text(workspace.additionalPaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                .padding(14)
-                .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                // Compact bar
-                HStack(spacing: 10) {
-                    if !workspace.instructions.isEmpty {
-                        Image(systemName: "text.alignleft")
-                            .font(Stanford.ui(12))
-                            .foregroundStyle(.secondary)
-
-                        Text("Instructions")
-                            .font(Stanford.caption(13).weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(workspace.instructions.replacingOccurrences(of: "\n", with: " "))
-                            .font(Stanford.ui(13))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
-                            .help(workspace.instructions)
-
-                        Spacer(minLength: 8)
-
-                        Button {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                isInstructionsExpanded = true
-                            }
-                        } label: {
-                            Text("Expand")
-                                .font(Stanford.caption(12).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            editedInstructions = workspace.instructions
-                            isEditingInstructions = true
-                        } label: {
-                            Text("Edit")
-                                .font(Stanford.caption(12).weight(.medium))
-                                .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Button {
-                            editedInstructions = ""
-                            isEditingInstructions = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus.circle")
-                                    .font(Stanford.ui(12))
-                                Text("Add instructions")
-                                    .font(Stanford.caption(13).weight(.medium))
-                            }
-                            .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Set workspace-level instructions that guide every agent task in this workspace")
-
-                        Spacer(minLength: 8)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Stanford.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            Button(action: onCreateTask) {
+                Label("New task", systemImage: "plus")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Stanford.lagunita)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
+            .buttonStyle(.plain)
+            .help("Create a task in \(workspace.name)")
         }
     }
 
-    // MARK: - Memories
+    // MARK: - Workspace Context
 
-    private var memoriesCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "text.badge.checkmark")
-                    .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Memories")
+    private var workspaceContextCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Workspace context")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
-                Text("\(workspace.memories.count)")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.tertiary)
+
+                Spacer()
+            }
+            .padding(.bottom, 8)
+
+            instructionsSummaryRow
+
+            if isEditingInstructions {
+                instructionsEditor
+                    .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+            } else if isInstructionsExpanded {
+                instructionsExpandedDetail
+                    .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
             }
 
-            ForEach(Array(workspace.memories.enumerated()), id: \.offset) { _, memory in
-                HStack(alignment: .top, spacing: 6) {
-                    Text("•")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.lagunita.opacity(0.55))
-                    Text(memory)
-                        .font(Stanford.ui(14))
-                        .foregroundStyle(Stanford.black)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
+            workspaceDivider
+
+            capabilitiesSummaryRow
+        }
+        .workspaceSectionPanel()
+    }
+
+    private var instructionsSummaryRow: some View {
+        WorkspaceHomeSummaryRow(
+            icon: "text.alignleft",
+            iconColor: Stanford.lagunita,
+            title: "Instructions",
+            subtitle: instructionsSubtitle,
+            onSelect: {
+                guard hasInstructions else {
+                    startEditingInstructions()
+                    return
+                }
+                withAnimation(disclosureAnimation) {
+                    isInstructionsExpanded.toggle()
+                }
+            }
+        ) {
+            HStack(spacing: 12) {
+                Button {
+                    startEditingInstructions()
+                } label: {
+                    Text(hasInstructions ? "Edit" : "Add")
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help(hasInstructions ? "Edit workspace instructions" : "Add workspace instructions")
+
+                if hasInstructions {
+                    Image(systemName: isInstructionsExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(12, weight: .semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
         }
-        .padding(14)
-        .background(Stanford.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // The center panel used to render a full "Plugins" summary section
-    // here (pluginsSection + pluginColumn) that duplicated the right
-    // rail's Configure tab. Removed in the center-panel-polish pass.
-    // Skills/Connectors/Tools are still shown in the right rail and
-    // edited via Configure; no center-panel footprint needed.
+    private var instructionsEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextEditor(text: $editedInstructions)
+                .font(Stanford.mono(13))
+                .focused($isInstructionsFocused)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 120, maxHeight: 280)
+                .padding(10)
+                .background(Color.primary.opacity(0.026))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Stanford.lagunita.opacity(0.32), lineWidth: 1)
+                )
+                .onAppear { isInstructionsFocused = true }
 
+            HStack(spacing: 10) {
+                Spacer()
+
+                Button {
+                    isEditingInstructions = false
+                } label: {
+                    Text("Cancel")
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+                    workspace.updatedAt = Date()
+                    isEditingInstructions = false
+                    isInstructionsExpanded = !workspace.instructions.isEmpty
+                } label: {
+                    Text("Save")
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Stanford.lagunita)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var instructionsExpandedDetail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(workspace.instructions)
+                .font(Stanford.ui(13))
+                .foregroundStyle(Stanford.black)
+                .textSelection(.enabled)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !workspace.additionalPaths.isEmpty {
+                Text("Includes \(workspace.additionalPaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var capabilitiesSummaryRow: some View {
+        WorkspaceHomeSummaryRow(
+            icon: "checkmark.shield",
+            iconColor: Stanford.lagunita,
+            title: capabilityHeadline,
+            subtitle: capabilitySubtitle,
+            onSelect: onManageCapabilities ?? onConfigure
+        ) {
+            HStack(spacing: 12) {
+                Button(action: onManageCapabilities ?? onConfigure) {
+                    Text("Manage")
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var workspaceDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.055))
+            .frame(height: 1)
+            .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
+    }
+
+    private var disclosureAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.18)
+    }
+
+    private var hasInstructions: Bool {
+        !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var instructionsSubtitle: String {
+        guard hasInstructions else {
+            return "Add guidance for how tasks should run"
+        }
+        return workspace.instructions
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var capabilityHeadline: String {
+        let count = max(
+            workspace.enabledCapabilityIDs.count,
+            workspace.skills.count + workspace.connectors.count + workspace.localTools.count
+        )
+        guard count > 0 else { return "No active capabilities" }
+        return "\(count) active \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    private var capabilitySubtitle: String {
+        let parts: [String] = [
+            countPhrase(workspace.skills.count, singular: "skill", plural: "skills"),
+            countPhrase(workspace.connectors.count, singular: "connector", plural: "connectors"),
+            countPhrase(workspace.localTools.count, singular: "tool", plural: "tools")
+        ].compactMap { $0 }
+
+        guard !parts.isEmpty else {
+            return "Browse the library to add skills, connectors, and tools"
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private func countPhrase(_ count: Int, singular: String, plural: String) -> String? {
+        guard count > 0 else { return nil }
+        return "\(count) \(count == 1 ? singular : plural)"
+    }
+
+    private func startEditingInstructions() {
+        editedInstructions = workspace.instructions
+        isEditingInstructions = true
+        isInstructionsExpanded = false
+    }
+
+}
+
+private struct WorkspaceHomeSummaryRow<Trailing: View>: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let subtitle: String
+    let onSelect: (() -> Void)?
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .center, spacing: WorkspaceHomePresentation.rowSpacing) {
+            Image(systemName: icon)
+                .font(Stanford.ui(20, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: WorkspaceHomePresentation.rowIconFrame)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(Stanford.ui(16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(subtitle)
+                    .font(Stanford.caption(13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 10)
+
+            trailing()
+                .layoutPriority(2)
+        }
+        .frame(maxWidth: .infinity, minHeight: WorkspaceHomePresentation.rowMinHeight, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect?()
+        }
+    }
 }
 
 private struct WorkspaceSectionPanelModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .padding(14)
+            .padding(16)
             .background(Stanford.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: WorkspaceHomePresentation.cardCornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: WorkspaceHomePresentation.cardCornerRadius, style: .continuous)
                     .stroke(Color.primary.opacity(0.05), lineWidth: 1)
             )
     }
@@ -414,7 +510,7 @@ private struct WorkspaceScheduleSection: View {
     let onNew: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Routines")
                     .font(Stanford.caption(13).weight(.semibold))
@@ -427,47 +523,54 @@ private struct WorkspaceScheduleSection: View {
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.bottom, 8)
 
-            VStack(spacing: 4) {
-                ForEach(schedules) { schedule in
-                    Button { onEdit(schedule) } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(Stanford.ui(12))
-                                .foregroundStyle(schedule.isEnabled ? Stanford.lagunita : .secondary)
-
-                            Text(schedule.name)
-                                .font(Stanford.body(13))
-                                .foregroundStyle(Stanford.black)
-                                .lineLimit(1)
-
-                            Text(schedule.frequencySummary)
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(.tertiary)
-
-                            Spacer()
-
-                            if schedule.fireCount > 0 {
-                                Text("\(schedule.fireCount) runs")
-                                    .font(Stanford.caption(11))
-                                    .foregroundStyle(.quaternary)
-                            }
-
-                            Toggle("", isOn: Binding(
-                                get: { schedule.isEnabled },
-                                set: { _ in onToggle(schedule) }
-                            ))
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                            .controlSize(.mini)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Stanford.cardBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
+            ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.055))
+                        .frame(height: 1)
+                        .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
                 }
+
+                WorkspaceScheduleRow(
+                    schedule: schedule,
+                    onToggle: { onToggle(schedule) },
+                    onEdit: { onEdit(schedule) }
+                )
+            }
+        }
+    }
+}
+
+private struct WorkspaceScheduleRow: View {
+    let schedule: TaskSchedule
+    let onToggle: () -> Void
+    let onEdit: () -> Void
+
+    var body: some View {
+        WorkspaceHomeSummaryRow(
+            icon: "arrow.triangle.2.circlepath",
+            iconColor: schedule.isEnabled ? Stanford.lagunita : Color.secondary.opacity(0.78),
+            title: schedule.name,
+            subtitle: schedule.frequencySummary,
+            onSelect: onEdit
+        ) {
+            HStack(spacing: 12) {
+                if schedule.fireCount > 0 {
+                    Text("\(schedule.fireCount) \(schedule.fireCount == 1 ? "run" : "runs")")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Toggle("", isOn: Binding(
+                    get: { schedule.isEnabled },
+                    set: { _ in onToggle() }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.mini)
             }
         }
     }

@@ -4061,6 +4061,27 @@ struct SidebarGroupingTests {
         #expect(visible.map(\.id) == [starredMatch.id])
     }
 
+    @Test("Workspace sidebar keeps starred and regular workspaces in one sorted list")
+    func workspaceSidebarFilterKeepsSingleSortedList() {
+        let starredZoo = makeWorkspace(name: "Zoo")
+        starredZoo.isStarred = true
+        let regularAlpha = makeWorkspace(name: "Alpha")
+        let starredBeta = makeWorkspace(name: "Beta")
+        starredBeta.isStarred = true
+
+        let visible = WorkspaceSidebarFilter.visibleWorkspaces(
+            [regularAlpha, starredZoo, starredBeta],
+            showStarredOnly: false,
+            searchText: ""
+        ) { _ in
+            true
+        } hasMatchingTasks: { _ in
+            false
+        }
+
+        #expect(visible.map(\.id) == [starredBeta.id, starredZoo.id, regularAlpha.id])
+    }
+
     @Test("Collapsed selected workspace is not force-expanded on selection change")
     func collapsedSelectedWorkspaceDoesNotAutoExpand() {
         let workspaceID = UUID()
@@ -4077,6 +4098,18 @@ struct SidebarGroupingTests {
             selectedWorkspaceID: nil,
             collapsedWorkspaceIDs: [workspaceID]
         ))
+    }
+
+    @Test("Lean sidebar presentation contracts keep the left rail navigational")
+    func leanSidebarPresentationContracts() {
+        #expect(SidebarLeanPresentation.usesQuietNewTaskCommand)
+        #expect(SidebarLeanPresentation.sectionHeadersShowCounts)
+        #expect(SidebarLeanPresentation.workspacesUseSingleFlatList)
+        #expect(SidebarLeanPresentation.workspaceStarsMoveToTrailingEdge)
+        #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
+        #expect(SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
+        #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
+        #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
     }
 }
 
