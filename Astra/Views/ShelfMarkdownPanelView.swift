@@ -38,7 +38,7 @@ struct ShelfMarkdownPanelView: View {
 
         var label: String {
             switch self {
-            case .task: "Task"
+            case .task: "This Task"
             case .workspace: "Workspace"
             case .all: "All"
             }
@@ -372,6 +372,8 @@ struct ShelfMarkdownPanelView: View {
             case .populatedList:
                 if isSearchingFiles {
                     searchResultsSection
+                } else if effectiveFileNavigatorScope == .task {
+                    taskScopeFileSections
                 } else {
                     ForEach(visibleFileRoots) { root in
                         fileRootSection(root)
@@ -395,6 +397,44 @@ struct ShelfMarkdownPanelView: View {
                         .padding(.vertical, 6)
                         .help(error.path)
                 }
+            }
+        }
+    }
+
+    private var taskScopeFileSections: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            taskFileGroupSection(
+                title: ShelfFileProvenance.taskGenerated.groupTitle,
+                roots: visibleFileRoots.filter { rootProvenance($0) == .taskGenerated }
+            )
+            taskFileGroupSection(
+                title: ShelfFileProvenance.userProvided.groupTitle,
+                roots: visibleFileRoots.filter { rootProvenance($0) == .userProvided }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func taskFileGroupSection(title: String, roots: [WorkspaceFileRoot]) -> some View {
+        if !roots.isEmpty {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                Spacer(minLength: 0)
+
+                Text(rootCountLabel(roots.reduce(0) { $0 + filteredNodes(for: $1).filter { !$0.isDirectory }.count }))
+                    .font(Stanford.caption(10).weight(.medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 9)
+            .padding(.bottom, 4)
+
+            ForEach(roots) { root in
+                fileRootSection(root)
             }
         }
     }
@@ -611,11 +651,20 @@ struct ShelfMarkdownPanelView: View {
                     .foregroundStyle(node.isDirectory ? Stanford.lagunita : fileNodeColor(node))
                     .frame(width: 16)
 
-                Text(node.name)
-                    .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? Stanford.lagunita : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.name)
+                        .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Stanford.lagunita : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let label = fileNodeProvenanceLabel(node) {
+                        Text(label)
+                            .font(Stanford.caption(9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer(minLength: 0)
 
@@ -696,7 +745,7 @@ struct ShelfMarkdownPanelView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    Text(searchResultPathLabel(for: node))
+                    Text(searchResultDetailLabel(for: node))
                         .font(Stanford.caption(10))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -863,6 +912,13 @@ struct ShelfMarkdownPanelView: View {
         return parent.isEmpty ? rootTitle : "\(rootTitle) / \(parent)"
     }
 
+    private func searchResultDetailLabel(for node: WorkspaceFileNode) -> String {
+        guard let provenance = fileNodeProvenance(node) else {
+            return searchResultPathLabel(for: node)
+        }
+        return "\(provenance.label) · \(searchResultPathLabel(for: node))"
+    }
+
     private func refreshFileIndex() {
         fileIndexTask?.cancel()
 
@@ -942,6 +998,45 @@ struct ShelfMarkdownPanelView: View {
         case .additional:
             3
         }
+    }
+
+    private var currentTaskOutputFolderNames: Set<String> {
+        ShelfFileProvenanceResolver.currentTaskOutputFolderNames(for: task)
+    }
+
+    private func rootProvenance(_ root: WorkspaceFileRoot) -> ShelfFileProvenance {
+        ShelfFileProvenanceResolver.provenance(
+            for: root,
+            currentTaskOutputFolderNames: currentTaskOutputFolderNames
+        )
+    }
+
+    private func fileNodeProvenance(_ node: WorkspaceFileNode) -> ShelfFileProvenance? {
+        guard let root = fileRoots.first(where: { $0.id == node.rootID }) else {
+            return nil
+        }
+        return ShelfFileProvenanceResolver.provenance(
+            for: root,
+            node: node,
+            currentTaskOutputFolderNames: currentTaskOutputFolderNames
+        )
+    }
+
+    private func fileNodeProvenanceLabel(_ node: WorkspaceFileNode) -> String? {
+        guard let provenance = fileNodeProvenance(node) else { return nil }
+        let kind = fileKindLabel(node)
+        return kind.isEmpty ? provenance.label : "\(provenance.label) · \(kind)"
+    }
+
+    private func fileKindLabel(_ node: WorkspaceFileNode) -> String {
+        if node.isDirectory {
+            return "Folder"
+        }
+        let ext = URL(fileURLWithPath: node.path).pathExtension.uppercased()
+        if !ext.isEmpty {
+            return ext
+        }
+        return "File"
     }
 
     private func autoOpenFirstFileIfNeeded(nodes: [WorkspaceFileNode]) {
