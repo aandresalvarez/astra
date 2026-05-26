@@ -9,8 +9,16 @@ struct ShelfBrowserPanelLayoutTests {
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth) == .regular)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth - 1) == .compact)
         #expect(ShelfBrowserToolbarLayout.resolve(width: 420) == .compact)
+        #expect(ShelfBrowserToolbarLayout.resolve(width: PanelLayoutGeometry.browserShelfMinWidth) == .compact)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth) == .compact)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth - 1) == .stacked)
+    }
+
+    @Test("compact browser toolbar is the browser shelf minimum layout")
+    func compactBrowserToolbarIsBrowserShelfMinimumLayout() {
+        #expect(ShelfBrowserToolbarLayout.compactMinimumWidth < PanelLayoutGeometry.browserShelfMinWidth)
+        #expect(ShelfBrowserToolbarLayout.compactAddressMinimumWidth <= 108)
+        #expect(ShelfBrowserToolbarLayout.regularAddressMinimumWidth > ShelfBrowserToolbarLayout.compactAddressMinimumWidth)
     }
 
     @Test("stacked browser toolbar has enough height for two rows")

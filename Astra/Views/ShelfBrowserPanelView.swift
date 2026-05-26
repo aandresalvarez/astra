@@ -7,7 +7,9 @@ enum ShelfBrowserToolbarLayout: Equatable {
     case stacked
 
     static let regularMinimumWidth: CGFloat = 560
-    static let compactMinimumWidth: CGFloat = 320
+    static let compactMinimumWidth: CGFloat = 280
+    static let regularAddressMinimumWidth: CGFloat = 170
+    static let compactAddressMinimumWidth: CGFloat = 108
 
     var height: CGFloat {
         switch self {
@@ -23,6 +25,11 @@ enum ShelfBrowserToolbarLayout: Equatable {
         if width >= compactMinimumWidth { return .compact }
         return .stacked
     }
+}
+
+private enum ShelfBrowserToolbarNavigationStyle {
+    case full
+    case primaryOnly
 }
 
 private struct ShelfBrowserToolbarWidthPreferenceKey: PreferenceKey {
@@ -43,7 +50,7 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
-    @State private var toolbarLayout = ShelfBrowserToolbarLayout.regular
+    @State private var toolbarLayout = ShelfBrowserToolbarLayout.compact
     // Tracks whether the user has seen the Embedded vs Controlled explanation
     // on the empty browser screen. Persists across sessions so the hint only
     // teaches once per install, not every time the shelf is empty.
@@ -159,6 +166,7 @@ struct ShelfBrowserPanelView: View {
             }
         }
         .onPreferenceChange(ShelfBrowserToolbarWidthPreferenceKey.self) { width in
+            guard width.isFinite && width > 0 else { return }
             let nextLayout = ShelfBrowserToolbarLayout.resolve(width: width)
             guard toolbarLayout != nextLayout else { return }
             toolbarLayout = nextLayout
@@ -170,22 +178,24 @@ struct ShelfBrowserPanelView: View {
         switch layout {
         case .regular:
             toolbarRow(
+                navigationStyle: .full,
                 showsFullEngineSwitcher: true,
                 showsModeBadgeInAddress: true,
                 usesCompactGoButton: false,
-                addressMinWidth: 170
+                addressMinWidth: ShelfBrowserToolbarLayout.regularAddressMinimumWidth
             )
         case .compact:
             toolbarRow(
+                navigationStyle: .primaryOnly,
                 showsFullEngineSwitcher: false,
                 showsModeBadgeInAddress: false,
                 usesCompactGoButton: true,
-                addressMinWidth: 145
+                addressMinWidth: ShelfBrowserToolbarLayout.compactAddressMinimumWidth
             )
         case .stacked:
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
-                    navigationButtonGroup
+                    primaryNavigationButton
                     compactEngineMenu
                     Spacer(minLength: 0)
                     goButton(isCompact: true)
@@ -203,13 +213,14 @@ struct ShelfBrowserPanelView: View {
     }
 
     private func toolbarRow(
+        navigationStyle: ShelfBrowserToolbarNavigationStyle,
         showsFullEngineSwitcher: Bool,
         showsModeBadgeInAddress: Bool,
         usesCompactGoButton: Bool,
         addressMinWidth: CGFloat
     ) -> some View {
         HStack(spacing: 6) {
-            navigationButtonGroup
+            navigationControls(style: navigationStyle)
             if showsFullEngineSwitcher {
                 engineSwitcher
             } else {
@@ -222,6 +233,16 @@ struct ShelfBrowserPanelView: View {
             overflowMenu
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func navigationControls(style: ShelfBrowserToolbarNavigationStyle) -> some View {
+        switch style {
+        case .full:
+            navigationButtonGroup
+        case .primaryOnly:
+            primaryNavigationButton
+        }
     }
 
     private var engineSwitcher: some View {
@@ -294,6 +315,18 @@ struct ShelfBrowserPanelView: View {
             ) {
                 performNavigationControl()
             }
+        }
+        .fixedSize()
+    }
+
+    private var primaryNavigationButton: some View {
+        browserButton(
+            navigationControlIcon,
+            help: navigationControlHelp,
+            disabled: navigationControlDisabled,
+            accent: session.isLoading ? Stanford.statusError : nil
+        ) {
+            performNavigationControl()
         }
         .fixedSize()
     }

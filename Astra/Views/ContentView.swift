@@ -15,7 +15,7 @@ private enum WorkspaceCanvasItem: Equatable {
         switch self {
         case .plan: 400
         case .markdown: PanelLayoutGeometry.filesShelfMinReadableWidth
-        case .browser: 360
+        case .browser: PanelLayoutGeometry.browserShelfMinWidth
         case .query: 460
         }
     }
