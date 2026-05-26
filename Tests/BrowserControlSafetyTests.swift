@@ -371,4 +371,116 @@ struct BrowserControlSafetyTests {
         #expect(decision.warning?.contains("generic Drive actions are not changing page state") == true)
         #expect(decision.diagnostics["drivePostFailureGenericNoProgressMutations"] as? Int == 2)
     }
+
+    @Test("Browser action metadata classifies read-only and mutating actions")
+    func browserActionMetadataClassifiesActions() {
+        let actions = BrowserBridgeActionMetadata.enriched([
+            ["method": "GET", "path": "/health"],
+            ["method": "POST", "path": "/googleDocsReplaceDocument"],
+            ["method": "POST", "path": "/click"]
+        ])
+
+        #expect(actions[0]["category"] as? String == "status")
+        #expect(actions[0]["riskLevel"] as? String == "read-only")
+        #expect(actions[0]["confirmation"] as? String == "not-required")
+        #expect(actions[0]["preferredUse"] as? String != nil)
+        #expect(actions[1]["category"] as? String == "site-mutation")
+        #expect(actions[1]["riskLevel"] as? String == "high-impact")
+        #expect(actions[2]["category"] as? String == "mutation")
+        #expect(actions[2]["confirmation"] as? String == "required-for-dangerous-targets")
+    }
+
+    @Test("Browser recovery hints re-analyze stale controls with label context")
+    func browserRecoveryHintsReanalyzeStaleControlsWithLabelContext() {
+        let recovery = BrowserBridgeRecoveryHints.recoveryObject(
+            error: "stale_analysis",
+            action: "click",
+            analysisID: "ana_1",
+            controlID: "ctl_2",
+            controlLabel: "Save",
+            validActions: []
+        ) ?? [:]
+
+        #expect(recovery["kind"] as? String == "reanalyze")
+        #expect(recovery["failedAction"] as? String == "click")
+        #expect(recovery["nextCommand"] as? String == "astra-browser analyze --query 'Save'")
+    }
+
+    @Test("Browser recovery hints choose a valid fallback action")
+    func browserRecoveryHintsChooseValidFallbackAction() {
+        let recovery = BrowserBridgeRecoveryHints.recoveryObject(
+            error: "unsupported_action",
+            action: "click",
+            analysisID: "ana_1",
+            controlID: "ctl_2",
+            validActions: [BrowserActionKind.open.rawValue]
+        ) ?? [:]
+
+        #expect(recovery["kind"] as? String == "choose-supported-action")
+        #expect(recovery["nextCommand"] as? String == "astra-browser open --analysis 'ana_1' --control 'ctl_2'")
+    }
+
+    @Test("Browser status summary reports readiness and last failures")
+    func browserStatusSummaryReportsReadinessAndLastFailures() {
+        let ready = BrowserBridgeStatusSummary.build(
+            bridgeEnabled: true,
+            hasEndpoint: true,
+            backend: "controlled Chromium",
+            controlledState: "running",
+            controlledRunning: true,
+            hasDebugPort: true,
+            activeAdapterCount: 1,
+            lastFailure: nil
+        )
+        let failing = BrowserBridgeStatusSummary.build(
+            bridgeEnabled: true,
+            hasEndpoint: true,
+            backend: "controlled Chromium",
+            controlledState: "running",
+            controlledRunning: true,
+            hasDebugPort: true,
+            activeAdapterCount: 1,
+            lastFailure: "stale_analysis"
+        )
+        let disabled = BrowserBridgeStatusSummary.build(
+            bridgeEnabled: false,
+            hasEndpoint: false,
+            backend: "embedded WebKit",
+            controlledState: "stopped",
+            controlledRunning: false,
+            hasDebugPort: false,
+            activeAdapterCount: 0,
+            lastFailure: "stale_analysis"
+        )
+
+        #expect(ready["readiness"] as? String == "ready")
+        #expect(ready["debugPort"] as? String == "available")
+        #expect(failing["readiness"] as? String == "needs_attention")
+        #expect(failing["lastFailure"] as? String == "stale_analysis")
+        #expect(disabled["readiness"] as? String == "disabled")
+        #expect(disabled["bridge"] as? String == "disabled")
+    }
+
+    @Test("Browser recovery hints attach top-level next command")
+    func browserRecoveryHintsAttachTopLevelNextCommand() {
+        let failedAction = BrowserBridgeRecoveryHints.failedActionName(
+            method: "POST",
+            path: "/click"
+        )
+        var response: [String: Any] = [
+            "ok": false,
+            "error": "browser_action_budget_exceeded"
+        ]
+
+        BrowserBridgeRecoveryHints.attach(
+            to: &response,
+            error: "browser_action_budget_exceeded",
+            action: failedAction
+        )
+
+        #expect(response["nextCommand"] as? String == "astra-browser trace")
+        let recovery = response["recovery"] as? [String: Any]
+        #expect(recovery?["kind"] as? String == "inspect-trace")
+        #expect(recovery?["failedAction"] as? String == "POST /click")
+    }
 }
