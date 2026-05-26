@@ -157,10 +157,15 @@ struct CapabilityRailPresentationTests {
 
     @Test("workspace setup rows disclose configuration details inline")
     func workspaceSetupRowsDiscloseConfigurationDetailsInline() {
+        #expect(WorkspaceSetupChecklistPresentation.sectionTitle == "Workspace setup")
+        #expect(WorkspaceSetupChecklistPresentation.missingGroupTitle == "Needs setup")
+        #expect(WorkspaceSetupChecklistPresentation.configuredGroupTitle == "Configured")
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineExpansion == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineEditing == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsMemoryRemoval == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsFolderRemoval == true)
+        #expect(WorkspaceSetupChecklistPresentation.usesCapabilitySummaryRowPattern == true)
+        #expect(WorkspaceSetupChecklistPresentation.showsPerRowStatusInCollapsedState == false)
         #expect(WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon == "chevron.right")
         #expect(WorkspaceSetupChecklistPresentation.expandedDisclosureIcon == "chevron.down")
         #expect(WorkspaceSetupChecklistPresentation.detailPreviewLimit == 4)
