@@ -3,6 +3,29 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 
+enum TaskComposerPresentation {
+    static let usesCompactInputSpacing = true
+    static let usesForcedExpandedInputHeight = false
+    static let decisionRowUsesNestedChrome = false
+    static let decisionRowUsesNestedStroke = false
+    static let decisionDockHorizontalPadding: CGFloat = 14
+    static let decisionDockTopPadding: CGFloat = 12
+    static let decisionDockBottomPadding: CGFloat = 8
+    static let decisionRowHorizontalPadding: CGFloat = 12
+    static let decisionRowVerticalPadding: CGFloat = 10
+    static let decisionRowSpacing: CGFloat = 12
+    static let decisionAccentWidth: CGFloat = 3
+    static let decisionAccentVerticalInset: CGFloat = 10
+    static let decisionIconFrame: CGFloat = 24
+    static let decisionIconFontSize: CGFloat = 20
+    static let decisionTitleFontSize: CGFloat = 14
+    static let decisionDetailFontSize: CGFloat = 12
+    static let inputHorizontalPadding: CGFloat = 14
+    static let inputTopPadding: CGFloat = 12
+    static let inputTopPaddingWithAttachments: CGFloat = 8
+    static let inputBottomPadding: CGFloat = 9
+}
+
 private struct TaskScopedStatusMessage: Equatable {
     let taskID: UUID
     let text: String
@@ -3559,7 +3582,6 @@ struct TaskMainView: View {
         commandPreview: String? = nil,
         @ViewBuilder actions: () -> Actions
     ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
         let hasSupportingRows = modeLabel != nil || scope != nil || commandPreview != nil || detailLineLimit > 1
 
         return ViewThatFits(in: .horizontal) {
@@ -3588,18 +3610,14 @@ struct TaskMainView: View {
                 actions: actions
             )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.primary.opacity(0.022))
-        .clipShape(shape)
-        .overlay {
-            shape.stroke(color.opacity(0.12), lineWidth: 1)
-        }
+        .padding(.horizontal, TaskComposerPresentation.decisionRowHorizontalPadding)
+        .padding(.vertical, TaskComposerPresentation.decisionRowVerticalPadding)
+        .contentShape(Rectangle())
         .overlay(alignment: .leading) {
             Capsule()
                 .fill(color.opacity(0.76))
-                .frame(width: 3)
-                .padding(.vertical, 10)
+                .frame(width: TaskComposerPresentation.decisionAccentWidth)
+                .padding(.vertical, TaskComposerPresentation.decisionAccentVerticalInset)
                 .padding(.leading, 1)
         }
     }
@@ -3616,11 +3634,14 @@ struct TaskMainView: View {
         hasSupportingRows: Bool,
         @ViewBuilder actions: () -> Actions
     ) -> some View {
-        HStack(alignment: hasSupportingRows ? .top : .center, spacing: 12) {
+        HStack(alignment: hasSupportingRows ? .top : .center, spacing: TaskComposerPresentation.decisionRowSpacing) {
             Image(systemName: icon)
-                .font(Stanford.ui(20, weight: .semibold))
+                .font(Stanford.ui(TaskComposerPresentation.decisionIconFontSize, weight: .semibold))
                 .foregroundStyle(color)
-                .frame(width: 24, height: 24)
+                .frame(
+                    width: TaskComposerPresentation.decisionIconFrame,
+                    height: TaskComposerPresentation.decisionIconFrame
+                )
                 .padding(.top, hasSupportingRows ? 1 : 0)
 
             taskDecisionTextStack(
@@ -3652,11 +3673,14 @@ struct TaskMainView: View {
         @ViewBuilder actions: () -> Actions
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: TaskComposerPresentation.decisionRowSpacing) {
                 Image(systemName: icon)
-                    .font(Stanford.ui(20, weight: .semibold))
+                    .font(Stanford.ui(TaskComposerPresentation.decisionIconFontSize, weight: .semibold))
                     .foregroundStyle(color)
-                    .frame(width: 24, height: 24)
+                    .frame(
+                        width: TaskComposerPresentation.decisionIconFrame,
+                        height: TaskComposerPresentation.decisionIconFrame
+                    )
 
                 taskDecisionTextStack(
                     title: title,
@@ -3688,11 +3712,11 @@ struct TaskMainView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(Stanford.body(14).weight(.semibold))
+                .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
                 .foregroundStyle(Stanford.black)
                 .lineLimit(1)
             Text(detail)
-                .font(Stanford.caption(12))
+                .font(Stanford.caption(TaskComposerPresentation.decisionDetailFontSize))
                 .foregroundStyle(.secondary)
                 .lineLimit(detailLineLimit)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3815,9 +3839,9 @@ struct TaskMainView: View {
             VStack(spacing: 0) {
                 if shouldShowTaskDecisionDock {
                     taskDecisionDock
-                        .padding(.horizontal, 14)
-                        .padding(.top, 12)
-                        .padding(.bottom, 8)
+                        .padding(.horizontal, TaskComposerPresentation.decisionDockHorizontalPadding)
+                        .padding(.top, TaskComposerPresentation.decisionDockTopPadding)
+                        .padding(.bottom, TaskComposerPresentation.decisionDockBottomPadding)
 
                     Divider()
                         .overlay(Color.primary.opacity(0.06))
@@ -3840,9 +3864,9 @@ struct TaskMainView: View {
                     .textFieldStyle(.plain)
                     .font(Stanford.chatBody())
                     .lineLimit(2...10)
-                    .padding(.horizontal, 14)
-                    .padding(.top, attachedFiles.isEmpty ? 12 : 8)
-                    .padding(.bottom, 9)
+                    .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
+                    .padding(.top, attachedFiles.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
+                    .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
                     .focused($isComposerFocused)
                     .onSubmit {
                         if showSlashMenu && !visibleSlashOptions.isEmpty {
