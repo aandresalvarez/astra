@@ -207,6 +207,59 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(approvalStore.records().isEmpty)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
     }
+
+    @Test("create flow rejects duplicate package IDs without partial writes")
+    func createFlowRejectsDuplicatePackageIDWithoutPartialWrites() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-duplicate-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root
+            .appendingPathComponent("capabilities", isDirectory: true)
+            .appendingPathComponent("local", isDirectory: true)
+            .appendingPathComponent("duplicate.json")
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("app-library", isDirectory: true))
+        let approvalStore = CapabilityApprovalStore(directory: root.appendingPathComponent("approvals", isDirectory: true))
+        let container = try makeRoundTripContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Duplicate Package Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        context.insert(workspace)
+
+        let package = roundTripPackage(name: "Duplicate Round Trip")
+        var existing = package
+        existing.version = "9.0.0"
+        try library.install(existing, sourceMetadata: .localLibrary())
+        let service = CapabilityPackageCreationService(
+            library: library,
+            sourceExporter: CapabilityPackageSourceExporter(),
+            approvalStore: approvalStore,
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        do {
+            _ = try service.create(
+                package,
+                enableHere: true,
+                sourceURL: sourceURL,
+                workspace: workspace,
+                modelContext: context,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace,
+                    isAdmin: true,
+                    currentAppVersion: SemanticVersion(1, 0, 0),
+                    approvalRecords: []
+                )
+            )
+            Issue.record("Duplicate created capability should be rejected before overwriting package state.")
+        } catch let error as CapabilityPackageCreationError {
+            if case .invalidPackage(let report) = error {
+                #expect(report.blockers.map(\.code).contains(.duplicatePackageID))
+            }
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(library.installedPackage(id: package.id)?.version == "9.0.0")
+        #expect(approvalStore.records().isEmpty)
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
+    }
 }
 
 private func makeRoundTripContainer() throws -> ModelContainer {

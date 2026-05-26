@@ -196,19 +196,19 @@ enum CapabilityPackageValidator {
         allowReplacingExistingPackageID: Bool,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
-        let id = package.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawID = package.id
+        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
         if id.isEmpty {
             issues.append(issue(.blocker, .invalidPackageID, "Missing package ID", "Package ID cannot be empty."))
             return
         }
 
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
-        if id.unicodeScalars.contains(where: { !allowed.contains($0) }) {
+        if !isValidPackageIDLiteral(rawID) {
             issues.append(issue(
                 .blocker,
                 .invalidPackageID,
                 "Unsafe package ID",
-                "Package ID may contain only letters, numbers, dots, hyphens, and underscores.",
+                "Package ID must start with a letter or number and contain only ASCII letters, numbers, dots, hyphens, and underscores.",
                 component: id
             ))
         }
@@ -247,7 +247,7 @@ enum CapabilityPackageValidator {
             ))
         }
 
-        if SemanticVersion(string: package.version) == nil {
+        if !isValidSemanticVersionLiteral(package.version) {
             issues.append(issue(
                 .blocker,
                 .invalidVersion,
@@ -256,6 +256,35 @@ enum CapabilityPackageValidator {
                 component: package.version
             ))
         }
+    }
+
+    private static func isValidPackageIDLiteral(_ value: String) -> Bool {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.count <= 128,
+              let first = value.unicodeScalars.first,
+              isASCIIAlphanumeric(first) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == "." || $0 == "-" || $0 == "_"
+        }
+    }
+
+    private static func isValidSemanticVersionLiteral(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value == trimmed else { return false }
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 || parts.count == 3 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.unicodeScalars.allSatisfy { (48...57).contains($0.value) }
+        }
+    }
+
+    private static func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+        (65...90).contains(scalar.value)
+            || (97...122).contains(scalar.value)
+            || (48...57).contains(scalar.value)
     }
 
     private static func validatePayload(

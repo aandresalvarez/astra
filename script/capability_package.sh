@@ -131,18 +131,20 @@ def validate_package(path: Path) -> dict:
             "issues": [issue("BLOCKER", "malformedJSON", "Package JSON root must be an object.")],
         }
 
-    package_id = str(package.get("id", "")).strip()
+    raw_package_id = package.get("id", "")
+    package_id = raw_package_id.strip() if isinstance(raw_package_id, str) else ""
     safe_name = safe_file_name(package_id)
-    if not package_id:
+    if not isinstance(raw_package_id, str) or not package_id:
         issues.append(issue("BLOCKER", "invalidPackageID", "Package ID cannot be empty."))
-    elif not SAFE_ID.match(package_id):
-        issues.append(issue("BLOCKER", "invalidPackageID", "Package ID may contain only letters, numbers, dots, hyphens, and underscores."))
+    elif raw_package_id != package_id or not SAFE_ID.match(package_id):
+        issues.append(issue("BLOCKER", "invalidPackageID", "Package ID must start with a letter or number and contain only ASCII letters, numbers, dots, hyphens, and underscores."))
 
     if safe_name == "capability":
         issues.append(issue("BLOCKER", "invalidPackageID", "Package ID does not produce a usable capability filename."))
 
-    version = str(package.get("version", "")).strip()
-    if not SEMVER.match(version):
+    raw_version = package.get("version", "")
+    version = raw_version.strip() if isinstance(raw_version, str) else ""
+    if not isinstance(raw_version, str) or raw_version != version or not SEMVER.match(version):
         issues.append(issue("BLOCKER", "invalidVersion", f"Package version {version or '<empty>'} is not semantic."))
 
     if "governance" not in package:

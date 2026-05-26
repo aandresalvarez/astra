@@ -70,6 +70,38 @@ struct CapabilityPackageValidatorTests {
         #expect(collisionReport.blockers.map(\.code).contains(.duplicatePackageFilename))
     }
 
+    @Test("package identity rejects whitespace punctuation unicode and malformed semver")
+    func packageIdentityRejectsUnsafeLiterals() {
+        let invalidIDs = [
+            " local.trimmed",
+            "local.trimmed ",
+            ".local.leading-dot",
+            "-local.leading-hyphen",
+            "local.café"
+        ]
+        for id in invalidIDs {
+            let report = CapabilityPackageValidator.validate(
+                package: makePackage(id: id, governance: .localDraft()),
+                checkPrerequisites: false
+            )
+            #expect(report.blockers.map(\.code).contains(.invalidPackageID), "\(id) should be invalid")
+        }
+
+        let invalidVersions = [
+            " 1.0.0",
+            "1.0.0 ",
+            "1.2.beta",
+            "1.2.3.4",
+            "1"
+        ]
+        for version in invalidVersions {
+            var package = makePackage(id: "local.invalid-version-\(UUID().uuidString)", governance: .localDraft())
+            package.version = version
+            let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+            #expect(report.blockers.map(\.code).contains(.invalidVersion), "\(version) should be invalid")
+        }
+    }
+
     @Test("unsafe local tool is blocked")
     func unsafeLocalToolIsBlocked() {
         var package = makePackage(governance: .localDraft())
@@ -386,6 +418,50 @@ struct CapabilityPackageImporterTests {
         #expect(installedPackages.allSatisfy { $0.governance.visibility == .adminOnly })
         #expect(installedPackages.allSatisfy { $0.governance.approvedBy == nil })
         #expect(installedPackages.allSatisfy { $0.governance.approvedAt == nil })
+    }
+
+    @Test("developer script rejects invalid package identity without partial writes")
+    func developerScriptRejectsInvalidIdentityWithoutPartialWrites() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-invalid-identity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+        let homeRoot = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: libraryRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: homeRoot, withIntermediateDirectories: true)
+
+        var whitespaceObject = try JSONSerialization.jsonObject(
+            with: encodedData(makePackage(id: "local.script-bad-identity", governance: nil))
+        ) as! [String: Any]
+        whitespaceObject["id"] = " local.script-bad-identity"
+        whitespaceObject["version"] = "1.2.beta"
+        try JSONSerialization.data(withJSONObject: whitespaceObject, options: [.prettyPrinted, .sortedKeys])
+            .write(to: libraryRoot.appendingPathComponent("whitespace.json"))
+
+        var typedObject = whitespaceObject
+        typedObject["id"] = 42
+        typedObject["version"] = 42
+        try JSONSerialization.data(withJSONObject: typedObject, options: [.prettyPrinted, .sortedKeys])
+            .write(to: libraryRoot.appendingPathComponent("typed.json"))
+
+        let result = try runCapabilityPackageScript(
+            arguments: ["install-dev-dir", libraryRoot.path],
+            home: homeRoot
+        )
+
+        #expect(result.status != 0)
+        #expect(result.output.contains("invalidPackageID"))
+        #expect(result.output.contains("invalidVersion"))
+        let devLibrary = homeRoot
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("AstraDev")
+            .appendingPathComponent("Capabilities")
+        let installedFiles = try? FileManager.default.contentsOfDirectory(
+            at: devLibrary,
+            includingPropertiesForKeys: nil
+        )
+        #expect(installedFiles?.isEmpty ?? true)
     }
 
     @Test("developer script install directory rejects duplicate package IDs without partial writes")

@@ -54,6 +54,7 @@ struct CapabilityPackageCreationService {
     ) throws -> CapabilityPackageCreationResult {
         let validation = CapabilityPackageValidator.validate(
             package: package,
+            installedPackages: library.installedPackages(),
             checkPrerequisites: false
         )
         guard validation.blockers.isEmpty, let validatedPackage = validation.package else {
