@@ -76,6 +76,7 @@ enum CapabilityRailSectionPresentation {
     static let addActionShowsPlusIcon = false
     static let showsAvailableToAddCount = false
     static let showsBrowseLibraryFooter = false
+    static let showsTopHealthSummaryMetrics = false
     static let attentionGroupShowsWarningIcon = false
     static let attentionGroupUsesWarningTint = false
 
@@ -85,20 +86,6 @@ enum CapabilityRailSectionPresentation {
 
     static func draftSummaryTitle(count: Int) -> String {
         "\(count) draft \(count == 1 ? "capability" : "capabilities")"
-    }
-
-    static func healthSummaryMetrics(
-        needsSetupCount _: Int,
-        readyCount: Int,
-        draftCount: Int
-    ) -> [CapabilityHealthSummaryMetricDescriptor] {
-        [
-            CapabilityHealthSummaryMetricDescriptor(icon: "checkmark.circle", title: "\(readyCount) ready"),
-            CapabilityHealthSummaryMetricDescriptor(
-                icon: "doc.text",
-                title: "\(draftCount) \(draftCount == 1 ? "draft" : "drafts")"
-            )
-        ]
     }
 
     static func previewList(_ names: [String], limit: Int = 3) -> String {
@@ -112,11 +99,6 @@ enum CapabilityRailSectionPresentation {
         let prefix = visible.joined(separator: ", ")
         return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
     }
-}
-
-struct CapabilityHealthSummaryMetricDescriptor: Equatable {
-    let icon: String
-    let title: String
 }
 
 enum WorkspaceSetupChecklistPresentation {
@@ -468,7 +450,6 @@ struct WorkspaceRightRailView: View {
                     capabilityAddButton
                 }
 
-                capabilityHealthSummary(snapshot)
                 capabilityList(snapshot)
             }
         }
@@ -522,32 +503,6 @@ struct WorkspaceRightRailView: View {
             .help(CapabilityRailSectionPresentation.addActionHelp)
             .accessibilityLabel("Add capability")
         }
-    }
-
-    private func capabilityHealthSummary(_ snapshot: CapabilityRailSnapshot) -> some View {
-        let metrics = CapabilityRailSectionPresentation.healthSummaryMetrics(
-            needsSetupCount: snapshot.needsSetupCount,
-            readyCount: snapshot.readyItems.count,
-            draftCount: snapshot.draftItems.count
-        )
-
-        return HStack(spacing: 8) {
-            ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
-                if index > 0 {
-                    CapabilityHealthDivider()
-                }
-
-                CapabilityHealthMetric(
-                    icon: metric.icon,
-                    title: metric.title,
-                    color: .secondary
-                )
-            }
-
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(snapshot.needsSetupCount) capabilities require action, \(snapshot.readyItems.count) ready capabilities, \(snapshot.draftItems.count) draft capabilities")
     }
 
     private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
@@ -2653,35 +2608,6 @@ private struct RailCountBadge: View {
                     style: .continuous
                 )
             )
-    }
-}
-
-private struct CapabilityHealthMetric: View {
-    let icon: String
-    let title: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(Stanford.ui(14, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: 17)
-
-            Text(title)
-                .font(Stanford.caption(13).weight(.semibold))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-        }
-    }
-}
-
-private struct CapabilityHealthDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.18))
-            .frame(width: 1, height: 22)
     }
 }
 

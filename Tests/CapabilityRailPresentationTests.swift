@@ -135,17 +135,9 @@ struct CapabilityRailPresentationTests {
         )
     }
 
-    @Test("capability health summary does not repeat setup warning")
-    func capabilityHealthSummaryDoesNotRepeatSetupWarning() {
-        let metricTitles = CapabilityRailSectionPresentation.healthSummaryMetrics(
-            needsSetupCount: 1,
-            readyCount: 6,
-            draftCount: 1
-        ).map(\.title)
-
-        #expect(metricTitles == ["6 ready", "1 draft"])
-        #expect(!metricTitles.contains { $0.localizedCaseInsensitiveContains("setup") })
-        #expect(!metricTitles.contains { $0.localizedCaseInsensitiveContains("attention") })
+    @Test("capability health omits low value top summary metrics")
+    func capabilityHealthOmitsLowValueTopSummaryMetrics() {
+        #expect(CapabilityRailSectionPresentation.showsTopHealthSummaryMetrics == false)
     }
 
     @Test("attention group header stays neutral because row pill carries setup state")
