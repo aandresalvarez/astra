@@ -14,7 +14,7 @@ private enum WorkspaceCanvasItem: Equatable {
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
-        case .markdown: 360
+        case .markdown: PanelLayoutGeometry.filesShelfMinReadableWidth
         case .browser: 360
         case .query: 460
         }
@@ -45,6 +45,10 @@ private enum WorkspaceCanvasItem: Equatable {
         case .browser: "Browser"
         case .query: "Query"
         }
+    }
+
+    var closesWhenDraggedBelowMinimum: Bool {
+        self == .markdown
     }
 }
 
@@ -2693,6 +2697,7 @@ private struct ContentDetailAreaView: View {
     @AppStorage(AppStorageKeys.rightRailWidth) private var rightRailStoredWidth = 0.0
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
+    @State private var shelfDragShouldDismiss = false
     @State private var resizingShelfItem: WorkspaceCanvasItem?
     @State private var rightRailDragStartWidth: CGFloat?
     @State private var rightRailTransientWidth: CGFloat?
@@ -3020,24 +3025,36 @@ private struct ContentDetailAreaView: View {
                 if shelfDragStartWidth == nil || resizingShelfItem != item {
                     resizingShelfItem = item
                     shelfDragStartWidth = shelfWidth(for: item, availableWidth: availableWidth)
+                    shelfDragShouldDismiss = false
                 }
                 guard let shelfDragStartWidth else { return }
                 let proposedWidth = shelfDragStartWidth - translation.width
                 let next = clampedShelfWidth(proposedWidth, for: item, availableWidth: availableWidth)
+                let shouldDismiss = item.closesWhenDraggedBelowMinimum
+                    && PanelLayoutGeometry.shouldDismissShelfResize(
+                        proposedWidth: proposedWidth,
+                        shelfMinWidth: item.minWidth
+                    )
                 // Bypass any ambient .animation modifier so the panel tracks the cursor 1:1.
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
                     shelfTransientWidth = next
+                    shelfDragShouldDismiss = shouldDismiss
                 }
             },
             onEnded: {
-                if let shelfTransientWidth {
+                let shouldDismiss = resizingShelfItem == item && shelfDragShouldDismiss
+                if let shelfTransientWidth, !shouldDismiss {
                     storeShelfWidth(shelfTransientWidth, for: item, availableWidth: availableWidth)
                 }
                 shelfDragStartWidth = nil
                 shelfTransientWidth = nil
+                shelfDragShouldDismiss = false
                 resizingShelfItem = nil
+                if shouldDismiss {
+                    activeCanvasItem = nil
+                }
             }
         )
     }
