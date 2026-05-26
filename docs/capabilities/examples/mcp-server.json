@@ -1,0 +1,81 @@
+{
+  "author": "Local",
+  "browserAdapters": [],
+  "category": "MCP",
+  "connectors": [],
+  "description": "Example local stdio MCP server declaration.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "workspaceFiles"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "MCP package pending local review.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "high",
+    "visibility": "adminOnly"
+  },
+  "icon": "server.rack",
+  "id": "local.example-mcp",
+  "localTools": [],
+  "mcpServers": [
+    {
+      "allowedTools": [
+        "items.list"
+      ],
+      "arguments": [
+        "stdio"
+      ],
+      "command": "example-mcp-server",
+      "connectorBindings": [],
+      "displayName": "Example MCP",
+      "environmentKeys": [],
+      "excludedTools": [
+        "items.delete"
+      ],
+      "id": "example",
+      "promptsEnabled": false,
+      "resourcesEnabled": false,
+      "transport": "stdio",
+      "trustLevel": "high",
+      "url": null
+    }
+  ],
+  "name": "Example MCP",
+  "prerequisites": [
+    {
+      "authHint": null,
+      "binary": "example-mcp-server",
+      "displayName": "Example MCP Server",
+      "installHint": "Install the server binary and make sure it is on PATH.",
+      "installURL": null,
+      "livenessArgs": [
+        "--version"
+      ],
+      "purpose": "Provides structured MCP tools for this capability.",
+      "semantic": null
+    }
+  ],
+  "setupGuide": "Install the MCP server binary before enabling this package.",
+  "skills": [],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "mcp"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

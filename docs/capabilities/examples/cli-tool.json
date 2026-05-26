@@ -1,0 +1,84 @@
+{
+  "author": "Local",
+  "browserAdapters": [],
+  "category": "Developer Tools",
+  "connectors": [],
+  "description": "Expose jq for structured JSON inspection.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "workspaceFiles"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Local CLI tool package pending review.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "medium",
+    "visibility": "adminOnly"
+  },
+  "icon": "terminal",
+  "id": "local.jq-reader",
+  "localTools": [
+    {
+      "arguments": "--version",
+      "command": "jq",
+      "description": "Run jq for JSON inspection.",
+      "icon": "terminal",
+      "name": "jq",
+      "toolType": "cli"
+    }
+  ],
+  "mcpServers": [],
+  "name": "jq Reader",
+  "prerequisites": [
+    {
+      "authHint": null,
+      "binary": "jq",
+      "displayName": "jq",
+      "installHint": "Install via Homebrew: `brew install jq`",
+      "installURL": "https://jqlang.github.io/jq/",
+      "livenessArgs": [
+        "--version"
+      ],
+      "purpose": "Parses JSON output from local commands.",
+      "semantic": null
+    }
+  ],
+  "setupGuide": "Install jq locally before enabling this capability.",
+  "skills": [
+    {
+      "allowedTools": [
+        "Read",
+        "Bash"
+      ],
+      "behaviorInstructions": "Use jq only for local JSON inspection. Do not mutate files unless the user explicitly asks.",
+      "customTools": [],
+      "description": "JSON inspection behavior.",
+      "disallowedTools": [],
+      "environmentKeys": [],
+      "environmentValues": [],
+      "icon": "terminal",
+      "name": "jq Reader"
+    }
+  ],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "json",
+    "cli"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

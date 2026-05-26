@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import ASTRACore
 
 enum CatalogFocus: String {
@@ -181,6 +183,26 @@ private struct CapabilityConfigurationLink: Identifiable {
     let color: Color
 }
 
+private struct CapabilityImportReview: Identifiable {
+    let id = UUID()
+    let report: CapabilityPackageValidationReport
+
+    var sourceURL: URL? {
+        report.sourceURL
+    }
+}
+
+enum CapabilityImportPresentation {
+    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
+        let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? "No description provided." : description
+    }
+
+    static func shouldShowContentSummary(for package: PluginPackage) -> Bool {
+        !package.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
@@ -215,6 +237,8 @@ struct PluginCatalogView: View {
     @State private var approvalError: String?
     @State private var approvalRevision = 0
     @State private var showCreateWizard = false
+    @State private var importReview: CapabilityImportReview?
+    @State private var importError: String?
     @State private var selectedPackageID: String?
 
     private var capabilities: WorkspaceCapabilities {
@@ -412,9 +436,18 @@ struct PluginCatalogView: View {
             selectedPackageID = newValue
         }
         .sheet(isPresented: $showCreateWizard) {
-            CapabilityCreationWizardView(workspace: workspace) { package, enableHere in
-                createCapability(package, enableHere: enableHere)
+            CapabilityCreationWizardView(workspace: workspace) { package, enableHere, sourceURL in
+                createCapability(package, enableHere: enableHere, sourceURL: sourceURL)
             }
+        }
+        .sheet(item: $importReview) { review in
+            CapabilityImportReviewSheet(
+                review: review,
+                onCancel: { importReview = nil },
+                onImport: { report in
+                    importCapability(report)
+                }
+            )
         }
         .sheet(item: $installingPackage) { package in
             PluginInstallSheet(
@@ -437,6 +470,14 @@ struct PluginCatalogView: View {
             Button("OK", role: .cancel) { installError = nil }
         } message: {
             Text(installError ?? "")
+        }
+        .alert("Capability could not be imported", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "")
         }
         .alert("Remove Capability Package?", isPresented: Binding(
             get: { removalCandidate != nil },
@@ -571,6 +612,7 @@ struct PluginCatalogView: View {
 
             Spacer()
 
+            importCapabilityButton
             newCapabilityButton
 
             if !isEmbedded {
@@ -590,6 +632,7 @@ struct PluginCatalogView: View {
             searchField
 
             if isEmbedded {
+                importCapabilityButton
                 newCapabilityButton
             }
         }
@@ -637,6 +680,18 @@ struct PluginCatalogView: View {
         }
         .buttonStyle(.bordered)
         .fixedSize()
+    }
+
+    private var importCapabilityButton: some View {
+        Button {
+            openCapabilityImportPanel()
+        } label: {
+            Label("Import Capability", systemImage: "square.and.arrow.down")
+                .font(Stanford.body(13))
+        }
+        .buttonStyle(.bordered)
+        .fixedSize()
+        .help("Import a local capability package JSON")
     }
 
     // MARK: - Category Strip
@@ -997,7 +1052,77 @@ struct PluginCatalogView: View {
         }
     }
 
-    private func createCapability(_ package: PluginPackage, enableHere: Bool) {
+    private func openCapabilityImportPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Capability"
+        panel.prompt = "Review"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.json]
+
+        guard panel.runModal() == .OK,
+              let url = panel.url else {
+            return
+        }
+        prepareCapabilityImportReview(url)
+    }
+
+    private func prepareCapabilityImportReview(_ url: URL) {
+        let report = CapabilityPackageImporter().validateFile(at: url)
+        importReview = CapabilityImportReview(report: report)
+    }
+
+    private func importCapability(_ report: CapabilityPackageValidationReport) {
+        let traceID = AuditTrace.make("capability-import")
+        guard report.canInstall else {
+            importError = report.summary
+            AppLogger.audit(
+                .capabilityEnableFailed,
+                category: "Capabilities",
+                fields: CapabilityAudit.importJSONFailureFields(
+                    report: report,
+                    workspace: workspace,
+                    traceID: traceID,
+                    result: "validation_blocked"
+                ),
+                level: .warning
+            )
+            return
+        }
+        do {
+            let result = try CapabilityPackageImporter().importValidatedPackage(report)
+            selectedPackageID = result.package.id
+            onPackageFocusChanged?(result.package.id)
+            importReview = nil
+            catalog.loadApprovedCapabilities()
+            onCatalogChanged?()
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "import_json",
+                "trace_id": traceID,
+                "package_id": result.package.id,
+                "package_name": result.package.name,
+                "package_version": result.package.version,
+                "workspace_id": workspace.id.uuidString
+            ])
+        } catch {
+            importError = error.localizedDescription
+            AppLogger.audit(
+                .capabilityEnableFailed,
+                category: "Capabilities",
+                fields: CapabilityAudit.importJSONFailureFields(
+                    report: report,
+                    workspace: workspace,
+                    traceID: traceID,
+                    result: "import_failed",
+                    errorType: String(describing: type(of: error))
+                ),
+                level: .error
+            )
+        }
+    }
+
+    private func createCapability(_ package: PluginPackage, enableHere: Bool, sourceURL: URL?) {
         let traceID = AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
         AppLogger.breadcrumb(action: enableHere ? "create_and_enable_capability_clicked" : "create_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
             "source": enableHere ? "create_and_enable" : "create_install_only",
@@ -1006,17 +1131,20 @@ struct PluginCatalogView: View {
             "workspace_id": workspace.id.uuidString
         ])
         do {
+            let result = try CapabilityPackageCreationService().create(
+                package,
+                enableHere: enableHere,
+                sourceURL: sourceURL,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: catalogPolicyContext,
+                traceID: traceID
+            )
+            if result.approvalRecord != nil {
+                approvalRevision += 1
+            }
             if enableHere {
-                try CapabilityInstaller().install(
-                    package,
-                    into: workspace,
-                    modelContext: modelContext,
-                    policyContext: catalogPolicyContext,
-                    traceID: traceID
-                )
-                onInstall?(package)
-            } else {
-                try CapabilityLibrary().install(package)
+                onInstall?(result.package)
             }
             catalog.loadApprovedCapabilities()
             onCatalogChanged?()
@@ -1029,6 +1157,7 @@ struct PluginCatalogView: View {
                 "package_name": package.name,
                 "package_version": package.version,
                 "workspace_id": workspace.id.uuidString,
+                "source_json_path": sourceURL?.path ?? "",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
@@ -1443,7 +1572,20 @@ struct PluginCatalogView: View {
 
     private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        let record = CapabilityApprovalStore().record(for: package)
+        let approvalStore = CapabilityApprovalStore()
+        let records = approvalStore.records()
+        let digest = try? CapabilityApprovalDigest.digest(for: package)
+        let record = digest.flatMap { digest in
+            records.last {
+                $0.packageID == package.id &&
+                $0.packageVersion == package.version &&
+                $0.sourceDigest == digest
+            }
+        }
+        let hasVersionRecord = records.contains {
+            $0.packageID == package.id && $0.packageVersion == package.version
+        }
+        let digestLabel = record != nil ? "Digest current" : (hasVersionRecord ? "Changed since approval" : "No local record")
         let shouldShow = catalogPolicyContext.isAdmin
             && (record != nil || decision.requiresApproval || decision.governance.approvalStatus != .approved)
 
@@ -1458,9 +1600,9 @@ struct PluginCatalogView: View {
                             .font(Stanford.caption(11).weight(.semibold))
                             .foregroundStyle(Stanford.lagunita)
                         Spacer()
-                        Text(record == nil ? "No local record" : "Local record")
+                        Text(digestLabel)
                             .font(Stanford.caption(10))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(hasVersionRecord && record == nil ? Stanford.poppy : Stanford.coolGrey)
                     }
 
                     HStack(spacing: 8) {
@@ -1810,6 +1952,196 @@ struct PluginCatalogView: View {
             workspace: workspace,
             capabilities: capabilities
         )
+    }
+}
+
+private struct CapabilityImportReviewSheet: View {
+    let review: CapabilityImportReview
+    let onCancel: () -> Void
+    let onImport: (CapabilityPackageValidationReport) -> Void
+
+    private var report: CapabilityPackageValidationReport {
+        review.report
+    }
+
+    private var package: PluginPackage? {
+        report.package
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: package?.icon ?? "exclamationmark.triangle")
+                    .font(Stanford.ui(18, weight: .semibold))
+                    .foregroundStyle(report.canInstall ? Stanford.lagunita : Stanford.poppy)
+                    .frame(width: 34, height: 34)
+                    .background((report.canInstall ? Stanford.lagunita : Stanford.poppy).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(package?.name ?? "Invalid Capability")
+                        .font(Stanford.heading(18))
+                    Text(review.sourceURL?.lastPathComponent ?? "Package JSON")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let package {
+                        importPackageOverview(package)
+                    }
+                    importIssueSection(
+                        title: "Blockers",
+                        empty: "No blockers",
+                        issues: report.blockers,
+                        color: Stanford.cardinalRed,
+                        icon: "xmark.octagon.fill"
+                    )
+                    importIssueSection(
+                        title: "Warnings",
+                        empty: "No warnings",
+                        issues: report.warnings,
+                        color: Stanford.poppy,
+                        icon: "exclamationmark.triangle.fill"
+                    )
+                }
+                .padding(18)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    onImport(report)
+                } label: {
+                    Label("Import Capability", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Stanford.lagunita)
+                .disabled(!report.canInstall)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(18)
+        }
+        .frame(width: 640, height: 560)
+    }
+
+    private func importPackageOverview(_ package: PluginPackage) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(package.id)
+                        .font(Stanford.ui(12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(CapabilityImportPresentation.overviewDescription(
+                        for: package,
+                        contentSummary: importContentSummary(package)
+                    ))
+                        .font(Stanford.body(13))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                importChip("v\(package.version)", color: Stanford.coolGrey)
+                importChip(package.governance.approvalStatus.rawValue.capitalized, color: Stanford.poppy)
+            }
+
+            if CapabilityImportPresentation.shouldShowContentSummary(for: package) {
+                Text(importContentSummary(package))
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.025))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func importIssueSection(
+        title: String,
+        empty: String,
+        issues: [CapabilityPackageValidationIssue],
+        color: Color,
+        icon: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(color)
+                Text("\(issues.count)")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(color.opacity(0.08))
+                    .clipShape(Capsule())
+                Spacer()
+            }
+
+            if issues.isEmpty {
+                Text(empty)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(issues) { issue in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issue.title)
+                                .font(Stanford.caption(11).weight(.semibold))
+                            Text(issue.message)
+                                .font(Stanford.caption(10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(color.opacity(0.045))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                }
+            }
+        }
+    }
+
+    private func importChip(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(Stanford.caption(10).weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.08))
+            .clipShape(Capsule())
+    }
+
+    private func importContentSummary(_ package: PluginPackage) -> String {
+        let parts = [
+            countPhrase(package.skills.count, singular: "skill", plural: "skills"),
+            countPhrase(package.connectors.count, singular: "connector", plural: "connectors"),
+            countPhrase(package.localTools.count, singular: "tool", plural: "tools"),
+            countPhrase(package.mcpServers.count, singular: "MCP server", plural: "MCP servers"),
+            countPhrase(package.browserAdapters.count, singular: "browser adapter", plural: "browser adapters"),
+            countPhrase(package.templates.count, singular: "template", plural: "templates")
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? "No installable payload" : parts.joined(separator: ", ")
+    }
+
+    private func countPhrase(_ count: Int, singular: String, plural: String) -> String {
+        guard count > 0 else { return "" }
+        return "\(count) \(count == 1 ? singular : plural)"
     }
 }
 
