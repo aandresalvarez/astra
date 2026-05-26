@@ -65,6 +65,7 @@ enum CapabilityRailSectionPresentation {
     static let addActionTitle = "Add"
     static let addActionSubtitle = "Browse library"
     static let addActionHelp = "Browse capability library"
+    static let addActionShowsPlusIcon = false
     static let showsAvailableToAddCount = false
     static let showsBrowseLibraryFooter = false
     static let attentionGroupShowsWarningIcon = false
@@ -480,21 +481,15 @@ struct WorkspaceRightRailView: View {
     private var capabilityAddButton: some View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "plus")
-                        .font(Stanford.ui(17, weight: .medium))
-                        .frame(width: 18, alignment: .center)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(CapabilityRailSectionPresentation.addActionTitle)
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .lineLimit(1)
 
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(CapabilityRailSectionPresentation.addActionTitle)
-                            .font(Stanford.ui(15, weight: .semibold))
-                            .lineLimit(1)
-
-                        Text(CapabilityRailSectionPresentation.addActionSubtitle)
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Text(CapabilityRailSectionPresentation.addActionSubtitle)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 .foregroundStyle(Stanford.lagunita)
             }

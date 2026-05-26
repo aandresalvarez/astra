@@ -113,6 +113,7 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
         #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
         #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
+        #expect(CapabilityRailSectionPresentation.addActionShowsPlusIcon == false)
         #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
         #expect(CapabilityRailSectionPresentation.showsBrowseLibraryFooter == false)
         #expect(!CapabilityRailSectionPresentation.addActionSubtitle.localizedCaseInsensitiveContains("available"))
