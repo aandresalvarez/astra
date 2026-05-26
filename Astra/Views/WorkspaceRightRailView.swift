@@ -29,6 +29,14 @@ private enum CapabilityRailGroupStyle: Equatable {
     case draft
 }
 
+private enum WorkspaceSetupItem: Hashable {
+    case instructions
+    case memory
+    case folders
+    case remoteAccess
+    case routines
+}
+
 enum CapabilityRailLayout {
     static let compactRowMinHeight: CGFloat = 64
     static let regularRowMinHeight: CGFloat = 68
@@ -112,6 +120,11 @@ struct CapabilityHealthSummaryMetricDescriptor: Equatable {
 }
 
 enum WorkspaceSetupChecklistPresentation {
+    static let supportsInlineExpansion = true
+    static let collapsedDisclosureIcon = "chevron.right"
+    static let expandedDisclosureIcon = "chevron.down"
+    static let detailPreviewLimit = 4
+
     enum State: Equatable {
         case configured
         case missing
@@ -126,6 +139,17 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func summary(configured: Int, total: Int) -> String {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+
+    static func overflowSummary(
+        total: Int,
+        visible: Int,
+        singular: String,
+        plural: String
+    ) -> String? {
+        let remaining = total - visible
+        guard remaining > 0 else { return nil }
+        return "\(remaining) more \(remaining == 1 ? singular : plural)"
     }
 }
 
@@ -187,6 +211,7 @@ struct WorkspaceRightRailView: View {
     @State private var isTemplatesExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
+    @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
     @State private var scrollMetrics = RightRailScrollMetrics()
@@ -1515,17 +1540,21 @@ struct WorkspaceRightRailView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 workspaceSetupChecklistRow(
+                    item: .instructions,
                     icon: "text.quote",
                     title: "Instructions",
                     subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Add guidance for how tasks should run",
                     state: hasWorkspaceInstructions ? .configured : .missing,
                     actionTitle: hasWorkspaceInstructions ? "Edit" : "Add",
                     action: onEditWorkspace
-                )
+                ) {
+                    instructionsSetupDetails
+                }
 
                 checklistDivider()
 
                 workspaceSetupChecklistRow(
+                    item: .memory,
                     icon: "text.badge.checkmark",
                     title: "Memory",
                     subtitle: workspace.memories.isEmpty
@@ -1535,21 +1564,18 @@ struct WorkspaceRightRailView: View {
                     actionTitle: "Add",
                     action: {
                         withAnimation(disclosureAnimation) {
+                            expandedWorkspaceSetupItems.insert(.memory)
                             isMemoryComposerVisible = true
                         }
                     }
-                )
-
-                if isMemoryComposerVisible {
-                    memoryComposer
-                        .padding(.leading, 24)
-                        .padding(.trailing, 2)
-                        .padding(.bottom, 7)
+                ) {
+                    memorySetupDetails
                 }
 
                 checklistDivider()
 
                 workspaceSetupChecklistRow(
+                    item: .folders,
                     icon: "folder",
                     title: "Folders",
                     subtitle: workspace.primaryPath.isEmpty
@@ -1558,11 +1584,14 @@ struct WorkspaceRightRailView: View {
                     state: workspaceFolderCount > 0 ? .configured : .missing,
                     actionTitle: "Add",
                     action: addExtraFolder
-                )
+                ) {
+                    foldersSetupDetails
+                }
 
                 checklistDivider()
 
                 workspaceSetupChecklistRow(
+                    item: .remoteAccess,
                     icon: "network",
                     title: "Remote access",
                     subtitle: sshConnections.isEmpty
@@ -1571,80 +1600,321 @@ struct WorkspaceRightRailView: View {
                     state: sshConnections.isEmpty ? .missing : .configured,
                     actionTitle: "Add",
                     action: onNewSSHConnection
-                )
+                ) {
+                    remoteAccessSetupDetails
+                }
 
                 if !workspace.schedules.isEmpty {
                     checklistDivider()
 
                     workspaceSetupChecklistRow(
+                        item: .routines,
                         icon: "arrow.triangle.2.circlepath",
                         title: "Routines",
                         subtitle: "\(workspace.schedules.count) scheduled \(workspace.schedules.count == 1 ? "routine" : "routines")",
                         state: .configured,
                         actionTitle: "Add",
                         action: onNewSchedule
-                    )
+                    ) {
+                        routinesSetupDetails
+                    }
                 }
             }
         }
     }
 
-    private func workspaceSetupChecklistRow(
+    private func workspaceSetupChecklistRow<Details: View>(
+        item: WorkspaceSetupItem,
         icon: String,
         title: String,
         subtitle: String,
         state: WorkspaceSetupChecklistPresentation.State,
         actionTitle: String?,
-        action: (() -> Void)?
+        action: (() -> Void)?,
+        @ViewBuilder details: () -> Details
     ) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: icon)
-                .font(Stanford.ui(16, weight: .medium))
-                .foregroundStyle(setupChecklistIconColor(for: state))
-                .frame(width: 26)
+        let isExpanded = expandedWorkspaceSetupItems.contains(item)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(Stanford.ui(14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+        return VStack(alignment: .leading, spacing: isExpanded ? 8 : 0) {
+            HStack(alignment: .center, spacing: 8) {
+                Button {
+                    toggleWorkspaceSetupItem(item)
+                } label: {
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: icon)
+                            .font(Stanford.ui(16, weight: .medium))
+                            .foregroundStyle(setupChecklistIconColor(for: state))
+                            .frame(width: 26)
 
-                Text(subtitle)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .layoutPriority(1)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title)
+                                .font(Stanford.ui(14, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
 
-            Spacer(minLength: 6)
+                            Text(subtitle)
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .layoutPriority(1)
 
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(setupChecklistStatusColor(for: state))
-                    .frame(width: 6, height: 6)
+                        Spacer(minLength: 6)
 
-                Text(state.label)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(setupChecklistStatusColor(for: state))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .frame(minWidth: 68, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(setupChecklistStatusColor(for: state))
+                                .frame(width: 6, height: 6)
 
-            if let actionTitle, let action {
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .lineLimit(1)
+                            Text(state.label)
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(setupChecklistStatusColor(for: state))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                        }
+                        .frame(minWidth: 68, alignment: .leading)
+
+                        Image(systemName: isExpanded
+                            ? WorkspaceSetupChecklistPresentation.expandedDisclosureIcon
+                            : WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon)
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 10)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .center)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .frame(width: 28, alignment: .trailing)
+
+                if let actionTitle, let action {
+                    Button(action: action) {
+                        Text(actionTitle)
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 28, alignment: .trailing)
+                }
+            }
+
+            if isExpanded {
+                details()
+                    .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                    .padding(.trailing, 4)
+                    .padding(.bottom, 8)
             }
         }
-        .frame(minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .center)
-        .contentShape(Rectangle())
+    }
+
+    private func toggleWorkspaceSetupItem(_ item: WorkspaceSetupItem) {
+        withAnimation(disclosureAnimation) {
+            if expandedWorkspaceSetupItems.contains(item) {
+                expandedWorkspaceSetupItems.remove(item)
+            } else {
+                expandedWorkspaceSetupItems.insert(item)
+            }
+        }
+    }
+
+    private var instructionsSetupDetails: some View {
+        let instructions = workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            if instructions.isEmpty {
+                setupEmptyDetail("No workspace instructions configured.")
+            } else {
+                setupDetailItem(
+                    title: "Main instructions",
+                    detail: instructions.replacingOccurrences(of: "\n", with: " "),
+                    lineLimit: 4
+                )
+            }
+        }
+    }
+
+    private var memorySetupDetails: some View {
+        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let visibleMemories = Array(workspace.memories.prefix(limit))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if visibleMemories.isEmpty {
+                setupEmptyDetail("No saved memory details yet.")
+            } else {
+                ForEach(Array(visibleMemories.enumerated()), id: \.offset) { _, memory in
+                    setupDetailItem(title: "Saved detail", detail: memory, lineLimit: 3)
+                }
+
+                setupOverflowDetail(
+                    total: workspace.memories.count,
+                    visible: visibleMemories.count,
+                    singular: "saved detail",
+                    plural: "saved details"
+                )
+            }
+
+            if isMemoryComposerVisible {
+                memoryComposer
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private var foldersSetupDetails: some View {
+        let folderItems = workspaceSetupFolderDetailItems
+        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let visibleFolders = Array(folderItems.prefix(limit))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if visibleFolders.isEmpty {
+                setupEmptyDetail("No workspace folder selected.")
+            } else {
+                ForEach(Array(visibleFolders.enumerated()), id: \.offset) { _, item in
+                    setupDetailItem(
+                        title: item.title,
+                        detail: compactPath(item.path),
+                        isMonospaced: true,
+                        lineLimit: 1
+                    )
+                    .help(item.path)
+                }
+
+                setupOverflowDetail(
+                    total: folderItems.count,
+                    visible: visibleFolders.count,
+                    singular: "folder",
+                    plural: "folders"
+                )
+            }
+        }
+    }
+
+    private var remoteAccessSetupDetails: some View {
+        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let visibleConnections = Array(sshConnections.prefix(limit))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if visibleConnections.isEmpty {
+                setupEmptyDetail("No remote servers configured.")
+            } else {
+                ForEach(visibleConnections) { connection in
+                    setupDetailItem(
+                        title: connection.name.isEmpty ? connection.host : connection.name,
+                        detail: remoteConnectionDetail(connection),
+                        isMonospaced: true,
+                        lineLimit: 1
+                    )
+                    .help(remoteConnectionDetail(connection))
+                }
+
+                setupOverflowDetail(
+                    total: sshConnections.count,
+                    visible: visibleConnections.count,
+                    singular: "remote server",
+                    plural: "remote servers"
+                )
+            }
+        }
+    }
+
+    private var routinesSetupDetails: some View {
+        let sortedSchedules = workspace.schedules.sorted { $0.name < $1.name }
+        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let visibleSchedules = Array(sortedSchedules.prefix(limit))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if visibleSchedules.isEmpty {
+                setupEmptyDetail("No routines configured.")
+            } else {
+                ForEach(visibleSchedules) { schedule in
+                    setupDetailItem(
+                        title: schedule.name,
+                        detail: "\(schedule.frequencySummary) - \(schedule.isEnabled ? "Enabled" : "Paused")",
+                        lineLimit: 1
+                    )
+                }
+
+                setupOverflowDetail(
+                    total: sortedSchedules.count,
+                    visible: visibleSchedules.count,
+                    singular: "routine",
+                    plural: "routines"
+                )
+            }
+        }
+    }
+
+    private var workspaceSetupFolderDetailItems: [(title: String, path: String)] {
+        var items: [(title: String, path: String)] = []
+        let primary = workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !primary.isEmpty {
+            items.append(("Primary", primary))
+        }
+
+        for path in workspace.additionalPaths {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                items.append(("Folder", trimmed))
+            }
+        }
+
+        return items
+    }
+
+    private func remoteConnectionDetail(_ connection: SSHConnection) -> String {
+        let target = "\(connection.user)@\(connection.host):\(connection.port)"
+        let remotePath = connection.remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return remotePath.isEmpty ? target : "\(target)  \(remotePath)"
+    }
+
+    private func setupDetailItem(
+        title: String,
+        detail: String,
+        isMonospaced: Bool = false,
+        lineLimit: Int
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(detail)
+                .font(isMonospaced ? Stanford.mono(10) : Stanford.caption(11))
+                .foregroundStyle(.secondary)
+                .lineLimit(lineLimit)
+                .truncationMode(isMonospaced ? .middle : .tail)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func setupEmptyDetail(_ text: String) -> some View {
+        Text(text)
+            .font(Stanford.caption(11))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func setupOverflowDetail(
+        total: Int,
+        visible: Int,
+        singular: String,
+        plural: String
+    ) -> some View {
+        if let summary = WorkspaceSetupChecklistPresentation.overflowSummary(
+            total: total,
+            visible: visible,
+            singular: singular,
+            plural: plural
+        ) {
+            Text(summary)
+                .font(Stanford.caption(11).weight(.medium))
+                .foregroundStyle(Stanford.lagunita)
+        }
     }
 
     private func checklistDivider() -> some View {
@@ -1963,6 +2233,7 @@ struct WorkspaceRightRailView: View {
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
+        expandedWorkspaceSetupItems = []
     }
 
     private func addExtraFolder() {

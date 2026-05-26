@@ -161,4 +161,28 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.State.configured.label == "Configured")
         #expect(WorkspaceSetupChecklistPresentation.State.missing.label == "Missing")
     }
+
+    @Test("workspace setup rows disclose configuration details inline")
+    func workspaceSetupRowsDiscloseConfigurationDetailsInline() {
+        #expect(WorkspaceSetupChecklistPresentation.supportsInlineExpansion == true)
+        #expect(WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon == "chevron.right")
+        #expect(WorkspaceSetupChecklistPresentation.expandedDisclosureIcon == "chevron.down")
+        #expect(WorkspaceSetupChecklistPresentation.detailPreviewLimit == 4)
+        #expect(
+            WorkspaceSetupChecklistPresentation.overflowSummary(
+                total: 6,
+                visible: 4,
+                singular: "folder",
+                plural: "folders"
+            ) == "2 more folders"
+        )
+        #expect(
+            WorkspaceSetupChecklistPresentation.overflowSummary(
+                total: 1,
+                visible: 1,
+                singular: "folder",
+                plural: "folders"
+            ) == nil
+        )
+    }
 }
