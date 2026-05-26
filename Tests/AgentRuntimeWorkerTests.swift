@@ -166,6 +166,26 @@ struct SubAgentPermissionsTests {
 @Suite("Task Deliverable Expectation")
 @MainActor
 struct TaskDeliverableExpectationTests {
+    @Test("Artifact detector keeps explicit standalone file requests")
+    func artifactDetectorKeepsExplicitStandaloneFileRequests() {
+        let task = AgentTask(
+            title: "Create HTML",
+            goal: "write a web page with html and javascript for a tic tac toe game"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector ignores ASTRA scaffold around informational file context")
+    func artifactDetectorIgnoresAstraScaffoldAroundInformationalFileContext() {
+        let task = AgentTask(
+            title: "Fork of Fork of question about the process",
+            goal: TaskPromptFixtures.scaffoldedZipStatusGoal
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()

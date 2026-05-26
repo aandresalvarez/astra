@@ -1400,6 +1400,13 @@ struct TaskThreadSnapshotTests {
         #expect(presentation.technicalOutputs.isEmpty)
     }
 
+    @Test("Task thread status chrome avoids neutral gray fills")
+    func taskThreadStatusChromeAvoidsNeutralGrayFills() {
+        #expect(TaskThreadStatusChrome.runActivityBackgroundOpacity == 0)
+        #expect(TaskThreadStatusChrome.runActivityDetailBackgroundOpacity == 0)
+        #expect(TaskThreadStatusChrome.runNoticeBackgroundOpacity == 0)
+    }
+
     @Test("Long tool results are summarized while preserving raw output")
     func longToolResultsAreSummarizedWithRawOutput() {
         let payload = String(repeating: "x", count: 6_000)
@@ -2145,6 +2152,259 @@ struct TaskThreadSnapshotTests {
         })
     }
 
+    @MainActor
+    @Test("Workspace file roots include task output folder referenced by task prompt")
+    func workspaceFileRootsIncludePromptReferencedTaskOutputFolder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-prompt-output-\(UUID().uuidString)")
+        let outputFolder = root.appendingPathComponent("tasks/945FF2B6", isDirectory: true)
+        let report = outputFolder.appendingPathComponent("BRIE_Deid_Pilot_Report.md")
+
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "JSL", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Check BRIE run",
+            goal: """
+            Task Output Folder: \(outputFolder.path)
+            Goal: check the process status
+            """,
+            workspace: workspace
+        )
+
+        let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
+        let outputRoot = try #require(roots.first { $0.path == outputFolder.standardizedFileURL.path })
+        #expect(outputRoot.kind == .taskFolder)
+        #expect(outputRoot.title == "Task Output 945FF2B6")
+
+        let snapshot = WorkspaceFileIndexService.scanSync(roots: roots)
+        #expect(snapshot.nodes.contains {
+            $0.rootID == outputRoot.id
+                && $0.relativePath == "BRIE_Deid_Pilot_Report.md"
+                && $0.destination == .files
+        })
+    }
+
+    @MainActor
+    @Test("Workspace argument includes prompt output when task has no workspace")
+    func workspaceArgumentIncludesPromptOutputWhenTaskHasNoWorkspace() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-argument-output-\(UUID().uuidString)")
+        let outputFolder = root.appendingPathComponent("tasks/945FF2B6", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "JSL", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Check BRIE run",
+            goal: """
+            Task Output Folder: \(outputFolder.path)
+            Goal: check the process status
+            """
+        )
+
+        let roots = WorkspaceFileIndexService.roots(workspace: workspace, task: task)
+
+        #expect(roots.contains {
+            $0.kind == .taskFolder
+                && $0.path == outputFolder.standardizedFileURL.path
+                && $0.title == "Task Output 945FF2B6"
+        })
+    }
+
+    @MainActor
+    @Test("Prompt referenced task folders support workspace paths with spaces")
+    func promptReferencedTaskFoldersSupportWorkspacePathsWithSpaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra workspace prompt output \(UUID().uuidString)")
+        let outputFolder = root.appendingPathComponent("tasks/945FF2B6", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "JSL", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Check BRIE run",
+            goal: """
+            Task Output Folder: \(outputFolder.path)
+            Goal: check the process status
+            """,
+            workspace: workspace
+        )
+
+        #expect(TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: workspace) == [
+            outputFolder.standardizedFileURL.path
+        ])
+    }
+
+    @MainActor
+    @Test("Prompt referenced task folders require a containing workspace")
+    func promptReferencedTaskFoldersRequireContainingWorkspace() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-prompt-output-nil-\(UUID().uuidString)")
+        let outputFolder = root.appendingPathComponent("tasks/945FF2B6", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let task = AgentTask(
+            title: "Check mentioned output",
+            goal: """
+            Task Output Folder: \(outputFolder.path)
+            Goal: check the process status
+            """
+        )
+
+        #expect(TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: nil).isEmpty)
+    }
+
+    @MainActor
+    @Test("Prompt referenced symlinked task folders stay inside workspace")
+    func promptReferencedSymlinkedTaskFoldersStayInsideWorkspace() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-prompt-symlink-\(UUID().uuidString)")
+        let tasksRoot = root.appendingPathComponent("tasks", isDirectory: true)
+        let linkedOutputFolder = tasksRoot.appendingPathComponent("945FF2B6", isDirectory: true)
+        let outsideFolder = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-outside-task-output-\(UUID().uuidString)", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: tasksRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideFolder, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedOutputFolder, withDestinationURL: outsideFolder)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outsideFolder)
+        }
+
+        let workspace = Workspace(name: "JSL", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Check mentioned output",
+            goal: """
+            Task Output Folder: \(linkedOutputFolder.path)
+            Goal: check the process status
+            """
+        )
+
+        #expect(TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: workspace).isEmpty)
+    }
+
+    @Test("File provenance distinguishes generated user and other task files")
+    func fileProvenanceDistinguishesGeneratedUserAndOtherTaskFiles() {
+        let generatedRoot = WorkspaceFileRoot(
+            id: "task:/tmp/tasks/945FF2B6",
+            kind: .taskFolder,
+            title: "Task Output 945FF2B6",
+            path: "/tmp/tasks/945FF2B6",
+            isDirectory: true
+        )
+        let inputRoot = WorkspaceFileRoot(
+            id: "input:/tmp/privacy.zip",
+            kind: .input,
+            title: "Input 1",
+            path: "/tmp/privacy.zip",
+            isDirectory: false
+        )
+        let workspaceRoot = WorkspaceFileRoot(
+            id: "primary:/tmp/ws",
+            kind: .primary,
+            title: "Primary",
+            path: "/tmp/ws",
+            isDirectory: true
+        )
+        let currentTaskNode = WorkspaceFileNode(
+            id: "current",
+            rootID: workspaceRoot.id,
+            path: "/tmp/ws/tasks/945FF2B6/report.md",
+            relativePath: "tasks/945FF2B6/report.md",
+            name: "report.md",
+            isDirectory: false,
+            depth: 2,
+            size: 10,
+            modifiedAt: nil,
+            destination: .files
+        )
+        let otherTaskNode = WorkspaceFileNode(
+            id: "other",
+            rootID: workspaceRoot.id,
+            path: "/tmp/ws/tasks/ABC12345/report.md",
+            relativePath: "tasks/ABC12345/report.md",
+            name: "report.md",
+            isDirectory: false,
+            depth: 2,
+            size: 10,
+            modifiedAt: nil,
+            destination: .files
+        )
+
+        #expect(ShelfFileProvenanceResolver.provenance(for: generatedRoot) == .taskGenerated)
+        #expect(ShelfFileProvenanceResolver.provenance(for: inputRoot) == .userProvided)
+        #expect(ShelfFileProvenanceResolver.provenance(
+            for: workspaceRoot,
+            node: currentTaskNode,
+            currentTaskOutputFolderNames: ["945FF2B6"]
+        ) == .currentTaskOutput)
+        #expect(ShelfFileProvenanceResolver.provenance(
+            for: workspaceRoot,
+            node: otherTaskNode,
+            currentTaskOutputFolderNames: ["945FF2B6"]
+        ) == .otherTaskOutput)
+    }
+
+    @Test("File provenance current task folders come from task ID only")
+    func fileProvenanceCurrentTaskFoldersComeFromTaskIDOnly() {
+        let workspace = Workspace(name: "JSL", primaryPath: "/tmp/ws")
+        let task = AgentTask(title: "Current", goal: "Review outputs", workspace: workspace)
+        task.id = UUID(uuidString: "945FF2B6-0000-0000-0000-000000000000")!
+        let workspaceRoot = WorkspaceFileRoot(
+            id: "primary:/tmp/ws",
+            kind: .primary,
+            title: "Primary",
+            path: "/tmp/ws",
+            isDirectory: true
+        )
+        let promptReferencedOtherTaskNode = WorkspaceFileNode(
+            id: "other",
+            rootID: workspaceRoot.id,
+            path: "/tmp/ws/tasks/ABC12345/report.md",
+            relativePath: "tasks/ABC12345/report.md",
+            name: "report.md",
+            isDirectory: false,
+            depth: 2,
+            size: 10,
+            modifiedAt: nil,
+            destination: .files
+        )
+        let currentTaskNode = WorkspaceFileNode(
+            id: "current",
+            rootID: workspaceRoot.id,
+            path: "/tmp/ws/tasks/945FF2B6/report.md",
+            relativePath: "tasks/945FF2B6/report.md",
+            name: "report.md",
+            isDirectory: false,
+            depth: 2,
+            size: 10,
+            modifiedAt: nil,
+            destination: .files
+        )
+
+        let folderNames = ShelfFileProvenanceResolver.currentTaskOutputFolderNames(for: task)
+
+        #expect(folderNames == ["945FF2B6"])
+        #expect(ShelfFileProvenanceResolver.provenance(
+            for: workspaceRoot,
+            node: promptReferencedOtherTaskNode,
+            currentTaskOutputFolderNames: folderNames
+        ) == .otherTaskOutput)
+        #expect(ShelfFileProvenanceResolver.provenance(
+            for: workspaceRoot,
+            node: currentTaskNode,
+            currentTaskOutputFolderNames: folderNames
+        ) == .currentTaskOutput)
+    }
+
     @Test("Workspace file scan skips heavy internal folders and symlink escapes")
     func workspaceFileScanSkipsInternalFoldersAndSymlinkEscapes() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2152,6 +2412,7 @@ struct TaskThreadSnapshotTests {
         let sources = root.appendingPathComponent("Sources", isDirectory: true)
         let nodeModules = root.appendingPathComponent("node_modules/pkg", isDirectory: true)
         let legacyTasks = root.appendingPathComponent("tasks/ABC12345", isDirectory: true)
+        let legacyTaskCli = legacyTasks.appendingPathComponent("cli", isDirectory: true)
         let taskInternals = root.appendingPathComponent(".astra/tasks/ABC12345", isDirectory: true)
         let outside = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-workspace-file-outside-\(UUID().uuidString).txt")
@@ -2159,10 +2420,14 @@ struct TaskThreadSnapshotTests {
         try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: nodeModules, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: legacyTasks, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: legacyTaskCli, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: taskInternals, withIntermediateDirectories: true)
         try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
         try "ignored".write(to: nodeModules.appendingPathComponent("index.js"), atomically: true, encoding: .utf8)
+        try "# Report".write(to: legacyTasks.appendingPathComponent("BRIE_Deid_Report.md"), atomically: true, encoding: .utf8)
+        try "print('run')".write(to: legacyTaskCli.appendingPathComponent("run_deid.py"), atomically: true, encoding: .utf8)
         try "ignored".write(to: legacyTasks.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
+        try "ignored".write(to: legacyTasks.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
         try "ignored".write(to: taskInternals.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
         try "secret".write(to: outside, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(
@@ -2188,11 +2453,16 @@ struct TaskThreadSnapshotTests {
         #expect(paths.contains("Sources/App.swift"))
         #expect(!paths.contains("node_modules"))
         #expect(!paths.contains("node_modules/pkg/index.js"))
-        #expect(!paths.contains("tasks"))
+        #expect(paths.contains("tasks"))
+        #expect(paths.contains("tasks/ABC12345"))
+        #expect(paths.contains("tasks/ABC12345/BRIE_Deid_Report.md"))
+        #expect(paths.contains("tasks/ABC12345/cli/run_deid.py"))
         #expect(!paths.contains("tasks/ABC12345/current_state.md"))
+        #expect(!paths.contains("tasks/ABC12345/session_history.md"))
         #expect(!paths.contains(".astra/tasks/ABC12345/current_state.md"))
         #expect(!paths.contains("outside.txt"))
         #expect(snapshot.nodes.first { $0.relativePath == "Sources/App.swift" }?.destination == .files)
+        #expect(snapshot.nodes.first { $0.relativePath == "tasks/ABC12345/BRIE_Deid_Report.md" }?.destination == .files)
     }
 
     @Test("Workspace file scan hides dot paths unless requested")

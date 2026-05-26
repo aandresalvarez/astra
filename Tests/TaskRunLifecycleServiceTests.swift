@@ -125,6 +125,35 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == "task.dismissed" })
     }
 
+    @Test("Coordinator approval completes stale no-usable-result when artifact requirement no longer applies")
+    func coordinatorApprovalCompletesStaleNoUsableResultWhenArtifactRequirementNoLongerApplies() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(
+            title: "Fork of Fork of question about the process",
+            goal: TaskPromptFixtures.scaffoldedZipStatusGoal
+        )
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "no_usable_result"
+        run.output = "BRIE full de-identification batch SUCCEEDED."
+        context.insert(run)
+        try context.save()
+
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == nil)
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .completed)
+        #expect(task.completedAt != nil)
+        #expect(task.events.contains { $0.type == "task.approved" })
+        #expect(!task.events.contains { $0.type == "task.dismissed" })
+    }
+
     @Test("Coordinator approval completes pending tasks without runs")
     func coordinatorApprovalCompletesPendingTasksWithoutRuns() throws {
         let container = try makeTaskRunLifecycleContainer()

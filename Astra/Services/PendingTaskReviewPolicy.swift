@@ -11,7 +11,11 @@ enum PendingTaskReviewPolicy {
         guard task.status == .pendingUser, let latestRun else { return nil }
 
         if latestRun.stopReason == "no_usable_result" {
-            return .noUsableResult
+            if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
+               !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun) {
+                return .noUsableResult
+            }
+            return nil
         }
 
         if stopReasonIsPolicyBlocked(latestRun.stopReason) {
