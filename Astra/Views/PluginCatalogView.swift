@@ -1103,20 +1103,20 @@ struct PluginCatalogView: View {
             "workspace_id": workspace.id.uuidString
         ])
         do {
-            if let sourceURL {
-                _ = try CapabilityPackageSourceExporter().export(package, to: sourceURL)
+            let result = try CapabilityPackageCreationService().create(
+                package,
+                enableHere: enableHere,
+                sourceURL: sourceURL,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: catalogPolicyContext,
+                traceID: traceID
+            )
+            if result.approvalRecord != nil {
+                approvalRevision += 1
             }
             if enableHere {
-                try CapabilityInstaller().install(
-                    package,
-                    into: workspace,
-                    modelContext: modelContext,
-                    policyContext: catalogPolicyContext,
-                    traceID: traceID
-                )
-                onInstall?(package)
-            } else {
-                try CapabilityLibrary().install(package)
+                onInstall?(result.package)
             }
             catalog.loadApprovedCapabilities()
             onCatalogChanged?()

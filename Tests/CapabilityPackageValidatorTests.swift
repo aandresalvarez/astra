@@ -339,6 +339,55 @@ struct CapabilityPackageImporterTests {
         #expect(result.output.contains("OK 2 capability packages are valid for local import"))
     }
 
+    @Test("developer script install directory writes normalized packages to dev library")
+    func developerScriptInstallDirectoryWritesNormalizedPackagesToDevLibrary() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-dir-install-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+        let homeRoot = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: libraryRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: homeRoot, withIntermediateDirectories: true)
+
+        let firstID = "local.script-install-one-\(UUID().uuidString)"
+        let secondID = "local.script-install-two-\(UUID().uuidString)"
+        var firstPackage = makePackage(id: firstID, governance: .builtInApproved())
+        firstPackage.sourceMetadata = .builtIn()
+        try encodedData(firstPackage)
+            .write(to: libraryRoot.appendingPathComponent("one.json"))
+        try encodedData(makePackage(id: secondID, governance: nil))
+            .write(to: libraryRoot.appendingPathComponent("two.json"))
+
+        let result = try runCapabilityPackageScript(
+            arguments: ["install-dev-dir", libraryRoot.path],
+            home: homeRoot
+        )
+
+        let devLibrary = homeRoot
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("AstraDev")
+            .appendingPathComponent("Capabilities")
+        let installedFiles = try FileManager.default.contentsOfDirectory(
+            at: devLibrary,
+            includingPropertiesForKeys: nil
+        )
+        let decoder = JSONDecoder()
+        let installedPackages = try installedFiles
+            .filter { $0.pathExtension == "json" }
+            .map { try decoder.decode(PluginPackage.self, from: Data(contentsOf: $0)) }
+
+        #expect(result.status == 0, "Script failed: \(result.output)")
+        #expect(result.output.contains("Installed \(firstID)"))
+        #expect(result.output.contains("Installed \(secondID)"))
+        #expect(Set(installedPackages.map(\.id)) == [firstID, secondID])
+        #expect(installedPackages.allSatisfy { $0.sourceMetadata == .localLibrary() })
+        #expect(installedPackages.allSatisfy { $0.governance.approvalStatus == .draft })
+        #expect(installedPackages.allSatisfy { $0.governance.visibility == .adminOnly })
+        #expect(installedPackages.allSatisfy { $0.governance.approvedBy == nil })
+        #expect(installedPackages.allSatisfy { $0.governance.approvedAt == nil })
+    }
+
     @Test("developer script install directory rejects duplicate package IDs without partial writes")
     func developerScriptInstallDirectoryRejectsDuplicateIDsWithoutPartialWrites() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -252,11 +252,17 @@ def add_batch_collision_issues(results: list[dict]) -> None:
 def normalize_package_for_install(package: dict) -> dict:
     governance = dict(package.get("governance") or {})
     governance["approvalStatus"] = "draft"
+    governance.setdefault("riskLevel", "medium")
     governance["visibility"] = "adminOnly"
+    governance.setdefault("allowedRoles", [])
+    governance.setdefault("allowedWorkspaceTags", [])
     governance["requiresAdminApproval"] = True
     governance["requiresExplicitUserConsent"] = True
+    governance.setdefault("dataAccess", [])
+    governance.setdefault("externalEffects", [])
     governance.pop("approvedBy", None)
     governance.pop("approvedAt", None)
+    governance.setdefault("reviewTicketURL", None)
     if not str(governance.get("policyNotes") or "").strip():
         governance["policyNotes"] = "Local capability package imported from JSON and pending review."
     package["governance"] = governance
