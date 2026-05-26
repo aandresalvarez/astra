@@ -76,7 +76,7 @@ def issue(severity: str, code: str, message: str) -> dict:
     return {"severity": severity, "code": code, "message": message}
 
 
-def list_field(package: dict, key: str, issues: list[dict]) -> list:
+def list_field(package, key, issues):
     value = package.get(key)
     if value is None:
         return []
@@ -86,7 +86,7 @@ def list_field(package: dict, key: str, issues: list[dict]) -> list:
     return value
 
 
-def object_items(items: list, key: str, issues: list[dict]):
+def object_items(items, key, issues):
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             issues.append(issue("BLOCKER", "malformedJSON", f"{key}[{index}] must be an object."))
@@ -94,7 +94,7 @@ def object_items(items: list, key: str, issues: list[dict]):
         yield item
 
 
-def string_items(items: list, key: str, issues: list[dict]):
+def string_items(items, key, issues):
     for index, item in enumerate(items):
         if not isinstance(item, str):
             issues.append(issue("BLOCKER", "malformedJSON", f"{key}[{index}] must be a string."))
@@ -114,10 +114,10 @@ def installed_collision_issue(target: Path, package_id: str) -> dict:
     return issue("BLOCKER", "duplicatePackageFilename", f"{package_id} maps to an installed capability filename already owned by {existing_id or 'an unreadable package'}.")
 
 
-def discover_package_paths(path: Path) -> list[Path]:
+def discover_package_paths(path):
     if directory_mode:
         if not path.is_dir():
-            print(f"BLOCKER unreadable: {path} is not a directory", file=sys.stderr)
+            print(f"BLOCKER unreadableFile: {path} is not a directory", file=sys.stderr)
             sys.exit(1)
         files = []
         for candidate in path.rglob("*.json"):
@@ -145,7 +145,7 @@ def validate_package(path: Path) -> dict:
             "package": None,
             "package_id": "",
             "safe_name": "",
-            "issues": [issue("BLOCKER", "unreadable", f"{exc}")],
+            "issues": [issue("BLOCKER", "unreadableFile", f"{exc}")],
         }
 
     try:
@@ -279,9 +279,9 @@ def validate_package(path: Path) -> dict:
     }
 
 
-def add_batch_collision_issues(results: list[dict]) -> None:
-    ids: dict[str, list[dict]] = {}
-    safe_names: dict[str, list[dict]] = {}
+def add_batch_collision_issues(results):
+    ids = {}
+    safe_names = {}
     for result in results:
         package_id = result["package_id"]
         safe_name = result["safe_name"]

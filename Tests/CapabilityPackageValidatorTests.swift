@@ -387,6 +387,35 @@ struct CapabilityPackageImporterTests {
         #expect(text.contains("OK capability package is valid for local import"))
     }
 
+    @Test("developer script avoids Python 3.9-only built-in generics")
+    func developerScriptAvoidsPython39OnlyBuiltInGenerics() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repoRoot
+            .appendingPathComponent("script")
+            .appendingPathComponent("capability_package.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        #expect(!script.contains("list["))
+        #expect(!script.contains("dict["))
+    }
+
+    @Test("developer script reports unreadableFile for missing package")
+    func developerScriptReportsUnreadableFileForMissingPackage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-unreadable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let missingURL = root.appendingPathComponent("missing.json")
+
+        let result = try runCapabilityPackageScript(arguments: ["validate", missingURL.path])
+
+        #expect(result.status != 0)
+        #expect(result.output.contains("unreadableFile"))
+        #expect(!result.output.contains("BLOCKER unreadable:"))
+    }
+
     @Test("developer script validates capability directories")
     func developerScriptValidatesCapabilityDirectories() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
