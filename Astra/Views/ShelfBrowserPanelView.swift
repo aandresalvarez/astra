@@ -7,7 +7,7 @@ enum ShelfBrowserToolbarLayout: Equatable {
     case stacked
 
     static let regularMinimumWidth: CGFloat = 560
-    static let compactMinimumWidth: CGFloat = 420
+    static let compactMinimumWidth: CGFloat = 320
 
     var height: CGFloat {
         switch self {

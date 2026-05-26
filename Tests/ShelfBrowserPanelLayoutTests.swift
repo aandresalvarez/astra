@@ -8,6 +8,7 @@ struct ShelfBrowserPanelLayoutTests {
         #expect(ShelfBrowserToolbarLayout.resolve(width: 640) == .regular)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth) == .regular)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth - 1) == .compact)
+        #expect(ShelfBrowserToolbarLayout.resolve(width: 420) == .compact)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth) == .compact)
         #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth - 1) == .stacked)
     }
