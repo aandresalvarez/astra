@@ -103,6 +103,9 @@ enum CapabilityRailSectionPresentation {
 
 enum WorkspaceSetupChecklistPresentation {
     static let supportsInlineExpansion = true
+    static let supportsInlineEditing = true
+    static let supportsMemoryRemoval = true
+    static let supportsFolderRemoval = true
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
     static let detailPreviewLimit = 4
@@ -1501,7 +1504,11 @@ struct WorkspaceRightRailView: View {
                     subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Add guidance for how tasks should run",
                     state: hasWorkspaceInstructions ? .configured : .missing,
                     actionTitle: hasWorkspaceInstructions ? "Edit" : "Add",
-                    action: onEditWorkspace
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            _ = expandedWorkspaceSetupItems.insert(.instructions)
+                        }
+                    }
                 ) {
                     instructionsSetupDetails
                 }
@@ -1538,7 +1545,12 @@ struct WorkspaceRightRailView: View {
                         : "Primary \(compactPath(workspace.primaryPath))",
                     state: workspaceFolderCount > 0 ? .configured : .missing,
                     actionTitle: "Add",
-                    action: addExtraFolder
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            _ = expandedWorkspaceSetupItems.insert(.folders)
+                        }
+                        addExtraFolder()
+                    }
                 ) {
                     foldersSetupDetails
                 }
@@ -1674,39 +1686,61 @@ struct WorkspaceRightRailView: View {
     }
 
     private var instructionsSetupDetails: some View {
-        let instructions = workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                if workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Add guidance for how tasks in this workspace should run...")
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 7)
+                        .allowsHitTesting(false)
+                }
 
-        return VStack(alignment: .leading, spacing: 6) {
-            if instructions.isEmpty {
-                setupEmptyDetail("No workspace instructions configured.")
-            } else {
-                setupDetailItem(
-                    title: "Main instructions",
-                    detail: instructions.replacingOccurrences(of: "\n", with: " "),
-                    lineLimit: 4
-                )
+                TextEditor(text: workspaceInstructionsBinding)
+                    .font(Stanford.caption(12))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 78, maxHeight: 140)
+                    .padding(5)
+            }
+            .background(setupInlineControlBackground)
+            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+
+            HStack(spacing: 8) {
+                Text("Included in every new task prompt.")
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                if hasWorkspaceInstructions {
+                    Button {
+                        workspace.instructions = ""
+                        markWorkspaceConfigurationChanged()
+                    } label: {
+                        Text("Clear")
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
 
     private var memorySetupDetails: some View {
-        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
-        let visibleMemories = Array(workspace.memories.prefix(limit))
-
-        return VStack(alignment: .leading, spacing: 7) {
-            if visibleMemories.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+            if workspace.memories.isEmpty {
                 setupEmptyDetail("No saved memory details yet.")
             } else {
-                ForEach(Array(visibleMemories.enumerated()), id: \.offset) { _, memory in
-                    setupDetailItem(title: "Saved detail", detail: memory, lineLimit: 3)
+                ForEach(Array(workspace.memories.indices), id: \.self) { index in
+                    editableMemoryRow(index)
                 }
-
-                setupOverflowDetail(
-                    total: workspace.memories.count,
-                    visible: visibleMemories.count,
-                    singular: "saved detail",
-                    plural: "saved details"
-                )
             }
 
             if isMemoryComposerVisible {
@@ -1717,31 +1751,37 @@ struct WorkspaceRightRailView: View {
     }
 
     private var foldersSetupDetails: some View {
-        let folderItems = workspaceSetupFolderDetailItems
-        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
-        let visibleFolders = Array(folderItems.prefix(limit))
-
-        return VStack(alignment: .leading, spacing: 7) {
-            if visibleFolders.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+            if workspaceFolderCount == 0 {
                 setupEmptyDetail("No workspace folder selected.")
             } else {
-                ForEach(Array(visibleFolders.enumerated()), id: \.offset) { _, item in
-                    setupDetailItem(
-                        title: item.title,
-                        detail: compactPath(item.path),
-                        isMonospaced: true,
-                        lineLimit: 1
-                    )
-                    .help(item.path)
+                let primary = workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !primary.isEmpty {
+                    setupFolderRow(title: "Primary", path: primary)
                 }
 
-                setupOverflowDetail(
-                    total: folderItems.count,
-                    visible: visibleFolders.count,
-                    singular: "folder",
-                    plural: "folders"
-                )
+                ForEach(Array(workspace.additionalPaths.enumerated()), id: \.offset) { index, path in
+                    setupFolderRow(
+                        title: "Path",
+                        path: path,
+                        canRemove: true,
+                        removeAction: { removeAdditionalPath(at: index) }
+                    )
+                }
             }
+
+            Button {
+                addExtraFolder()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus")
+                        .font(Stanford.ui(10, weight: .semibold))
+                    Text("Add path")
+                        .font(Stanford.caption(11).weight(.medium))
+                }
+                .foregroundStyle(Stanford.lagunita)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -1800,27 +1840,115 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var workspaceSetupFolderDetailItems: [(title: String, path: String)] {
-        var items: [(title: String, path: String)] = []
-        let primary = workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !primary.isEmpty {
-            items.append(("Primary", primary))
-        }
-
-        for path in workspace.additionalPaths {
-            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                items.append(("Folder", trimmed))
-            }
-        }
-
-        return items
-    }
-
     private func remoteConnectionDetail(_ connection: SSHConnection) -> String {
         let target = "\(connection.user)@\(connection.host):\(connection.port)"
         let remotePath = connection.remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
         return remotePath.isEmpty ? target : "\(target)  \(remotePath)"
+    }
+
+    private var workspaceInstructionsBinding: Binding<String> {
+        Binding(
+            get: { workspace.instructions },
+            set: { value in
+                workspace.instructions = value
+                markWorkspaceConfigurationChanged()
+            }
+        )
+    }
+
+    private func memoryBinding(at index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard workspace.memories.indices.contains(index) else { return "" }
+                return workspace.memories[index]
+            },
+            set: { value in
+                guard workspace.memories.indices.contains(index) else { return }
+                workspace.memories[index] = value
+                markWorkspaceConfigurationChanged()
+            }
+        )
+    }
+
+    private func editableMemoryRow(_ index: Int) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            TextField("Saved detail", text: memoryBinding(at: index), axis: .vertical)
+                .font(Stanford.caption(12))
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 6)
+                .background(setupInlineControlBackground)
+                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+
+            Button {
+                removeMemory(at: index)
+            } label: {
+                Image(systemName: "trash")
+                    .font(Stanford.ui(11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 18, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Remove memory")
+        }
+    }
+
+    private func setupFolderRow(
+        title: String,
+        path: String,
+        canRemove: Bool = false,
+        removeAction: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .center, spacing: 7) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(compactPath(path))
+                    .font(Stanford.mono(10))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(path)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(path, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(Stanford.ui(10))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 18, height: 22)
+            }
+            .buttonStyle(.plain)
+            .help("Copy path")
+
+            if canRemove, let removeAction {
+                Button(action: removeAction) {
+                    Image(systemName: "trash")
+                        .font(Stanford.ui(11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help("Remove path")
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 6)
+        .background(setupInlineControlBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
     }
 
     private func setupDetailItem(
@@ -1851,6 +1979,10 @@ struct WorkspaceRightRailView: View {
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var setupInlineControlBackground: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.035)
     }
 
     @ViewBuilder
@@ -1974,8 +2106,7 @@ struct WorkspaceRightRailView: View {
                         .help(path)
                     Spacer(minLength: 0)
                     Button {
-                        workspace.additionalPaths.remove(at: idx)
-                        workspace.updatedAt = Date()
+                        removeAdditionalPath(at: idx)
                     } label: {
                         Image(systemName: "xmark")
                             .font(Stanford.ui(10, weight: .semibold))
@@ -2173,6 +2304,17 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private func markWorkspaceConfigurationChanged() {
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    private func removeAdditionalPath(at index: Int) {
+        guard workspace.additionalPaths.indices.contains(index) else { return }
+        workspace.additionalPaths.remove(at: index)
+        markWorkspaceConfigurationChanged()
+    }
+
     private func loadSSHConnections() {
         guard !workspace.primaryPath.isEmpty else {
             sshConnections = []
@@ -2202,7 +2344,7 @@ struct WorkspaceRightRailView: View {
             let path = url.path
             if !workspace.additionalPaths.contains(path) {
                 workspace.additionalPaths.append(path)
-                workspace.updatedAt = Date()
+                markWorkspaceConfigurationChanged()
             }
         }
     }
@@ -2211,9 +2353,15 @@ struct WorkspaceRightRailView: View {
         let text = newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         workspace.memories.append(text)
-        workspace.updatedAt = Date()
+        markWorkspaceConfigurationChanged()
         newMemoryText = ""
         isMemoryComposerVisible = false
+    }
+
+    private func removeMemory(at index: Int) {
+        guard workspace.memories.indices.contains(index) else { return }
+        workspace.memories.remove(at: index)
+        markWorkspaceConfigurationChanged()
     }
 
     private var memoryComposer: some View {
