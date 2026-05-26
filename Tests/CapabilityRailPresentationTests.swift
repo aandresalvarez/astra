@@ -147,6 +147,12 @@ struct CapabilityRailPresentationTests {
         #expect(!metricTitles.contains { $0.localizedCaseInsensitiveContains("attention") })
     }
 
+    @Test("attention group header stays neutral because row pill carries setup state")
+    func attentionGroupHeaderStaysNeutralBecauseRowPillCarriesSetupState() {
+        #expect(CapabilityRailSectionPresentation.attentionGroupShowsWarningIcon == false)
+        #expect(CapabilityRailSectionPresentation.attentionGroupUsesWarningTint == false)
+    }
+
     @Test("workspace setup checklist summary stays compact")
     func workspaceSetupChecklistSummaryStaysCompact() {
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")

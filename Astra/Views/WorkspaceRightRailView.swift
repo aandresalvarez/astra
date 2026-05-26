@@ -67,6 +67,8 @@ enum CapabilityRailSectionPresentation {
     static let addActionHelp = "Browse capability library"
     static let browseLibraryCommandTitle = "Browse capability library"
     static let showsAvailableToAddCount = false
+    static let attentionGroupShowsWarningIcon = false
+    static let attentionGroupUsesWarningTint = false
 
     static func readySummaryTitle(count: Int) -> String {
         "\(count) ready \(count == 1 ? "capability" : "capabilities")"
@@ -770,18 +772,16 @@ struct WorkspaceRightRailView: View {
         count _: Int,
         style: CapabilityRailGroupStyle
     ) -> some View {
-        let tint = capabilityGroupTint(style)
-
         return HStack(spacing: 8) {
-            if style == .attention {
+            if style == .attention, CapabilityRailSectionPresentation.attentionGroupShowsWarningIcon {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(Stanford.ui(12, weight: .semibold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(Stanford.poppy)
             }
 
             Text(title)
                 .font(Stanford.caption(13).weight(.semibold))
-                .foregroundStyle(style == .attention ? tint : .secondary)
+                .foregroundStyle(capabilityGroupHeaderForeground(style))
 
             Spacer(minLength: 0)
         }
@@ -829,15 +829,12 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private func capabilityGroupTint(_ style: CapabilityRailGroupStyle) -> Color {
-        switch style {
-        case .attention:
+    private func capabilityGroupHeaderForeground(_ style: CapabilityRailGroupStyle) -> Color {
+        if style == .attention, CapabilityRailSectionPresentation.attentionGroupUsesWarningTint {
             return Stanford.poppy
-        case .ready:
-            return .secondary
-        case .draft:
-            return .secondary
         }
+
+        return .secondary
     }
 
     private func capabilityGroupFill(_ style: CapabilityRailGroupStyle) -> Color {
