@@ -88,6 +88,7 @@ enum TaskRelatedOutputFolders {
         let resolvedPath = resolvedSymlinkPath(path)
         guard isPath(resolvedPath, containedIn: resolvedWorkspacePath) else { return false }
         return !path.contains("/.astra/tasks/") && !path.contains("/.agentflow/tasks/")
+            && !resolvedPath.contains("/.astra/tasks/") && !resolvedPath.contains("/.agentflow/tasks/")
     }
 
     private static func isPath(_ path: String, containedIn parentPath: String) -> Bool {
