@@ -108,6 +108,7 @@ struct SettingsView: View {
             alignDefaultModelsWithRuntime()
         }
         .onChange(of: runtimeProviderSettingsRevision) {
+            loadProviderPathDrafts()
             readinessReport = nil
             readinessCheckedAt = nil
         }

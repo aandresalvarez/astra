@@ -53,7 +53,7 @@ enum RuntimeProviderListPresentation {
                 subtitle: "Checking...",
                 state: .checking,
                 isSelected: isSelected,
-                isInstalled: false,
+                isInstalled: isInstalledStatus(status),
                 installCommand: installCommand
             )
         }
@@ -115,5 +115,14 @@ enum RuntimeProviderListPresentation {
     private static func installedSubtitle(version: String) -> String {
         let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Installed" : "Installed - \(trimmed)"
+    }
+
+    private static func isInstalledStatus(_ status: HealthStatus?) -> Bool {
+        switch status {
+        case .healthy, .unauthenticated, .unresponsive:
+            return true
+        case .missingBinary, .none:
+            return false
+        }
     }
 }

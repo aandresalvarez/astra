@@ -45,6 +45,24 @@ struct RuntimeProviderListPresentationTests {
         #expect(row.isInstalled)
     }
 
+    @Test("Checking preserves installed state from the last known status")
+    func checkingPreservesInstalledStateFromLastKnownStatus() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let row = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: .claudeCode,
+            status: .healthy(path: "/opt/future/bin/future-cli", version: "Future CLI 2.0"),
+            isProbing: true,
+            installingRuntime: nil,
+            installCommand: "brew install future-cli"
+        )
+
+        #expect(row.state == .checking)
+        #expect(row.subtitle == "Checking...")
+        #expect(row.isInstalled)
+    }
+
     @Test("Provider rows preserve registry order as the list grows")
     func providerRowsPreserveOrderAsListGrows() throws {
         let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
