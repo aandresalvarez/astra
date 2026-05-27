@@ -100,6 +100,12 @@ final class TaskQueue {
         )
         let resolvedProviderSettings: AgentRuntimeProviderSettings? = providerSettings.map { settings in
             var settings = settings
+            if let path = claudePath, !path.isEmpty {
+                settings.setExecutablePath(path, for: .claudeCode)
+            }
+            if let path = copilotPath, !path.isEmpty {
+                settings.setExecutablePath(path, for: .copilotCLI)
+            }
             if let home = copilotHome, !home.isEmpty {
                 settings.setHomeDirectory(home, for: .copilotCLI)
             } else if settings.homeDirectory(for: .copilotCLI).isEmpty {

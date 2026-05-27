@@ -1003,8 +1003,10 @@ struct SettingsView: View {
     }
 
     private func hasUnsavedProviderPathDraft(for runtime: AgentRuntimeID) -> Bool {
-        let draft = providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
-        return draft != RuntimeProviderSettingsStore.executablePath(for: runtime)
+        ProviderPathPersistenceState.hasUnsavedDraft(
+            draft: providerPathDrafts[runtime],
+            persisted: RuntimeProviderSettingsStore.executablePath(for: runtime)
+        )
     }
 
     private func detectCLI(for runtime: AgentRuntimeID) {
@@ -1027,11 +1029,12 @@ struct SettingsView: View {
     }
 
     private func configuredProviderPath(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode: claudePath
-        case .copilotCLI: copilotPath
-        default: providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
-        }
+        ProviderPathPersistenceState.persistedPath(
+            for: runtime,
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerPath: RuntimeProviderSettingsStore.executablePath(for: runtime)
+        )
     }
 
     private func browseFolder() {

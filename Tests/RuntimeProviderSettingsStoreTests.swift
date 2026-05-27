@@ -86,6 +86,21 @@ struct RuntimeProviderSettingsStoreTests {
         #expect(before == after)
     }
 
+    @Test("Provider path status uses persisted path instead of unsaved draft")
+    func providerPathStatusUsesPersistedPathInsteadOfUnsavedDraft() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+
+        let statusPath = ProviderPathPersistenceState.persistedPath(
+            for: futureRuntime,
+            claudePath: "/custom/bin/claude",
+            copilotPath: "/custom/bin/copilot",
+            providerPath: ""
+        )
+
+        #expect(statusPath.isEmpty)
+        #expect(ProviderPathPersistenceState.hasUnsavedDraft(draft: "/draft/bin/future", persisted: ""))
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "RuntimeProviderSettingsStoreTests-\(UUID().uuidString)"
         return (UserDefaults(suiteName: suiteName)!, suiteName)
