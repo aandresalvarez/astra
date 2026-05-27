@@ -102,6 +102,8 @@ final class TaskQueue {
             var settings = settings
             if let home = copilotHome, !home.isEmpty {
                 settings.setHomeDirectory(home, for: .copilotCLI)
+            } else if settings.homeDirectory(for: .copilotCLI).isEmpty {
+                settings.setHomeDirectory(CopilotCLIRuntime.channelHome(), for: .copilotCLI)
             }
             return settings
         }

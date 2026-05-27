@@ -152,6 +152,26 @@ struct QueueLockTests {
         }
     }
 
+    @Test("applySettings keeps Copilot channel home when provider settings omit it")
+    func applySettingsKeepsCopilotChannelHomeWhenProviderSettingsOmitIt() {
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath("/opt/copilot/bin/copilot", for: .copilotCLI)
+
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: nil,
+            providerSettings: settings,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.executablePath(for: .copilotCLI) == "/opt/copilot/bin/copilot")
+            #expect(worker.homeDirectory(for: .copilotCLI) == CopilotCLIRuntime.channelHome())
+        }
+    }
+
     @Test("cancelAll clears dispatched and active state")
     @MainActor
     func cancelAllClearsAll() {

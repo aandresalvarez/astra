@@ -256,7 +256,11 @@ struct SettingsView: View {
                 path: providerPathBinding(for: runtime),
                 prompt: "Auto-detected",
                 detectedPath: detectedProviderPath(for: runtime),
-                detectAction: { detectCLI(for: runtime) }
+                detectAction: { detectCLI(for: runtime) },
+                saveAction: runtime == .claudeCode || runtime == .copilotCLI
+                    ? nil
+                    : { saveProviderPathDraft(for: runtime) },
+                hasUnsavedChanges: hasUnsavedProviderPathDraft(for: runtime)
             )
 
             if runtime == .claudeCode {
@@ -439,7 +443,9 @@ struct SettingsView: View {
         path: Binding<String>,
         prompt: String,
         detectedPath: String,
-        detectAction: @escaping () -> Void
+        detectAction: @escaping () -> Void,
+        saveAction: (() -> Void)? = nil,
+        hasUnsavedChanges: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 12) {
@@ -450,6 +456,15 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .frame(minWidth: 280, maxWidth: 420)
                     .textSelection(.enabled)
+                    .onSubmit {
+                        saveAction?()
+                    }
+                if let saveAction {
+                    Button("Save") {
+                        saveAction()
+                    }
+                    .disabled(!hasUnsavedChanges)
+                }
                 Button {
                     detectAction()
                 } label: {
@@ -961,7 +976,6 @@ struct SettingsView: View {
             },
             set: { value in
                 providerPathDrafts[runtime] = value
-                RuntimeProviderSettingsStore.setExecutablePath(value, for: runtime)
             }
         )
     }
@@ -981,6 +995,16 @@ struct SettingsView: View {
             providerPathDrafts[runtime] = detected
             RuntimeProviderSettingsStore.setExecutablePath(detected, for: runtime)
         }
+    }
+
+    private func saveProviderPathDraft(for runtime: AgentRuntimeID) {
+        let value = providerPathDrafts[runtime] ?? ""
+        RuntimeProviderSettingsStore.setExecutablePath(value, for: runtime)
+    }
+
+    private func hasUnsavedProviderPathDraft(for runtime: AgentRuntimeID) -> Bool {
+        let draft = providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
+        return draft != RuntimeProviderSettingsStore.executablePath(for: runtime)
     }
 
     private func detectCLI(for runtime: AgentRuntimeID) {

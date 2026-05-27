@@ -2285,15 +2285,15 @@ struct ContentView: View {
         )
         guard FileManager.default.isExecutableFile(atPath: resolvedExecutablePath) else { return }
 
-        let signature = [
-            runtime.rawValue,
-            resolvedExecutablePath,
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "|")
+        let signature = RuntimeModelRefreshSignature.make(
+            runtime: runtime,
+            executablePath: resolvedExecutablePath,
+            providerSettings: providerSettings,
+            claudeProviderRaw: claudeProviderRaw,
+            claudeVertexOpusModel: claudeVertexOpusModel,
+            claudeVertexSonnetModel: claudeVertexSonnetModel,
+            claudeVertexHaikuModel: claudeVertexHaikuModel
+        )
         guard runtimeModelRefreshTasks[runtime] == nil,
               lastRuntimeModelRefreshSignatures[runtime] != signature else { return }
         lastRuntimeModelRefreshSignatures[runtime] = signature

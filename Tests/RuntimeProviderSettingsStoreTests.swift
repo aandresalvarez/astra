@@ -54,6 +54,38 @@ struct RuntimeProviderSettingsStoreTests {
         #expect(configuration.executablePath(for: futureRuntime) == "/opt/future/bin/future2")
     }
 
+    @Test("Model refresh signature ignores unrelated provider settings")
+    func modelRefreshSignatureIgnoresUnrelatedProviderSettings() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        var settings = AgentRuntimeProviderSettings()
+        settings.setHomeDirectory("/tmp/copilot-home", for: .copilotCLI)
+
+        let before = RuntimeModelRefreshSignature.make(
+            runtime: .copilotCLI,
+            executablePath: "/opt/copilot/bin/copilot",
+            providerSettings: settings,
+            claudeProviderRaw: "anthropic",
+            claudeVertexOpusModel: "opus-a",
+            claudeVertexSonnetModel: "sonnet-a",
+            claudeVertexHaikuModel: "haiku-a"
+        )
+
+        settings.setExecutablePath("/opt/future/bin/future", for: futureRuntime)
+        settings.setHomeDirectory("/tmp/future-home", for: futureRuntime)
+
+        let after = RuntimeModelRefreshSignature.make(
+            runtime: .copilotCLI,
+            executablePath: "/opt/copilot/bin/copilot",
+            providerSettings: settings,
+            claudeProviderRaw: "vertex",
+            claudeVertexOpusModel: "opus-b",
+            claudeVertexSonnetModel: "sonnet-b",
+            claudeVertexHaikuModel: "haiku-b"
+        )
+
+        #expect(before == after)
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "RuntimeProviderSettingsStoreTests-\(UUID().uuidString)"
         return (UserDefaults(suiteName: suiteName)!, suiteName)
