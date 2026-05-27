@@ -34,8 +34,20 @@ final class AgentRuntimeWorker {
         runtimeConfiguration.setExecutablePath(path, for: runtime)
     }
 
+    func executablePath(for runtime: AgentRuntimeID) -> String {
+        runtimeConfiguration.executablePath(for: runtime)
+    }
+
     func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
         runtimeConfiguration.setHomeDirectory(path, for: runtime)
+    }
+
+    func homeDirectory(for runtime: AgentRuntimeID) -> String {
+        runtimeConfiguration.homeDirectory(for: runtime)
+    }
+
+    func setProviderSettings(_ settings: AgentRuntimeProviderSettings) {
+        runtimeConfiguration.setProviderSettings(settings)
     }
 
     var defaultRuntimeID: AgentRuntimeID {
@@ -904,9 +916,7 @@ final class AgentRuntimeWorker {
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: model,
-            claudePath: claudePath,
-            copilotPath: copilotPath,
-            copilotHome: copilotHome
+            providerSettings: runtimeConfiguration.configuredProviderSettings
         )
     }
 

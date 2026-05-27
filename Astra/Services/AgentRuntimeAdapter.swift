@@ -12,10 +12,6 @@ protocol AgentRuntimeAdapter {
     var recordsStreamTelemetry: Bool { get }
     var recordsInferredFileChanges: Bool { get }
 
-    func cachedModelsJSON(
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON: String
-    ) -> String
     func policyAdapter(copilotCapabilities: CopilotCLICapabilities) -> any ProviderPolicyAdapter
     func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
     func existingProviderConfigSummary(workspacePath: String) -> String?
@@ -93,6 +89,14 @@ protocol AgentRuntimeAdapter {
 }
 
 extension AgentRuntimeAdapter {
+    var availableModelsStorageKey: String {
+        AppStorageKeys.runtimeAvailableModelsKey(for: id)
+    }
+
+    var modelsCheckedAtStorageKey: String {
+        AppStorageKeys.runtimeModelsCheckedAtKey(for: id)
+    }
+
     var recordsStreamTelemetry: Bool { false }
 
     var recordsInferredFileChanges: Bool { false }
@@ -102,8 +106,11 @@ extension AgentRuntimeAdapter {
     }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
-        AgentRuntimeLaunchSettings(
-            executablePath: configuration.executablePath(for: id),
+        let configuredPath = configuration.executablePath(for: id)
+        return AgentRuntimeLaunchSettings(
+            executablePath: configuredPath.isEmpty
+                ? RuntimePathResolver.detectExecutablePath(named: descriptor.executableName)
+                : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
         )
     }
@@ -694,13 +701,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         phase == "run"
     }
 
-    func cachedModelsJSON(
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON _: String
-    ) -> String {
-        cachedClaudeModelsJSON
-    }
-
     func policyAdapter(copilotCapabilities _: CopilotCLICapabilities) -> any ProviderPolicyAdapter {
         ClaudePolicyAdapter()
     }
@@ -720,7 +720,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         var checks: [RuntimeReadinessCheck] = []
         let prerequisite = descriptor.prerequisite
         let executable = probes.resolvedExecutable(
-            configuredPath: configuration.claudePath,
+            configuredPath: configuration.executablePath(for: id),
             binary: prerequisite.binary
         )
 
@@ -947,9 +947,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
-        let executable = configuration.claudePath.isEmpty
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty
             ? RuntimePathResolver.detectClaudePath()
-            : configuration.claudePath
+            : configuredPath
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         var args = [
@@ -1252,13 +1253,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
 
-    func cachedModelsJSON(
-        cachedClaudeModelsJSON _: String,
-        cachedCopilotModelsJSON: String
-    ) -> String {
-        cachedCopilotModelsJSON
-    }
-
     func policyAdapter(copilotCapabilities: CopilotCLICapabilities) -> any ProviderPolicyAdapter {
         CopilotPolicyAdapter(capabilities: copilotCapabilities)
     }
@@ -1277,7 +1271,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     ) async -> RuntimeReadinessReport {
         let prerequisite = descriptor.prerequisite
         let executable = probes.resolvedExecutable(
-            configuredPath: configuration.copilotPath,
+            configuredPath: configuration.executablePath(for: id),
             binary: prerequisite.binary
         )
         let cliStatus = await probes.checkExecutable(
@@ -1499,9 +1493,13 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
-        let executable = configuration.copilotPath.isEmpty
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty
             ? CopilotCLIRuntime.detectPath()
-            : configuration.copilotPath
+            : configuredPath
+        let copilotHome = configuration.homeDirectory(for: id).isEmpty
+            ? CopilotCLIRuntime.channelHome()
+            : configuration.homeDirectory(for: id)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
@@ -1515,10 +1513,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: 120,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: configuration.copilotHome
+            copilotHome: copilotHome
         )
 
-        try? FileManager.default.createDirectory(atPath: configuration.copilotHome, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: plan.executablePath)
         process.arguments = plan.arguments

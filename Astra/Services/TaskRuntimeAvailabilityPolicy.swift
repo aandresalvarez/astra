@@ -7,22 +7,36 @@ enum TaskRuntimeAvailabilityPolicy {
     static func alignAfterReadinessRefresh(
         task: AgentTask,
         runtimeReadinessStates _: [AgentRuntimeID: RuntimeReadinessState],
+        cache: RuntimeModelAvailabilityCache,
+        now: () -> Date = Date.init
+    ) {
+        alignModelWithCurrentRuntime(
+            task: task,
+            cache: cache,
+            now: now
+        )
+    }
+
+    static func alignAfterReadinessRefresh(
+        task: AgentTask,
+        runtimeReadinessStates _: [AgentRuntimeID: RuntimeReadinessState],
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String,
         now: () -> Date = Date.init
     ) {
         alignModelWithCurrentRuntime(
             task: task,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON,
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            ),
             now: now
         )
     }
 
     static func alignModelWithCurrentRuntime(
         task: AgentTask,
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON: String,
+        cache: RuntimeModelAvailabilityCache,
         now: () -> Date = Date.init
     ) {
         guard task.status != .running else { return }
@@ -33,12 +47,27 @@ enum TaskRuntimeAvailabilityPolicy {
         let normalized = RuntimeModelAvailability.normalizedModel(
             task.model,
             for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            cache: cache
         )
         if task.model != normalized {
             task.model = normalized
             task.updatedAt = now()
         }
+    }
+
+    static func alignModelWithCurrentRuntime(
+        task: AgentTask,
+        cachedClaudeModelsJSON: String,
+        cachedCopilotModelsJSON: String,
+        now: () -> Date = Date.init
+    ) {
+        alignModelWithCurrentRuntime(
+            task: task,
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            ),
+            now: now
+        )
     }
 }

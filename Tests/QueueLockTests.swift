@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import ASTRA
+import ASTRACore
 
 // MARK: - Helper
 
@@ -126,6 +127,67 @@ struct QueueLockTests {
         for worker in queue.workers {
             #expect(worker.skipPermissions == false)
             #expect(worker.permissionPolicy == .restricted)
+        }
+    }
+
+    @Test("applySettings propagates provider-keyed runtime settings")
+    func applySettingsPropagatesProviderKeyedRuntimeSettings() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath("/opt/future/bin/future", for: futureRuntime)
+        settings.setHomeDirectory("/tmp/future-home", for: futureRuntime)
+
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: nil,
+            providerSettings: settings,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.executablePath(for: futureRuntime) == "/opt/future/bin/future")
+            #expect(worker.homeDirectory(for: futureRuntime) == "/tmp/future-home")
+        }
+    }
+
+    @Test("applySettings keeps Copilot channel home when provider settings omit it")
+    func applySettingsKeepsCopilotChannelHomeWhenProviderSettingsOmitIt() {
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath("/opt/copilot/bin/copilot", for: .copilotCLI)
+
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: nil,
+            providerSettings: settings,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.executablePath(for: .copilotCLI) == "/opt/copilot/bin/copilot")
+            #expect(worker.homeDirectory(for: .copilotCLI) == CopilotCLIRuntime.channelHome())
+        }
+    }
+
+    @Test("applySettings merges explicit built-in paths into partial provider settings")
+    func applySettingsMergesExplicitBuiltInPathsIntoPartialProviderSettings() {
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: "/custom/bin/claude",
+            copilotPath: "/custom/bin/copilot",
+            providerSettings: AgentRuntimeProviderSettings(),
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.executablePath(for: .claudeCode) == "/custom/bin/claude")
+            #expect(worker.executablePath(for: .copilotCLI) == "/custom/bin/copilot")
+            #expect(worker.homeDirectory(for: .copilotCLI) == CopilotCLIRuntime.channelHome())
         }
     }
 

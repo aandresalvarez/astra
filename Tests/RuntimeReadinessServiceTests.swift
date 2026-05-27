@@ -210,6 +210,39 @@ struct RuntimeReadinessServiceTests {
         #expect(!calls.contains { $0.path == "/detected/copilot" })
     }
 
+    @Test("Provider-keyed readiness settings choose configured executable")
+    func providerKeyedReadinessSettingsChooseConfiguredExecutable() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/provider-map/bin/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "copilot 1.0\n", stderr: "")
+        )
+
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath("/provider-map/bin/copilot", for: .copilotCLI)
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { _ in "/detected/copilot" },
+            isExecutable: { $0 == "/provider-map/bin/copilot" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .copilotCLI,
+            providerSettings: settings,
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .ready)
+        let calls = await runner.recordedCalls()
+        #expect(calls.contains { $0.path == "/provider-map/bin/copilot" && $0.args == ["--version"] })
+        #expect(!calls.contains { $0.path == "/detected/copilot" })
+    }
+
     @Test("Missing Copilot CLI blocks readiness before account validation")
     func missingCopilotBlocksReadiness() async {
         let runner = StubBinaryRunner()

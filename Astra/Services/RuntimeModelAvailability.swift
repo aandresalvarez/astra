@@ -7,6 +7,45 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
     var checkedAt: Date
 }
 
+struct RuntimeModelAvailabilityCache: Equatable, Sendable {
+    private var rawSnapshots: [AgentRuntimeID: String]
+
+    init(rawSnapshots: [AgentRuntimeID: String] = [:]) {
+        self.rawSnapshots = rawSnapshots
+    }
+
+    init(cachedClaudeModelsJSON: String, cachedCopilotModelsJSON: String) {
+        self.init(rawSnapshots: [
+            .claudeCode: cachedClaudeModelsJSON,
+            .copilotCLI: cachedCopilotModelsJSON
+        ])
+    }
+
+    static func appStorage(
+        cachedClaudeModelsJSON: String,
+        cachedCopilotModelsJSON: String,
+        defaults: UserDefaults = .standard,
+        runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
+    ) -> RuntimeModelAvailabilityCache {
+        var snapshots: [AgentRuntimeID: String] = [
+            .claudeCode: cachedClaudeModelsJSON,
+            .copilotCLI: cachedCopilotModelsJSON
+        ]
+        for runtime in runtimes where snapshots[runtime] == nil {
+            snapshots[runtime] = defaults.string(forKey: AppStorageKeys.runtimeAvailableModelsKey(for: runtime)) ?? ""
+        }
+        return RuntimeModelAvailabilityCache(rawSnapshots: snapshots)
+    }
+
+    func rawSnapshot(for runtime: AgentRuntimeID) -> String {
+        rawSnapshots[runtime] ?? ""
+    }
+
+    mutating func setRawSnapshot(_ raw: String, for runtime: AgentRuntimeID) {
+        rawSnapshots[runtime] = raw
+    }
+}
+
 struct RuntimeModelResolution: Equatable, Sendable {
     let runtime: AgentRuntimeID
     let requestedModel: String
@@ -48,14 +87,23 @@ enum RuntimeModelAvailability {
 
     static func models(
         for runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> [String] {
+        cachedModels(for: runtime, cache: cache) ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
+    }
+
+    static func models(
+        for runtime: AgentRuntimeID,
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> [String] {
-        cachedModels(
+        models(
             for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        ) ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            )
+        )
     }
 
     static func defaultModel(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> String {
@@ -64,14 +112,30 @@ enum RuntimeModelAvailability {
 
     static func defaultModel(
         for runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String {
+        defaultSuggestion(for: runtime, suggestions: models(for: runtime, cache: cache))
+    }
+
+    static func defaultModel(
+        for runtime: AgentRuntimeID,
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> String {
-        defaultSuggestion(for: runtime, suggestions: models(
+        defaultModel(
             for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        ))
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            )
+        )
+    }
+
+    static func hasCachedModels(
+        for runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> Bool {
+        cachedModels(for: runtime, cache: cache) != nil
     }
 
     static func hasCachedModels(
@@ -79,11 +143,13 @@ enum RuntimeModelAvailability {
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> Bool {
-        cachedModels(
+        hasCachedModels(
             for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        ) != nil
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            )
+        )
     }
 
     static func normalizedModel(
@@ -101,18 +167,25 @@ enum RuntimeModelAvailability {
     static func normalizedModel(
         _ model: String,
         for runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String {
+        resolveModel(model, for: runtime, cache: cache).resolvedModel
+    }
+
+    static func normalizedModel(
+        _ model: String,
+        for runtime: AgentRuntimeID,
         cachedClaudeModelsJSON: String,
         cachedCopilotModelsJSON: String
     ) -> String {
-        resolveModel(
+        normalizedModel(
             model,
             for: runtime,
-            cachedSnapshot: cachedSnapshot(
-                for: runtime,
+            cache: RuntimeModelAvailabilityCache(
                 cachedClaudeModelsJSON: cachedClaudeModelsJSON,
                 cachedCopilotModelsJSON: cachedCopilotModelsJSON
             )
-        ).resolvedModel
+        )
     }
 
     static func resolveModel(
@@ -137,15 +210,10 @@ enum RuntimeModelAvailability {
     static func modelForRuntimeSwitch(
         currentModel: String,
         to runtime: AgentRuntimeID,
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON: String
+        cache: RuntimeModelAvailabilityCache
     ) -> String {
         let trimmed = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let suggestions = models(
-            for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        )
+        let suggestions = models(for: runtime, cache: cache)
         if suggestions.contains(trimmed) {
             return trimmed
         }
@@ -154,6 +222,34 @@ enum RuntimeModelAvailability {
             return runtimeDefaultModel
         }
         return suggestions.first ?? runtimeDefaultModel
+    }
+
+    static func modelForRuntimeSwitch(
+        currentModel: String,
+        to runtime: AgentRuntimeID,
+        cachedClaudeModelsJSON: String,
+        cachedCopilotModelsJSON: String
+    ) -> String {
+        modelForRuntimeSwitch(
+            currentModel: currentModel,
+            to: runtime,
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: cachedClaudeModelsJSON,
+                cachedCopilotModelsJSON: cachedCopilotModelsJSON
+            )
+        )
+    }
+
+    static func resolveModel(
+        _ model: String,
+        for runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> RuntimeModelResolution {
+        resolveModel(
+            model,
+            for: runtime,
+            cachedSnapshot: cachedSnapshot(for: runtime, cache: cache)
+        )
     }
 
     static func persistAvailableModels(
@@ -175,11 +271,13 @@ enum RuntimeModelAvailability {
         }
         defaults.set(raw, forKey: availableModelsKey(for: runtime))
         defaults.set(checkedAt.timeIntervalSince1970, forKey: checkedAtKey(for: runtime))
+        bumpCacheRevision(defaults: defaults)
     }
 
     static func clearAvailableModels(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: availableModelsKey(for: runtime))
         defaults.removeObject(forKey: checkedAtKey(for: runtime))
+        bumpCacheRevision(defaults: defaults)
     }
 
     static func cachedModels(from raw: String, for runtime: AgentRuntimeID) -> [String]? {
@@ -222,29 +320,16 @@ enum RuntimeModelAvailability {
 
     private static func cachedModels(
         for runtime: AgentRuntimeID,
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON: String
+        cache: RuntimeModelAvailabilityCache
     ) -> [String]? {
-        cachedSnapshot(
-            for: runtime,
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        )?.models
+        cachedSnapshot(for: runtime, cache: cache)?.models
     }
 
     private static func cachedSnapshot(
         for runtime: AgentRuntimeID,
-        cachedClaudeModelsJSON: String,
-        cachedCopilotModelsJSON: String
+        cache: RuntimeModelAvailabilityCache
     ) -> RuntimeModelAvailabilitySnapshot? {
-        guard let adapter = AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime) else {
-            return nil
-        }
-        let raw = adapter.cachedModelsJSON(
-            cachedClaudeModelsJSON: cachedClaudeModelsJSON,
-            cachedCopilotModelsJSON: cachedCopilotModelsJSON
-        )
-        return cachedSnapshot(from: raw, for: runtime)
+        cachedSnapshot(from: cache.rawSnapshot(for: runtime), for: runtime)
     }
 
     private static func resolveModel(
@@ -343,11 +428,16 @@ enum RuntimeModelAvailability {
 
     private static func availableModelsKey(for runtime: AgentRuntimeID) -> String {
         AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.availableModelsStorageKey
-            ?? "astra.runtime.\(runtime.rawValue).availableModels.v1"
+            ?? AppStorageKeys.runtimeAvailableModelsKey(for: runtime)
     }
 
     private static func checkedAtKey(for runtime: AgentRuntimeID) -> String {
         AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.modelsCheckedAtStorageKey
-            ?? "astra.runtime.\(runtime.rawValue).modelsCheckedAt.v1"
+            ?? AppStorageKeys.runtimeModelsCheckedAtKey(for: runtime)
+    }
+
+    private static func bumpCacheRevision(defaults: UserDefaults) {
+        defaults.set(defaults.integer(forKey: AppStorageKeys.runtimeModelCacheRevision) + 1,
+                     forKey: AppStorageKeys.runtimeModelCacheRevision)
     }
 }

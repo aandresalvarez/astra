@@ -529,19 +529,30 @@ final class TaskLifecycleCoordinator {
     func backfillGeneratedThreadTitles(
         claudePath: String,
         copilotPath: String = "",
+        providerSettings: AgentRuntimeProviderSettings = AgentRuntimeProviderSettings(),
         defaultRuntimeID: String = TaskExecutionDefaults.runtime.rawValue,
         model: String = "claude-haiku-4-5-20251001",
         limit: Int = 40
     ) {
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        var resolvedSettings = providerSettings
+        if resolvedSettings.executablePath(for: .claudeCode).isEmpty {
+            resolvedSettings.setExecutablePath(claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
+                                               for: .claudeCode)
+        }
+        if resolvedSettings.executablePath(for: .copilotCLI).isEmpty {
+            resolvedSettings.setExecutablePath(copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
+                                               for: .copilotCLI)
+        }
+        if resolvedSettings.homeDirectory(for: .copilotCLI).isEmpty {
+            resolvedSettings.setHomeDirectory(CopilotCLIRuntime.channelHome(), for: .copilotCLI)
+        }
         let utilityRuntime = AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(model, for: runtime),
-            claudePath: claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
-            copilotPath: copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
-            copilotHome: CopilotCLIRuntime.channelHome()
+            providerSettings: resolvedSettings
         )
-        let executablePath = runtime == .copilotCLI ? utilityRuntime.copilotPath : utilityRuntime.claudePath
+        let executablePath = utilityRuntime.executablePath(for: runtime)
         guard FileManager.default.isExecutableFile(atPath: executablePath) else {
             AppLogger.audit(.taskStats, category: "UI", fields: [
                 "operation": "thread_title_backfill",

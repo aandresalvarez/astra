@@ -93,6 +93,11 @@ struct Phase3FunctionalTest {
         task.maxTurns = 8
         context.insert(task)
         try context.save()
+        let effectiveTokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: task.tokenBudget,
+            usesAgentTeam: task.useAgentTeam,
+            teamSize: task.teamSize
+        )
 
         #expect(task.useAgentTeam == runtimeCase.expectsTeamEvents)
         #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 3 : 1))
@@ -139,6 +144,10 @@ struct Phase3FunctionalTest {
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
         }
+        if task.status == .budgetExceeded {
+            #expect(eventTypes.contains("budget.exceeded"),
+                    "Budget exceeded status must include a budget.exceeded event")
+        }
 
         // 8. Verify parallel team activity
         let teamStartEvents = allEvents.filter { $0.type == "team.agent.started" }
@@ -157,40 +166,32 @@ struct Phase3FunctionalTest {
         }
 
         // 9. Verify output file — state-decision.md
-        let decisionPath = findOutputFile(named: "state-decision.md", workspacePath: testDir, task: task)
-        let hasDecisionFile = decisionPath != nil
+        let decisionPath = try #require(
+            findOutputFile(named: "state-decision.md", workspacePath: testDir, task: task),
+            "state-decision.md should exist even when budget exceeded after provider work (status: \(task.status.rawValue))"
+        )
+        let content = try String(contentsOfFile: decisionPath, encoding: .utf8)
+        #expect(!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "state-decision.md should have content")
 
-        if let decisionPath {
-            let content = try String(contentsOfFile: decisionPath, encoding: .utf8)
-            #expect(!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    "state-decision.md should have content")
+        // Check for comparison matrix indicators (markdown table)
+        let hasTable = content.contains("|") && content.contains("---")
+        let hasLibraries = (content.contains("Redux") || content.contains("redux"))
+            && (content.contains("Zustand") || content.contains("zustand"))
+            && (content.contains("Context") || content.contains("context"))
 
-            // Check for comparison matrix indicators (markdown table)
-            let hasTable = content.contains("|") && content.contains("---")
-            let hasLibraries = (content.contains("Redux") || content.contains("redux"))
-                && (content.contains("Zustand") || content.contains("zustand"))
-                && (content.contains("Context") || content.contains("context"))
+        #expect(hasTable || hasLibraries,
+                "state-decision.md should contain a comparison matrix or mention all three libraries")
 
-            #expect(hasTable || hasLibraries,
-                    "state-decision.md should contain a comparison matrix or mention all three libraries")
-
-            print("state-decision.md preview:\n\(content.prefix(500))")
-        } else {
-            // If budget was exceeded before file creation, that's acceptable
-            if task.status == .budgetExceeded {
-                print("NOTE: Budget exceeded before state-decision.md was created — this is an expected outcome for Phase 3")
-            } else {
-                #expect(hasDecisionFile, "state-decision.md should exist (status: \(task.status.rawValue))")
-            }
-        }
+        print("state-decision.md preview:\n\(content.prefix(500))")
 
         // 10. Token budget stress test — verify budget tracking worked
         // Agent teams report tokens in large batches (per-agent result events), so overshoot
         // can be significant. We verify the budget mechanism fired, not exact cutoff.
         if task.status == .budgetExceeded {
             if runtimeCase.expectsUsageStats {
-                #expect(task.tokensUsed > task.tokenBudget,
-                        "Budget exceeded status should mean tokens (\(task.tokensUsed)) exceeded budget (\(task.tokenBudget))")
+                #expect(task.tokensUsed > effectiveTokenBudget,
+                        "Budget exceeded status should mean tokens (\(task.tokensUsed)) exceeded effective budget (\(effectiveTokenBudget))")
             }
         }
 
@@ -199,13 +200,13 @@ struct Phase3FunctionalTest {
         print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Workspace: \(workspace.name) -> \(workspace.primaryPath)")
         print("Status: \(task.status.rawValue)")
-        print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")
+        print("Tokens: \(task.tokensUsed) / \(effectiveTokenBudget) effective (base \(task.tokenBudget))")
         print("Cost: $\(String(format: "%.4f", task.costUSD))")
         print("Session: \(task.sessionId ?? "nil")")
         print("Events: \(allEvents.count) (\(eventTypes.sorted().joined(separator: ", ")))")
         print("Team spawns: \(teamStartEvents.count) started, \(teamCompletedEvents.count) completed")
         print("Agent tool uses: \(agentToolUses.count)")
-        print("state-decision.md exists: \(hasDecisionFile)")
+        print("state-decision.md exists: true")
         print("=============================================\n")
     }
 

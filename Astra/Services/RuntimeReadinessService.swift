@@ -38,14 +38,76 @@ struct RuntimeReadinessReport: Sendable, Equatable {
 
 struct RuntimeReadinessConfiguration: Sendable, Equatable {
     var runtime: AgentRuntimeID
-    var claudePath: String
-    var copilotPath: String
+    var providerSettings: AgentRuntimeProviderSettings
     var claudeProvider: ClaudeProvider
     var vertexProjectID: String
     var vertexRegion: String
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
+
+    init(
+        runtime: AgentRuntimeID,
+        claudePath: String,
+        copilotPath: String,
+        claudeProvider: ClaudeProvider,
+        vertexProjectID: String,
+        vertexRegion: String,
+        vertexOpusModel: String,
+        vertexSonnetModel: String,
+        vertexHaikuModel: String
+    ) {
+        self.init(
+            runtime: runtime,
+            providerSettings: AgentRuntimeProviderSettings(
+                executablePaths: [
+                    .claudeCode: claudePath,
+                    .copilotCLI: copilotPath
+                ],
+                homeDirectories: [
+                    .copilotCLI: CopilotCLIRuntime.channelHome()
+                ]
+            ),
+            claudeProvider: claudeProvider,
+            vertexProjectID: vertexProjectID,
+            vertexRegion: vertexRegion,
+            vertexOpusModel: vertexOpusModel,
+            vertexSonnetModel: vertexSonnetModel,
+            vertexHaikuModel: vertexHaikuModel
+        )
+    }
+
+    init(
+        runtime: AgentRuntimeID,
+        providerSettings: AgentRuntimeProviderSettings,
+        claudeProvider: ClaudeProvider,
+        vertexProjectID: String,
+        vertexRegion: String,
+        vertexOpusModel: String,
+        vertexSonnetModel: String,
+        vertexHaikuModel: String
+    ) {
+        self.runtime = runtime
+        self.providerSettings = providerSettings
+        self.claudeProvider = claudeProvider
+        self.vertexProjectID = vertexProjectID
+        self.vertexRegion = vertexRegion
+        self.vertexOpusModel = vertexOpusModel
+        self.vertexSonnetModel = vertexSonnetModel
+        self.vertexHaikuModel = vertexHaikuModel
+    }
+
+    var claudePath: String {
+        providerSettings.executablePath(for: .claudeCode)
+    }
+
+    var copilotPath: String {
+        providerSettings.executablePath(for: .copilotCLI)
+    }
+
+    func executablePath(for runtime: AgentRuntimeID) -> String {
+        providerSettings.executablePath(for: runtime)
+    }
 }
 
 struct RuntimeReadinessService {

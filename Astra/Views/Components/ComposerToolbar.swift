@@ -91,6 +91,7 @@ struct ComposerToolbar: View {
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var globalDefaultPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var isPlusHovered = false
     @State private var isPolicySheetPresented = false
@@ -306,8 +307,7 @@ struct ComposerToolbar: View {
                             RuntimeModelAvailability.modelForRuntimeSwitch(
                                 currentModel: model,
                                 to: runtime,
-                                cachedClaudeModelsJSON: claudeAvailableModels,
-                                cachedCopilotModelsJSON: copilotAvailableModels
+                                cache: runtimeModelCache
                             )
                         )
                     } label: {
@@ -871,6 +871,13 @@ struct ComposerToolbar: View {
     private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
         RuntimeModelAvailability.models(
             for: runtime,
+            cache: runtimeModelCache
+        )
+    }
+
+    private var runtimeModelCache: RuntimeModelAvailabilityCache {
+        _ = runtimeModelCacheRevision
+        return RuntimeModelAvailabilityCache.appStorage(
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )

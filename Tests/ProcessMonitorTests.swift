@@ -1994,4 +1994,28 @@ struct RuntimeBudgetProfileTests {
         #expect(copilot.estimatedLaunchInputTokens(prompt: prompt) == promptEstimate + copilot.launchOverheadTokens)
         #expect(claude.launchOverheadTokens > copilot.launchOverheadTokens)
     }
+
+    @Test("Effective budget scales team budgets without audit side effects")
+    func effectiveBudgetScalesTeamBudgets() {
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 0,
+            usesAgentTeam: true,
+            teamSize: 3
+        ) == Int.max)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 100_000,
+            usesAgentTeam: false,
+            teamSize: 3
+        ) == 100_000)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 100_000,
+            usesAgentTeam: true,
+            teamSize: 1
+        ) == 200_000)
+        #expect(AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: 100_000,
+            usesAgentTeam: true,
+            teamSize: 3
+        ) == 300_000)
+    }
 }

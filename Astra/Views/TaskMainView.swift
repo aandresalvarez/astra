@@ -111,6 +111,7 @@ struct TaskMainView: View {
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
@@ -119,6 +120,7 @@ struct TaskMainView: View {
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
@@ -206,21 +208,32 @@ struct TaskMainView: View {
         let model = RuntimeModelAvailability.normalizedModel(
             task.model,
             for: runtime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: model,
-            claudePath: claudePath,
-            copilotPath: copilotPath,
-            copilotHome: CopilotCLIRuntime.channelHome()
+            providerSettings: providerSettingsForUtilityRuntime
         )
+    }
+
+    private var providerSettingsForUtilityRuntime: AgentRuntimeProviderSettings {
+        var settings = RuntimeProviderSettingsStore.settings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        settings.setExecutablePath(copilotPath, for: .copilotCLI)
+        return settings
     }
 
     private func alignTaskModelWithRuntime() {
         TaskRuntimeAvailabilityPolicy.alignModelWithCurrentRuntime(
             task: task,
+            cache: runtimeModelCache
+        )
+    }
+
+    private var runtimeModelCache: RuntimeModelAvailabilityCache {
+        _ = runtimeModelCacheRevision
+        return RuntimeModelAvailabilityCache.appStorage(
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -228,8 +241,7 @@ struct TaskMainView: View {
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
-            claudePath: claudePath,
-            copilotPath: copilotPath,
+            providerSettings: providerSettingsForReadiness,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
@@ -239,10 +251,19 @@ struct TaskMainView: View {
         )
     }
 
+    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
+        var settings = RuntimeProviderSettingsStore.settings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        settings.setExecutablePath(copilotPath, for: .copilotCLI)
+        return settings
+    }
+
     private var runtimeAvailabilitySignature: String {
         [
             claudePath,
             copilotPath,
+            String(runtimeProviderSettingsRevision),
+            RuntimeProviderSettingsStore.signature(),
             claudeProviderRaw,
             claudeVertexProjectID,
             claudeVertexRegion,
@@ -375,6 +396,7 @@ struct TaskMainView: View {
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
+        .onChange(of: runtimeModelCacheRevision) { alignTaskModelWithRuntime() }
         .onChange(of: threadSnapshotTrigger) { _, _ in
             threadViewModel.refreshSnapshot(for: task)
             schedulePlanStateCacheRefresh()
@@ -446,8 +468,7 @@ struct TaskMainView: View {
         TaskRuntimeAvailabilityPolicy.alignAfterReadinessRefresh(
             task: task,
             runtimeReadinessStates: runtimeReadinessStates,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
     }
 
@@ -3923,8 +3944,7 @@ struct TaskMainView: View {
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: task.model,
                             to: resolved,
-                            cachedClaudeModelsJSON: claudeAvailableModels,
-                            cachedCopilotModelsJSON: copilotAvailableModels
+                            cache: runtimeModelCache
                         )
                         task.model = resolvedModel
                         task.updatedAt = Date()

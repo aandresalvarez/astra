@@ -2,8 +2,7 @@ import Foundation
 import ASTRACore
 
 struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
-    var claudePath: String
-    var copilotPath: String
+    var providerSettings: AgentRuntimeProviderSettings
     var claudeProvider: ClaudeProvider
     var vertexProjectID: String
     var vertexRegion: String
@@ -11,11 +10,57 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
     var vertexSonnetModel: String
     var vertexHaikuModel: String
 
+    init(
+        claudePath: String,
+        copilotPath: String,
+        claudeProvider: ClaudeProvider,
+        vertexProjectID: String,
+        vertexRegion: String,
+        vertexOpusModel: String,
+        vertexSonnetModel: String,
+        vertexHaikuModel: String
+    ) {
+        self.init(
+            providerSettings: AgentRuntimeProviderSettings(
+                executablePaths: [
+                    .claudeCode: claudePath,
+                    .copilotCLI: copilotPath
+                ],
+                homeDirectories: [
+                    .copilotCLI: CopilotCLIRuntime.channelHome()
+                ]
+            ),
+            claudeProvider: claudeProvider,
+            vertexProjectID: vertexProjectID,
+            vertexRegion: vertexRegion,
+            vertexOpusModel: vertexOpusModel,
+            vertexSonnetModel: vertexSonnetModel,
+            vertexHaikuModel: vertexHaikuModel
+        )
+    }
+
+    init(
+        providerSettings: AgentRuntimeProviderSettings,
+        claudeProvider: ClaudeProvider,
+        vertexProjectID: String,
+        vertexRegion: String,
+        vertexOpusModel: String,
+        vertexSonnetModel: String,
+        vertexHaikuModel: String
+    ) {
+        self.providerSettings = providerSettings
+        self.claudeProvider = claudeProvider
+        self.vertexProjectID = vertexProjectID
+        self.vertexRegion = vertexRegion
+        self.vertexOpusModel = vertexOpusModel
+        self.vertexSonnetModel = vertexSonnetModel
+        self.vertexHaikuModel = vertexHaikuModel
+    }
+
     func readinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
         RuntimeReadinessConfiguration(
             runtime: runtime,
-            claudePath: claudePath,
-            copilotPath: copilotPath,
+            providerSettings: providerSettings,
             claudeProvider: claudeProvider,
             vertexProjectID: vertexProjectID,
             vertexRegion: vertexRegion,

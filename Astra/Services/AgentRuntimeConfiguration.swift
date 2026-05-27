@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct AgentRuntimeProviderSettings {
+struct AgentRuntimeProviderSettings: Equatable, Sendable {
     private var executablePaths: [AgentRuntimeID: String]
     private var homeDirectories: [AgentRuntimeID: String]
 
@@ -17,12 +17,20 @@ struct AgentRuntimeProviderSettings {
         executablePaths[runtime] ?? ""
     }
 
+    var configuredExecutablePaths: [AgentRuntimeID: String] {
+        executablePaths
+    }
+
     mutating func setExecutablePath(_ path: String, for runtime: AgentRuntimeID) {
         executablePaths[runtime] = path
     }
 
     func homeDirectory(for runtime: AgentRuntimeID) -> String {
         homeDirectories[runtime] ?? ""
+    }
+
+    var configuredHomeDirectories: [AgentRuntimeID: String] {
+        homeDirectories
     }
 
     mutating func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
@@ -38,17 +46,20 @@ struct AgentRuntimeConfiguration {
         claudePath: String = RuntimePathResolver.detectClaudePath(),
         copilotPath: String = CopilotCLIRuntime.detectPath(),
         copilotHome: String = CopilotCLIRuntime.channelHome(),
+        providerSettings: AgentRuntimeProviderSettings = AgentRuntimeProviderSettings(),
         defaultRuntimeID: AgentRuntimeID = .claudeCode
     ) {
-        self.providerSettings = AgentRuntimeProviderSettings(
-            executablePaths: [
-                .claudeCode: claudePath,
-                .copilotCLI: copilotPath
-            ],
-            homeDirectories: [
-                .copilotCLI: copilotHome
-            ]
-        )
+        var resolvedSettings = providerSettings
+        if resolvedSettings.executablePath(for: .claudeCode).isEmpty {
+            resolvedSettings.setExecutablePath(claudePath, for: .claudeCode)
+        }
+        if resolvedSettings.executablePath(for: .copilotCLI).isEmpty {
+            resolvedSettings.setExecutablePath(copilotPath, for: .copilotCLI)
+        }
+        if resolvedSettings.homeDirectory(for: .copilotCLI).isEmpty {
+            resolvedSettings.setHomeDirectory(copilotHome, for: .copilotCLI)
+        }
+        self.providerSettings = resolvedSettings
         self.defaultRuntimeID = defaultRuntimeID
     }
 
@@ -79,8 +90,16 @@ struct AgentRuntimeConfiguration {
         providerSettings.homeDirectory(for: runtime)
     }
 
+    var configuredProviderSettings: AgentRuntimeProviderSettings {
+        providerSettings
+    }
+
     mutating func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
         providerSettings.setHomeDirectory(path, for: runtime)
+    }
+
+    mutating func setProviderSettings(_ settings: AgentRuntimeProviderSettings) {
+        providerSettings = settings
     }
 
     func selectedRuntime(for task: AgentTask) -> AgentRuntimeID {
