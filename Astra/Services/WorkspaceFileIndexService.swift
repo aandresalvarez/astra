@@ -99,6 +99,10 @@ enum WorkspaceFileIndexService {
         if let task {
             let access = TaskWorkspaceAccess(task: task)
             append(kind: .taskFolder, title: "Task Folder", rawPath: access.taskFolder)
+            for path in TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: task.workspace ?? workspace, fileManager: fileManager) {
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                append(kind: .taskFolder, title: "Task Output \(name)", rawPath: path)
+            }
             var inputIndex = 1
             for path in task.inputs {
                 if append(kind: .input, title: "Input \(inputIndex)", rawPath: path) {
@@ -324,7 +328,8 @@ enum WorkspaceFileIndexService {
         rootKind: WorkspaceFileRoot.Kind
     ) -> Bool {
         if rootKind != .taskFolder,
-           relativePath == "tasks" || relativePath.hasPrefix("tasks/") {
+           let runtimeRelativePath = legacyTaskRuntimeRelativePath(relativePath),
+           !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: runtimeRelativePath) {
             return true
         }
         if relativePath == ".astra/tasks" || relativePath.hasPrefix(".astra/tasks/") {
@@ -334,6 +339,17 @@ enum WorkspaceFileIndexService {
             return true
         }
         return false
+    }
+
+    private static func legacyTaskRuntimeRelativePath(_ relativePath: String) -> String? {
+        let components = relativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard components.count >= 3,
+              components[0] == "tasks" else {
+            return nil
+        }
+        return components.dropFirst(2).joined(separator: "/")
     }
 
     private static func hasHiddenPathComponent(_ relativePath: String) -> Bool {

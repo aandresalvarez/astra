@@ -1854,7 +1854,7 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.022))
+        .background(Color.primary.opacity(TaskThreadStatusChrome.runActivityBackgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1971,7 +1971,7 @@ struct TaskMainView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.022))
+        .background(Color.primary.opacity(TaskThreadStatusChrome.runActivityDetailBackgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -2354,7 +2354,6 @@ struct TaskMainView: View {
         let isCollapsible = prominence == .actionable
         let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
         let rawDetail = isExpanded ? runNoticeRawDetail(for: notice, body: body) : nil
-        let backgroundOpacity = prominence == .actionable ? 0.026 : 0.022
         let strokeOpacity = prominence == .actionable ? 0.12 : 0.08
 
         return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
@@ -2391,7 +2390,7 @@ struct TaskMainView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, isExpanded ? 8 : 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(backgroundOpacity))
+        .background(Color.primary.opacity(TaskThreadStatusChrome.runNoticeBackgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
