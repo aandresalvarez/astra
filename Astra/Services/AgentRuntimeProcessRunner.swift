@@ -42,7 +42,7 @@ final class AgentRuntimeProcessRunner {
             task: task,
             workspacePath: workspacePath,
             executablePath: executablePath,
-            copilotHome: homeDirectory,
+            providerHomeDirectory: homeDirectory,
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             permissionManifest: permissionManifest,

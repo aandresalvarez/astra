@@ -174,7 +174,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
 struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     let providerID: AgentRuntimeID = .copilotCLI
     let adapterVersion = 1
-    var capabilities: CopilotCLICapabilities = .conservative
+    var capabilities: AgentRuntimePolicyCapabilities = .conservative
 
     var supportedFeatures: ProviderPolicyFeatures {
         ProviderPolicyFeatures(
@@ -369,11 +369,11 @@ private enum PolicyLocalToolGrants {
 enum ProviderPolicyAdapterRegistry {
     static func adapter(
         for runtime: AgentRuntimeID,
-        copilotCapabilities: CopilotCLICapabilities = .conservative
+        runtimeCapabilities: AgentRuntimePolicyCapabilities = .conservative
     ) -> any ProviderPolicyAdapter {
         AgentRuntimeAdapterRegistry
             .adapter(for: runtime)
-            .policyAdapter(copilotCapabilities: copilotCapabilities)
+            .policyAdapter(runtimeCapabilities: runtimeCapabilities)
     }
 }
 
@@ -494,7 +494,7 @@ enum AgentPolicyManifestService {
         executionPolicy: AgentRuntimeExecutionPolicy,
         defaultPolicyLevelRaw: String,
         providerVersion: String? = nil,
-        copilotCapabilities: CopilotCLICapabilities = .conservative,
+        providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         modelContext: ModelContext
@@ -531,7 +531,7 @@ enum AgentPolicyManifestService {
         )
         let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
-        let providerPolicyAdapter = runtimeAdapter.policyAdapter(copilotCapabilities: copilotCapabilities)
+        let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
         let context = PolicyRenderContext(
             runtimeID: runtime,
