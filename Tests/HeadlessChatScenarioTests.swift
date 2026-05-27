@@ -65,6 +65,50 @@ struct HeadlessChatScenarioTests {
         #expect(events.contains { if case .systemInit(_, "session-1") = $0 { true } else { false } })
     }
 
+    @Test("Fake Antigravity chat completes through the worker without UI")
+    func fakeAntigravityChatCompletes() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            printf '%s\\n' 'Headless Antigravity response'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Answer from Antigravity",
+            model: "Gemini 3.5 Flash (Low)"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        let events = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Headless Antigravity response")
+        #expect(events.contains {
+            if case .text(let text) = $0 {
+                text.trimmingCharacters(in: .whitespacesAndNewlines) == "Headless Antigravity response"
+            } else {
+                false
+            }
+        })
+        #expect(FileManager.default.fileExists(
+            atPath: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: worker.homeDirectory(for: .antigravityCLI)).path
+        ))
+    }
+
     @Test("Standalone artifact task without created files stays pending review")
     func standaloneArtifactTaskWithoutCreatedFilesStaysPendingReview() async throws {
         let harness = try HeadlessChatHarness()
@@ -1980,6 +2024,10 @@ private final class HeadlessChatHarness {
             worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
         default:
             worker.setExecutablePath(executablePath, for: runtime)
+            worker.setHomeDirectory(
+                rootURL.appendingPathComponent("\(runtime.rawValue)-home", isDirectory: true).path,
+                for: runtime
+            )
         }
         return worker
     }

@@ -183,9 +183,10 @@ struct Phase1FunctionalTest {
         let eventTypes = Set(allEvents.map(\.type))
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
-        #expect(eventTypes.contains("agent.thinking"), "Missing agent.thinking")
-        #expect(eventTypes.contains("tool.use"), "Missing tool.use")
-        #expect(eventTypes.contains("agent.response"), "Missing agent.response")
+        #expect(E2ETestSupport.hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
+        if runtimeCase.expectsStructuredToolEvents {
+            #expect(eventTypes.contains("tool.use"), "Missing tool.use")
+        }
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
         }
@@ -197,7 +198,7 @@ struct Phase1FunctionalTest {
             #expect(toolPayloads.contains { $0.contains("Write") }, "Should record Write tool use")
             #expect(toolPayloads.contains { $0.contains("Bash") }, "Should record Bash tool use")
         } else {
-            #expect(!run.fileChanges.isEmpty, "Copilot should infer file changes")
+            #expect(!run.fileChanges.isEmpty, "\(runtimeCase.runtimeID.displayName) should infer file changes")
         }
 
         // 8. Verify Artifacts (these are what the Artifacts tab renders)
@@ -234,7 +235,11 @@ struct Phase1FunctionalTest {
         if runtimeCase.expectsSessionID {
             #expect(parsedTypes.contains { $0.hasPrefix("systemInit") }, "Callback should include systemInit")
         }
-        #expect(parsedTypes.contains { $0.hasPrefix("result") }, "Callback should include result")
+        if runtimeCase.expectsResultCallback {
+            #expect(parsedTypes.contains { $0.hasPrefix("result") }, "Callback should include result")
+        } else {
+            #expect(!receivedEvents.isEmpty, "Callback should include provider output")
+        }
 
         // Summary
         print("\n=== Phase 1 Worker E2E Results ===")

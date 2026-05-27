@@ -94,6 +94,16 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access."
     )
 
+    public static let antigravity = CLIPrerequisite(
+        binary: "agy",
+        livenessArgs: ["--version"],
+        displayName: "Google Antigravity CLI",
+        purpose: "Runs tasks through Google Antigravity CLI.",
+        installURL: URL(string: "https://antigravity.google/product/antigravity-cli"),
+        installHint: "Install via shell: `curl -fsSL https://antigravity.google/cli/install.sh | bash`",
+        authHint: "Run `agy` once and complete Google Sign-In when prompted."
+    )
+
     public static let githubCLI = CLIPrerequisite(
         binary: "gh",
         displayName: "GitHub CLI",

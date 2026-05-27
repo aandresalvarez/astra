@@ -379,6 +379,17 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
+        if trimmed.lowercased() == "default" {
+            return RuntimeModelResolution(
+                runtime: runtime,
+                requestedModel: trimmed,
+                resolvedModel: defaultSuggestion(for: runtime, suggestions: suggestions),
+                source: source,
+                reason: "legacy_default_alias",
+                availableModelCount: suggestions.count,
+                checkedAt: checkedAt
+            )
+        }
         if cachedSnapshot != nil {
             return RuntimeModelResolution(
                 runtime: runtime,

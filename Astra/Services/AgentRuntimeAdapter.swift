@@ -420,11 +420,19 @@ struct CopilotCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     }
 }
 
+struct AntigravityCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
+    let providerID = "antigravity-cli"
+    var runtimeAdapters: [any AgentRuntimeAdapter] {
+        [AntigravityCLIRuntimeAdapter()]
+    }
+}
+
 enum BuiltInAgentRuntimeAdapterProviders {
     static var all: [any AgentRuntimeAdapterProvider] {
         [
             ClaudeCodeRuntimeAdapterProvider(),
-            CopilotCLIRuntimeAdapterProvider()
+            CopilotCLIRuntimeAdapterProvider(),
+            AntigravityCLIRuntimeAdapterProvider()
         ]
     }
 }
@@ -1686,6 +1694,326 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
         let joined = pieces.joined()
         return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
+    var id: AgentRuntimeID { descriptor.id }
+    let descriptor = AgentRuntimeDescriptor(
+        id: .antigravityCLI,
+        displayName: "Google Antigravity CLI",
+        executableName: "agy",
+        installHint: "Install via shell: `curl -fsSL https://antigravity.google/cli/install.sh | bash`",
+        authHint: "Run `agy` once and complete Google Sign-In when prompted.",
+        prerequisite: CommonCLIPrerequisites.antigravity,
+        defaultModel: AntigravityCLIRuntime.defaultModelName(),
+        defaultModels: AntigravityCLIRuntime.availableModelNames(),
+        supportsAstraRunProtocol: true
+    )
+    let readinessCheckID = "antigravity-cli"
+    let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)
+    let recordsInferredFileChanges = true
+
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
+        let configuredPath = configuration.executablePath(for: id)
+        return AgentRuntimeLaunchSettings(
+            executablePath: configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath,
+            homeDirectory: configuration.homeDirectory(for: id)
+        )
+    }
+
+    func missingExecutableAuditReason() -> String {
+        "antigravity_cli_not_found"
+    }
+
+    func missingExecutableStopReason() -> String? {
+        "missing_antigravity"
+    }
+
+    func missingExecutableMessage(executablePath _: String) -> String {
+        "Google Antigravity CLI not found. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then run `agy` once to authenticate."
+    }
+
+    func defaultStartEventPayload(task: AgentTask) -> String {
+        "Antigravity started working on: \(task.goal)"
+    }
+
+    func connectorPreflightContextText(
+        task _: AgentTask,
+        promptOverride: String?,
+        startPayload: String,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride ?? startPayload
+    }
+
+    func shouldPrepareIsolation(phase _: String) -> Bool {
+        true
+    }
+
+    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
+    func manualCompletionPayload(phase _: String) -> String {
+        "Antigravity finished."
+    }
+
+    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
+        "Antigravity exited with code \(exitCode)."
+    }
+
+    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
+        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    }
+
+    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
+        "Max turns reached (\(task.maxTurns)). Process killed."
+    }
+
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String?,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+    }
+
+    func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
+        AntigravityPolicyAdapter()
+    }
+
+    func providerConfigOwnership(workspacePath _: String) -> PolicyConfigOwnership {
+        .generated
+    }
+
+    func existingProviderConfigSummary(workspacePath _: String) -> String? {
+        nil
+    }
+
+    func readinessReport(
+        configuration: RuntimeReadinessConfiguration,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessReport {
+        let prerequisite = descriptor.prerequisite
+        let executable = probes.resolvedExecutable(
+            configuredPath: configuration.executablePath(for: id),
+            binary: prerequisite.binary
+        )
+        let cliStatus = await probes.checkExecutable(
+            id: readinessCheckID,
+            title: prerequisite.displayName,
+            executable: executable,
+            args: prerequisite.livenessArgs,
+            missingDetail: "\(prerequisite.displayName) was not found.",
+            installHint: prerequisite.installHint
+        )
+
+        var checks = [cliStatus.check]
+        if cliStatus.isReady {
+            checks.append(antigravityAccountDeferredCheck())
+        }
+        return RuntimeReadinessReport(checks: checks)
+    }
+
+    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let models = AntigravityCLIRuntime.availableModelNames()
+        RuntimeModelAvailability.persistAvailableModels(models, for: id)
+        return RuntimeReadinessCheck(
+            id: "antigravity-models",
+            title: "Antigravity models",
+            detail: "Available: \(models.joined(separator: ", "))",
+            state: .ready,
+            remediation: nil
+        )
+    }
+
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        guard let bash = detectedExecutable(named: "bash", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        let command = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "bash",
+            executablePath: bash,
+            arguments: ["-lc", command],
+            displayCommand: command
+        )
+    }
+
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
+            for: context.task,
+            taskEnv: taskEnv
+        )
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
+        let executable = context.executablePath.isEmpty ? AntigravityCLIRuntime.detectPath() : context.executablePath
+        let providerVersion = AntigravityCLIRuntime.versionSummary(executablePath: executable)
+        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
+            providerHomeDirectory: context.providerHomeDirectory
+        )
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
+        let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
+            ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
+            : false
+        let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: context.prompt,
+            workspacePath: context.workspacePath,
+            additionalPaths: additionalPaths,
+            permissionPolicy: effectivePermissionPolicy,
+            timeoutSeconds: context.timeoutSeconds,
+            taskEnvironment: taskEnv,
+            pathPrefix: pathPrefix,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+        )
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: context.workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: providerVersion,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: [],
+            providerDetectedFields: [
+                "runtime": id.rawValue,
+                "provider_version": providerVersion ?? "unknown",
+                "executable_configured": String(!context.executablePath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
+                "executable_path": executable,
+                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
+            ],
+            commandPlannedFields: [
+                "runtime": id.rawValue,
+                "phase": "run",
+                "model": model,
+                "provider_model": providerModel,
+                "model_applied": String(modelApplied),
+                "permission_policy": effectivePermissionPolicy.rawValue,
+                "parses_json_lines": String(plan.parsesJSONLines),
+                "additional_paths_count": String(additionalPaths.count),
+                "task_env_count": String(taskEnv.count),
+                "uses_print": String(plan.arguments.contains("--print")),
+                "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
+                "uses_sandbox": String(plan.arguments.contains("--sandbox")),
+                "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
+            ]
+        )
+    }
+
+    func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
+        AntigravityCLIRuntime.parsePlainText(line: line)
+    }
+
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines _: Bool) -> String? {
+        AntigravityCLIRuntime.blockingPlainTextMessage(line: line)
+    }
+
+    func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: AntigravityCLIRuntime.parsePlainTextAgentEvents(
+            line: line,
+            appendingNewline: true
+        ))
+    }
+
+    func processWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        pipeline: AgentRuntimeEventPipelineBox
+    ) -> [AgentRuntimeRecordedEvent] {
+        guard case .agent(let agentEvent) = event else { return [] }
+        return pipeline.process(agentEvent).map(AgentRuntimeRecordedEvent.agent)
+    }
+
+    func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: pipeline.flushAgentEvents())
+    }
+
+    @MainActor
+    func recordWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        mode _: AgentRuntimeRecordingMode,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    ) {
+        guard case .agent(let agentEvent) = event else { return }
+        AgentEventRecorder.recordAntigravityEvent(
+            agentEvent,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
+        guard let agentEvent = event.agentEvent else { return nil }
+        return AgentEventRecorder.parsedEvent(from: agentEvent)
+    }
+
+    func runUtilityPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode _: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty
+            ? AntigravityCLIRuntime.detectPath()
+            : configuredPath
+        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
+            providerHomeDirectory: configuration.homeDirectory(for: id)
+        )
+        let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
+        if FileManager.default.isExecutableFile(atPath: executable) {
+            AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)
+        }
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: prompt,
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 120,
+            taskEnvironment: [:]
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: plan.executablePath)
+        process.arguments = plan.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+        process.environment = plan.environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+    }
+
+    private func antigravityAccountDeferredCheck() -> RuntimeReadinessCheck {
+        RuntimeReadinessCheck(
+            id: "antigravity-account",
+            title: "Antigravity account",
+            detail: "CLI is available. Antigravity authenticates through the system keyring or browser sign-in when a task starts.",
+            state: .ready,
+            remediation: nil
+        )
     }
 }
 

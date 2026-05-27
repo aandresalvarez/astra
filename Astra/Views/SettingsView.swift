@@ -353,6 +353,7 @@ struct SettingsView: View {
         switch runtime {
         case .claudeCode: "terminal"
         case .copilotCLI: "person.crop.circle"
+        case .antigravityCLI: "sparkles"
         default: "terminal"
         }
     }

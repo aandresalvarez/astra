@@ -959,6 +959,7 @@ struct ComposerToolbar: View {
         switch runtime {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
+        case .antigravityCLI: "Antigravity"
         default: runtime.displayName
         }
     }

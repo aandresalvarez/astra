@@ -378,8 +378,10 @@ struct AstraRunProtocolTests {
     func runtimeMetadataAdvertisesARP() {
         #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .claudeCode))
         #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .copilotCLI))
+        #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: .antigravityCLI))
         #expect(AgentRuntimeAdapterRegistry.descriptor(for: .claudeCode).supportsAstraRunProtocol)
         #expect(AgentRuntimeAdapterRegistry.descriptor(for: .copilotCLI).supportsAstraRunProtocol)
+        #expect(AgentRuntimeAdapterRegistry.descriptor(for: .antigravityCLI).supportsAstraRunProtocol)
     }
 }
 

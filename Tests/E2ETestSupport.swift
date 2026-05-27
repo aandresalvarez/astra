@@ -12,6 +12,8 @@ enum E2ETestSupport {
         let expectsUsageStats: Bool
         let expectsCostUSD: Bool
         let expectsTeamEvents: Bool
+        let expectsStructuredToolEvents: Bool
+        let expectsResultCallback: Bool
 
         var description: String {
             runtimeID.displayName
@@ -19,26 +21,53 @@ enum E2ETestSupport {
     }
 
     static var runtimeCases: [RuntimeCase] {
-        [
+        runtimeCases(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func runtimeCases(environment: [String: String]) -> [RuntimeCase] {
+        let cases = [
             RuntimeCase(
                 runtimeID: .claudeCode,
-                model: ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                model: environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
                 directoryNameComponent: "claude",
                 expectsSessionID: true,
                 expectsUsageStats: true,
                 expectsCostUSD: true,
-                expectsTeamEvents: true
+                expectsTeamEvents: true,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true
             ),
             RuntimeCase(
                 runtimeID: .copilotCLI,
-                model: ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
+                model: environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
                 directoryNameComponent: "copilot",
                 expectsSessionID: false,
                 expectsUsageStats: false,
                 expectsCostUSD: false,
-                expectsTeamEvents: false
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true
+            ),
+            RuntimeCase(
+                runtimeID: .antigravityCLI,
+                model: environment["REAL_ANTIGRAVITY_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI),
+                directoryNameComponent: "antigravity",
+                expectsSessionID: false,
+                expectsUsageStats: false,
+                expectsCostUSD: false,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: false,
+                expectsResultCallback: false
             )
         ]
+        let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !requested.isEmpty else { return cases }
+        return cases.filter { runtimeCase in
+            runtimeCase.runtimeID.rawValue.lowercased() == requested
+                || runtimeCase.directoryNameComponent.lowercased() == requested
+        }
     }
 
     @MainActor
@@ -83,6 +112,12 @@ enum E2ETestSupport {
             if let temporaryRootPath {
                 worker.copilotHome = copilotHomePath(forTemporaryRootPath: temporaryRootPath)
             }
+        case .antigravityCLI:
+            let path = RuntimePathResolver.detectAntigravityPath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("agy")
+            }
+            worker.setExecutablePath(path, for: .antigravityCLI)
         default:
             throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
@@ -183,6 +218,22 @@ private actor E2ELiveProviderGate {
 
 @Suite("E2E live provider gate")
 struct E2ELiveProviderGateTests {
+    @Test("Runtime cases include Antigravity and support runtime filtering")
+    func runtimeCasesIncludeAntigravityAndSupportFiltering() {
+        let allCases = E2ETestSupport.runtimeCases(environment: [:])
+        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
+
+        let filteredByID = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "antigravity_cli",
+            "REAL_ANTIGRAVITY_MODEL": "Gemini Test Model"
+        ])
+        #expect(filteredByID.map(\.runtimeID) == [.antigravityCLI])
+        #expect(filteredByID.first?.model == "Gemini Test Model")
+
+        let filteredByName = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "antigravity"])
+        #expect(filteredByName.map(\.runtimeID) == [.antigravityCLI])
+    }
+
     @Test("Queued live provider waiters finish when cancelled")
     func queuedLiveProviderWaitersFinishWhenCancelled() async throws {
         let holderReady = AsyncTestLatch()

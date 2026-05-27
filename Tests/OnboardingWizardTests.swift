@@ -70,6 +70,10 @@ struct OnboardingWizardTests {
         let copilotPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .copilotCLI)
         #expect(copilotPrerequisites.map(\.binary) == ["copilot"])
         #expect(copilotPrerequisites.map(\.livenessArgs) == [["--version"]])
+
+        let antigravityPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .antigravityCLI)
+        #expect(antigravityPrerequisites.map(\.binary) == ["agy"])
+        #expect(antigravityPrerequisites.map(\.livenessArgs) == [["--version"]])
     }
 
     @Test("Onboarding completion uses the Astra-specific storage key")

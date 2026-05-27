@@ -140,6 +140,22 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4-6", for: .copilotCLI, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI))
     }
 
+    @Test("Legacy default model alias resolves to selected runtime default")
+    func legacyDefaultModelAliasResolvesToSelectedRuntimeDefault() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            "default",
+            for: .antigravityCLI,
+            defaults: defaults
+        )
+
+        #expect(resolution.resolvedModel == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
+        #expect(resolution.resolvedModel != "default")
+        #expect(resolution.reason == "legacy_default_alias")
+    }
+
     @Test("Runtime switches choose a provider suggestion")
     func runtimeSwitchUsesProviderSuggestion() {
         let (defaults, suiteName) = makeDefaults()

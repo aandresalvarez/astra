@@ -217,6 +217,10 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
+        runtimeAdditionalPaths(for: task)
+    }
+
+    static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
         var paths = TaskWorkspaceAccess(task: task).runtimeAdditionalPaths
         if !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty {
             paths.append(TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
@@ -229,6 +233,11 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
+        runtimeLocalToolCommands(for: task)
+    }
+
+    @MainActor
+    static func runtimeLocalToolCommands(for task: AgentTask) -> [String] {
         Array(Set(TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -290,6 +290,97 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     }
 }
 
+struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .antigravityCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: false,
+            supportsPathScoping: true,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: false,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
+        var diagnostics = diagnostics(for: policy, context: context)
+        diagnostics = diagnostics.map { diagnostic in
+            guard diagnostic.id == "\(providerID.rawValue).secret-redaction-unsupported" else {
+                return diagnostic
+            }
+            return PolicyDiagnostic(
+                id: diagnostic.id,
+                severity: .warning,
+                title: "Credential redaction is ASTRA-managed",
+                message: "Antigravity CLI does not expose a secret-env flag, so ASTRA records credential key names only and still passes selected credential environment variables to the provider process.",
+                affectedCapability: "credentials",
+                remediation: "Use Antigravity only with trusted workspaces when credential capabilities are enabled, or disable unused credential capabilities for this workspace."
+            )
+        }
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "antigravity.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use sandbox mode",
+                message: "Antigravity CLI exposes per-run sandbox and full-permission flags, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Review or Locked mode for sandboxed runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run Antigravity CLI permission flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+
+    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+}
+
 private enum ProviderRuntimeGrantCompanions {
     static func grants(for grants: [PermissionGrant]) -> [PermissionGrant] {
         let sanitized = PermissionBroker.sanitizeApprovedGrants(grants)
