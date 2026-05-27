@@ -239,18 +239,28 @@ final class AgentRuntimeProcessRunner {
     @MainActor
     static func effectiveTokenBudget(for task: AgentTask) -> Int {
         let baseBudget = task.tokenBudget
-        if baseBudget == 0 {
-            return Int.max
-        }
-        if task.useAgentTeam {
-            let tokenBudget = baseBudget * max(2, task.teamSize)
+        let tokenBudget = effectiveTokenBudget(
+            baseBudget: baseBudget,
+            usesAgentTeam: task.useAgentTeam,
+            teamSize: task.teamSize
+        )
+        if task.useAgentTeam, baseBudget != 0 {
             AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
                 "event": "team_budget_scaled",
                 "base_budget": String(baseBudget),
                 "team_size": String(max(2, task.teamSize)),
                 "token_budget": String(tokenBudget)
             ])
-            return tokenBudget
+        }
+        return tokenBudget
+    }
+
+    static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
+        if baseBudget == 0 {
+            return Int.max
+        }
+        if usesAgentTeam {
+            return baseBudget * max(2, teamSize)
         }
         return baseBudget
     }

@@ -27,6 +27,7 @@ final class AppRuntimeController {
     func applySettings(
         claudePath: String,
         copilotPath: String,
+        providerSettings: AgentRuntimeProviderSettings = RuntimeProviderSettingsStore.settings(),
         defaultRuntimeID: String,
         timeoutSeconds: Int,
         validationModel: String,
@@ -38,6 +39,7 @@ final class AppRuntimeController {
             claudePath: claudePath.isEmpty ? nil : claudePath,
             copilotPath: copilotPath.isEmpty ? nil : copilotPath,
             copilotHome: CopilotCLIRuntime.channelHome(),
+            providerSettings: providerSettings,
             defaultRuntimeID: runtime,
             timeoutSeconds: TimeInterval(timeoutSeconds),
             validationModel: validationModel,
@@ -58,6 +60,7 @@ final class AppRuntimeController {
         coordinator: TaskLifecycleCoordinator,
         claudePath: String,
         copilotPath: String,
+        providerSettings: AgentRuntimeProviderSettings = RuntimeProviderSettingsStore.settings(),
         defaultRuntimeID: String,
         validationModel: String,
         isUITestingSeededLaunch: Bool
@@ -67,6 +70,7 @@ final class AppRuntimeController {
         coordinator.backfillGeneratedThreadTitles(
             claudePath: claudePath,
             copilotPath: copilotPath,
+            providerSettings: providerSettings,
             defaultRuntimeID: defaultRuntimeID,
             model: validationModel
         )

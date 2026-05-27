@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
@@ -30,11 +31,15 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets
 
     @State private var detectedPath = ""
     @State private var detectedCopilotPath = ""
+    @State private var providerPathDrafts: [AgentRuntimeID: String] = [:]
+    @State private var detectedProviderPaths: [AgentRuntimeID: String] = [:]
+    @State private var expandedProviderRuntime: AgentRuntimeID?
     @State private var readinessReport: RuntimeReadinessReport?
     @State private var isCheckingReadiness = false
     @State private var readinessCheckedAt: Date?
@@ -81,8 +86,12 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .scenePadding()
         .onAppear {
+            loadProviderPathDrafts()
             detectClaudeCLI()
             detectCopilotCLI()
+            if expandedProviderRuntime == nil {
+                expandedProviderRuntime = selectedRuntime
+            }
             Task { await refreshRuntimeReadiness() }
         }
         .onChange(of: readinessSignature) {
@@ -94,6 +103,13 @@ struct SettingsView: View {
         }
         .onChange(of: copilotAvailableModels) {
             alignDefaultModelsWithRuntime()
+        }
+        .onChange(of: runtimeModelCacheRevision) {
+            alignDefaultModelsWithRuntime()
+        }
+        .onChange(of: runtimeProviderSettingsRevision) {
+            readinessReport = nil
+            readinessCheckedAt = nil
         }
         .onChange(of: logRetentionDays) {
             AppLogger.rotateIfNeeded()
@@ -110,98 +126,19 @@ struct SettingsView: View {
                 }
                 .onChange(of: defaultRuntimeID) {
                     alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: true)
+                    expandedProviderRuntime = selectedRuntime
+                    readinessReport = nil
+                    readinessCheckedAt = nil
                 }
                 Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
 
-            Section("Claude Code Connection") {
-                providerHeader(
-                    runtime: .claudeCode,
-                    systemImage: "terminal",
-                    detail: "Claude Code can use either an Anthropic session or Google Vertex AI."
-                )
-
-                providerPathRow(
-                    title: "CLI path",
-                    path: $claudePath,
-                    prompt: "Auto-detected",
-                    detectedPath: detectedPath,
-                    detectAction: detectClaudeCLI
-                )
-
-                Picker("Route through", selection: $claudeProviderRaw) {
-                    ForEach(ClaudeProvider.allCases) { provider in
-                        Label(provider.label, systemImage: provider.symbolName)
-                            .tag(provider.rawValue)
-                    }
+            Section("Providers") {
+                ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
+                    providerDisclosureRow(runtime)
                 }
-
-                if selectedClaudeProvider == .vertex {
-                    TextField(
-                        "GCP Project ID",
-                        text: $claudeVertexProjectID,
-                        prompt: Text("my-gcp-project")
-                    )
-                    TextField(
-                        "Region",
-                        text: $claudeVertexRegion,
-                        prompt: Text("us-east5 or global")
-                    )
-
-                    Text("Vertex model aliases")
-                        .font(Stanford.caption(12).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                    Text("Use Vertex IDs such as `claude-opus-4-6@default`; plain Anthropic model names do not resolve on Vertex.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-
-                    TextField(
-                        "Opus alias",
-                        text: $claudeVertexOpusModel,
-                        prompt: Text("claude-opus-4-6@default")
-                    )
-                    TextField(
-                        "Sonnet alias",
-                        text: $claudeVertexSonnetModel,
-                        prompt: Text("claude-sonnet-4-6@default")
-                    )
-                    TextField(
-                        "Haiku alias",
-                        text: $claudeVertexHaikuModel,
-                        prompt: Text("claude-haiku-4-5@20251001")
-                    )
-
-                    Text("ASTRA injects the Vertex project, region, and model alias environment variables when it starts Claude Code. Authentication comes from `gcloud auth application-default login`.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Anthropic routing uses the Claude Code CLI session on this Mac. Authenticate or refresh the account with `claude /login`.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("GitHub Copilot CLI Connection") {
-                providerHeader(
-                    runtime: .copilotCLI,
-                    systemImage: "person.crop.circle",
-                    detail: "Copilot runs through your GitHub Copilot CLI account."
-                )
-
-                providerPathRow(
-                    title: "CLI path",
-                    path: $copilotPath,
-                    prompt: "Auto-detected",
-                    detectedPath: detectedCopilotPath,
-                    detectAction: detectCopilotCLI
-                )
-
-                Text("Copilot uses your GitHub Copilot account and may consume Copilot premium requests.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
             }
 
             Section("Technical Readiness") {
@@ -269,17 +206,28 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    private func providerHeader(runtime: AgentRuntimeID, systemImage: String, detail: String) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(Stanford.ui(18))
-                .foregroundStyle(runtime == selectedRuntime ? Stanford.statusInfo : .secondary)
-                .frame(width: 24)
+    private func providerDisclosureRow(_ runtime: AgentRuntimeID) -> some View {
+        DisclosureGroup(isExpanded: expandedProviderBinding(for: runtime)) {
+            providerConnectionDetails(runtime)
+                .padding(.top, 8)
+        } label: {
+            providerSummaryLabel(runtime)
+        }
+    }
+
+    private func providerSummaryLabel(_ runtime: AgentRuntimeID) -> some View {
+        let status = providerConnectionStatus(for: runtime)
+
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: providerIcon(for: runtime))
+                .font(Stanford.ui(16, weight: .semibold))
+                .foregroundStyle(status.tint)
+                .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(runtime.displayName)
+                Text(AgentRuntimeAdapterRegistry.descriptor(for: runtime).displayName)
                     .font(Stanford.body(14).weight(.semibold))
-                Text(detail)
+                Text(status.detail)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -288,14 +236,201 @@ struct SettingsView: View {
             Spacer()
 
             if runtime == selectedRuntime {
-                Label("Default", systemImage: "checkmark.circle.fill")
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.statusHealthy)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Stanford.statusHealthy.opacity(0.12)))
+                providerChip("Default", tint: Stanford.statusInfo)
+            }
+
+            Image(systemName: status.symbol)
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(status.tint)
+                .frame(width: 14)
+            providerChip(status.label, tint: status.tint)
+        }
+    }
+
+    @ViewBuilder
+    private func providerConnectionDetails(_ runtime: AgentRuntimeID) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            providerPathRow(
+                title: "CLI path",
+                path: providerPathBinding(for: runtime),
+                prompt: "Auto-detected",
+                detectedPath: detectedProviderPath(for: runtime),
+                detectAction: { detectCLI(for: runtime) }
+            )
+
+            if runtime == .claudeCode {
+                claudeRouteSettings
+            } else {
+                let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+                if !descriptor.authHint.isEmpty {
+                    Text(descriptor.authHint)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            if runtime != selectedRuntime {
+                Button {
+                    defaultRuntimeID = runtime.rawValue
+                } label: {
+                    Label("Make Default", systemImage: "checkmark.circle")
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var claudeRouteSettings: some View {
+        Picker("Route through", selection: $claudeProviderRaw) {
+            ForEach(ClaudeProvider.allCases) { provider in
+                Label(provider.label, systemImage: provider.symbolName)
+                    .tag(provider.rawValue)
+            }
+        }
+
+        if selectedClaudeProvider == .vertex {
+            TextField(
+                "GCP Project ID",
+                text: $claudeVertexProjectID,
+                prompt: Text("my-gcp-project")
+            )
+            TextField(
+                "Region",
+                text: $claudeVertexRegion,
+                prompt: Text("us-east5 or global")
+            )
+
+            Text("Vertex model aliases")
+                .font(Stanford.caption(12).weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Text("Use Vertex IDs such as `claude-opus-4-6@default`; plain Anthropic model names do not resolve on Vertex.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+
+            TextField(
+                "Opus alias",
+                text: $claudeVertexOpusModel,
+                prompt: Text("claude-opus-4-6@default")
+            )
+            TextField(
+                "Sonnet alias",
+                text: $claudeVertexSonnetModel,
+                prompt: Text("claude-sonnet-4-6@default")
+            )
+            TextField(
+                "Haiku alias",
+                text: $claudeVertexHaikuModel,
+                prompt: Text("claude-haiku-4-5@20251001")
+            )
+
+            Text("ASTRA injects the Vertex project, region, and model alias environment variables when it starts Claude Code. Authentication comes from `gcloud auth application-default login`.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Anthropic routing uses the Claude Code CLI session on this Mac. Authenticate or refresh the account with `claude /login`.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func providerChip(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(tint.opacity(0.10)))
+    }
+
+    private func providerIcon(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: "terminal"
+        case .copilotCLI: "person.crop.circle"
+        default: "terminal"
+        }
+    }
+
+    private func providerConnectionStatus(
+        for runtime: AgentRuntimeID
+    ) -> (label: String, detail: String, symbol: String, tint: Color) {
+        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+
+        if runtime == selectedRuntime {
+            if isCheckingReadiness {
+                return (
+                    "Checking",
+                    "Checking path, account, and model access.",
+                    "arrow.triangle.2.circlepath",
+                    Stanford.statusInfo
+                )
+            }
+
+            switch readinessReport?.state {
+            case .ready:
+                return (
+                    "Ready",
+                    "\(descriptor.displayName) passed the latest readiness check.",
+                    "checkmark.circle.fill",
+                    Stanford.statusHealthy
+                )
+            case .warning:
+                return (
+                    "Review",
+                    readinessReport?.summary ?? "The default provider is usable, with one item to review.",
+                    "exclamationmark.triangle.fill",
+                    Stanford.statusWarn
+                )
+            case .blocked:
+                return (
+                    "Blocked",
+                    readinessReport?.summary ?? "Resolve provider setup before starting new tasks.",
+                    "xmark.octagon.fill",
+                    Stanford.statusError
+                )
+            case .none:
+                return (
+                    "Selected",
+                    "Default for new tasks. Run Check Now to verify local setup.",
+                    "circle.dotted",
+                    Stanford.statusInfo
+                )
+            }
+        }
+
+        if !configuredProviderPath(for: runtime).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return (
+                "Configured",
+                "CLI path saved for \(descriptor.displayName).",
+                "checkmark.circle.fill",
+                Stanford.statusHealthy
+            )
+        }
+
+        let detected = detectedProviderPath(for: runtime).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !detected.isEmpty {
+            return (
+                "Detected",
+                detected,
+                "checkmark.circle.fill",
+                Stanford.statusHealthy
+            )
+        }
+
+        return (
+            "Needs setup",
+            descriptor.installHint.isEmpty ? "Configure the CLI path before using this provider." : descriptor.installHint,
+            "circle",
+            Stanford.coolGrey
+        )
+    }
+
+    private func expandedProviderBinding(for runtime: AgentRuntimeID) -> Binding<Bool> {
+        Binding(
+            get: { expandedProviderRuntime == runtime },
+            set: { expandedProviderRuntime = $0 ? runtime : nil }
+        )
     }
 
     private func providerPathRow(
@@ -551,18 +686,24 @@ struct SettingsView: View {
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
             for: selectedRuntime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
     }
 
     private var modelSuggestionSourceText: String {
         let source = RuntimeModelAvailability.hasCachedModels(
             for: selectedRuntime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         ) ? "the latest \(selectedRuntime.displayName) check" : "built-in \(selectedRuntime.displayName) defaults"
         return source
+    }
+
+    private var runtimeModelCache: RuntimeModelAvailabilityCache {
+        _ = runtimeModelCacheRevision
+        return RuntimeModelAvailabilityCache.appStorage(
+            cachedClaudeModelsJSON: claudeAvailableModels,
+            cachedCopilotModelsJSON: copilotAvailableModels
+        )
     }
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
@@ -583,8 +724,7 @@ struct SettingsView: View {
     private var readinessConfiguration: RuntimeReadinessConfiguration {
         RuntimeReadinessConfiguration(
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID),
-            claudePath: claudePath,
-            copilotPath: copilotPath,
+            providerSettings: providerSettingsForReadiness,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
@@ -599,6 +739,8 @@ struct SettingsView: View {
             defaultRuntimeID,
             claudePath,
             copilotPath,
+            String(runtimeProviderSettingsRevision),
+            RuntimeProviderSettingsStore.signature(),
             claudeProviderRaw,
             claudeVertexProjectID,
             claudeVertexRegion,
@@ -606,6 +748,13 @@ struct SettingsView: View {
             claudeVertexSonnetModel,
             claudeVertexHaikuModel
         ].joined(separator: "\u{1F}")
+    }
+
+    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
+        var settings = RuntimeProviderSettingsStore.settings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        settings.setExecutablePath(copilotPath, for: .copilotCLI)
+        return settings
     }
 
     private func modelSelectionRow(title: String, selection: Binding<String>) -> some View {
@@ -783,6 +932,83 @@ struct SettingsView: View {
         }
     }
 
+    private func providerPathBinding(for runtime: AgentRuntimeID) -> Binding<String> {
+        switch runtime {
+        case .claudeCode:
+            return Binding(
+                get: { claudePath },
+                set: { value in
+                    claudePath = value
+                    providerPathDrafts[runtime] = value
+                }
+            )
+        case .copilotCLI:
+            return Binding(
+                get: { copilotPath },
+                set: { value in
+                    copilotPath = value
+                    providerPathDrafts[runtime] = value
+                }
+            )
+        default:
+            break
+        }
+
+        return Binding(
+            get: {
+                providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
+            },
+            set: { value in
+                providerPathDrafts[runtime] = value
+                RuntimeProviderSettingsStore.setExecutablePath(value, for: runtime)
+            }
+        )
+    }
+
+    private func loadProviderPathDrafts() {
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            providerPathDrafts[runtime] = RuntimeProviderSettingsStore.executablePath(for: runtime)
+        }
+    }
+
+    private func detectProviderCLI(_ runtime: AgentRuntimeID) {
+        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+        let detected = RuntimePathResolver.detectExecutablePath(named: descriptor.executableName)
+        guard !detected.isEmpty else { return }
+        detectedProviderPaths[runtime] = detected
+        if providerPathDrafts[runtime, default: ""].isEmpty {
+            providerPathDrafts[runtime] = detected
+            RuntimeProviderSettingsStore.setExecutablePath(detected, for: runtime)
+        }
+    }
+
+    private func detectCLI(for runtime: AgentRuntimeID) {
+        switch runtime {
+        case .claudeCode:
+            detectClaudeCLI()
+        case .copilotCLI:
+            detectCopilotCLI()
+        default:
+            detectProviderCLI(runtime)
+        }
+    }
+
+    private func detectedProviderPath(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: detectedPath
+        case .copilotCLI: detectedCopilotPath
+        default: detectedProviderPaths[runtime] ?? ""
+        }
+    }
+
+    private func configuredProviderPath(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: claudePath
+        case .copilotCLI: copilotPath
+        default: providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
+        }
+    }
+
     private func browseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -836,27 +1062,23 @@ struct SettingsView: View {
             defaultModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                 currentModel: defaultModel,
                 to: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
+                cache: runtimeModelCache
             )
             validationModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                 currentModel: validationModel,
                 to: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
+                cache: runtimeModelCache
             )
         } else {
             defaultModel = RuntimeModelAvailability.normalizedModel(
                 defaultModel,
                 for: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
+                cache: runtimeModelCache
             )
             validationModel = RuntimeModelAvailability.normalizedModel(
                 validationModel,
                 for: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
+                cache: runtimeModelCache
             )
         }
         AppLogger.breadcrumb(action: "settings_runtime_models_aligned", category: "UI", fields: [

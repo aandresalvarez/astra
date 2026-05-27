@@ -86,6 +86,7 @@ final class TaskQueue {
         claudePath: String?,
         copilotPath: String? = nil,
         copilotHome: String? = nil,
+        providerSettings: AgentRuntimeProviderSettings? = nil,
         defaultRuntimeID: AgentRuntimeID = .claudeCode,
         timeoutSeconds: TimeInterval,
         validationModel: String,
@@ -97,15 +98,26 @@ final class TaskQueue {
             globalDefaultRaw: defaultPolicyLevelRaw,
             skipPermissions: skipPermissions
         )
-        for worker in workers {
-            if let path = claudePath, !path.isEmpty {
-                worker.claudePath = path
-            }
-            if let path = copilotPath, !path.isEmpty {
-                worker.copilotPath = path
-            }
+        let resolvedProviderSettings: AgentRuntimeProviderSettings? = providerSettings.map { settings in
+            var settings = settings
             if let home = copilotHome, !home.isEmpty {
-                worker.copilotHome = home
+                settings.setHomeDirectory(home, for: .copilotCLI)
+            }
+            return settings
+        }
+        for worker in workers {
+            if let resolvedProviderSettings {
+                worker.setProviderSettings(resolvedProviderSettings)
+            } else {
+                if let path = claudePath, !path.isEmpty {
+                    worker.claudePath = path
+                }
+                if let path = copilotPath, !path.isEmpty {
+                    worker.copilotPath = path
+                }
+                if let home = copilotHome, !home.isEmpty {
+                    worker.copilotHome = home
+                }
             }
             worker.defaultRuntimeID = defaultRuntimeID
             worker.timeoutSeconds = timeoutSeconds

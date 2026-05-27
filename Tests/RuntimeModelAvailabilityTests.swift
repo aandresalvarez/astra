@@ -61,6 +61,75 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.normalizedModel("gpt-5", for: .claudeCode, defaults: defaults) == "claude-sonnet-4-6")
     }
 
+    @Test("Future runtime model cache uses provider-keyed storage")
+    func futureRuntimeModelCacheUsesProviderKeyedStorage() throws {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+
+        RuntimeModelAvailability.persistAvailableModels(
+            ["future-large", "future-small"],
+            for: futureRuntime,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 77)
+        )
+
+        let genericKey = AppStorageKeys.runtimeAvailableModelsKey(for: futureRuntime)
+        #expect(defaults.string(forKey: genericKey)?.contains("future-large") == true)
+        #expect(defaults.string(forKey: AppStorageKeys.claudeAvailableModels) == nil)
+        #expect(defaults.string(forKey: AppStorageKeys.copilotAvailableModels) == nil)
+        #expect(defaults.integer(forKey: AppStorageKeys.runtimeModelCacheRevision) == 1)
+        #expect(RuntimeModelAvailability.models(for: futureRuntime, defaults: defaults) == [
+            "future-large",
+            "future-small"
+        ])
+        #expect(RuntimeModelAvailability.normalizedModel("unknown", for: futureRuntime, defaults: defaults) == "future-large")
+        #expect(RuntimeModelAvailability.cacheSummary(for: futureRuntime, defaults: defaults).checkedAt == Date(timeIntervalSince1970: 77))
+    }
+
+    @Test("Runtime model availability cache resolves arbitrary runtime snapshots")
+    func runtimeModelAvailabilityCacheResolvesArbitraryRuntimeSnapshots() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let snapshot = RuntimeModelAvailabilitySnapshot(
+            runtimeID: futureRuntime.rawValue,
+            models: ["future-fast", "future-deep"],
+            checkedAt: Date(timeIntervalSince1970: 99)
+        )
+        let data = try JSONEncoder().encode(snapshot)
+        let raw = try #require(String(data: data, encoding: .utf8))
+        let cache = RuntimeModelAvailabilityCache(rawSnapshots: [futureRuntime: raw])
+
+        #expect(RuntimeModelAvailability.models(for: futureRuntime, cache: cache) == [
+            "future-fast",
+            "future-deep"
+        ])
+        let resolution = RuntimeModelAvailability.resolveModel("missing", for: futureRuntime, cache: cache)
+        #expect(resolution.resolvedModel == "future-fast")
+        #expect(resolution.source == "cached_provider_models")
+        #expect(resolution.reason == "not_in_cached_provider_models")
+    }
+
+    @Test("App storage cache includes generic runtime model keys")
+    func appStorageCacheIncludesGenericRuntimeModelKeys() throws {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        RuntimeModelAvailability.persistAvailableModels(
+            ["future-ui-model"],
+            for: futureRuntime,
+            defaults: defaults
+        )
+
+        let cache = RuntimeModelAvailabilityCache.appStorage(
+            cachedClaudeModelsJSON: "",
+            cachedCopilotModelsJSON: "",
+            defaults: defaults,
+            runtimes: [.claudeCode, .copilotCLI, futureRuntime]
+        )
+
+        #expect(RuntimeModelAvailability.models(for: futureRuntime, cache: cache) == ["future-ui-model"])
+    }
+
     @Test("Unverified custom model is preserved unless it is known to another runtime")
     func unverifiedCustomModelIsPreservedWithoutCache() {
         let (defaults, suiteName) = makeDefaults()

@@ -35,6 +35,41 @@ enum AppStorageKeys {
     static let claudeModelsCheckedAt = "astra.claude.modelsCheckedAt.v1"
     static let copilotAvailableModels = "astra.copilot.availableModels.v1"
     static let copilotModelsCheckedAt = "astra.copilot.modelsCheckedAt.v1"
+    static let runtimeModelCacheRevision = "astra.runtime.modelCacheRevision.v1"
+    static let runtimeProviderSettingsRevision = "astra.runtime.providerSettingsRevision.v1"
+
+    static func runtimeAvailableModelsKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode:
+            return claudeAvailableModels
+        case .copilotCLI:
+            return copilotAvailableModels
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).availableModels.v1"
+        }
+    }
+
+    static func runtimeModelsCheckedAtKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode:
+            return claudeModelsCheckedAt
+        case .copilotCLI:
+            return copilotModelsCheckedAt
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).modelsCheckedAt.v1"
+        }
+    }
+
+    static func storageComponent(for runtime: AgentRuntimeID) -> String {
+        runtime.rawValue
+            .lowercased()
+            .map { character in
+                character.isLetter || character.isNumber || character == "_" || character == "-"
+                    ? character
+                    : "_"
+            }
+            .reduce(into: "") { $0.append($1) }
+    }
 }
 
 enum LoggingPreferences {

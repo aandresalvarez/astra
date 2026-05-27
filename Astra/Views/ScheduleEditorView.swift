@@ -29,6 +29,7 @@ struct ScheduleEditorView: View {
     @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
 
     @State private var name = ""
     @State private var routineDescription = ""
@@ -329,8 +330,7 @@ struct ScheduleEditorView: View {
                                     model = RuntimeModelAvailability.modelForRuntimeSwitch(
                                         currentModel: model,
                                         to: runtime,
-                                        cachedClaudeModelsJSON: claudeAvailableModels,
-                                        cachedCopilotModelsJSON: copilotAvailableModels
+                                        cache: runtimeModelCache
                                     )
                                 }
                             }
@@ -494,8 +494,7 @@ struct ScheduleEditorView: View {
                     model = RuntimeModelAvailability.normalizedModel(
                         defaultModel,
                         for: runtime,
-                        cachedClaudeModelsJSON: claudeAvailableModels,
-                        cachedCopilotModelsJSON: copilotAvailableModels
+                        cache: runtimeModelCache
                     )
                 }
                 if let b = prefillBudget { tokenBudget = b }
@@ -512,6 +511,9 @@ struct ScheduleEditorView: View {
             alignModelWithRuntime()
         }
         .onChange(of: copilotAvailableModels) {
+            alignModelWithRuntime()
+        }
+        .onChange(of: runtimeModelCacheRevision) {
             alignModelWithRuntime()
         }
     }
@@ -539,6 +541,12 @@ struct ScheduleEditorView: View {
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
             for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
+            cache: runtimeModelCache
+        )
+    }
+
+    private var runtimeModelCache: RuntimeModelAvailabilityCache {
+        RuntimeModelAvailabilityCache.appStorage(
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
@@ -579,8 +587,7 @@ struct ScheduleEditorView: View {
         model = RuntimeModelAvailability.normalizedModel(
             model,
             for: runtime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
     }
 
@@ -667,8 +674,7 @@ struct ScheduleEditorView: View {
         s.model = RuntimeModelAvailability.normalizedModel(
             model,
             for: resolvedRuntime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
         s.tokenBudget = tokenBudget
         s.scheduleType = scheduleType

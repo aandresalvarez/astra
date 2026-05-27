@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import ASTRA
+import ASTRACore
 
 // MARK: - Helper
 
@@ -126,6 +127,28 @@ struct QueueLockTests {
         for worker in queue.workers {
             #expect(worker.skipPermissions == false)
             #expect(worker.permissionPolicy == .restricted)
+        }
+    }
+
+    @Test("applySettings propagates provider-keyed runtime settings")
+    func applySettingsPropagatesProviderKeyedRuntimeSettings() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath("/opt/future/bin/future", for: futureRuntime)
+        settings.setHomeDirectory("/tmp/future-home", for: futureRuntime)
+
+        let queue = TaskQueue(poolSize: 2)
+        queue.applySettings(
+            claudePath: nil,
+            providerSettings: settings,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 300,
+            validationModel: "haiku"
+        )
+
+        for worker in queue.workers {
+            #expect(worker.executablePath(for: futureRuntime) == "/opt/future/bin/future")
+            #expect(worker.homeDirectory(for: futureRuntime) == "/tmp/future-home")
         }
     }
 

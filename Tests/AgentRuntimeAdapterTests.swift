@@ -103,17 +103,16 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Adapters select provider scoped cached model JSON")
     func adaptersSelectProviderScopedCachedModelJSON() {
-        let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
-        let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let futureRuntime = AgentRuntimeID(rawValue: "future_cli")!
+        let cache = RuntimeModelAvailabilityCache(rawSnapshots: [
+            .claudeCode: "claude-cache",
+            .copilotCLI: "copilot-cache",
+            futureRuntime: "future-cache"
+        ])
 
-        #expect(claude.cachedModelsJSON(
-            cachedClaudeModelsJSON: "claude-cache",
-            cachedCopilotModelsJSON: "copilot-cache"
-        ) == "claude-cache")
-        #expect(copilot.cachedModelsJSON(
-            cachedClaudeModelsJSON: "claude-cache",
-            cachedCopilotModelsJSON: "copilot-cache"
-        ) == "copilot-cache")
+        #expect(cache.rawSnapshot(for: .claudeCode) == "claude-cache")
+        #expect(cache.rawSnapshot(for: .copilotCLI) == "copilot-cache")
+        #expect(cache.rawSnapshot(for: futureRuntime) == "future-cache")
     }
 
     @Test("Adapters preserve policy and budget wiring")

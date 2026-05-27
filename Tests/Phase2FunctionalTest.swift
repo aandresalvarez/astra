@@ -97,6 +97,11 @@ struct Phase2FunctionalTest {
         task.maxTurns = 8
         context.insert(task)
         try context.save()
+        let effectiveTokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(
+            baseBudget: task.tokenBudget,
+            usesAgentTeam: task.useAgentTeam,
+            teamSize: task.teamSize
+        )
 
         #expect(task.useAgentTeam == runtimeCase.expectsTeamEvents, "Task team mode should match runtime support")
         #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 2 : 1), "Team size should match runtime support")
@@ -145,6 +150,14 @@ struct Phase2FunctionalTest {
         #expect(eventTypes.contains("tool.use"), "Missing tool.use")
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
+        }
+        if task.status == .budgetExceeded {
+            #expect(eventTypes.contains("budget.exceeded"),
+                    "Budget exceeded status must include a budget.exceeded event")
+            if runtimeCase.expectsUsageStats {
+                #expect(task.tokensUsed > effectiveTokenBudget,
+                        "Budget exceeded should exceed effective budget: \(task.tokensUsed) / \(effectiveTokenBudget)")
+            }
         }
 
         // 8. Verify Agent Teams events — spawning teammates
@@ -198,7 +211,7 @@ struct Phase2FunctionalTest {
         print("Runtime: \(runtimeCase.runtimeID.displayName)")
         print("Workspace: \(workspace.name) -> \(workspace.primaryPath)")
         print("Status: \(task.status.rawValue)")
-        print("Tokens: \(task.tokensUsed) / \(task.tokenBudget)")
+        print("Tokens: \(task.tokensUsed) / \(effectiveTokenBudget) effective (base \(task.tokenBudget))")
         print("Cost: $\(String(format: "%.4f", task.costUSD))")
         print("Session: \(task.sessionId ?? "nil")")
         print("Events: \(allEvents.count) (\(eventTypes.sorted().joined(separator: ", ")))")

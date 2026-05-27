@@ -345,6 +345,7 @@ struct ContentView: View {
     @State private var runningTaskCount = 0
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
@@ -375,10 +376,8 @@ struct ContentView: View {
     @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
-    @State private var claudeModelRefreshTask: Task<Void, Never>?
-    @State private var copilotModelRefreshTask: Task<Void, Never>?
-    @State private var lastClaudeModelRefreshSignature = ""
-    @State private var lastCopilotModelRefreshSignature = ""
+    @State private var runtimeModelRefreshTasks: [AgentRuntimeID: Task<Void, Never>] = [:]
+    @State private var lastRuntimeModelRefreshSignatures: [AgentRuntimeID: String] = [:]
     @State private var lastGeneratedHTMLPreviewSignature = ""
     @State private var lastGeneratedMarkdownPreviewSignature = ""
     @State private var selectedTaskHasMarkdownShelfContent = false
@@ -424,9 +423,7 @@ struct ContentView: View {
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime),
-            claudePath: claudePath,
-            copilotPath: copilotPath,
-            copilotHome: CopilotCLIRuntime.channelHome()
+            providerSettings: currentProviderSettings()
         )
     }
 
@@ -444,6 +441,8 @@ struct ContentView: View {
         [
             claudePath,
             copilotPath,
+            String(runtimeProviderSettingsRevision),
+            RuntimeProviderSettingsStore.signature(),
             defaultRuntimeID,
             claudeProviderRaw,
             claudeVertexOpusModel,
@@ -2126,6 +2125,7 @@ struct ContentView: View {
             coordinator: coordinator,
             claudePath: claudePath,
             copilotPath: copilotPath,
+            providerSettings: currentProviderSettings(),
             defaultRuntimeID: defaultRuntimeID,
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
@@ -2257,6 +2257,7 @@ struct ContentView: View {
         runtime.applySettings(
             claudePath: claudePath,
             copilotPath: copilotPath,
+            providerSettings: RuntimeProviderSettingsStore.settings(),
             defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
@@ -2267,55 +2268,78 @@ struct ContentView: View {
     }
 
     private func refreshProviderModelsInBackground() {
-        refreshClaudeModelsInBackground()
-        refreshCopilotModelsInBackground()
+        guard !isUITestingSeededLaunch else { return }
+        let providerSettings = currentProviderSettings()
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            refreshRuntimeModelsInBackground(runtime, providerSettings: providerSettings)
+        }
     }
 
-    private func refreshClaudeModelsInBackground() {
-        guard !isUITestingSeededLaunch else { return }
-        let resolvedClaudePath = claudePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? RuntimePathResolver.detectClaudePath()
-            : claudePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard FileManager.default.isExecutableFile(atPath: resolvedClaudePath) else { return }
+    private func refreshRuntimeModelsInBackground(
+        _ runtime: AgentRuntimeID,
+        providerSettings: AgentRuntimeProviderSettings
+    ) {
+        let resolvedExecutablePath = resolvedRuntimeExecutablePath(
+            for: runtime,
+            providerSettings: providerSettings
+        )
+        guard FileManager.default.isExecutableFile(atPath: resolvedExecutablePath) else { return }
 
-        let configuration = ClaudeModelAvailabilityConfiguration(
-            provider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+        let signature = [
+            runtime.rawValue,
+            resolvedExecutablePath,
+            RuntimeProviderSettingsStore.signature(),
+            claudeProviderRaw,
+            claudeVertexOpusModel,
+            claudeVertexSonnetModel,
+            claudeVertexHaikuModel
+        ].joined(separator: "|")
+        guard runtimeModelRefreshTasks[runtime] == nil,
+              lastRuntimeModelRefreshSignatures[runtime] != signature else { return }
+        lastRuntimeModelRefreshSignatures[runtime] = signature
+
+        let configuration = RuntimeReadinessConfiguration(
+            runtime: runtime,
+            providerSettings: providerSettings,
+            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
         )
-        let signature = [
-            resolvedClaudePath,
-            configuration.provider.rawValue,
-            configuration.vertexOpusModel,
-            configuration.vertexSonnetModel,
-            configuration.vertexHaikuModel
-        ].joined(separator: "|")
-        guard claudeModelRefreshTask == nil, lastClaudeModelRefreshSignature != signature else { return }
-        lastClaudeModelRefreshSignature = signature
-        claudeModelRefreshTask = Task {
-            _ = await ClaudeModelAvailabilityService().refreshAndPersist(configuration: configuration)
+        runtimeModelRefreshTasks[runtime] = Task {
+            _ = await AgentRuntimeAdapterRegistry
+                .adapter(for: runtime)
+                .modelAvailabilityCheck(configuration: configuration)
             await MainActor.run {
-                claudeModelRefreshTask = nil
+                runtimeModelRefreshTasks[runtime] = nil
             }
         }
     }
 
-    private func refreshCopilotModelsInBackground() {
-        guard !isUITestingSeededLaunch else { return }
-        let resolvedCopilotPath = copilotPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? CopilotCLIRuntime.detectPath()
-            : copilotPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard FileManager.default.isExecutableFile(atPath: resolvedCopilotPath) else { return }
+    private func currentProviderSettings() -> AgentRuntimeProviderSettings {
+        var settings = RuntimeProviderSettingsStore.settings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        settings.setExecutablePath(copilotPath, for: .copilotCLI)
+        return settings
+    }
 
-        let signature = resolvedCopilotPath
-        guard copilotModelRefreshTask == nil, lastCopilotModelRefreshSignature != signature else { return }
-        lastCopilotModelRefreshSignature = signature
-        copilotModelRefreshTask = Task {
-            _ = await CopilotModelAvailabilityService().refreshAndPersist()
-            await MainActor.run {
-                copilotModelRefreshTask = nil
-            }
+    private func resolvedRuntimeExecutablePath(
+        for runtime: AgentRuntimeID,
+        providerSettings: AgentRuntimeProviderSettings
+    ) -> String {
+        let configuredPath = providerSettings.executablePath(for: runtime)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard configuredPath.isEmpty else { return configuredPath }
+
+        switch AgentRuntimeAdapterRegistry.descriptor(for: runtime).executableName {
+        case "claude":
+            return RuntimePathResolver.detectClaudePath()
+        case "copilot":
+            return CopilotCLIRuntime.detectPath()
+        case let executableName:
+            return RuntimePathResolver.detectExecutablePath(named: executableName)
         }
     }
 }

@@ -10,6 +10,7 @@ struct NewTaskView: View {
     @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     var workspace: Workspace?
@@ -87,8 +88,7 @@ struct NewTaskView: View {
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: model,
                             to: runtime,
-                            cachedClaudeModelsJSON: claudeAvailableModels,
-                            cachedCopilotModelsJSON: copilotAvailableModels
+                            cache: runtimeModelCache
                         )
                         model = resolvedModel
                         AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
@@ -197,8 +197,7 @@ struct NewTaskView: View {
             model = RuntimeModelAvailability.normalizedModel(
                 model,
                 for: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
+                cache: runtimeModelCache
             )
             tokenBudget = defaultBudget
             policyLevelRaw = AgentPolicyDefaults.effectiveLevel(
@@ -207,31 +206,33 @@ struct NewTaskView: View {
             ).userFacingLevel.rawValue
         }
         .onChange(of: claudeAvailableModels) {
-            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
-            model = RuntimeModelAvailability.normalizedModel(
-                model,
-                for: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
-            )
+            alignModelWithRuntimeCache()
         }
         .onChange(of: copilotAvailableModels) {
-            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
-            model = RuntimeModelAvailability.normalizedModel(
-                model,
-                for: runtime,
-                cachedClaudeModelsJSON: claudeAvailableModels,
-                cachedCopilotModelsJSON: copilotAvailableModels
-            )
+            alignModelWithRuntimeCache()
+        }
+        .onChange(of: runtimeModelCacheRevision) {
+            alignModelWithRuntimeCache()
         }
     }
 
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
             for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
+            cache: runtimeModelCache
+        )
+    }
+
+    private var runtimeModelCache: RuntimeModelAvailabilityCache {
+        RuntimeModelAvailabilityCache.appStorage(
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
+    }
+
+    private func alignModelWithRuntimeCache() {
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
+        model = RuntimeModelAvailability.normalizedModel(model, for: runtime, cache: runtimeModelCache)
     }
 
     private var modelSelectionRow: some View {
@@ -285,8 +286,7 @@ struct NewTaskView: View {
         let resolvedModel = RuntimeModelAvailability.normalizedModel(
             model,
             for: runtime,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cache: runtimeModelCache
         )
         let task = AgentTask(
             title: title.trimmingCharacters(in: .whitespaces),

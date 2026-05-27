@@ -363,6 +363,8 @@ struct OnboardingWizardView: View {
     @State private var isProbingClaude = false
     @State private var copilotStatus: HealthStatus?
     @State private var isProbingCopilot = false
+    @State private var providerStatuses: [AgentRuntimeID: HealthStatus] = [:]
+    @State private var probingRuntimeIDs: Set<AgentRuntimeID> = []
     @State private var githubStatus: HealthStatus?
     @State private var githubAuthStatus: HealthStatus?
     @State private var isProbingGitHub = false
@@ -717,9 +719,15 @@ struct OnboardingWizardView: View {
                 .foregroundStyle(Stanford.coolGrey)
                 .textCase(.uppercase)
 
-            HStack(spacing: 8) {
-                ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
-                    runtimeChoiceCard(runtime)
+            let runtimes = AgentRuntimeAdapterRegistry.runtimeIDs
+            VStack(spacing: 0) {
+                ForEach(Array(runtimes.enumerated()), id: \.element) { index, runtime in
+                    runtimeChoiceRow(runtime)
+                    if index < runtimes.count - 1 {
+                        Divider()
+                            .opacity(0.45)
+                            .padding(.leading, 34)
+                    }
                 }
             }
 
@@ -727,48 +735,47 @@ struct OnboardingWizardView: View {
         }
     }
 
-    private func runtimeChoiceCard(_ runtime: AgentRuntimeID) -> some View {
-        let selected = runtime == selectedRuntime
-        let ready = runtimeIsInstalled(runtime)
-        let isInstalling = installingRuntime == runtime
-        let tint: Color = selected ? Stanford.lagunita : (ready ? Stanford.paloAltoGreen : Stanford.coolGrey)
+    private func runtimeChoiceRow(_ runtime: AgentRuntimeID) -> some View {
+        let presentation = runtimePresentation(for: runtime)
+        let tint = runtimeChoiceTint(for: presentation)
+        let isInstalling = presentation.state == .installing
 
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 9) {
-                if isInstalling {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 18, height: 18)
-                } else {
-                    Image(systemName: selected ? "largecircle.fill.circle" : (ready ? "checkmark.circle.fill" : "circle"))
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(tint)
-                        .frame(width: 18)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(runtime.displayName)
-                        .font(Stanford.body(12).weight(.semibold))
-                        .foregroundStyle(Stanford.black)
-                        .lineLimit(1)
-                    Text(runtimeChoiceSubtitle(runtime))
-                        .font(Stanford.caption(10))
-                        .foregroundStyle(Stanford.coolGrey)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
+        return HStack(alignment: .center, spacing: 10) {
+            if isInstalling {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 18, height: 18)
+            } else {
+                Image(systemName: runtimeChoiceSymbol(for: presentation))
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 18)
             }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(presentation.title)
+                    .font(Stanford.body(12).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .lineLimit(1)
+                Text(presentation.subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 10)
 
             HStack(spacing: 6) {
                 Button {
                     selectRuntime(runtime)
                 } label: {
-                    Label(selected ? "Selected" : "Use", systemImage: selected ? "checkmark" : "arrow.right")
+                    Label(presentation.isSelected ? "Selected" : "Use", systemImage: presentation.isSelected ? "checkmark" : "arrow.right")
                         .font(Stanford.caption(10).weight(.semibold))
                 }
-                .disabled(selected || installingRuntime != nil)
+                .disabled(presentation.isSelected || installingRuntime != nil)
 
-                if !ready {
+                if !presentation.isInstalled {
                     Button {
                         Task { await installRuntime(runtime) }
                     } label: {
@@ -778,15 +785,64 @@ struct OnboardingWizardView: View {
                     .disabled(installingRuntime != nil)
                 }
             }
+            .fixedSize()
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 94, alignment: .topLeading)
-        .background(selected ? Stanford.lagunita.opacity(0.10) : Stanford.fog.opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(selected ? Stanford.lagunita.opacity(0.35) : Stanford.sandstone.opacity(0.25), lineWidth: 1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .center)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(presentation.isSelected ? Stanford.lagunita.opacity(0.09) : Color.clear)
         )
+        .contentShape(Rectangle())
+    }
+
+    private func runtimePresentation(for runtime: AgentRuntimeID) -> RuntimeProviderRowPresentation {
+        RuntimeProviderListPresentation.row(
+            runtime: runtime,
+            descriptor: AgentRuntimeAdapterRegistry.descriptor(for: runtime),
+            selectedRuntime: selectedRuntime,
+            status: runtimeStatus(for: runtime),
+            isProbing: isProbingRuntime(runtime),
+            installingRuntime: installingRuntime,
+            installCommand: installDisplayCommand(for: runtime)
+        )
+    }
+
+    private func runtimeChoiceSymbol(for presentation: RuntimeProviderRowPresentation) -> String {
+        if presentation.isSelected, presentation.isInstalled {
+            return "largecircle.fill.circle"
+        }
+
+        switch presentation.state {
+        case .checking:
+            return "arrow.triangle.2.circlepath"
+        case .installing:
+            return "square.and.arrow.down"
+        case .selectedReady, .ready:
+            return "checkmark.circle.fill"
+        case .unauthenticated, .unresponsive:
+            return "exclamationmark.triangle.fill"
+        case .missing, .unknown:
+            return "circle"
+        }
+    }
+
+    private func runtimeChoiceTint(for presentation: RuntimeProviderRowPresentation) -> Color {
+        if presentation.isSelected, presentation.isInstalled {
+            return Stanford.lagunita
+        }
+
+        switch presentation.state {
+        case .checking, .installing:
+            return Stanford.lagunita
+        case .selectedReady, .ready:
+            return Stanford.paloAltoGreen
+        case .unauthenticated, .unresponsive:
+            return Stanford.poppy
+        case .missing, .unknown:
+            return Stanford.coolGrey
+        }
     }
 
     @ViewBuilder
@@ -940,7 +996,7 @@ struct OnboardingWizardView: View {
         switch selectedRuntime {
         case .claudeCode: claudeStatus
         case .copilotCLI: copilotStatus
-        default: nil
+        default: providerStatuses[selectedRuntime]
         }
     }
 
@@ -948,12 +1004,17 @@ struct OnboardingWizardView: View {
         switch selectedRuntime {
         case .claudeCode: isProbingClaude
         case .copilotCLI: isProbingCopilot
-        default: false
+        default: probingRuntimeIDs.contains(selectedRuntime)
         }
     }
 
     private var isCheckingCLIEnvironment: Bool {
-        isCheckingRuntimeReadiness || isProbingClaude || isProbingCopilot || isProbingGitHub || installingRuntime != nil
+        isCheckingRuntimeReadiness
+            || isProbingClaude
+            || isProbingCopilot
+            || !probingRuntimeIDs.isEmpty
+            || isProbingGitHub
+            || installingRuntime != nil
     }
 
     private var selectedRuntimeSymbol: String {
@@ -968,7 +1029,7 @@ struct OnboardingWizardView: View {
         switch runtime {
         case .claudeCode: claudeStatus
         case .copilotCLI: copilotStatus
-        default: nil
+        default: providerStatuses[runtime]
         }
     }
 
@@ -977,32 +1038,11 @@ struct OnboardingWizardView: View {
         return false
     }
 
-    private func runtimeChoiceSubtitle(_ runtime: AgentRuntimeID) -> String {
-        if installingRuntime == runtime {
-            return installDisplayCommand(for: runtime) ?? "Installing..."
-        }
-        if runtime == selectedRuntime, isCoreRuntimeReady {
-            return "Selected and ready"
-        }
-        switch runtimeStatus(for: runtime) {
-        case .healthy(_, let version): return "Installed - \(version)"
-        case .unauthenticated(let detail): return detail
-        case .unresponsive(let detail): return detail
-        case .missingBinary: return installDisplayCommand(for: runtime) ?? runtimeInstallHint(runtime)
-        case .none:
-            return isProbingRuntime(runtime) ? "Checking..." : "Not checked yet"
-        }
-    }
-
-    private func runtimeInstallHint(_ runtime: AgentRuntimeID) -> String {
-        AgentRuntimeAdapterRegistry.descriptor(for: runtime).installHint
-    }
-
     private func isProbingRuntime(_ runtime: AgentRuntimeID) -> Bool {
         switch runtime {
         case .claudeCode: isProbingClaude
         case .copilotCLI: isProbingCopilot
-        default: false
+        default: probingRuntimeIDs.contains(runtime)
         }
     }
 
@@ -1805,6 +1845,9 @@ struct OnboardingWizardView: View {
     private func probeAllRuntimes(forceRefresh: Bool) async {
         await probeClaude(forceRefresh: forceRefresh)
         await probeCopilot(forceRefresh: forceRefresh)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs where runtime != .claudeCode && runtime != .copilotCLI {
+            await probeRuntime(runtime, forceRefresh: forceRefresh)
+        }
     }
 
     private func probeClaude(forceRefresh: Bool) async {
@@ -1834,6 +1877,23 @@ struct OnboardingWizardView: View {
         if case .healthy(let path, _) = copilotStatus,
            shouldReplaceConfiguredPath(copilotPath, with: path) {
             copilotPath = path
+        }
+    }
+
+    private func probeRuntime(_ runtime: AgentRuntimeID, forceRefresh: Bool) async {
+        let prerequisite = AgentRuntimeAdapterRegistry.descriptor(for: runtime).prerequisite
+        probingRuntimeIDs.insert(runtime)
+        defer { probingRuntimeIDs.remove(runtime) }
+
+        if forceRefresh {
+            await preflightCache.invalidate(binary: prerequisite.binary)
+        }
+        let status = await preflightCache.status(for: prerequisite)
+        providerStatuses[runtime] = status
+
+        if case .healthy(let path, _) = status,
+           shouldReplaceConfiguredPath(RuntimeProviderSettingsStore.executablePath(for: runtime), with: path) {
+            RuntimeProviderSettingsStore.setExecutablePath(path, for: runtime)
         }
     }
 
@@ -1869,7 +1929,7 @@ struct OnboardingWizardView: View {
         case .copilotCLI:
             await probeCopilot(forceRefresh: true)
         default:
-            break
+            await probeRuntime(runtime, forceRefresh: true)
         }
         installingRuntime = nil
 
@@ -1896,11 +1956,8 @@ struct OnboardingWizardView: View {
 
     private func selectInstalledRuntimeIfNeeded() {
         guard !runtimeIsInstalled(selectedRuntime) else { return }
-        if runtimeIsInstalled(.copilotCLI) {
-            defaultRuntimeID = AgentRuntimeID.copilotCLI.rawValue
-            runtimeReadinessReport = nil
-        } else if runtimeIsInstalled(.claudeCode) {
-            defaultRuntimeID = AgentRuntimeID.claudeCode.rawValue
+        if let installedRuntime = AgentRuntimeAdapterRegistry.runtimeIDs.first(where: runtimeIsInstalled) {
+            defaultRuntimeID = installedRuntime.rawValue
             runtimeReadinessReport = nil
         }
     }
@@ -2036,10 +2093,12 @@ struct OnboardingWizardView: View {
         defer { isCheckingRuntimeReadiness = false }
 
         let service = RuntimeReadinessService()
+        var providerSettings = RuntimeProviderSettingsStore.settings()
+        providerSettings.setExecutablePath(claudePath, for: .claudeCode)
+        providerSettings.setExecutablePath(copilotPath, for: .copilotCLI)
         runtimeReadinessReport = await service.check(configuration: RuntimeReadinessConfiguration(
             runtime: selectedRuntime,
-            claudePath: claudePath,
-            copilotPath: copilotPath,
+            providerSettings: providerSettings,
             claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
