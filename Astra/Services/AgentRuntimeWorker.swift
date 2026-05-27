@@ -460,7 +460,7 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: selectedRuntime, phase: auditPhase)
         await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
-        let policyCapabilities = runtimeAdapter.policyCapabilities(executablePath: launchSettings.executablePath)
+        let providerCapabilities = runtimeAdapter.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -472,7 +472,7 @@ final class AgentRuntimeWorker {
             permissionPolicy: runPermissionPolicy,
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            copilotCapabilities: policyCapabilities,
+            providerCapabilities: providerCapabilities,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {

@@ -2,6 +2,71 @@ import Foundation
 import SwiftData
 import ASTRACore
 
+struct AgentRuntimePolicyCapabilities: Equatable, Sendable {
+    var supportsOutputFormatJSON: Bool
+    var supportsStreamingFlag: Bool
+    var supportsNoAskUser: Bool
+    var supportsSilent: Bool
+    var supportsSecretEnvVars: Bool
+    var supportsAllowAll: Bool
+    var supportsAllowAllTools: Bool
+    var supportsAllowAllPaths: Bool
+    var supportsAllowAllURLs: Bool
+    var requiresAllowAllToolsForPrompt: Bool
+
+    static let conservative = AgentRuntimePolicyCapabilities(
+        supportsOutputFormatJSON: false,
+        supportsStreamingFlag: false,
+        supportsNoAskUser: false,
+        supportsSilent: false,
+        supportsSecretEnvVars: false,
+        supportsAllowAll: false,
+        supportsAllowAllTools: false,
+        supportsAllowAllPaths: false,
+        supportsAllowAllURLs: false,
+        requiresAllowAllToolsForPrompt: true
+    )
+
+    init(
+        supportsOutputFormatJSON: Bool,
+        supportsStreamingFlag: Bool,
+        supportsNoAskUser: Bool,
+        supportsSilent: Bool,
+        supportsSecretEnvVars: Bool,
+        supportsAllowAll: Bool,
+        supportsAllowAllTools: Bool,
+        supportsAllowAllPaths: Bool,
+        supportsAllowAllURLs: Bool,
+        requiresAllowAllToolsForPrompt: Bool
+    ) {
+        self.supportsOutputFormatJSON = supportsOutputFormatJSON
+        self.supportsStreamingFlag = supportsStreamingFlag
+        self.supportsNoAskUser = supportsNoAskUser
+        self.supportsSilent = supportsSilent
+        self.supportsSecretEnvVars = supportsSecretEnvVars
+        self.supportsAllowAll = supportsAllowAll
+        self.supportsAllowAllTools = supportsAllowAllTools
+        self.supportsAllowAllPaths = supportsAllowAllPaths
+        self.supportsAllowAllURLs = supportsAllowAllURLs
+        self.requiresAllowAllToolsForPrompt = requiresAllowAllToolsForPrompt
+    }
+
+    init(copilotCLI capabilities: CopilotCLICapabilities) {
+        self.init(
+            supportsOutputFormatJSON: capabilities.supportsOutputFormatJSON,
+            supportsStreamingFlag: capabilities.supportsStreamingFlag,
+            supportsNoAskUser: capabilities.supportsNoAskUser,
+            supportsSilent: capabilities.supportsSilent,
+            supportsSecretEnvVars: capabilities.supportsSecretEnvVars,
+            supportsAllowAll: capabilities.supportsAllowAll,
+            supportsAllowAllTools: capabilities.supportsAllowAllTools,
+            supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
+            supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
+            requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
+        )
+    }
+}
+
 protocol AgentRuntimeAdapter {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
@@ -12,7 +77,7 @@ protocol AgentRuntimeAdapter {
     var recordsStreamTelemetry: Bool { get }
     var recordsInferredFileChanges: Bool { get }
 
-    func policyAdapter(copilotCapabilities: CopilotCLICapabilities) -> any ProviderPolicyAdapter
+    func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter
     func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
     func existingProviderConfigSummary(workspacePath: String) -> String?
     func readinessReport(
@@ -35,7 +100,7 @@ protocol AgentRuntimeAdapter {
     ) -> String
     func shouldCheckWorkspaceDirectory(phase: String) -> Bool
     func shouldPrepareIsolation(phase: String) -> Bool
-    func policyCapabilities(executablePath: String) -> CopilotCLICapabilities
+    func policyCapabilities(executablePath: String) -> AgentRuntimePolicyCapabilities
     func shouldValidateSuccessfulRun(phase: String) -> Bool
     func manualCompletionPayload(phase: String) -> String
     func failurePayloadPrefix(phase: String, exitCode: Int) -> String
@@ -149,7 +214,7 @@ extension AgentRuntimeAdapter {
         phase == "run"
     }
 
-    func policyCapabilities(executablePath _: String) -> CopilotCLICapabilities {
+    func policyCapabilities(executablePath _: String) -> AgentRuntimePolicyCapabilities {
         .conservative
     }
 
@@ -431,7 +496,7 @@ struct AgentRuntimeProcessLaunchContext {
     let task: AgentTask
     let workspacePath: String
     let executablePath: String
-    let copilotHome: String
+    let providerHomeDirectory: String
     let permissionPolicy: PermissionPolicy
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
@@ -701,7 +766,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         phase == "run"
     }
 
-    func policyAdapter(copilotCapabilities _: CopilotCLICapabilities) -> any ProviderPolicyAdapter {
+    func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
         ClaudePolicyAdapter()
     }
 
@@ -1219,8 +1284,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
-    func policyCapabilities(executablePath: String) -> CopilotCLICapabilities {
-        CopilotCLIRuntime.capabilities(executablePath: executablePath)
+    func policyCapabilities(executablePath: String) -> AgentRuntimePolicyCapabilities {
+        AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLIRuntime.capabilities(executablePath: executablePath))
     }
 
     func shouldValidateSuccessfulRun(phase _: String) -> Bool {
@@ -1253,8 +1318,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
 
-    func policyAdapter(copilotCapabilities: CopilotCLICapabilities) -> any ProviderPolicyAdapter {
-        CopilotPolicyAdapter(capabilities: copilotCapabilities)
+    func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
+        CopilotPolicyAdapter(capabilities: runtimeCapabilities)
     }
 
     func providerConfigOwnership(workspacePath _: String) -> PolicyConfigOwnership {
@@ -1371,7 +1436,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
             taskEnvironment: taskEnv,
-            copilotHome: context.copilotHome,
+            copilotHome: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
@@ -1387,7 +1452,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [context.copilotHome],
+            directoriesToCreate: [context.providerHomeDirectory],
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",

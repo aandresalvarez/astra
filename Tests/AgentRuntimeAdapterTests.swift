@@ -119,9 +119,15 @@ struct AgentRuntimeAdapterTests {
     func adaptersPreservePolicyAndBudgetWiring() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let permissiveCapabilities = AgentRuntimePolicyCapabilities(
+            copilotCLI: CopilotCLICapabilities(helpText: "--output-format --no-ask-user --allow-all")
+        )
+        let copilotPolicyAdapter = copilot.policyAdapter(runtimeCapabilities: permissiveCapabilities) as? CopilotPolicyAdapter
 
-        #expect(claude.policyAdapter(copilotCapabilities: .conservative).providerID == .claudeCode)
-        #expect(copilot.policyAdapter(copilotCapabilities: .conservative).providerID == .copilotCLI)
+        #expect(claude.policyAdapter(runtimeCapabilities: .conservative).providerID == .claudeCode)
+        #expect(copilot.policyAdapter(runtimeCapabilities: .conservative).providerID == .copilotCLI)
+        #expect(copilotPolicyAdapter?.capabilities.supportsAllowAll == true)
+        #expect(copilotPolicyAdapter?.capabilities.supportsOutputFormatJSON == true)
         #expect(claude.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .claudeCode))
         #expect(copilot.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .copilotCLI))
         #expect(claude.budgetProfile.launchOverheadTokens == 120_000)
@@ -268,7 +274,7 @@ struct AgentRuntimeAdapterTests {
                 task: claudeTask,
                 workspacePath: workspace.primaryPath,
                 executablePath: "/bin/claude",
-                copilotHome: "",
+                providerHomeDirectory: "",
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 permissionManifest: nil,
@@ -281,7 +287,7 @@ struct AgentRuntimeAdapterTests {
                 task: copilotTask,
                 workspacePath: workspace.primaryPath,
                 executablePath: "/bin/copilot-not-present",
-                copilotHome: "/tmp/astra-copilot-home",
+                providerHomeDirectory: "/tmp/astra-provider-home",
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 permissionManifest: nil,
@@ -298,7 +304,7 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.runtime == .copilotCLI)
         #expect(copilotPlan.executablePath == "/bin/copilot-not-present")
         #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
-        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-copilot-home"])
+        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-provider-home"])
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
     }
 

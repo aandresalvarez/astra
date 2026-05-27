@@ -191,10 +191,12 @@ struct AgentPolicyTests {
         #expect(claudeRender.allowedTools.contains("Bash(gh *)"))
         #expect(!claudeRender.allowedTools.contains("WebFetch"))
 
-        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
-        --allow-tool
-        --output-format
-        """))
+        let copilot = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(
+            copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --output-format
+            """)
+        ))
         let copilotRender = copilot.render(
             policy: policy,
             context: policyRenderContext(
@@ -238,7 +240,7 @@ struct AgentPolicyTests {
         --no-ask-user
         --secret-env-vars
         """)
-        let adapter = CopilotPolicyAdapter(capabilities: capabilities)
+        let adapter = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(copilotCLI: capabilities))
         let render = adapter.render(
             policy: .preset(.autonomous),
             context: policyRenderContext(runtime: .copilotCLI, features: adapter.supportedFeatures)
@@ -259,7 +261,7 @@ struct AgentPolicyTests {
         --stream
         --no-ask-user
         """)
-        let adapter = CopilotPolicyAdapter(capabilities: capabilities)
+        let adapter = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(copilotCLI: capabilities))
         let render = adapter.render(
             policy: .preset(.review),
             context: policyRenderContext(runtime: .copilotCLI, features: adapter.supportedFeatures)
@@ -664,10 +666,12 @@ struct AgentPolicyTests {
         #expect(!claudeRender.allowedTools.contains("Bash(gh:*)"))
         #expect(!claudeRender.allowedTools.contains("Bash(gh *)"))
 
-        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
-        --allow-tool
-        --output-format
-        """))
+        let copilot = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(
+            copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --output-format
+            """)
+        ))
         let copilotRender = copilot.render(
             policy: .preset(.review),
             context: policyRenderContext(
@@ -693,10 +697,12 @@ struct AgentPolicyTests {
         )
         #expect(claudeRender.allowedTools.contains("Bash(astra-browser *)"))
 
-        let copilot = CopilotPolicyAdapter(capabilities: CopilotCLICapabilities(helpText: """
-        --allow-tool
-        --output-format
-        """))
+        let copilot = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(
+            copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --output-format
+            """)
+        ))
         let copilotRender = copilot.render(
             policy: .preset(.build),
             context: policyRenderContext(
@@ -920,10 +926,12 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
-            copilotCapabilities: CopilotCLICapabilities(helpText: """
-            --allow-tool
-            --output-format
-            """),
+            providerCapabilities: AgentRuntimePolicyCapabilities(
+                copilotCLI: CopilotCLICapabilities(helpText: """
+                --allow-tool
+                --output-format
+                """)
+            ),
             modelContext: context
         )
 
