@@ -76,6 +76,7 @@ protocol AgentRuntimeAdapter {
     var budgetProfile: AgentRuntimeBudgetProfile { get }
     var recordsStreamTelemetry: Bool { get }
     var recordsInferredFileChanges: Bool { get }
+    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { get }
 
     func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter
     func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
@@ -165,6 +166,8 @@ extension AgentRuntimeAdapter {
     var recordsStreamTelemetry: Bool { false }
 
     var recordsInferredFileChanges: Bool { false }
+
+    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { false }
 
     func installPlan(detectExecutable _: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
         nil
@@ -1718,6 +1721,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     let readinessCheckID = "antigravity-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)
     let recordsInferredFileChanges = true
+    let recordsEstimatedUsageWhenProviderUsageMissing = true
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)

@@ -822,6 +822,15 @@ final class AgentRuntimeWorker {
             task.status = .failed
         }
 
+        Self.recordEstimatedUsageIfProviderDidNotReport(
+            runtimeAdapter: runtimeAdapter,
+            selectedRuntime: selectedRuntime,
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+
         AgentRuntimeRunPersistence.recordSessionTurn(
             task: task,
             run: run,
@@ -891,6 +900,44 @@ final class AgentRuntimeWorker {
         task.status = .completed
         let event = TaskEvent(task: task, type: "task.completed", payload: successPayload, run: run)
         modelContext.insert(event)
+    }
+
+    @MainActor
+    private static func recordEstimatedUsageIfProviderDidNotReport(
+        runtimeAdapter: any AgentRuntimeAdapter,
+        selectedRuntime: AgentRuntimeID,
+        prompt: String,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        guard runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
+              run.tokensUsed == 0 else {
+            return
+        }
+
+        let estimatedInput = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(
+            prompt: prompt,
+            runtime: selectedRuntime
+        )
+        let estimatedOutput = AgentProcessMonitor.estimatedTokenCount(for: run.output)
+        let estimatedTotal = estimatedInput + estimatedOutput
+        guard estimatedTotal > 0 else { return }
+
+        run.tokensUsed = estimatedTotal
+        run.inputTokens = estimatedInput
+        run.outputTokens = estimatedOutput
+        task.tokensUsed += estimatedTotal
+
+        let detail = "estimated tokens: \(estimatedTotal) (in: \(estimatedInput), out: \(estimatedOutput)) | provider usage unavailable"
+        modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: detail, run: run))
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+            "tokens_total": String(estimatedTotal),
+            "tokens_input": String(estimatedInput),
+            "tokens_output": String(estimatedOutput),
+            "runtime": selectedRuntime.rawValue,
+            "source": "estimated_provider_usage_missing"
+        ])
     }
 
     @MainActor

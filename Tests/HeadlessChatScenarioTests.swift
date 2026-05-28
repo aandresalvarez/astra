@@ -97,6 +97,13 @@ struct HeadlessChatScenarioTests {
         #expect(run.status == .completed)
         #expect(run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue)
         #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Headless Antigravity response")
+        #expect(run.tokensUsed > 0)
+        #expect(run.inputTokens > 0)
+        #expect(run.outputTokens > 0)
+        #expect(task.tokensUsed == run.tokensUsed)
+        #expect(task.events.contains {
+            $0.type == "task.stats" && $0.payload.contains("estimated tokens") && $0.payload.contains("provider usage unavailable")
+        })
         #expect(events.contains {
             if case .text(let text) = $0 {
                 text.trimmingCharacters(in: .whitespacesAndNewlines) == "Headless Antigravity response"
