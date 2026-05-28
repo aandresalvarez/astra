@@ -61,11 +61,8 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
-            defer {
-                Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }
-            }
             let plan = adapter.makeProcessLaunchPlan(context: launchContext)
-            return await runProcess(
+            let result = await runProcess(
                 adapter: adapter,
                 plan: plan,
                 task: task,
@@ -74,6 +71,8 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 onLine: onLine
             )
+            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+            return result
         }
 
         let plan = adapter.makeProcessLaunchPlan(context: launchContext)

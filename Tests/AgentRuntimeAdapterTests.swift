@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -65,6 +66,21 @@ struct AgentRuntimeAdapterTests {
                 message: "Runtime 'claude_code' is already registered by provider 'primary-claude-provider'."
             )
         ])
+    }
+
+    @Test("Shared launch state release is awaited before returning")
+    func sharedLaunchStateReleaseIsAwaitedBeforeReturning() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let runnerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+
+        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)"))
+        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
     }
 
     @Test("Adapters own model cache storage keys")
