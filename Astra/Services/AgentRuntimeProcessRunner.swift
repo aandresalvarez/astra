@@ -37,7 +37,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let plan = adapter.makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+        let launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
@@ -47,7 +47,24 @@ final class AgentRuntimeProcessRunner {
             executionPolicy: executionPolicy,
             permissionManifest: permissionManifest,
             timeoutSeconds: timeoutSeconds
-        ))
+        )
+        if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
+            await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+            let result = await runProcess(
+                adapter: adapter,
+                plan: plan,
+                task: task,
+                permissionManifest: permissionManifest,
+                budgetEnforcementMode: budgetEnforcementMode,
+                timeoutSeconds: timeoutSeconds,
+                onLine: onLine
+            )
+            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+            return result
+        }
+
+        let plan = adapter.makeProcessLaunchPlan(context: launchContext)
         return await runProcess(
             adapter: adapter,
             plan: plan,

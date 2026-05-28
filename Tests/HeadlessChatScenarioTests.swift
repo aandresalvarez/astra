@@ -116,6 +116,62 @@ struct HeadlessChatScenarioTests {
         ))
     }
 
+    @Test("Concurrent Antigravity runs with a shared home keep their selected models isolated")
+    func concurrentAntigravityRunsWithSharedHomeKeepModelsIsolated() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            /usr/bin/python3 -u - <<'PY'
+            import json
+            import os
+            import time
+            time.sleep(0.25)
+            settings_path = os.path.join(os.environ["HOME"], ".gemini", "antigravity-cli", "settings.json")
+            with open(settings_path, "r", encoding="utf-8") as handle:
+                model = json.load(handle).get("model", "")
+            print(f"model={model}", flush=True)
+            PY
+            exit 0
+            """
+        )
+
+        let firstTask = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Use the first Antigravity model",
+            model: "Gemini 3.5 Flash"
+        )
+        let secondTask = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Use the second Antigravity model",
+            model: "Gemini 3 Flash"
+        )
+        let firstWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+        let secondWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        let firstRun = Task { @MainActor in
+            await harness.execute(task: firstTask, worker: firstWorker)
+        }
+        let secondRun = Task { @MainActor in
+            await harness.execute(task: secondTask, worker: secondWorker)
+        }
+        _ = await (firstRun.value, secondRun.value)
+
+        let firstOutput = try #require(firstTask.runs.first?.output)
+        let secondOutput = try #require(secondTask.runs.first?.output)
+        #expect(firstTask.status == .completed)
+        #expect(secondTask.status == .completed)
+        #expect(firstOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3.5 Flash")
+        #expect(secondOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3 Flash")
+    }
+
     @Test("Standalone artifact task without created files stays pending review")
     func standaloneArtifactTaskWithoutCreatedFilesStaysPendingReview() async throws {
         let harness = try HeadlessChatHarness()
@@ -286,6 +342,46 @@ struct HeadlessChatScenarioTests {
         #expect(run.tokensUsed == 45)
         #expect(task.tokensUsed == 45)
         #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Antigravity estimated usage participates in final budget warnings")
+    func antigravityEstimatedUsageRecordsFinalBudgetWarning() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            /usr/bin/python3 - <<'PY'
+            print("A" * 5000)
+            PY
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Produce a long Antigravity response",
+            model: "Gemini 3.5 Flash",
+            tokenBudget: 1_000
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+        worker.budgetEnforcementModeOverride = .warning
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.tokensUsed > task.tokenBudget)
+        #expect(task.events.contains { $0.type == "task.stats" && $0.payload.contains("estimated tokens") })
         #expect(task.events.contains { $0.type == "budget.warning" })
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }

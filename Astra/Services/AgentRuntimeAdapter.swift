@@ -77,6 +77,7 @@ protocol AgentRuntimeAdapter {
     var recordsStreamTelemetry: Bool { get }
     var recordsInferredFileChanges: Bool { get }
     var recordsEstimatedUsageWhenProviderUsageMissing: Bool { get }
+    var modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority { get }
 
     func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter
     func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
@@ -88,6 +89,7 @@ protocol AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck
     func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan?
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
     func missingExecutableStopReason() -> String?
     func missingExecutableMessage(executablePath: String) -> String
@@ -169,6 +171,8 @@ extension AgentRuntimeAdapter {
 
     var recordsEstimatedUsageWhenProviderUsageMissing: Bool { false }
 
+    var modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority { .authoritative }
+
     func installPlan(detectExecutable _: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
         nil
     }
@@ -181,6 +185,10 @@ extension AgentRuntimeAdapter {
                 : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
         )
+    }
+
+    func sharedLaunchStateKey(context _: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey? {
+        nil
     }
 
     func missingExecutableAuditReason() -> String {
@@ -1722,12 +1730,22 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)
     let recordsInferredFileChanges = true
     let recordsEstimatedUsageWhenProviderUsageMissing = true
+    let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
         return AgentRuntimeLaunchSettings(
             executablePath: configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
+        )
+    }
+
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey? {
+        AgentRuntimeSharedStateKey(
+            runtime: id,
+            identifier: AntigravityCLIRuntime.settingsURL(
+                providerHomeDirectory: context.providerHomeDirectory
+            ).standardizedFileURL.path
         )
     }
 
@@ -1839,7 +1857,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let models = AntigravityCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id)
+        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",
             title: "Antigravity models",
@@ -1988,6 +2006,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: configuration.homeDirectory(for: id)
         )
+        let sharedStateKey = AgentRuntimeSharedStateKey(
+            runtime: id,
+            identifier: modelSettingsURL.standardizedFileURL.path
+        )
+        await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         if FileManager.default.isExecutableFile(atPath: executable) {
             AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)
@@ -2014,6 +2037,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
     }
 

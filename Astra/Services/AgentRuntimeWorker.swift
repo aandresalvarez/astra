@@ -587,6 +587,14 @@ final class AgentRuntimeWorker {
             recordingState: recordingState,
             onEvent: onEvent
         ))
+        Self.recordEstimatedUsageIfProviderDidNotReport(
+            runtimeAdapter: runtimeAdapter,
+            selectedRuntime: selectedRuntime,
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
@@ -821,15 +829,6 @@ final class AgentRuntimeWorker {
             }
             task.status = .failed
         }
-
-        Self.recordEstimatedUsageIfProviderDidNotReport(
-            runtimeAdapter: runtimeAdapter,
-            selectedRuntime: selectedRuntime,
-            prompt: prompt,
-            task: task,
-            run: run,
-            modelContext: modelContext
-        )
 
         AgentRuntimeRunPersistence.recordSessionTurn(
             task: task,

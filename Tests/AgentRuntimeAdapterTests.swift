@@ -379,6 +379,36 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
     }
 
+    @Test("Antigravity declares shared launch state and suggestion-only model availability")
+    func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
+        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let workspace = Workspace(name: "Provider State", primaryPath: "/tmp/astra-provider-state")
+        let task = AgentTask(
+            title: "Antigravity",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "Gemini 3.5 Flash",
+            runtime: .antigravityCLI
+        )
+        let context = AgentRuntimeProcessLaunchContext(
+            prompt: "hello",
+            task: task,
+            workspacePath: workspace.primaryPath,
+            executablePath: "/bin/agy",
+            providerHomeDirectory: "/tmp/astra-antigravity-home",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 30
+        )
+
+        #expect(adapter.modelAvailabilityAuthority == .suggestions)
+        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("antigravity_cli:") == true)
+        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
+        #expect(AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)
+        #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
+    }
+
     @Test("Adapters own provider stream parsing")
     func adaptersOwnProviderStreamParsing() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
