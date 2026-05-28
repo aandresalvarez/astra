@@ -109,6 +109,7 @@ enum AntigravityCLIRuntime {
         permissionPolicy: PermissionPolicy,
         timeoutSeconds: TimeInterval,
         taskEnvironment: [String: String],
+        providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false
     ) -> AntigravityCLICommandPlan {
@@ -137,6 +138,10 @@ enum AntigravityCLIRuntime {
         env["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
         for (key, value) in taskEnvironment {
             env[key] = value
+        }
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty {
+            env["HOME"] = trimmedHome
         }
 
         return AntigravityCLICommandPlan(

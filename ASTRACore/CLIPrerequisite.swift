@@ -99,8 +99,8 @@ public enum CommonCLIPrerequisites {
         livenessArgs: ["--version"],
         displayName: "Google Antigravity CLI",
         purpose: "Runs tasks through Google Antigravity CLI.",
-        installURL: URL(string: "https://antigravity.google/product/antigravity-cli"),
-        installHint: "Install via shell: `curl -fsSL https://antigravity.google/cli/install.sh | bash`",
+        installURL: URL(string: "https://www.antigravity.google/docs/cli-getting-started"),
+        installHint: "Install from the official Google Antigravity CLI setup docs.",
         authHint: "Run `agy` once and complete Google Sign-In when prompted."
     )
 

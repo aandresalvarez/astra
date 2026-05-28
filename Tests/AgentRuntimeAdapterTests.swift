@@ -157,8 +157,11 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan?.displayCommand == "npm install -g @anthropic-ai/claude-code")
         #expect(copilotPlan?.runtime == .copilotCLI)
         #expect(copilotPlan?.displayCommand == "brew install copilot-cli")
-        #expect(antigravityPlan?.runtime == .antigravityCLI)
-        #expect(antigravityPlan?.displayCommand == "curl -fsSL https://antigravity.google/cli/install.sh | bash")
+        #expect(antigravityPlan == nil)
+        let antigravity = AgentRuntimeAdapterRegistry.descriptor(for: .antigravityCLI)
+        #expect(antigravity.installHint.contains("official Google Antigravity CLI setup docs"))
+        #expect(antigravity.installHint.contains("curl") == false)
+        #expect(antigravity.installHint.contains("| bash") == false)
     }
 
     @Test("Adapters own session lifecycle policy")
@@ -343,7 +346,7 @@ struct AgentRuntimeAdapterTests {
                 task: antigravityTask,
                 workspacePath: workspace.primaryPath,
                 executablePath: "/bin/agy-not-present",
-                providerHomeDirectory: "",
+                providerHomeDirectory: "/tmp/astra-antigravity-home",
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 permissionManifest: nil,
@@ -368,7 +371,9 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.arguments.starts(with: ["--print", "hello", "--print-timeout", "30s"]))
         #expect(antigravityPlan.arguments.contains("--sandbox"))
         #expect(antigravityPlan.parsesJSONLines == false)
+        #expect(antigravityPlan.environment["HOME"] == "/tmp/astra-antigravity-home")
         #expect(antigravityPlan.providerDetectedFields["runtime"] == AgentRuntimeID.antigravityCLI.rawValue)
+        #expect(antigravityPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(antigravityPlan.commandPlannedFields["model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["provider_model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")

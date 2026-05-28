@@ -78,4 +78,22 @@ struct RuntimeCLIInstallerTests {
         #expect(result.detail?.contains("Homebrew") == true)
         #expect(await runner.recordedCalls().isEmpty)
     }
+
+    @Test("Antigravity installer uses guidance instead of piping remote shell")
+    func antigravityInstallerUsesGuidanceInsteadOfRemoteShell() async {
+        let runner = StubBinaryRunner()
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { binary in binary == "bash" ? "/bin/bash" : "" }
+        )
+
+        #expect(installer.plan(for: .antigravityCLI) == nil)
+
+        let result = await installer.install(runtime: .antigravityCLI)
+        #expect(!result.succeeded)
+        #expect(result.plan == nil)
+        #expect(result.detail?.contains("official Google Antigravity CLI setup docs") == true)
+        #expect(result.detail?.contains("| bash") == false)
+        #expect(await runner.recordedCalls().isEmpty)
+    }
 }

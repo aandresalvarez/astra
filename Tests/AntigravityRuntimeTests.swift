@@ -33,6 +33,23 @@ struct AntigravityCLIRuntimeTests {
         #expect(plan.environment["PATH"]?.contains(RuntimePathResolver.astraToolsPath) == true)
     }
 
+    @Test("Provider home redirects HOME for settings consistency")
+    func providerHomeRedirectsHomeForSettingsConsistency() {
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: "/bin/agy",
+            prompt: "hello",
+            workspacePath: "/workspace",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 30,
+            taskEnvironment: ["HOME": "/tmp/task-home"],
+            providerHomeDirectory: "/tmp/provider-home"
+        )
+
+        #expect(plan.environment["HOME"] == "/tmp/provider-home")
+        #expect(AntigravityCLIRuntime.settingsURL(providerHomeDirectory: "/tmp/provider-home").path == "/tmp/provider-home/.gemini/antigravity-cli/settings.json")
+    }
+
     @Test("Autonomous command uses Antigravity broad permission flag")
     func autonomousCommandUsesBroadPermissionFlag() {
         let plan = AntigravityCLIRuntime.buildCommand(

@@ -1708,7 +1708,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         id: .antigravityCLI,
         displayName: "Google Antigravity CLI",
         executableName: "agy",
-        installHint: "Install via shell: `curl -fsSL https://antigravity.google/cli/install.sh | bash`",
+        installHint: "Install from the official Google Antigravity CLI setup docs: https://www.antigravity.google/docs/cli-getting-started",
         authHint: "Run `agy` once and complete Google Sign-In when prompted.",
         prerequisite: CommonCLIPrerequisites.antigravity,
         defaultModel: AntigravityCLIRuntime.defaultModelName(),
@@ -1736,7 +1736,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "Google Antigravity CLI not found. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then run `agy` once to authenticate."
+        "Google Antigravity CLI not found. Install it from the official setup docs, then run `agy` once to authenticate."
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
@@ -1823,7 +1823,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             case .availability:
                 checks.append(antigravityAccountDeferredCheck())
             case .diagnostic:
-                checks.append(await antigravityLiveAccountCheck(executable: executable ?? "", probes: probes))
+                checks.append(await antigravityLiveAccountCheck(
+                    executable: executable ?? "",
+                    providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id),
+                    probes: probes
+                ))
             }
         }
         return RuntimeReadinessReport(checks: checks)
@@ -1841,18 +1845,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
-        guard let bash = detectedExecutable(named: "bash", detectExecutable: detectExecutable) else {
-            return nil
-        }
-        let command = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
-        return RuntimeCLIInstallPlan(
-            runtime: id,
-            installerName: "bash",
-            executablePath: bash,
-            arguments: ["-lc", command],
-            displayCommand: command
-        )
+    func installPlan(detectExecutable _: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        nil
     }
 
     @MainActor
@@ -1883,6 +1877,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: effectivePermissionPolicy,
             timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
+            providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
@@ -1904,7 +1899,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "executable_configured": String(!context.executablePath.isEmpty),
                 "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
                 "executable_path": executable,
-                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
+                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
+                "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
@@ -1999,7 +1995,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             additionalPaths: [],
             permissionPolicy: .restricted,
             timeoutSeconds: 120,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            providerHomeDirectory: configuration.homeDirectory(for: id)
         )
 
         let process = Process()
@@ -2018,6 +2015,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     private func antigravityLiveAccountCheck(
         executable: String,
+        providerHomeDirectory: String,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let timeoutSeconds: TimeInterval = 30
@@ -2032,6 +2030,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         environment["NO_COLOR"] = "1"
         environment["TERM"] = environment["TERM"] ?? "xterm-256color"
         environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty {
+            environment["HOME"] = trimmedHome
+        }
 
         let result = await probes.run(
             path: executable,
