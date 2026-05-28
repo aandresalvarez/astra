@@ -2012,7 +2012,17 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtime: id,
             identifier: modelSettingsURL.standardizedFileURL.path
         )
-        await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+        do {
+            try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+        } catch is CancellationError {
+            return AgentUtilityRunResult(
+                exitCode: -1,
+                output: "",
+                error: "Task cancelled before acquiring provider shared state."
+            )
+        } catch {
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
+        }
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         if FileManager.default.isExecutableFile(atPath: executable) {
             AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)

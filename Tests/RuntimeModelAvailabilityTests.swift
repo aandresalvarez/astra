@@ -94,6 +94,24 @@ struct RuntimeModelAvailabilityTests {
         #expect(resolution.reason == "unknown_custom_model_preserved")
     }
 
+    @Test("Legacy authority detection uses decoded key presence")
+    func legacyAuthorityDetectionUsesDecodedKeyPresence() throws {
+        let snapshot = """
+        {"runtimeID":"antigravity_cli","models":["authority"],"checkedAt":0}
+        """
+        let cached = RuntimeModelAvailabilityCache(rawSnapshots: [.antigravityCLI: snapshot])
+        let custom = "Gemini Future Experimental"
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            custom,
+            for: .antigravityCLI,
+            cache: cached
+        )
+
+        #expect(resolution.resolvedModel == custom)
+        #expect(resolution.reason == "unknown_custom_model_preserved")
+    }
+
     @Test("Cached Claude and Copilot models stay isolated")
     func runtimeModelCachesStayIsolated() {
         let (defaults, suiteName) = makeDefaults()

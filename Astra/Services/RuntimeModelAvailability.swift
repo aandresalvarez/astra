@@ -11,6 +11,7 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
     var models: [String]
     var checkedAt: Date
     var authority: RuntimeModelAvailabilityAuthority
+    var hasExplicitAuthority: Bool
 
     init(
         runtimeID: String,
@@ -22,6 +23,7 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
         self.models = models
         self.checkedAt = checkedAt
         self.authority = authority
+        self.hasExplicitAuthority = true
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -36,10 +38,19 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
         runtimeID = try container.decode(String.self, forKey: .runtimeID)
         models = try container.decode([String].self, forKey: .models)
         checkedAt = try container.decode(Date.self, forKey: .checkedAt)
+        hasExplicitAuthority = container.contains(.authority)
         authority = try container.decodeIfPresent(
             RuntimeModelAvailabilityAuthority.self,
             forKey: .authority
         ) ?? .authoritative
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(runtimeID, forKey: .runtimeID)
+        try container.encode(models, forKey: .models)
+        try container.encode(checkedAt, forKey: .checkedAt)
+        try container.encode(authority, forKey: .authority)
     }
 }
 
@@ -330,7 +341,7 @@ enum RuntimeModelAvailability {
         }
         let cleaned = cleanProviderModels(snapshot.models)
         guard !cleaned.isEmpty else { return nil }
-        let authority = raw.contains(#""authority""#)
+        let authority = snapshot.hasExplicitAuthority
             ? snapshot.authority
             : legacySnapshotAuthority(for: runtime)
         return RuntimeModelAvailabilitySnapshot(

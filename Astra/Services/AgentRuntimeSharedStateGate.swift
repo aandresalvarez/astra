@@ -12,17 +12,58 @@ struct AgentRuntimeSharedStateKey: Hashable, Sendable {
 actor AgentRuntimeSharedStateGate {
     static let shared = AgentRuntimeSharedStateGate()
 
-    private var heldKeys: Set<AgentRuntimeSharedStateKey> = []
-    private var waiters: [AgentRuntimeSharedStateKey: [CheckedContinuation<Void, Never>]] = [:]
+    private struct Waiter {
+        var id: UUID
+        var continuation: CheckedContinuation<Bool, Never>
+    }
 
-    func acquire(_ key: AgentRuntimeSharedStateKey) async {
+    private var heldKeys: Set<AgentRuntimeSharedStateKey> = []
+    private var waiters: [AgentRuntimeSharedStateKey: [Waiter]] = [:]
+
+    func acquire(_ key: AgentRuntimeSharedStateKey) async throws {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+
         if heldKeys.insert(key).inserted {
             return
         }
 
-        await withCheckedContinuation { continuation in
-            waiters[key, default: []].append(continuation)
+        let waiterID = UUID()
+        let acquired = await withTaskCancellationHandler {
+            await enqueueWaiter(id: waiterID, key: key)
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID, key: key) }
         }
+
+        guard acquired else {
+            throw CancellationError()
+        }
+
+        if Task.isCancelled {
+            release(key)
+            throw CancellationError()
+        }
+    }
+
+    private func enqueueWaiter(id: UUID, key: AgentRuntimeSharedStateKey) async -> Bool {
+        if Task.isCancelled {
+            return false
+        }
+
+        return await withCheckedContinuation { continuation in
+            waiters[key, default: []].append(Waiter(id: id, continuation: continuation))
+        }
+    }
+
+    private func cancelWaiter(id: UUID, key: AgentRuntimeSharedStateKey) {
+        guard var queued = waiters[key],
+              let index = queued.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = queued.remove(at: index)
+        waiters[key] = queued.isEmpty ? nil : queued
+        waiter.continuation.resume(returning: false)
     }
 
     func release(_ key: AgentRuntimeSharedStateKey) {
@@ -33,6 +74,6 @@ actor AgentRuntimeSharedStateGate {
 
         let next = queued.removeFirst()
         waiters[key] = queued.isEmpty ? nil : queued
-        next.resume()
+        next.continuation.resume(returning: true)
     }
 }

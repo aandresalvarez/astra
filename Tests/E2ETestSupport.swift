@@ -64,10 +64,15 @@ enum E2ETestSupport {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard !requested.isEmpty else { return cases }
-        return cases.filter { runtimeCase in
+        let filtered = cases.filter { runtimeCase in
             runtimeCase.runtimeID.rawValue.lowercased() == requested
                 || runtimeCase.directoryNameComponent.lowercased() == requested
         }
+        guard !filtered.isEmpty else {
+            fputs("Unknown RUN_E2E_RUNTIME '\(requested)'; running all runtime cases instead.\n", stderr)
+            return cases
+        }
+        return filtered
     }
 
     @MainActor
@@ -232,6 +237,9 @@ struct E2ELiveProviderGateTests {
 
         let filteredByName = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "antigravity"])
         #expect(filteredByName.map(\.runtimeID) == [.antigravityCLI])
+
+        let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
+        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
     }
 
     @Test("Queued live provider waiters finish when cancelled")
@@ -263,6 +271,29 @@ struct E2ELiveProviderGateTests {
         await releaseHolder.open()
         try await holder.value
         _ = try await E2ETestSupport.withLiveProviderSlot { true }
+    }
+
+    @Test("Shared runtime state gate removes cancelled waiters")
+    func sharedRuntimeStateGateRemovesCancelledWaiters() async throws {
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: UUID().uuidString)
+        try await AgentRuntimeSharedStateGate.shared.acquire(key)
+        let waiterRan = AsyncTestFlag()
+
+        let waiter = Task {
+            try await AgentRuntimeSharedStateGate.shared.acquire(key)
+            await waiterRan.set()
+            await AgentRuntimeSharedStateGate.shared.release(key)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        waiter.cancel()
+
+        let waiterFinished = await taskFinishesWithinTimeout(waiter, nanoseconds: 500_000_000)
+        #expect(waiterFinished)
+        #expect(await waiterRan.value == false)
+
+        await AgentRuntimeSharedStateGate.shared.release(key)
+        try await AgentRuntimeSharedStateGate.shared.acquire(key)
+        await AgentRuntimeSharedStateGate.shared.release(key)
     }
 }
 

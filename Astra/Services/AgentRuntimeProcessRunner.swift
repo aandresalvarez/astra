@@ -49,9 +49,23 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
-            await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            do {
+                try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            } catch is CancellationError {
+                return AgentProcessResult(
+                    exitCode: -1,
+                    error: "Task cancelled before acquiring provider shared state.",
+                    runtimeStopReason: "cancelled",
+                    runtimeStopMessage: "Task cancelled before acquiring provider shared state."
+                )
+            } catch {
+                return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
+            }
+            defer {
+                Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }
+            }
             let plan = adapter.makeProcessLaunchPlan(context: launchContext)
-            let result = await runProcess(
+            return await runProcess(
                 adapter: adapter,
                 plan: plan,
                 task: task,
@@ -60,8 +74,6 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 onLine: onLine
             )
-            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
-            return result
         }
 
         let plan = adapter.makeProcessLaunchPlan(context: launchContext)
