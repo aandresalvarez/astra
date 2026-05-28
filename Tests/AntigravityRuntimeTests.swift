@@ -50,6 +50,11 @@ struct AntigravityCLIRuntimeTests {
         #expect(AntigravityCLIRuntime.settingsURL(providerHomeDirectory: "/tmp/provider-home").path == "/tmp/provider-home/.gemini/antigravity-cli/settings.json")
     }
 
+    @Test("Version summary is deferred to readiness checks")
+    func versionSummaryIsDeferredToReadinessChecks() {
+        #expect(AntigravityCLIRuntime.versionSummary(executablePath: "/bin/agy") == nil)
+    }
+
     @Test("Autonomous command uses Antigravity broad permission flag")
     func autonomousCommandUsesBroadPermissionFlag() {
         let plan = AntigravityCLIRuntime.buildCommand(

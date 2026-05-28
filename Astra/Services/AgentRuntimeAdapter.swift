@@ -706,12 +706,12 @@ struct RuntimeReadinessProbeContext {
     private func processFailureDetail(_ result: RunResult) -> String {
         switch result.outcome {
         case .launchFailed(let reason):
-            return "Could not launch: \(redacted(reason))"
+            return "Could not launch: \(RuntimeReadinessRedactor.redacted(reason))"
         case .timedOut:
             return "Timed out after \(Int(timeout))s."
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
-            let trimmed = redacted(evidence)
+            let trimmed = RuntimeReadinessRedactor.redacted(evidence)
                 .replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -728,10 +728,16 @@ struct RuntimeReadinessProbeContext {
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let firstLine, !firstLine.isEmpty else { return fallback }
-        return redacted(firstLine)
+        return RuntimeReadinessRedactor.redacted(firstLine)
     }
 
-    private func redacted(_ value: String) -> String {
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum RuntimeReadinessRedactor {
+    static func redacted(_ value: String) -> String {
         var output = value
         output = output.replacingPattern(
             #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
@@ -747,10 +753,6 @@ struct RuntimeReadinessProbeContext {
             with: "[redacted-key]"
         )
         return output
-    }
-
-    private func trimmed(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -2104,12 +2106,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     ) -> String {
         switch result.outcome {
         case .launchFailed(let reason):
-            return "Could not launch live Antigravity check: \(antigravityReadinessRedacted(reason))"
+            return "Could not launch live Antigravity check: \(RuntimeReadinessRedactor.redacted(reason))"
         case .timedOut:
             return "Timed out after \(Int(timeoutSeconds))s during live Antigravity check."
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
-            let sanitized = antigravityReadinessRedacted(evidence)
+            let sanitized = RuntimeReadinessRedactor.redacted(evidence)
                 .replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !sanitized.isEmpty else {
@@ -2117,24 +2119,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             }
             return "Live Antigravity check exited with status \(code): \(String(sanitized.prefix(180)))"
         }
-    }
-
-    private func antigravityReadinessRedacted(_ value: String) -> String {
-        var output = value
-        output = output.replacingPattern(
-            #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
-            with: "[redacted-email]",
-            options: [.caseInsensitive]
-        )
-        output = output.replacingPattern(
-            #"ya29\.[A-Za-z0-9._-]+"#,
-            with: "[redacted-token]"
-        )
-        output = output.replacingPattern(
-            #"sk-[A-Za-z0-9_-]+"#,
-            with: "[redacted-key]"
-        )
-        return output
     }
 }
 

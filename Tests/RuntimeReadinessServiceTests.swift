@@ -357,6 +357,19 @@ struct RuntimeReadinessServiceTests {
         #expect(account?.detail.contains("ya29.secret-token-value") == false)
     }
 
+    @Test("Readiness redactor is shared by generic and Antigravity failures")
+    func readinessRedactorIsSharedByGenericAndAntigravityFailures() {
+        let raw = "user alvaro@example.com token ya29.secret-token-value key sk-test-secret"
+        let redacted = RuntimeReadinessRedactor.redacted(raw)
+
+        #expect(redacted.contains("[redacted-email]"))
+        #expect(redacted.contains("[redacted-token]"))
+        #expect(redacted.contains("[redacted-key]"))
+        #expect(!redacted.contains("alvaro@example.com"))
+        #expect(!redacted.contains("ya29.secret-token-value"))
+        #expect(!redacted.contains("sk-test-secret"))
+    }
+
     @Test("Antigravity availability readiness remains lightweight")
     func antigravityAvailabilityReadinessDoesNotSpendLiveProviderCall() async {
         let runner = StubBinaryRunner()

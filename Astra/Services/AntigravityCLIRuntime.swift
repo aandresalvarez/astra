@@ -26,10 +26,7 @@ enum AntigravityCLIRuntime {
     }
 
     static func versionSummary(executablePath: String) -> String? {
-        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
-            return nil
-        }
-        return probeVersion(executablePath: executablePath, args: ["--version"])
+        nil
     }
 
     static func settingsURL(providerHomeDirectory: String = "") -> URL {
@@ -221,42 +218,5 @@ enum AntigravityCLIRuntime {
             return (tool: "ToolApproval", reason: line, isBlocking: false)
         }
         return nil
-    }
-
-    private static func probeVersion(executablePath: String, args: [String]) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = args
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in semaphore.signal() }
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        guard semaphore.wait(timeout: .now() + 2) == .success else {
-            process.terminate()
-            return nil
-        }
-        guard process.terminationStatus == 0 else {
-            return nil
-        }
-
-        let output = (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
-            + "\n"
-            + (String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
-        return output
-            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
