@@ -7,6 +7,11 @@ enum RuntimeReadinessState: String, Sendable, Equatable {
     case blocked
 }
 
+enum RuntimeReadinessScope: Sendable, Equatable {
+    case availability
+    case diagnostic
+}
+
 struct RuntimeReadinessCheck: Identifiable, Sendable, Equatable {
     let id: String
     let title: String
@@ -38,6 +43,7 @@ struct RuntimeReadinessReport: Sendable, Equatable {
 
 struct RuntimeReadinessConfiguration: Sendable, Equatable {
     var runtime: AgentRuntimeID
+    var scope: RuntimeReadinessScope
     var providerSettings: AgentRuntimeProviderSettings
     var claudeProvider: ClaudeProvider
     var vertexProjectID: String
@@ -48,6 +54,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
 
     init(
         runtime: AgentRuntimeID,
+        scope: RuntimeReadinessScope = .diagnostic,
         claudePath: String,
         copilotPath: String,
         claudeProvider: ClaudeProvider,
@@ -59,6 +66,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
     ) {
         self.init(
             runtime: runtime,
+            scope: scope,
             providerSettings: AgentRuntimeProviderSettings(
                 executablePaths: [
                     .claudeCode: claudePath,
@@ -79,6 +87,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
 
     init(
         runtime: AgentRuntimeID,
+        scope: RuntimeReadinessScope = .diagnostic,
         providerSettings: AgentRuntimeProviderSettings,
         claudeProvider: ClaudeProvider,
         vertexProjectID: String,
@@ -88,6 +97,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         vertexHaikuModel: String
     ) {
         self.runtime = runtime
+        self.scope = scope
         self.providerSettings = providerSettings
         self.claudeProvider = claudeProvider
         self.vertexProjectID = vertexProjectID

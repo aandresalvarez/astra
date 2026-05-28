@@ -629,8 +629,13 @@ struct RuntimeReadinessProbeContext {
     let detectExecutable: @Sendable (String) -> String
     let isExecutable: @Sendable (String) -> Bool
 
-    func run(path: String, args: [String], environment: [String: String]? = nil) async -> RunResult {
-        await runner.run(path: path, args: args, timeout: timeout, environment: environment)
+    func run(
+        path: String,
+        args: [String],
+        timeout overrideTimeout: TimeInterval? = nil,
+        environment: [String: String]? = nil
+    ) async -> RunResult {
+        await runner.run(path: path, args: args, timeout: overrideTimeout ?? timeout, environment: environment)
     }
 
     func checkExecutable(
@@ -1814,7 +1819,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
-            checks.append(antigravityAccountDeferredCheck())
+            switch configuration.scope {
+            case .availability:
+                checks.append(antigravityAccountDeferredCheck())
+            case .diagnostic:
+                checks.append(await antigravityLiveAccountCheck(executable: executable ?? "", probes: probes))
+            }
         }
         return RuntimeReadinessReport(checks: checks)
     }
@@ -2006,14 +2016,95 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
     }
 
+    private func antigravityLiveAccountCheck(
+        executable: String,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessCheck {
+        let timeoutSeconds: TimeInterval = 30
+        let args = [
+            "--print",
+            "Reply with ASTRA_READY only.",
+            "--print-timeout",
+            "\(Int(timeoutSeconds))s",
+            "--sandbox"
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["NO_COLOR"] = "1"
+        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
+        environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
+
+        let result = await probes.run(
+            path: executable,
+            args: args,
+            timeout: timeoutSeconds,
+            environment: environment
+        )
+        guard result.isSuccess else {
+            return RuntimeReadinessCheck(
+                id: "antigravity-account",
+                title: "Antigravity account",
+                detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
+                state: .blocked,
+                remediation: "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
+            )
+        }
+
+        return RuntimeReadinessCheck(
+            id: "antigravity-account",
+            title: "Antigravity account",
+            detail: "Live non-interactive check completed with `agy --print --sandbox`.",
+            state: .ready,
+            remediation: nil
+        )
+    }
+
     private func antigravityAccountDeferredCheck() -> RuntimeReadinessCheck {
         RuntimeReadinessCheck(
             id: "antigravity-account",
             title: "Antigravity account",
-            detail: "CLI is available. Antigravity authenticates through the system keyring or browser sign-in when a task starts.",
+            detail: "CLI is available. Run Check Again in Settings for a live non-interactive account check.",
             state: .ready,
             remediation: nil
         )
+    }
+
+    private func antigravityLiveAccountFailureDetail(
+        _ result: RunResult,
+        timeoutSeconds: TimeInterval
+    ) -> String {
+        switch result.outcome {
+        case .launchFailed(let reason):
+            return "Could not launch live Antigravity check: \(antigravityReadinessRedacted(reason))"
+        case .timedOut:
+            return "Timed out after \(Int(timeoutSeconds))s during live Antigravity check."
+        case .exited(let code):
+            let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
+            let sanitized = antigravityReadinessRedacted(evidence)
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sanitized.isEmpty else {
+                return "Live Antigravity check exited with status \(code)."
+            }
+            return "Live Antigravity check exited with status \(code): \(String(sanitized.prefix(180)))"
+        }
+    }
+
+    private func antigravityReadinessRedacted(_ value: String) -> String {
+        var output = value
+        output = output.replacingPattern(
+            #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
+            with: "[redacted-email]",
+            options: [.caseInsensitive]
+        )
+        output = output.replacingPattern(
+            #"ya29\.[A-Za-z0-9._-]+"#,
+            with: "[redacted-token]"
+        )
+        output = output.replacingPattern(
+            #"sk-[A-Za-z0-9_-]+"#,
+            with: "[redacted-key]"
+        )
+        return output
     }
 }
 

@@ -247,6 +247,10 @@ struct AgentRuntimeAdapterTests {
             forKey: "/opt/agy --version",
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
+        )
 
         let service = RuntimeReadinessService(
             runner: runner,
