@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -67,15 +68,33 @@ struct AgentRuntimeAdapterTests {
         ])
     }
 
+    @Test("Shared launch state release is awaited before returning")
+    func sharedLaunchStateReleaseIsAwaitedBeforeReturning() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let runnerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+
+        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)"))
+        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
+    }
+
     @Test("Adapters own model cache storage keys")
     func adaptersOwnModelCacheStorageKeys() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
 
         #expect(claude.availableModelsStorageKey == AppStorageKeys.claudeAvailableModels)
         #expect(claude.modelsCheckedAtStorageKey == AppStorageKeys.claudeModelsCheckedAt)
         #expect(copilot.availableModelsStorageKey == AppStorageKeys.copilotAvailableModels)
         #expect(copilot.modelsCheckedAtStorageKey == AppStorageKeys.copilotModelsCheckedAt)
+        #expect(antigravity.descriptor.defaultModels.contains("Gemini 3.5 Flash (Low)"))
+        #expect(antigravity.descriptor.defaultModel != "default")
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
     }
@@ -119,6 +138,7 @@ struct AgentRuntimeAdapterTests {
     func adaptersPreservePolicyAndBudgetWiring() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let permissiveCapabilities = AgentRuntimePolicyCapabilities(
             copilotCLI: CopilotCLICapabilities(helpText: "--output-format --no-ask-user --allow-all")
         )
@@ -126,12 +146,15 @@ struct AgentRuntimeAdapterTests {
 
         #expect(claude.policyAdapter(runtimeCapabilities: .conservative).providerID == .claudeCode)
         #expect(copilot.policyAdapter(runtimeCapabilities: .conservative).providerID == .copilotCLI)
+        #expect(antigravity.policyAdapter(runtimeCapabilities: .conservative).providerID == .antigravityCLI)
         #expect(copilotPolicyAdapter?.capabilities.supportsAllowAll == true)
         #expect(copilotPolicyAdapter?.capabilities.supportsOutputFormatJSON == true)
         #expect(claude.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .claudeCode))
         #expect(copilot.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .copilotCLI))
+        #expect(antigravity.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .antigravityCLI))
         #expect(claude.budgetProfile.launchOverheadTokens == 120_000)
         #expect(copilot.budgetProfile.launchOverheadTokens == 0)
+        #expect(antigravity.budgetProfile.launchOverheadTokens == 0)
     }
 
     @Test("Adapters own CLI install planning")
@@ -142,11 +165,19 @@ struct AgentRuntimeAdapterTests {
         let copilotPlan = AgentRuntimeAdapterRegistry
             .adapter(for: .copilotCLI)
             .installPlan { binary in binary == "brew" ? "/opt/homebrew/bin/brew" : "" }
+        let antigravityPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .antigravityCLI)
+            .installPlan { binary in binary == "bash" ? "/bin/bash" : "" }
 
         #expect(claudePlan?.runtime == .claudeCode)
         #expect(claudePlan?.displayCommand == "npm install -g @anthropic-ai/claude-code")
         #expect(copilotPlan?.runtime == .copilotCLI)
         #expect(copilotPlan?.displayCommand == "brew install copilot-cli")
+        #expect(antigravityPlan == nil)
+        let antigravity = AgentRuntimeAdapterRegistry.descriptor(for: .antigravityCLI)
+        #expect(antigravity.installHint.contains("official Google Antigravity CLI setup docs"))
+        #expect(antigravity.installHint.contains("curl") == false)
+        #expect(antigravity.installHint.contains("| bash") == false)
     }
 
     @Test("Adapters own session lifecycle policy")
@@ -166,25 +197,33 @@ struct AgentRuntimeAdapterTests {
         )
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
 
         #expect(claude.launchSettings(configuration: configuration).executablePath == "/tmp/claude")
         #expect(copilot.launchSettings(configuration: configuration).homeDirectory == "/tmp/copilot-home")
         #expect(claude.recordsStreamTelemetry == false)
         #expect(copilot.recordsStreamTelemetry)
+        #expect(antigravity.recordsStreamTelemetry == false)
         #expect(claude.recordsInferredFileChanges == false)
         #expect(copilot.recordsInferredFileChanges)
+        #expect(antigravity.recordsInferredFileChanges)
 
         #expect(claude.shouldCheckWorkspaceDirectory(phase: "resume") == false)
         #expect(copilot.shouldCheckWorkspaceDirectory(phase: "resume"))
+        #expect(antigravity.shouldCheckWorkspaceDirectory(phase: "resume"))
         #expect(claude.shouldPrepareIsolation(phase: "resume") == false)
         #expect(copilot.shouldPrepareIsolation(phase: "resume"))
+        #expect(antigravity.shouldPrepareIsolation(phase: "resume"))
         #expect(claude.shouldValidateSuccessfulRun(phase: "resume") == false)
         #expect(copilot.shouldValidateSuccessfulRun(phase: "resume"))
+        #expect(antigravity.shouldValidateSuccessfulRun(phase: "resume"))
         #expect(claude.performsPostRunFollowUps(phase: "run"))
         #expect(copilot.performsPostRunFollowUps(phase: "run") == false)
+        #expect(antigravity.performsPostRunFollowUps(phase: "run") == false)
 
         #expect(claude.defaultStartEventPayload(task: task) == "Agent started working on: Say hi")
         #expect(copilot.defaultStartEventPayload(task: task) == "Copilot started working on: Say hi")
+        #expect(antigravity.defaultStartEventPayload(task: task) == "Antigravity started working on: Say hi")
         #expect(claude.sessionTurnMessage(
             task: task,
             promptOverride: "prompt",
@@ -193,6 +232,13 @@ struct AgentRuntimeAdapterTests {
             phase: "resume"
         ) == "message")
         #expect(copilot.sessionTurnMessage(
+            task: task,
+            promptOverride: "prompt",
+            startPayload: "start",
+            sessionMessage: "message",
+            phase: "resume"
+        ) == "start")
+        #expect(antigravity.sessionTurnMessage(
             task: task,
             promptOverride: "prompt",
             startPayload: "start",
@@ -216,6 +262,14 @@ struct AgentRuntimeAdapterTests {
             forKey: "/opt/copilot --version",
             result: RunResult(outcome: .exited(code: 0), stdout: "copilot 1.0\n", stderr: "")
         )
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
+        )
 
         let service = RuntimeReadinessService(
             runner: runner,
@@ -223,6 +277,7 @@ struct AgentRuntimeAdapterTests {
                 switch binary {
                 case "claude": "/opt/claude"
                 case "copilot": "/opt/copilot"
+                case "agy": "/opt/agy"
                 default: ""
                 }
             },
@@ -266,6 +321,13 @@ struct AgentRuntimeAdapterTests {
             model: "gpt-5",
             runtime: .copilotCLI
         )
+        let antigravityTask = AgentTask(
+            title: "Antigravity",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "default",
+            runtime: .antigravityCLI
+        )
 
         let claudePlan = AgentRuntimeAdapterRegistry
             .adapter(for: .claudeCode)
@@ -293,6 +355,19 @@ struct AgentRuntimeAdapterTests {
                 permissionManifest: nil,
                 timeoutSeconds: 30
             ))
+        let antigravityPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .antigravityCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: antigravityTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/agy-not-present",
+                providerHomeDirectory: "/tmp/astra-antigravity-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
 
         #expect(claudePlan.runtime == .claudeCode)
         #expect(claudePlan.executablePath == "/bin/claude")
@@ -306,21 +381,70 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
         #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-provider-home"])
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
+
+        #expect(antigravityPlan.runtime == .antigravityCLI)
+        #expect(antigravityPlan.executablePath == "/bin/agy-not-present")
+        #expect(antigravityPlan.arguments.starts(with: ["--print", "hello", "--print-timeout", "30s"]))
+        #expect(antigravityPlan.arguments.contains("--sandbox"))
+        #expect(antigravityPlan.parsesJSONLines == false)
+        #expect(antigravityPlan.environment["HOME"] == "/tmp/astra-antigravity-home")
+        #expect(antigravityPlan.providerDetectedFields["runtime"] == AgentRuntimeID.antigravityCLI.rawValue)
+        #expect(antigravityPlan.providerDetectedFields["provider_home_configured"] == "true")
+        #expect(antigravityPlan.commandPlannedFields["model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
+        #expect(antigravityPlan.commandPlannedFields["provider_model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
+        #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
+    }
+
+    @Test("Antigravity declares shared launch state and suggestion-only model availability")
+    func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
+        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let workspace = Workspace(name: "Provider State", primaryPath: "/tmp/astra-provider-state")
+        let task = AgentTask(
+            title: "Antigravity",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "Gemini 3.5 Flash",
+            runtime: .antigravityCLI
+        )
+        let context = AgentRuntimeProcessLaunchContext(
+            prompt: "hello",
+            task: task,
+            workspacePath: workspace.primaryPath,
+            executablePath: "/bin/agy",
+            providerHomeDirectory: "/tmp/astra-antigravity-home",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 30
+        )
+
+        #expect(adapter.modelAvailabilityAuthority == .suggestions)
+        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("antigravity_cli:") == true)
+        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
+        #expect(AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)
+        #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
     }
 
     @Test("Adapters own provider stream parsing")
     func adaptersOwnProviderStreamParsing() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let claudeLine = #"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#
         let copilotLine = #"{"type":"agent.message.delta","data":{"text":"hello"}}"#
+        let antigravityLine = "hello from antigravity"
         let permissionPrompt = "Allow access to these paths? (y/n):"
 
         #expect(claude.parseProcessEvents(line: claudeLine, parsesJSONLines: true).count == 1)
         #expect(claude.parseWorkerStreamEvents(line: claudeLine, parsesJSONLines: true).parsedEvents.count == 1)
         #expect(copilot.parseProcessEvents(line: copilotLine, parsesJSONLines: true).isEmpty == false)
         #expect(copilot.parseWorkerStreamEvents(line: copilotLine, parsesJSONLines: true).agentEvents.isEmpty == false)
+        #expect(antigravity.parseProcessEvents(line: antigravityLine, parsesJSONLines: false).isEmpty == false)
+        #expect(antigravity.parseWorkerStreamEvents(line: antigravityLine, parsesJSONLines: false).agentEvents == [
+            .text(text: "hello from antigravity\n")
+        ])
         #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
         #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
+        #expect(antigravity.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
     }
 }

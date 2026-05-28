@@ -333,6 +333,49 @@ enum AgentEventRecorder {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState? = nil
     ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Copilot",
+            permissionSource: "copilot_stream",
+            unknownEventName: "unknown_copilot_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
+    static func recordAntigravityEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Antigravity",
+            permissionSource: "antigravity_stream",
+            unknownEventName: "unknown_antigravity_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
+    private static func recordProviderAgentEvent(
+        _ event: AgentEvent,
+        providerDisplayName: String,
+        permissionSource: String,
+        unknownEventName: String,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
         switch event {
         case .started(let sessionID, let model):
             recordingState?.breakConversationCoalescing(for: run)
@@ -340,7 +383,8 @@ enum AgentEventRecorder {
                 task.sessionId = sessionID
                 run.providerSessionId = sessionID
             }
-            let payload = model.map { "Copilot stream started with model \($0)." } ?? "Copilot stream started."
+            let payload = model.map { "\(providerDisplayName) stream started with model \($0)." }
+                ?? "\(providerDisplayName) stream started."
             modelContext.insert(TaskEvent(task: task, type: "task.started", payload: payload, run: run))
 
         case .thinking(let text):
@@ -385,7 +429,7 @@ enum AgentEventRecorder {
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
                 "tool": normalizedPermissionTool(tool),
                 "reason_summary": permissionReasonSummary(reason),
-                "source": "copilot_stream"
+                "source": permissionSource
             ], level: .warning)
 
         case .stats(let input, let output, let cost, let duration, let turns):
@@ -431,7 +475,7 @@ enum AgentEventRecorder {
         case .unknown(_, let type, _):
             recordingState?.breakConversationCoalescing(for: run)
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
-                "event": "unknown_copilot_stream_event",
+                "event": unknownEventName,
                 "event_type": type
             ], level: .debug)
         }

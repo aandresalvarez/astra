@@ -37,7 +37,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let plan = adapter.makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+        let launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
@@ -47,7 +47,35 @@ final class AgentRuntimeProcessRunner {
             executionPolicy: executionPolicy,
             permissionManifest: permissionManifest,
             timeoutSeconds: timeoutSeconds
-        ))
+        )
+        if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
+            do {
+                try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            } catch is CancellationError {
+                return AgentProcessResult(
+                    exitCode: -1,
+                    error: "Task cancelled before acquiring provider shared state.",
+                    runtimeStopReason: "cancelled",
+                    runtimeStopMessage: "Task cancelled before acquiring provider shared state."
+                )
+            } catch {
+                return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
+            }
+            let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+            let result = await runProcess(
+                adapter: adapter,
+                plan: plan,
+                task: task,
+                permissionManifest: permissionManifest,
+                budgetEnforcementMode: budgetEnforcementMode,
+                timeoutSeconds: timeoutSeconds,
+                onLine: onLine
+            )
+            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+            return result
+        }
+
+        let plan = adapter.makeProcessLaunchPlan(context: launchContext)
         return await runProcess(
             adapter: adapter,
             plan: plan,
@@ -217,6 +245,10 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
+        runtimeAdditionalPaths(for: task)
+    }
+
+    static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
         var paths = TaskWorkspaceAccess(task: task).runtimeAdditionalPaths
         if !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty {
             paths.append(TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
@@ -229,6 +261,11 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
+        runtimeLocalToolCommands(for: task)
+    }
+
+    @MainActor
+    static func runtimeLocalToolCommands(for task: AgentTask) -> [String] {
         Array(Set(TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)

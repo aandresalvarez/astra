@@ -270,6 +270,141 @@ struct RuntimeReadinessServiceTests {
         #expect(report.checks.first?.state == .blocked)
     }
 
+    @Test("Antigravity diagnostic readiness runs a live noninteractive check")
+    func antigravityDiagnosticReadinessRunsLivePrintCheck() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .ready)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.state == .ready)
+        #expect(account?.detail.contains("agy --print --sandbox") == true)
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/agy", args: ["--version"]),
+            StubBinaryRunner.Call(
+                path: "/opt/agy",
+                args: ["--print", "Reply with ASTRA_READY only.", "--print-timeout", "30s", "--sandbox"]
+            )
+        ])
+    }
+
+    @Test("Antigravity diagnostic readiness blocks on live auth failure without leaking credentials")
+    func antigravityDiagnosticReadinessBlocksOnLiveAuthFailure() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(
+                outcome: .exited(code: 1),
+                stdout: "",
+                stderr: "Authentication required for alvaro@example.com token ya29.secret-token-value\n"
+            )
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.remediation?.contains("Run `agy` in Terminal") == true)
+        #expect(account?.detail.contains("[redacted-email]") == true)
+        #expect(account?.detail.contains("[redacted-token]") == true)
+        #expect(account?.detail.contains("alvaro@example.com") == false)
+        #expect(account?.detail.contains("ya29.secret-token-value") == false)
+    }
+
+    @Test("Readiness redactor is shared by generic and Antigravity failures")
+    func readinessRedactorIsSharedByGenericAndAntigravityFailures() {
+        let raw = "user alvaro@example.com token ya29.secret-token-value key sk-test-secret"
+        let redacted = RuntimeReadinessRedactor.redacted(raw)
+
+        #expect(redacted.contains("[redacted-email]"))
+        #expect(redacted.contains("[redacted-token]"))
+        #expect(redacted.contains("[redacted-key]"))
+        #expect(!redacted.contains("alvaro@example.com"))
+        #expect(!redacted.contains("ya29.secret-token-value"))
+        #expect(!redacted.contains("sk-test-secret"))
+    }
+
+    @Test("Antigravity availability readiness remains lightweight")
+    func antigravityAvailabilityReadinessDoesNotSpendLiveProviderCall() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            scope: .availability,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .ready)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.detail.contains("live non-interactive account check") == true)
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/agy", args: ["--version"])
+        ])
+    }
+
     @Test("Provider availability exposes only ready runtimes")
     func providerAvailabilityExposesOnlyReadyRuntimes() async {
         let runner = StubBinaryRunner()

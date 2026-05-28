@@ -147,7 +147,9 @@ struct Phase2FunctionalTest {
 
         #expect(eventTypes.contains("task.started"), "Missing task.started")
         #expect(E2ETestSupport.hasProviderProgressEvent(eventTypes), "Missing provider progress/output event")
-        #expect(eventTypes.contains("tool.use"), "Missing tool.use")
+        if runtimeCase.expectsStructuredToolEvents {
+            #expect(eventTypes.contains("tool.use"), "Missing tool.use")
+        }
         if runtimeCase.expectsUsageStats {
             #expect(eventTypes.contains("task.stats"), "Missing task.stats")
         }

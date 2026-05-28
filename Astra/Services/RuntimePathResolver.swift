@@ -4,10 +4,11 @@ enum RuntimePathResolver {
     static let usrBin = "/usr/bin"
     static let homebrewBin = "/opt/homebrew/bin"
     static let usrLocalBin = "/usr/local/bin"
+    static let userLocalBin = "\(NSHomeDirectory())/.local/bin"
     static let astraToolsPath = "\(NSHomeDirectory())/.astra/tools"
 
     static var shellPathSuffix: String {
-        "\(usrLocalBin):\(homebrewBin)"
+        "\(usrLocalBin):\(homebrewBin):\(userLocalBin)"
     }
 
     static var agentPathSuffix: String {
@@ -44,7 +45,7 @@ enum RuntimePathResolver {
         detectExecutablePath(
             named: "claude",
             candidates: [
-                "\(NSHomeDirectory())/.local/bin/claude",
+                "\(userLocalBin)/claude",
                 "\(usrLocalBin)/claude",
                 "\(homebrewBin)/claude",
                 "\(NSHomeDirectory())/.npm-global/bin/claude"
@@ -58,7 +59,7 @@ enum RuntimePathResolver {
         detectExecutablePath(
             named: "copilot",
             candidates: [
-                "\(NSHomeDirectory())/.local/bin/copilot",
+                "\(userLocalBin)/copilot",
                 "\(homebrewBin)/copilot",
                 "\(usrLocalBin)/copilot",
                 "\(NSHomeDirectory())/.npm-global/bin/copilot"
@@ -68,9 +69,23 @@ enum RuntimePathResolver {
         )
     }
 
+    static func detectAntigravityPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "agy",
+            candidates: [
+                "\(userLocalBin)/agy",
+                "\(homebrewBin)/agy",
+                "\(usrLocalBin)/agy",
+                "\(NSHomeDirectory())/.npm-global/bin/agy"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         [
-            "\(NSHomeDirectory())/.local/bin/\(executableName)",
+            "\(userLocalBin)/\(executableName)",
             "\(homebrewBin)/\(executableName)",
             "\(usrLocalBin)/\(executableName)",
             "\(NSHomeDirectory())/.npm-global/bin/\(executableName)",

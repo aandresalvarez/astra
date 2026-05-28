@@ -38,6 +38,80 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4", for: .copilotCLI, defaults: defaults) == "gpt-5")
     }
 
+    @Test("Suggestion-only provider cache preserves custom models")
+    func suggestionOnlyProviderCachePreservesCustomModels() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        RuntimeModelAvailability.persistAvailableModels(
+            ["Gemini 3.5 Flash", "Claude Sonnet 4.6 (Thinking)"],
+            for: .antigravityCLI,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 11),
+            authority: .suggestions
+        )
+
+        let custom = "Gemini Future Experimental"
+        let resolution = RuntimeModelAvailability.resolveModel(custom, for: .antigravityCLI, defaults: defaults)
+
+        #expect(resolution.resolvedModel == custom)
+        #expect(resolution.reason == "unknown_custom_model_preserved")
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .antigravityCLI, defaults: defaults) == "Gemini 3.5 Flash")
+    }
+
+    @Test("Legacy provider model cache remains authoritative")
+    func legacyProviderModelCacheRemainsAuthoritative() throws {
+        let snapshot = """
+        {"runtimeID":"copilot_cli","models":["gpt-5"],"checkedAt":0}
+        """
+        let cached = RuntimeModelAvailabilityCache(rawSnapshots: [.copilotCLI: snapshot])
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            "future-copilot-model",
+            for: .copilotCLI,
+            cache: cached
+        )
+
+        #expect(resolution.resolvedModel == "gpt-5")
+        #expect(resolution.reason == "not_in_cached_provider_models")
+    }
+
+    @Test("Legacy Antigravity model cache inherits suggestion-only authority")
+    func legacyAntigravityModelCacheInheritsSuggestionAuthority() throws {
+        let snapshot = """
+        {"runtimeID":"antigravity_cli","models":["Gemini 3.5 Flash"],"checkedAt":0}
+        """
+        let cached = RuntimeModelAvailabilityCache(rawSnapshots: [.antigravityCLI: snapshot])
+        let custom = "Gemini Future Experimental"
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            custom,
+            for: .antigravityCLI,
+            cache: cached
+        )
+
+        #expect(resolution.resolvedModel == custom)
+        #expect(resolution.reason == "unknown_custom_model_preserved")
+    }
+
+    @Test("Legacy authority detection uses decoded key presence")
+    func legacyAuthorityDetectionUsesDecodedKeyPresence() throws {
+        let snapshot = """
+        {"runtimeID":"antigravity_cli","models":["authority"],"checkedAt":0}
+        """
+        let cached = RuntimeModelAvailabilityCache(rawSnapshots: [.antigravityCLI: snapshot])
+        let custom = "Gemini Future Experimental"
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            custom,
+            for: .antigravityCLI,
+            cache: cached
+        )
+
+        #expect(resolution.resolvedModel == custom)
+        #expect(resolution.reason == "unknown_custom_model_preserved")
+    }
+
     @Test("Cached Claude and Copilot models stay isolated")
     func runtimeModelCachesStayIsolated() {
         let (defaults, suiteName) = makeDefaults()
@@ -138,6 +212,22 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.normalizedModel("custom-provider-model", for: .claudeCode, defaults: defaults) == "custom-provider-model")
         #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .claudeCode, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode))
         #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4-6", for: .copilotCLI, defaults: defaults) == AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI))
+    }
+
+    @Test("Legacy default model alias resolves to selected runtime default")
+    func legacyDefaultModelAliasResolvesToSelectedRuntimeDefault() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let resolution = RuntimeModelAvailability.resolveModel(
+            "default",
+            for: .antigravityCLI,
+            defaults: defaults
+        )
+
+        #expect(resolution.resolvedModel == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
+        #expect(resolution.resolvedModel != "default")
+        #expect(resolution.reason == "legacy_default_alias")
     }
 
     @Test("Runtime switches choose a provider suggestion")

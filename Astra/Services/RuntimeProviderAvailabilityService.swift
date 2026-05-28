@@ -60,6 +60,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
     func readinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
         RuntimeReadinessConfiguration(
             runtime: runtime,
+            scope: .availability,
             providerSettings: providerSettings,
             claudeProvider: claudeProvider,
             vertexProjectID: vertexProjectID,

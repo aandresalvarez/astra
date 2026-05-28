@@ -1,10 +1,57 @@
 import Foundation
 import ASTRACore
 
+enum RuntimeModelAvailabilityAuthority: String, Codable, Equatable, Sendable {
+    case authoritative
+    case suggestions
+}
+
 struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
     var runtimeID: String
     var models: [String]
     var checkedAt: Date
+    var authority: RuntimeModelAvailabilityAuthority
+    var hasExplicitAuthority: Bool
+
+    init(
+        runtimeID: String,
+        models: [String],
+        checkedAt: Date,
+        authority: RuntimeModelAvailabilityAuthority = .authoritative
+    ) {
+        self.runtimeID = runtimeID
+        self.models = models
+        self.checkedAt = checkedAt
+        self.authority = authority
+        self.hasExplicitAuthority = true
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runtimeID
+        case models
+        case checkedAt
+        case authority
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        runtimeID = try container.decode(String.self, forKey: .runtimeID)
+        models = try container.decode([String].self, forKey: .models)
+        checkedAt = try container.decode(Date.self, forKey: .checkedAt)
+        hasExplicitAuthority = container.contains(.authority)
+        authority = try container.decodeIfPresent(
+            RuntimeModelAvailabilityAuthority.self,
+            forKey: .authority
+        ) ?? .authoritative
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(runtimeID, forKey: .runtimeID)
+        try container.encode(models, forKey: .models)
+        try container.encode(checkedAt, forKey: .checkedAt)
+        try container.encode(authority, forKey: .authority)
+    }
 }
 
 struct RuntimeModelAvailabilityCache: Equatable, Sendable {
@@ -256,14 +303,16 @@ enum RuntimeModelAvailability {
         _ models: [String],
         for runtime: AgentRuntimeID,
         defaults: UserDefaults = .standard,
-        checkedAt: Date = Date()
+        checkedAt: Date = Date(),
+        authority: RuntimeModelAvailabilityAuthority = .authoritative
     ) {
         let cleaned = cleanProviderModels(models)
         guard !cleaned.isEmpty else { return }
         let snapshot = RuntimeModelAvailabilitySnapshot(
             runtimeID: runtime.rawValue,
             models: cleaned,
-            checkedAt: checkedAt
+            checkedAt: checkedAt,
+            authority: authority
         )
         guard let data = try? JSONEncoder().encode(snapshot),
               let raw = String(data: data, encoding: .utf8) else {
@@ -292,10 +341,14 @@ enum RuntimeModelAvailability {
         }
         let cleaned = cleanProviderModels(snapshot.models)
         guard !cleaned.isEmpty else { return nil }
+        let authority = snapshot.hasExplicitAuthority
+            ? snapshot.authority
+            : legacySnapshotAuthority(for: runtime)
         return RuntimeModelAvailabilitySnapshot(
             runtimeID: snapshot.runtimeID,
             models: cleaned,
-            checkedAt: snapshot.checkedAt
+            checkedAt: snapshot.checkedAt,
+            authority: authority
         )
     }
 
@@ -346,6 +399,7 @@ enum RuntimeModelAvailability {
         let suggestions = cachedSnapshot?.models ?? AgentRuntimeAdapterRegistry.defaultModels(for: runtime)
         let source = cachedSnapshot == nil ? "built_in_defaults" : "cached_provider_models"
         let checkedAt = cachedSnapshot?.checkedAt
+        let cachedListIsAuthoritative = cachedSnapshot?.authority == .authoritative
         guard !suggestions.isEmpty else {
             return RuntimeModelResolution(
                 runtime: runtime,
@@ -379,7 +433,18 @@ enum RuntimeModelAvailability {
                 checkedAt: checkedAt
             )
         }
-        if cachedSnapshot != nil {
+        if trimmed.lowercased() == "default" {
+            return RuntimeModelResolution(
+                runtime: runtime,
+                requestedModel: trimmed,
+                resolvedModel: defaultSuggestion(for: runtime, suggestions: suggestions),
+                source: source,
+                reason: "legacy_default_alias",
+                availableModelCount: suggestions.count,
+                checkedAt: checkedAt
+            )
+        }
+        if cachedListIsAuthoritative {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
@@ -434,6 +499,10 @@ enum RuntimeModelAvailability {
     private static func checkedAtKey(for runtime: AgentRuntimeID) -> String {
         AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.modelsCheckedAtStorageKey
             ?? AppStorageKeys.runtimeModelsCheckedAtKey(for: runtime)
+    }
+
+    private static func legacySnapshotAuthority(for runtime: AgentRuntimeID) -> RuntimeModelAvailabilityAuthority {
+        AgentRuntimeAdapterRegistry.adapterIfRegistered(for: runtime)?.modelAvailabilityAuthority ?? .authoritative
     }
 
     private static func bumpCacheRevision(defaults: UserDefaults) {
