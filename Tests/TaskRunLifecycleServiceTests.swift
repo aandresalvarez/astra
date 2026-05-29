@@ -186,14 +186,81 @@ struct TaskRunLifecycleServiceTests {
         context.insert(run)
         try context.save()
 
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == .policyBlocked)
+        #expect(PendingTaskReviewPolicy.reviewState(for: task, latestRun: run) == PendingTaskReviewState(
+            isDismissed: false,
+            dismissalReason: .policyBlocked
+        ))
+
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
         coordinator.approveTask(task)
 
         #expect(task.status == .pendingUser)
         #expect(task.isDone == true)
         #expect(task.completedAt == nil)
-        #expect(task.events.contains { $0.type == "task.dismissed" })
+        #expect(task.events.contains { $0.type == "task.dismissed" && $0.run?.id == run.id })
         #expect(!task.events.contains { $0.type == "task.approved" })
+        #expect(PendingTaskReviewPolicy.isDismissed(task: task, latestRun: run))
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == nil)
+        #expect(PendingTaskReviewPolicy.reviewState(for: task, latestRun: run) == PendingTaskReviewState(
+            isDismissed: true,
+            dismissalReason: nil
+        ))
+
+        let retryRun = TaskRun(task: task)
+        retryRun.status = .failed
+        retryRun.startedAt = run.startedAt.addingTimeInterval(60)
+        retryRun.stopReason = "policy_violation"
+        context.insert(retryRun)
+        try context.save()
+
+        #expect(!PendingTaskReviewPolicy.isDismissed(task: task, latestRun: retryRun))
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: retryRun) == .policyBlocked)
+        #expect(PendingTaskReviewPolicy.reviewState(for: task, latestRun: retryRun) == PendingTaskReviewState(
+            isDismissed: false,
+            dismissalReason: .policyBlocked
+        ))
+    }
+
+    @Test("Pending task review policy maps legacy dismissal to original run only")
+    func pendingTaskReviewPolicyMapsLegacyDismissalToOriginalRunOnly() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Legacy policy block", goal: "List protected resource")
+        task.status = .pendingUser
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.startedAt = Date(timeIntervalSince1970: 1_000)
+        run.stopReason = "policy_violation"
+        context.insert(run)
+
+        let legacyDismissal = TaskEvent(
+            task: task,
+            type: "task.dismissed",
+            payload: "Task dismissed by user without marking it completed."
+        )
+        legacyDismissal.timestamp = run.startedAt.addingTimeInterval(30)
+        context.insert(legacyDismissal)
+        try context.save()
+
+        #expect(PendingTaskReviewPolicy.reviewState(for: task, latestRun: run) == PendingTaskReviewState(
+            isDismissed: true,
+            dismissalReason: nil
+        ))
+
+        let retryRun = TaskRun(task: task)
+        retryRun.status = .failed
+        retryRun.startedAt = run.startedAt.addingTimeInterval(60)
+        retryRun.stopReason = "policy_violation"
+        context.insert(retryRun)
+        try context.save()
+
+        #expect(PendingTaskReviewPolicy.reviewState(for: task, latestRun: retryRun) == PendingTaskReviewState(
+            isDismissed: false,
+            dismissalReason: .policyBlocked
+        ))
     }
 
     @Test("Pending task review policy dismisses completed artifact tasks missing files")

@@ -3265,11 +3265,15 @@ struct TaskMainView: View {
     }
 
     private var shouldShowTaskDecisionDock: Bool {
+        let reviewState = pendingTaskReviewState
         switch task.status {
         case .running:
             return onCancelTask != nil
         case .pendingUser:
-            return true
+            return hasOpenRuntimePermissionApprovalRequest ||
+                executableApprovedPlan != nil ||
+                reviewState.dismissalReason != nil ||
+                (!reviewState.isDismissed && onApproveTask != nil)
         case .queued:
             return executableApprovedPlan != nil || onRunTask != nil || canToggleTaskDoneFromDecisionDock
         case .failed, .budgetExceeded:
@@ -3287,8 +3291,12 @@ struct TaskMainView: View {
     }
 
     private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
-        guard !hasOpenRuntimePermissionApprovalRequest else { return nil }
-        return PendingTaskReviewPolicy.dismissalReason(
+        pendingTaskReviewState.dismissalReason
+    }
+
+    private var pendingTaskReviewState: PendingTaskReviewState {
+        guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
+        return PendingTaskReviewPolicy.reviewState(
             for: task,
             latestRun: latestRunModel
         )
@@ -3354,6 +3362,7 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var taskDecisionDock: some View {
+        let reviewState = pendingTaskReviewState
         if task.status == .running, let onCancel = onCancelTask {
             taskDecisionSurface(
                 icon: "stop.circle.fill",
@@ -3377,7 +3386,7 @@ struct TaskMainView: View {
             pendingReviewDecisionDock
         } else if let plan = executableApprovedPlan {
             planDecisionDock(plan)
-        } else if task.status == .pendingUser {
+        } else if task.status == .pendingUser, !reviewState.isDismissed || reviewState.dismissalReason != nil {
             pendingReviewDecisionDock
         } else if task.status == .failed || task.status == .budgetExceeded {
             failedDecisionDock
