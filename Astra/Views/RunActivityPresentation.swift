@@ -411,6 +411,37 @@ struct RunActivityPresentation: Hashable, Sendable {
         }
         return facts
     }
+
+    static let empty = RunActivityPresentation(
+        issues: [],
+        approvals: [],
+        progressMessages: [],
+        tools: [],
+        files: [],
+        policy: nil,
+        technicalOutputs: [],
+        stats: []
+    )
+
+    private init(
+        issues: [RunIssuePresentation],
+        approvals: [RuntimePermissionApprovalNoticePresentation],
+        progressMessages: [TaskRunProgressMessage],
+        tools: [ToolActivityPresentation],
+        files: [StoredFileChange],
+        policy: PolicySummaryPresentation?,
+        technicalOutputs: [TechnicalOutputPresentation],
+        stats: [RunFactPresentation]
+    ) {
+        self.issues = issues
+        self.approvals = approvals
+        self.progressMessages = progressMessages
+        self.tools = tools
+        self.files = files
+        self.policy = policy
+        self.technicalOutputs = technicalOutputs
+        self.stats = stats
+    }
 }
 
 enum PayloadFormatter {

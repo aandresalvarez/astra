@@ -495,6 +495,7 @@ struct TaskThreadSnapshot: Sendable {
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
     private let outputPresentationByRunID: [UUID: TaskRunOutputPresentation]
+    private let activityPresentationByRunID: [UUID: RunActivityPresentation]
 
     static let empty = TaskThreadSnapshot(
         goal: "",
@@ -648,9 +649,28 @@ struct TaskThreadSnapshot: Sendable {
         activityByRunID = activity
         protocolByRunID = protocolStatesByRunID
         latestAgentPlanItems = latestPlanItems
-        outputPresentationByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
+        let outputPresByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
             result[run.id] = TaskRunOutputPresentation(run: run, events: eventsByRunID[run.id] ?? [])
         }
+        outputPresentationByRunID = outputPresByRunID
+
+        var activityPresentations: [UUID: RunActivityPresentation] = [:]
+        for run in sortedRuns {
+            let act = activity[run.id] ?? .empty
+            let outputPres = outputPresByRunID[run.id] ?? .empty
+            
+            let displayNotices = run.hasVPNWarning ? act.notices.filter { $0.type != "error" } : act.notices
+            let actionableNotices = displayNotices.filter { TaskRunNoticePresentationRules.shouldShowInline($0, for: run) }
+            
+            activityPresentations[run.id] = RunActivityPresentation(
+                run: run,
+                activity: act,
+                notices: displayNotices,
+                suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
+                progressMessages: outputPres.progressMessages
+            )
+        }
+        activityPresentationByRunID = activityPresentations
 
         conversationItems = Self.makeConversationItems(
             goal: goal,
@@ -660,6 +680,14 @@ struct TaskThreadSnapshot: Sendable {
             activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
+    }
+
+    func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
+        activityPresentationByRunID[run.id] ?? .empty
+    }
+
+    func activityPresentation(for run: TaskRun) -> RunActivityPresentation {
+        activityPresentationByRunID[run.id] ?? .empty
     }
 
     func activity(for run: TaskRunSnapshot) -> TaskRunActivity {

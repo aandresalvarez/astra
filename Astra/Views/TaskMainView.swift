@@ -1131,9 +1131,7 @@ struct TaskMainView: View {
               run.status == .running else {
             return false
         }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
-        let presentation = RunActivityPresentation(run: run, activity: activity, notices: notices)
+        let presentation = currentThreadSnapshot.activityPresentation(for: run)
         return shouldShowRunActivityDisclosure(presentation)
     }
 
@@ -1619,13 +1617,7 @@ struct TaskMainView: View {
         let outputPresentation = currentThreadSnapshot.outputPresentation(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
-        let runActivityPresentation = RunActivityPresentation(
-            run: run,
-            activity: activity,
-            notices: displayNotices,
-            suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
-            progressMessages: outputPresentation.progressMessages
-        )
+        let runActivityPresentation = currentThreadSnapshot.activityPresentation(for: run)
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
