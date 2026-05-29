@@ -161,4 +161,51 @@ class GitService {
     func push(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["push"])
     }
+    
+    func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
+        var additions = 0
+        var deletions = 0
+        
+        do {
+            let unstagedOutput = try await runGit(at: repoPath, arguments: ["diff", "--numstat"])
+            let stagedOutput = try await runGit(at: repoPath, arguments: ["diff", "--cached", "--numstat"])
+            
+            let allLines = unstagedOutput.split(separator: "\n") + stagedOutput.split(separator: "\n")
+            for line in allLines {
+                // Split by spaces or tabs
+                let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+                    .flatMap { $0.split(separator: "\t", omittingEmptySubsequences: true) }
+                
+                guard parts.count >= 2 else { continue }
+                if let add = Int(parts[0]) {
+                    additions += add
+                }
+                if let del = Int(parts[1]) {
+                    deletions += del
+                }
+            }
+        } catch {
+            // Graceful fallback
+        }
+        return (additions, deletions)
+    }
+    
+    func getRemoteOriginURL(at repoPath: String) async -> String? {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["config", "--get", "remote.origin.url"])
+            let url = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if url.isEmpty { return nil }
+            
+            var webURL = url
+            if webURL.hasPrefix("git@github.com:") {
+                webURL = webURL.replacingOccurrences(of: "git@github.com:", with: "https://github.com/")
+            }
+            if webURL.hasSuffix(".git") {
+                webURL = String(webURL.dropLast(4))
+            }
+            return webURL
+        } catch {
+            return nil
+        }
+    }
 }

@@ -19,9 +19,16 @@ class WorkspaceGitViewModel: ObservableObject {
     @Published var commitMessage: String = ""
     @Published var stageAllBeforeCommit: Bool = false
     
+    @Published var additions: Int = 0
+    @Published var deletions: Int = 0
+    @Published var selectedEnvironment: String = "Local"
+    
     @Published var isSyncing: Bool = false
     @Published var errorMessage: String? = nil
     @Published var showNewBranchPopover = false
+    @Published var showBranchPickerPopover = false
+    @Published var showCommitPopover = false
+    @Published var showEnvironmentPopover = false
     @Published var newBranchName = ""
     
     private var workspace: Workspace?
@@ -66,14 +73,18 @@ class WorkspaceGitViewModel: ObservableObject {
         async let branch = GitService.shared.getCurrentBranch(at: repo.path)
         async let localBranches = GitService.shared.getLocalBranches(at: repo.path)
         async let files = GitService.shared.getStatusFiles(at: repo.path)
+        async let diffStats = GitService.shared.getDiffStats(at: repo.path)
         
         let fetchedBranch = await branch
         let fetchedBranches = await localBranches
         let fetchedFiles = await files
+        let fetchedStats = await diffStats
         
         self.currentBranch = fetchedBranch
         self.branches = fetchedBranches
         self.statusFiles = fetchedFiles
+        self.additions = fetchedStats.additions
+        self.deletions = fetchedStats.deletions
     }
     
     func checkout(branch: String) {
@@ -197,6 +208,25 @@ class WorkspaceGitViewModel: ObservableObject {
                 self.errorMessage = error.localizedDescription
             }
             isSyncing = false
+        }
+    }
+    
+    func createPullRequest() {
+        guard let repo = selectedRepository else { return }
+        Task {
+            if let baseURL = await GitService.shared.getRemoteOriginURL(at: repo.path) {
+                let branch = currentBranch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? currentBranch
+                let prURLString = "\(baseURL)/pull/new/\(branch)"
+                if let url = URL(string: prURLString) {
+                    DispatchQueue.main.async {
+                        #if os(macOS)
+                        NSWorkspace.shared.open(url)
+                        #endif
+                    }
+                }
+            } else {
+                self.errorMessage = "Could not detect remote origin URL to create pull request."
+            }
         }
     }
 }
