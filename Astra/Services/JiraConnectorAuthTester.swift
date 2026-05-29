@@ -2,11 +2,22 @@ import Foundation
 
 protocol ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse)
+}
+
+extension ConnectorHTTPTransport {
+    func data(for request: URLRequest, cancellationToken _: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
 }
 
 struct URLSessionConnectorHTTPTransport: ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await URLSession.shared.data(for: request)
+        try await data(for: request, cancellationToken: nil)
+    }
+
+    func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
+        try await LocalAgentCancellableDataLoader.data(for: request, cancellationToken: cancellationToken)
     }
 }
 

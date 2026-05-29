@@ -21,6 +21,7 @@ struct AgentRuntimeAdapterRegistryTests {
         #expect(runtime.displayName == "Future Provider")
         #expect(AgentRuntimeAdapterRegistry.defaultModels(for: runtime) == ["default"])
         #expect(AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: runtime) == false)
+        #expect(AgentRuntimeAdapterRegistry.executionCapabilities(for: runtime) == .textOnly)
     }
 
     @Test("Runtime IDs encode as strings and decode legacy keyed payloads")
@@ -50,6 +51,47 @@ struct AgentRuntimeAdapterRegistryTests {
             #expect(descriptor.defaultModels == AgentRuntimeAdapterRegistry.defaultModels(for: runtime))
             #expect(descriptor.defaultModel == AgentRuntimeAdapterRegistry.defaultModel(for: runtime))
             #expect(descriptor.supportsAstraRunProtocol == AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: runtime))
+            #expect(descriptor.executionCapabilities == AgentRuntimeAdapterRegistry.executionCapabilities(for: runtime))
+        }
+    }
+
+    @Test("Runtime descriptors distinguish CLI harnesses from local chat")
+    func runtimeDescriptorsDistinguishCLIHarnessesFromLocalChat() {
+        let local = AgentRuntimeAdapterRegistry.descriptor(for: .localMLX).executionCapabilities
+        #expect(local.supportsTextOnly)
+        #expect(local.supportsAstraBrokeredTools == false)
+        #expect(local.supportsProviderNativeTools == false)
+        #expect(local.supportsConnectors == false)
+        #expect(local.supportsBrowserRead == false)
+        #expect(local.supportsBrowserMutation == false)
+        #expect(local.supportsFileWrite == false)
+        #expect(local.supportsShell == false)
+        #expect(local.supportsNetwork == false)
+        #expect(local.canExecuteActions == false)
+
+        let localAgent = LocalMLXRuntime.localAgentExecutionCapabilities
+        #expect(localAgent.supportsTextOnly)
+        #expect(localAgent.supportsAstraBrokeredTools)
+        #expect(localAgent.supportsProviderNativeTools == false)
+        #expect(localAgent.supportsConnectors)
+        #expect(localAgent.supportsBrowserRead)
+        #expect(localAgent.supportsBrowserMutation)
+        #expect(localAgent.supportsFileWrite)
+        #expect(localAgent.supportsShell)
+        #expect(localAgent.supportsNetwork)
+        #expect(localAgent.canExecuteActions)
+
+        for runtime in [AgentRuntimeID.claudeCode, .copilotCLI, .antigravityCLI] {
+            let capabilities = AgentRuntimeAdapterRegistry.descriptor(for: runtime).executionCapabilities
+            #expect(capabilities.supportsTextOnly)
+            #expect(capabilities.supportsProviderNativeTools)
+            #expect(capabilities.supportsConnectors)
+            #expect(capabilities.supportsBrowserRead)
+            #expect(capabilities.supportsBrowserMutation)
+            #expect(capabilities.supportsFileWrite)
+            #expect(capabilities.supportsShell)
+            #expect(capabilities.supportsNetwork)
+            #expect(capabilities.canExecuteActions)
         }
     }
 }

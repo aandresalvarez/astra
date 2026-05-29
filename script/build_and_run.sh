@@ -4,8 +4,13 @@ set -euo pipefail
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="ASTRA"
-TOOL_PRODUCTS=("astra-browser" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
+TOOL_PRODUCTS=("astra-browser" "astra-local-model" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
+LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}"
+LOCAL_MODEL_SMOKE_MODEL_DIR="${ASTRA_LOCAL_MODEL_SMOKE_MODEL_DIR:-}"
+LOCAL_MODEL_SMOKE_MODEL="${ASTRA_LOCAL_MODEL_SMOKE_MODEL:-Qwen/Qwen3-4B-MLX-4bit}"
+LOCAL_MODEL_SMOKE_CONTEXT_TOKENS="${ASTRA_LOCAL_MODEL_SMOKE_CONTEXT_TOKENS:-8192}"
+LOCAL_MODEL_COLD_START_MAX_MS="${ASTRA_LOCAL_MODEL_COLD_START_MAX_MS:-0}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
@@ -91,6 +96,21 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARK
   exit 2
 fi
 
+case "$LOCAL_MODEL_BACKEND" in
+  scaffold|mlx)
+    ;;
+  *)
+    echo "Unknown ASTRA_LOCAL_MODEL_BACKEND '$LOCAL_MODEL_BACKEND'. Use scaffold or mlx." >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$ASTRA_CHANNEL" != "dev" && "$LOCAL_MODEL_BACKEND" == "scaffold" ]]; then
+  echo "Production and beta ASTRA bundles must include the native MLX local model helper." >&2
+  echo "Use ASTRA_LOCAL_MODEL_BACKEND=mlx. The scaffold helper is only allowed for development-channel builds." >&2
+  exit 2
+fi
+
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -119,17 +139,106 @@ if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
   SWIFT_BUILD_ARGS=(-c release "${SWIFT_BUILD_ARGS[@]}")
 fi
 
+NATIVE_LOCAL_MODEL_BINARY=""
+NATIVE_LOCAL_MODEL_BUILD_DIR=""
+
+build_native_local_model_metallib() {
+  local native_package="$1"
+  local mlx_metal_root="$native_package/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal"
+  local air_dir="$NATIVE_LOCAL_MODEL_BUILD_DIR/astra-local-model-metal-air"
+  local metal_tool
+  local metallib_tool
+  local -a metal_sources
+  local source_path
+  local output_name
+
+  if [[ ! -d "$mlx_metal_root" ]]; then
+    echo "Missing MLX generated Metal shader sources at $mlx_metal_root." >&2
+    exit 2
+  fi
+
+  metal_tool="$(xcrun -sdk macosx -find metal 2>/dev/null || true)"
+  metallib_tool="$(xcrun -sdk macosx -find metallib 2>/dev/null || true)"
+  if [[ -z "$metal_tool" || -z "$metallib_tool" ]] || ! "$metal_tool" -v >/dev/null 2>&1; then
+    echo "Missing Xcode Metal Toolchain required to package the native Local MLX helper." >&2
+    echo "Install it with: xcodebuild -downloadComponent MetalToolchain" >&2
+    exit 2
+  fi
+
+  metal_sources=()
+  while IFS= read -r source_path; do
+    metal_sources+=("$source_path")
+  done < <(find "$mlx_metal_root" -name "*.metal" -print | sort)
+  if [[ "${#metal_sources[@]}" -eq 0 ]]; then
+    echo "No MLX Metal shader sources found under $mlx_metal_root." >&2
+    exit 2
+  fi
+
+  rm -rf "$air_dir"
+  mkdir -p "$air_dir"
+  for source_path in "${metal_sources[@]}"; do
+    output_name="${source_path#"$mlx_metal_root"/}"
+    output_name="${output_name//\//_}"
+    output_name="${output_name%.metal}.air"
+    "$metal_tool" \
+      -x metal \
+      -Wall \
+      -Wextra \
+      -fno-fast-math \
+      -Wno-c++17-extensions \
+      -Wno-c++20-extensions \
+      -c "$source_path" \
+      -I"$mlx_metal_root" \
+      -o "$air_dir/$output_name"
+  done
+
+  "$metallib_tool" "$air_dir"/*.air -o "$NATIVE_LOCAL_MODEL_BUILD_DIR/default.metallib"
+  cp "$NATIVE_LOCAL_MODEL_BUILD_DIR/default.metallib" "$NATIVE_LOCAL_MODEL_BUILD_DIR/mlx.metallib"
+}
+
+build_native_local_model_helper() {
+  local native_package="$ROOT_DIR/Tools/AstraLocalModelNative"
+  local native_args=(--package-path "$native_package" --product "astra-local-model-native")
+  local native_build_dir
+
+  if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+    native_args=(-c release "${native_args[@]}")
+  fi
+
+  swift build "${native_args[@]}"
+  native_build_dir="$(swift build "${native_args[@]}" --show-bin-path)"
+  NATIVE_LOCAL_MODEL_BUILD_DIR="$native_build_dir"
+  NATIVE_LOCAL_MODEL_BINARY="$native_build_dir/astra-local-model-native"
+  build_native_local_model_metallib "$native_package"
+}
+
+tool_binary_path() {
+  local tool_product="$1"
+  if [[ "$tool_product" == "astra-local-model" && "$LOCAL_MODEL_BACKEND" == "mlx" ]]; then
+    printf '%s\n' "$NATIVE_LOCAL_MODEL_BINARY"
+  else
+    printf '%s\n' "$BUILD_DIR/$tool_product"
+  fi
+}
+
 swift build "${SWIFT_BUILD_ARGS[@]}"
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
+  if [[ "$tool_product" == "astra-local-model" && "$LOCAL_MODEL_BACKEND" == "mlx" ]]; then
+    continue
+  fi
   swift build "${SWIFT_BUILD_ARGS[@]}" --product "$tool_product"
 done
 BUILD_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
 
+if [[ "$LOCAL_MODEL_BACKEND" == "mlx" ]]; then
+  build_native_local_model_helper
+fi
+
 if [[ "$REQUIRE_ARM64" == "1" ]]; then
   verify_arm64_binary "$BUILD_BINARY"
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
-    verify_arm64_binary "$BUILD_DIR/$tool_product"
+    verify_arm64_binary "$(tool_binary_path "$tool_product")"
   done
 fi
 
@@ -144,10 +253,74 @@ fi
 
 BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
 mkdir -p "$BUNDLED_TOOLS_DIR"
+
+copy_native_local_model_resources() {
+  if [[ "$LOCAL_MODEL_BACKEND" != "mlx" || -z "$NATIVE_LOCAL_MODEL_BUILD_DIR" ]]; then
+    return
+  fi
+  while IFS= read -r resource_path; do
+    local resource_name
+    resource_name="$(basename "$resource_path")"
+    rm -rf "$BUNDLED_TOOLS_DIR/$resource_name"
+    /usr/bin/ditto "$resource_path" "$BUNDLED_TOOLS_DIR/$resource_name"
+  done < <(find "$NATIVE_LOCAL_MODEL_BUILD_DIR" -maxdepth 1 \( -name "*.bundle" -o -name "*.metallib" \) -print)
+}
+
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
-  cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"
+  if [[ "$tool_product" == "astra-local-model" && "$LOCAL_MODEL_BACKEND" == "mlx" ]]; then
+    cp "$NATIVE_LOCAL_MODEL_BINARY" "$BUNDLED_TOOLS_DIR/$tool_product"
+  else
+    cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"
+  fi
   chmod +x "$BUNDLED_TOOLS_DIR/$tool_product"
 done
+copy_native_local_model_resources
+
+verify_native_local_model_release_gate() {
+  if [[ "$LOCAL_MODEL_BACKEND" != "mlx" ]]; then
+    return
+  fi
+  local helper="$BUNDLED_TOOLS_DIR/astra-local-model"
+  local health
+  if [[ ! -f "$BUNDLED_TOOLS_DIR/default.metallib" || ! -f "$BUNDLED_TOOLS_DIR/mlx.metallib" ]]; then
+    echo "Bundled local model helper is missing MLX Metal libraries." >&2
+    exit 2
+  fi
+
+  health="$("$helper" --health)"
+  if [[ "$health" != *'"backend":"mlx"'* ]]; then
+    echo "Bundled local model helper did not report the MLX backend." >&2
+    echo "$health" >&2
+    exit 2
+  fi
+
+  if [[ -z "$LOCAL_MODEL_SMOKE_MODEL_DIR" ]]; then
+    return
+  fi
+
+  local smoke_output
+  local cold_start_ms
+  smoke_output="$("$helper" --smoke \
+    --model-dir "$LOCAL_MODEL_SMOKE_MODEL_DIR" \
+    --model "$LOCAL_MODEL_SMOKE_MODEL" \
+    --max-context-tokens "$LOCAL_MODEL_SMOKE_CONTEXT_TOKENS" \
+    --max-output-tokens 1)"
+  printf '%s\n' "$smoke_output" >"$APP_RESOURCES/local-model-cold-start.json"
+  cold_start_ms="$(printf '%s\n' "$smoke_output" | /usr/bin/sed -n 's/.*"durationMs":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | /usr/bin/head -n 1)"
+  if [[ "$LOCAL_MODEL_COLD_START_MAX_MS" =~ ^[0-9]+$ && "$LOCAL_MODEL_COLD_START_MAX_MS" -gt 0 ]]; then
+    if [[ -z "$cold_start_ms" ]]; then
+      echo "Native local model smoke check did not report durationMs." >&2
+      echo "$smoke_output" >&2
+      exit 2
+    fi
+    if [[ "$cold_start_ms" -gt "$LOCAL_MODEL_COLD_START_MAX_MS" ]]; then
+      echo "Native local model cold start exceeded gate: ${cold_start_ms}ms > ${LOCAL_MODEL_COLD_START_MAX_MS}ms." >&2
+      exit 2
+    fi
+  fi
+}
+
+verify_native_local_model_release_gate
 
 APP_ICON_SOURCE="$ROOT_DIR/Astra/Resources/AppIcon.icns"
 if [[ "$ASTRA_CHANNEL" == "dev" && -f "$ROOT_DIR/Astra/Resources/AppIconDev.icns" ]]; then

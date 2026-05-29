@@ -6,35 +6,74 @@ import Foundation
 /// not be scanned for protocol markers.
 public struct AgentRuntimeEventPipeline: Sendable {
     private let supportsAstraRunProtocol: Bool
+    private let stripsReasoningTags: Bool
     private var astraFilter = AstraRunProtocolTextFilter()
+    private var reasoningFilter = LocalModelReasoningFilter()
     private var invalidAstraEventCount = 0
 
-    public init(supportsAstraRunProtocol: Bool) {
+    public init(supportsAstraRunProtocol: Bool, stripsReasoningTags: Bool = false) {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
+        self.stripsReasoningTags = stripsReasoningTags
     }
 
     public mutating func process(_ event: ParsedEvent) -> [ParsedEvent] {
-        guard supportsAstraRunProtocol, case .text(let text) = event else {
-            return [event]
+        guard case .text(let text) = event else { return [event] }
+        guard let visibleText = visibleText(from: text) else { return [] }
+        guard supportsAstraRunProtocol else {
+            return [.text(text: visibleText)]
         }
-        return parsedEvents(from: astraFilter.process(text: text).outputs)
+        return parsedEvents(from: astraFilter.process(text: visibleText).outputs)
     }
 
     public mutating func process(_ event: AgentEvent) -> [AgentEvent] {
-        guard supportsAstraRunProtocol, case .text(let text) = event else {
-            return [event]
+        guard case .text(let text) = event else { return [event] }
+        guard let visibleText = visibleText(from: text) else { return [] }
+        guard supportsAstraRunProtocol else {
+            return [.text(text: visibleText)]
         }
-        return agentEvents(from: astraFilter.process(text: text).outputs)
+        return agentEvents(from: astraFilter.process(text: visibleText).outputs)
     }
 
     public mutating func flushParsedEvents() -> [ParsedEvent] {
-        guard supportsAstraRunProtocol else { return [] }
-        return parsedEvents(from: astraFilter.flush().outputs)
+        var events: [ParsedEvent] = []
+        if let visibleText = flushReasoningText() {
+            if supportsAstraRunProtocol {
+                events.append(contentsOf: parsedEvents(from: astraFilter.process(text: visibleText).outputs))
+            } else {
+                events.append(.text(text: visibleText))
+            }
+        }
+        if supportsAstraRunProtocol {
+            events.append(contentsOf: parsedEvents(from: astraFilter.flush().outputs))
+        }
+        return events
     }
 
     public mutating func flushAgentEvents() -> [AgentEvent] {
-        guard supportsAstraRunProtocol else { return [] }
-        return agentEvents(from: astraFilter.flush().outputs)
+        var events: [AgentEvent] = []
+        if let visibleText = flushReasoningText() {
+            if supportsAstraRunProtocol {
+                events.append(contentsOf: agentEvents(from: astraFilter.process(text: visibleText).outputs))
+            } else {
+                events.append(.text(text: visibleText))
+            }
+        }
+        if supportsAstraRunProtocol {
+            events.append(contentsOf: agentEvents(from: astraFilter.flush().outputs))
+        }
+        return events
+    }
+
+    private mutating func visibleText(from text: String) -> String? {
+        guard stripsReasoningTags else { return text }
+        let visible = reasoningFilter.process(text: text)
+        return visible.isEmpty ? nil : visible
+    }
+
+    private mutating func flushReasoningText() -> String? {
+        guard stripsReasoningTags else { return nil }
+        let visible = reasoningFilter.flush()
+        return visible.isEmpty ? nil : visible
     }
 
     private mutating func parsedEvents(from outputs: [AstraRunProtocolTextFilterOutput]) -> [ParsedEvent] {

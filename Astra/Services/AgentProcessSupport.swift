@@ -5,7 +5,14 @@ import ASTRACore
 protocol AgentRuntimeProcessControl: AnyObject {
     var isRunning: Bool { get }
     var terminationStatus: Int32 { get }
+    func requestCancellation(reason: String)
     func terminate()
+}
+
+extension AgentRuntimeProcessControl {
+    func requestCancellation(reason _: String) {
+        terminate()
+    }
 }
 
 extension Process: AgentRuntimeProcessControl {}
@@ -21,6 +28,10 @@ final class AgentRuntimeProcessControlBox: @unchecked Sendable {
 
     func terminate() {
         process.terminate()
+    }
+
+    func requestCancellation(reason: String) {
+        process.requestCancellation(reason: reason)
     }
 }
 
@@ -40,19 +51,27 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private let arguments: [String]
     private let currentDirectory: String
     private let environment: [String: String]
+    private let dedicatedEventFileDescriptor: Int32?
+    private let dedicatedControlFileDescriptor: Int32?
     private let lock = NSLock()
 
     private var processID: pid_t = 0
     private var processGroupID: pid_t = 0
     private var running = false
     private var status: Int32 = 0
+    private var controlWriteClosed = false
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    private let eventPipe: Pipe?
+    private let controlPipe: Pipe?
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
     var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
+    var eventFileHandle: FileHandle { eventPipe?.fileHandleForReading ?? stdoutFileHandle }
+    var usesDedicatedEventStream: Bool { eventPipe != nil }
+    var usesDedicatedControlStream: Bool { controlPipe != nil }
 
     var isRunning: Bool {
         lock.lock()
@@ -70,12 +89,18 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         executablePath: String,
         arguments: [String],
         currentDirectory: String,
-        environment: [String: String]
+        environment: [String: String],
+        dedicatedEventFileDescriptor: Int32? = nil,
+        dedicatedControlFileDescriptor: Int32? = nil
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.currentDirectory = currentDirectory
         self.environment = environment
+        self.dedicatedEventFileDescriptor = dedicatedEventFileDescriptor
+        self.dedicatedControlFileDescriptor = dedicatedControlFileDescriptor
+        self.eventPipe = dedicatedEventFileDescriptor.map { _ in Pipe() }
+        self.controlPipe = dedicatedControlFileDescriptor.map { _ in Pipe() }
     }
 
     func run() throws {
@@ -97,10 +122,48 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_adddup2(stdout)")
         try check(posix_spawn_file_actions_adddup2(&actions, stderrPipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO),
                   operation: "posix_spawn_file_actions_adddup2(stderr)")
-        try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe.fileHandleForReading.fileDescriptor),
-                  operation: "posix_spawn_file_actions_addclose(stdout_read)")
-        try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
-                  operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        if let eventPipe, let dedicatedEventFileDescriptor {
+            try check(posix_spawn_file_actions_adddup2(
+                &actions,
+                eventPipe.fileHandleForWriting.fileDescriptor,
+                dedicatedEventFileDescriptor
+            ), operation: "posix_spawn_file_actions_adddup2(event)")
+            try addClose(
+                eventPipe.fileHandleForReading.fileDescriptor,
+                to: &actions,
+                operation: "posix_spawn_file_actions_addclose(event_read)"
+            )
+            if eventPipe.fileHandleForWriting.fileDescriptor != dedicatedEventFileDescriptor {
+                try check(posix_spawn_file_actions_addclose(&actions, eventPipe.fileHandleForWriting.fileDescriptor),
+                          operation: "posix_spawn_file_actions_addclose(event_write)")
+            }
+        }
+        if let controlPipe, let dedicatedControlFileDescriptor {
+            try check(posix_spawn_file_actions_adddup2(
+                &actions,
+                controlPipe.fileHandleForReading.fileDescriptor,
+                dedicatedControlFileDescriptor
+            ), operation: "posix_spawn_file_actions_adddup2(control)")
+            try addClose(
+                controlPipe.fileHandleForWriting.fileDescriptor,
+                to: &actions,
+                operation: "posix_spawn_file_actions_addclose(control_write)"
+            )
+            if controlPipe.fileHandleForReading.fileDescriptor != dedicatedControlFileDescriptor {
+                try check(posix_spawn_file_actions_addclose(&actions, controlPipe.fileHandleForReading.fileDescriptor),
+                          operation: "posix_spawn_file_actions_addclose(control_read)")
+            }
+        }
+        try addClose(
+            stdoutPipe.fileHandleForReading.fileDescriptor,
+            to: &actions,
+            operation: "posix_spawn_file_actions_addclose(stdout_read)"
+        )
+        try addClose(
+            stderrPipe.fileHandleForReading.fileDescriptor,
+            to: &actions,
+            operation: "posix_spawn_file_actions_addclose(stderr_read)"
+        )
         try addWorkingDirectory(to: &actions)
 
         let flags = Int16(POSIX_SPAWN_SETPGROUP)
@@ -132,6 +195,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
+        eventPipe?.fileHandleForWriting.closeFile()
+        controlPipe?.fileHandleForReading.closeFile()
+        disableSIGPIPE(on: controlPipe?.fileHandleForWriting.fileDescriptor)
 
         lock.lock()
         processID = childPID
@@ -141,6 +207,36 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.reapProcess(pid: childPID)
+        }
+    }
+
+    func requestCancellation(reason: String) {
+        let ids = currentIDs()
+        guard ids.isRunning else { return }
+        guard let controlPipe else {
+            terminate()
+            return
+        }
+
+        let wroteControlMessage: Bool
+        do {
+            let message = LocalModelControlMessage.cancel(reason: reason)
+            let data = try JSONEncoder().encode(message)
+            wroteControlMessage = writeControlData(data + Data([0x0a]), to: controlPipe.fileHandleForWriting)
+        } catch {
+            wroteControlMessage = false
+        }
+
+        if !wroteControlMessage {
+            terminate()
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(2)) { [weak self] in
+            guard let self else { return }
+            let latest = self.currentIDs()
+            guard latest.isRunning else { return }
+            self.terminate()
         }
     }
 
@@ -166,6 +262,31 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
     }
 
+    private func writeControlData(_ data: Data, to handle: FileHandle) -> Bool {
+        lock.lock()
+        if controlWriteClosed {
+            lock.unlock()
+            return false
+        }
+        lock.unlock()
+
+        let didWrite = writeAll(data, to: handle.fileDescriptor)
+        closeControlWriteIfNeeded()
+        return didWrite
+    }
+
+    private func closeControlWriteIfNeeded() {
+        guard let controlPipe else { return }
+        lock.lock()
+        guard !controlWriteClosed else {
+            lock.unlock()
+            return
+        }
+        controlWriteClosed = true
+        lock.unlock()
+        controlPipe.fileHandleForWriting.closeFile()
+    }
+
     private func addWorkingDirectory(to actions: inout posix_spawn_file_actions_t?) throws {
         let result = currentDirectory.withCString { path in
             if #available(macOS 26.0, *) {
@@ -175,6 +296,43 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             }
         }
         try check(result, operation: "posix_spawn_file_actions_addchdir")
+    }
+
+    private func addClose(
+        _ fileDescriptor: Int32,
+        to actions: inout posix_spawn_file_actions_t?,
+        operation: String
+    ) throws {
+        if fileDescriptor == dedicatedEventFileDescriptor || fileDescriptor == dedicatedControlFileDescriptor {
+            return
+        }
+        try check(posix_spawn_file_actions_addclose(&actions, fileDescriptor), operation: operation)
+    }
+
+    private func disableSIGPIPE(on fileDescriptor: Int32?) {
+        guard let fileDescriptor else { return }
+        _ = fcntl(fileDescriptor, F_SETNOSIGPIPE, 1)
+    }
+
+    private func writeAll(_ data: Data, to fileDescriptor: Int32) -> Bool {
+        guard !data.isEmpty else { return true }
+        disableSIGPIPE(on: fileDescriptor)
+        return data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return true }
+            var offset = 0
+            while offset < data.count {
+                let written = Darwin.write(fileDescriptor, baseAddress.advanced(by: offset), data.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written == -1 && errno == EINTR {
+                    continue
+                }
+                return false
+            }
+            return true
+        }
     }
 
     private func reapProcess(pid: pid_t) {
@@ -192,6 +350,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
 
         cleanupResidualProcessGroup()
+        closeControlWriteIfNeeded()
 
         lock.lock()
         status = exitStatus
@@ -568,6 +727,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         case .fileChange: "file_change"
         case .permissionRequested: "permission_requested"
         case .stats: "stats"
+        case .diagnostic(let kind, _): "diagnostic:\(kind)"
         case .astraProtocol: "astra_protocol"
         case .completed: "completed"
         case .failed: "failed"
@@ -715,6 +875,8 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             break
         case .stats:
             statsEventCount += 1
+        case .diagnostic:
+            break
         case .astraProtocol:
             break
         case .completed:
@@ -736,8 +898,11 @@ final class AgentRuntimeEventPipelineBox: @unchecked Sendable {
     private let lock = NSLock()
     private var pipeline: AgentRuntimeEventPipeline
 
-    init(supportsAstraRunProtocol: Bool) {
-        pipeline = AgentRuntimeEventPipeline(supportsAstraRunProtocol: supportsAstraRunProtocol)
+    init(supportsAstraRunProtocol: Bool, stripsReasoningTags: Bool = false) {
+        pipeline = AgentRuntimeEventPipeline(
+            supportsAstraRunProtocol: supportsAstraRunProtocol,
+            stripsReasoningTags: stripsReasoningTags
+        )
     }
 
     func process(_ event: ParsedEvent) -> [ParsedEvent] {

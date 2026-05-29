@@ -53,7 +53,7 @@ enum AgentEventCompactor {
         }
 
         switch event.type {
-        case "user.message", "schedule.result", "system.info", "recap.result", "budget.warning":
+        case "user.message", "schedule.result", "system.info", "recap.result", "budget.warning", "local_agent.watchdog", "local_agent.metrics":
             return true
         default:
             return false

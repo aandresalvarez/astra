@@ -253,7 +253,7 @@ enum TaskContextStateManager {
             return detail.isEmpty ? "Blocked step: \(step.title)" : "Blocked step: \(step.title) - \(detail)"
         } ?? []
         let eventBlockers = task.events
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
+            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded", "local_agent.watchdog"].contains($0.type) }
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .map { boundedInline($0.payload, maxCharacters: 220) }
@@ -317,7 +317,7 @@ enum TaskContextStateManager {
     ) -> TaskContextState.Turn {
         let runBlockers = task.events
             .filter { $0.run?.id == run.id }
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
+            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded", "local_agent.watchdog"].contains($0.type) }
             .map { boundedInline($0.payload, maxCharacters: 220) }
         return TaskContextState.Turn(
             turn: number,

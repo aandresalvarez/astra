@@ -82,86 +82,96 @@ public struct ProcessBinaryRunner: BinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
-        await withCheckedContinuation { continuation in
-            // Guard against a continuation being resumed twice if both the
-            // process-termination callback and the timeout fire close
-            // together. We keep the first result and drop the rest.
-            let state = ContinuationState(continuation: continuation)
+        let cancellation = ProcessCancellationBox()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                // Guard against a continuation being resumed twice if both the
+                // process-termination callback and the timeout fire close
+                // together. We keep the first result and drop the rest.
+                let state = ContinuationState(continuation: continuation)
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = args
-            if let env = environment {
-                process.environment = env
-            }
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            let stdoutCollector = PipeCollector()
-            let stderrCollector = PipeCollector()
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty { return }
-                stdoutCollector.append(data)
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty { return }
-                stderrCollector.append(data)
-            }
-
-            process.terminationHandler = { proc in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                // Drain whatever's left after the process exits.
-                let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                if !tailOut.isEmpty { stdoutCollector.append(tailOut) }
-                let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                if !tailErr.isEmpty { stderrCollector.append(tailErr) }
-
-                state.finish(
-                    outcome: .exited(code: proc.terminationStatus),
-                    stdout: stdoutCollector.string,
-                    stderr: stderrCollector.string
-                )
-            }
-
-            do {
-                try process.run()
-            } catch {
-                state.finish(
-                    outcome: .launchFailed(error.localizedDescription),
-                    stdout: "",
-                    stderr: ""
-                )
-                return
-            }
-
-            // Timeout enforcement. DispatchSourceTimer would work but we're
-            // already inside a structured continuation — a detached Task is
-            // simpler and cancellable.
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                guard process.isRunning else { return }
-                // Polite first, then forceful. terminate() sends SIGTERM;
-                // if the process hasn't exited after 500ms we SIGKILL.
-                process.terminate()
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: path)
+                process.arguments = args
+                if let env = environment {
+                    process.environment = env
                 }
-                // Stamp the outcome as a timeout even though the termination
-                // handler will still fire. First one wins (see state.finish).
-                state.finish(
-                    outcome: .timedOut,
-                    stdout: stdoutCollector.string,
-                    stderr: stderrCollector.string
-                )
+
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+
+                let stdoutCollector = PipeCollector()
+                let stderrCollector = PipeCollector()
+                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty { return }
+                    stdoutCollector.append(data)
+                }
+                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty { return }
+                    stderrCollector.append(data)
+                }
+
+                process.terminationHandler = { proc in
+                    cancellation.clear(process)
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    // Drain whatever's left after the process exits.
+                    let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                    if !tailOut.isEmpty { stdoutCollector.append(tailOut) }
+                    let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    if !tailErr.isEmpty { stderrCollector.append(tailErr) }
+
+                    state.finish(
+                        outcome: .exited(code: proc.terminationStatus),
+                        stdout: stdoutCollector.string,
+                        stderr: stderrCollector.string
+                    )
+                }
+
+                do {
+                    try process.run()
+                    cancellation.set(process)
+                    if Task.isCancelled {
+                        cancellation.terminate()
+                    }
+                } catch {
+                    state.finish(
+                        outcome: .launchFailed(error.localizedDescription),
+                        stdout: "",
+                        stderr: ""
+                    )
+                    return
+                }
+
+                // Timeout enforcement. DispatchSourceTimer would work but we're
+                // already inside a structured continuation — a detached Task is
+                // simpler and cancellable.
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    guard process.isRunning else { return }
+                    // Polite first, then forceful. terminate() sends SIGTERM;
+                    // if the process hasn't exited after 500ms we SIGKILL.
+                    process.terminate()
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if process.isRunning {
+                        kill(process.processIdentifier, SIGKILL)
+                    }
+                    // Stamp the outcome as a timeout even though the termination
+                    // handler will still fire. First one wins (see state.finish).
+                    state.finish(
+                        outcome: .timedOut,
+                        stdout: stdoutCollector.string,
+                        stderr: stderrCollector.string
+                    )
+                }
             }
-        }
+        }, onCancel: {
+            cancellation.terminate()
+        })
     }
 }
 
@@ -184,6 +194,39 @@ private final class PipeCollector: @unchecked Sendable {
         let snapshot = buffer
         lock.unlock()
         return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+}
+
+private final class ProcessCancellationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+
+    func set(_ process: Process) {
+        lock.lock()
+        self.process = process
+        lock.unlock()
+    }
+
+    func clear(_ process: Process) {
+        lock.lock()
+        if self.process === process {
+            self.process = nil
+        }
+        lock.unlock()
+    }
+
+    func terminate() {
+        lock.lock()
+        let process = process
+        lock.unlock()
+        guard let process, process.isRunning else { return }
+        process.terminate()
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
     }
 }
 

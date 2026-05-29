@@ -86,6 +86,21 @@ struct AntigravityCLIRuntimeTests {
             tool: "WorkspaceAccess",
             reason: "Allow access to these paths? (y/n):"
         )])
+        let writePromptEvents = AntigravityCLIRuntime.parsePlainTextAgentEvents(
+            line: "Permission required for tool Write. approve?"
+        )
+        #expect(writePromptEvents == [.permissionRequested(
+            tool: "Write",
+            reason: "Permission required for tool Write. approve?"
+        )])
+
+        let shellPromptEvents = AntigravityCLIRuntime.parsePlainTextAgentEvents(
+            line: "This command requires permission: shell(rm -rf build). approve?"
+        )
+        #expect(shellPromptEvents == [.permissionRequested(
+            tool: "shell(rm -rf build)",
+            reason: "This command requires permission: shell(rm -rf build). approve?"
+        )])
         #expect(AntigravityCLIRuntime.blockingPlainTextMessage(
             line: "Allow access to these paths? (y/n):"
         ) != nil)

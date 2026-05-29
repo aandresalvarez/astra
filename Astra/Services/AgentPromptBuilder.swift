@@ -14,6 +14,8 @@ enum AgentPromptBuilder {
     static func buildPrompt(for task: AgentTask) -> String {
         var parts: [String] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        let runtimeCapabilities = executionCapabilities(for: task)
+        let canUseActions = runtimeCapabilities.canExecuteActions
 
         parts.append(currentTaskBlock(for: task))
         appendThreadIntentContext(for: task, to: &parts)
@@ -42,7 +44,7 @@ enum AgentPromptBuilder {
                 var summaryBlock = "Recent tasks in this workspace (for context):"
                 for t in recentTasks {
                     let status = t.status.rawValue
-                    let output = t.runs.last?.output ?? ""
+                    let output = LocalModelReasoningFilter.visibleText(from: t.runs.last?.output ?? "")
                     let summary = output.isEmpty ? "(no output)" : String(output.prefix(200))
                     summaryBlock += "\n- [\(status)] \(t.title): \(summary)"
                 }
@@ -50,20 +52,26 @@ enum AgentPromptBuilder {
             }
         }
 
-        appendSSHContext(for: task, to: &parts)
-        appendWorkspacePaths(for: task, to: &parts)
-        appendTaskOutputFolder(for: task, to: &parts)
+        if canUseActions {
+            appendSSHContext(for: task, to: &parts)
+            appendWorkspacePaths(for: task, to: &parts)
+        }
+        appendTaskOutputFolder(for: task, allowsArtifacts: canUseActions, to: &parts)
 
         parts.append("Goal: \(task.goal)")
 
         appendInputs(for: task, to: &parts)
         appendConstraints(for: task, to: &parts)
-        appendSkillInstructions(from: capabilityScope, to: &parts)
-        appendConnectorContext(from: capabilityScope, to: &parts)
-        appendToolContext(from: capabilityScope, to: &parts)
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
-        appendDocumentReaderContext(to: &parts)
-        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
+        if canUseActions {
+            appendSkillInstructions(from: capabilityScope, to: &parts)
+            appendConnectorContext(from: capabilityScope, to: &parts)
+            appendToolContext(from: capabilityScope, to: &parts)
+            appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
+            appendDocumentReaderContext(to: &parts)
+        } else {
+            appendTextOnlyRuntimeContext(from: capabilityScope, to: &parts)
+        }
+        if canUseActions, AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
             appendAstraRunProtocolInstructions(to: &parts)
         }
 
@@ -91,6 +99,10 @@ enum AgentPromptBuilder {
 
     private static func currentTaskReminder(for task: AgentTask) -> String {
         "Current Task Reminder: complete this task now: \(task.goal)"
+    }
+
+    private static func executionCapabilities(for task: AgentTask) -> AgentRuntimeExecutionCapabilities {
+        AgentRuntimeAdapterRegistry.executionCapabilities(for: task.resolvedRuntimeID)
     }
 
     static func buildApprovedPlanExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload) -> String {
@@ -153,9 +165,26 @@ enum AgentPromptBuilder {
         }
     }
 
-    private static func appendTaskOutputFolder(for task: AgentTask, to parts: inout [String]) {
+    private static func appendTaskOutputFolder(
+        for task: AgentTask,
+        allowsArtifacts: Bool = true,
+        to parts: inout [String]
+    ) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
+            if !allowsArtifacts {
+                let pathLine: String
+                if let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir) {
+                    pathLine = "Task Output Folder: \(relativePath)\nAbsolute path: \(taskDir)"
+                } else {
+                    pathLine = "Task Output Folder: \(taskDir)"
+                }
+                parts.append("""
+                \(pathLine)
+                ASTRA saves this chat response in the task history automatically. This runtime cannot create, read, or modify files in the task folder during this run.
+                """)
+                return
+            }
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
             if let relativePath {
                 parts.append("""
@@ -174,6 +203,31 @@ enum AgentPromptBuilder {
                 """)
             }
         }
+    }
+
+    private static func appendTextOnlyRuntimeContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+        var unavailable: [String] = []
+        if !capabilityScope.connectors.isEmpty {
+            let names = capabilityScope.connectors.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")
+            unavailable.append(names.isEmpty ? "connectors" : "connectors: \(names)")
+        }
+        if !capabilityScope.localTools.isEmpty {
+            let names = capabilityScope.localTools.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")
+            unavailable.append(names.isEmpty ? "local tools" : "local tools: \(names)")
+        }
+        if !capabilityScope.enabledBrowserAdapters.isEmpty {
+            unavailable.append("browser actions")
+        }
+
+        var block = """
+        Local Chat Mode:
+        This local model can answer only from text already included in this prompt. It cannot execute shell commands, call connectors, use browser sessions, read or write workspace files, install packages, or create artifacts. If the user asks for external data or an action, say Local Agent/tool execution is not enabled yet and ask them to switch to Claude Code, GitHub Copilot CLI, Google Antigravity CLI, or a future Local Agent mode. Do not claim that you ran a connector, opened a page, read a file, wrote a file, or will proceed to do so.
+        """
+
+        if !unavailable.isEmpty {
+            block += "\nUnavailable in this Local Chat run: \(unavailable.joined(separator: "; "))."
+        }
+        parts.append(block)
     }
 
     private static func relativeTaskFolderPath(for task: AgentTask, taskDir: String) -> String? {
@@ -536,6 +590,8 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPrompt(message: String, task: AgentTask) -> String {
         var parts: [String] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
+        let runtimeCapabilities = executionCapabilities(for: task)
+        let canUseActions = runtimeCapabilities.canExecuteActions
 
         parts.append("You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.")
         parts.append("Goal: \(task.goal)")
@@ -559,13 +615,15 @@ enum AgentPromptBuilder {
         let sortedRuns = followUpContextRuns(for: task)
         if !includedExactSessionTranscript, !sortedRuns.isEmpty {
             var answersBlock = "Previous responses (your final answers from each turn):"
-            for (i, run) in sortedRuns.enumerated() where !run.output.isEmpty {
+            for (i, run) in sortedRuns.enumerated() {
+                let visibleOutput = LocalModelReasoningFilter.visibleText(from: run.output)
+                guard !visibleOutput.isEmpty else { continue }
                 let turnLabel = "Turn \(i + 1)"
                 let recentIndex = sortedRuns.count - i
                 let maxLen = recentIndex <= fallbackRecentRunResponseLimit
                     ? fallbackRecentRunResponseMaxCharacters
                     : fallbackOlderRunResponseMaxCharacters
-                let snippet = boundedText(run.output, maxCharacters: maxLen, keeping: .suffix)
+                let snippet = boundedText(visibleOutput, maxCharacters: maxLen, keeping: .suffix)
                 answersBlock += "\n\n--- \(turnLabel) ---\n\(snippet)"
             }
             parts.append(answersBlock)
@@ -582,14 +640,14 @@ enum AgentPromptBuilder {
             parts.append("Files modified in this task:\n\(changeList)")
         }
 
-        if !folder.isEmpty {
+        if canUseActions, !folder.isEmpty {
             let taskFiles = listTaskFolderFiles(folder)
             if !taskFiles.isEmpty {
                 parts.append("Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.")
             }
         }
 
-        appendTaskOutputFolder(for: task, to: &parts)
+        appendTaskOutputFolder(for: task, allowsArtifacts: canUseActions, to: &parts)
 
         let contextLine = buildFollowUpMessage(message: "", task: task, capabilityScope: capabilityScope)
         if contextLine != "",
@@ -597,9 +655,12 @@ enum AgentPromptBuilder {
             parts.append(String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]))
         }
 
-        appendConnectorContext(from: capabilityScope, to: &parts)
-
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
+        if canUseActions {
+            appendConnectorContext(from: capabilityScope, to: &parts)
+            appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
+        } else {
+            appendTextOnlyRuntimeContext(from: capabilityScope, to: &parts)
+        }
 
         if let memories = task.workspace?.memories, !memories.isEmpty {
             let memoriesBlock = """
@@ -610,7 +671,7 @@ enum AgentPromptBuilder {
             parts.append(memoriesBlock)
         }
 
-        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
+        if canUseActions, AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
             appendAstraRunProtocolInstructions(to: &parts)
         }
 
@@ -658,11 +719,12 @@ enum AgentPromptBuilder {
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
+            let visibleText = LocalModelReasoningFilter.visibleText(from: text)
             let recentIndex = turnFiles.count - offset
             let maxCharacters = recentIndex <= recentSessionFullOutputFileLimit
                 ? recentSessionFullOutputMaxCharacters
                 : olderSessionOutputMaxCharacters
-            let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
+            let excerpt = boundedText(visibleText, maxCharacters: maxCharacters, keeping: .prefix)
             return "--- \(url.lastPathComponent) ---\n\(excerpt)"
         }
 
@@ -717,16 +779,19 @@ enum AgentPromptBuilder {
 
     private static func buildFollowUpMessage(message: String, task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> String {
         var contextParts: [String] = []
+        let canUseActions = executionCapabilities(for: task).canExecuteActions
 
         if let ws = task.workspace {
-            let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
-            if let conn = connections.first, !conn.remotePath.isEmpty {
-                contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
-            }
+            if canUseActions {
+                let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
+                if let conn = connections.first, !conn.remotePath.isEmpty {
+                    contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
+                }
 
-            if !ws.additionalPaths.isEmpty {
-                let paths = ws.additionalPaths.map { "\((($0 as NSString).lastPathComponent)): \($0)" }.joined(separator: ", ")
-                contextParts.append("Additional workspace folders: \(paths)")
+                if !ws.additionalPaths.isEmpty {
+                    let paths = ws.additionalPaths.map { "\((($0 as NSString).lastPathComponent)): \($0)" }.joined(separator: ", ")
+                    contextParts.append("Additional workspace folders: \(paths)")
+                }
             }
 
             if !ws.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -734,12 +799,12 @@ enum AgentPromptBuilder {
             }
         }
 
-        let behaviorBlock = capabilityScope.resolver.resolvedBehaviorInstructions
-        if !behaviorBlock.isEmpty {
+        let behaviorBlock = canUseActions ? capabilityScope.resolver.resolvedBehaviorInstructions : ""
+        if canUseActions, !behaviorBlock.isEmpty {
             contextParts.append("Skills: \(String(behaviorBlock.prefix(500)))")
         }
 
-        if let lastRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first {
+        if canUseActions, let lastRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first {
             let recentPaths = lastRun.fileChanges.suffix(5).map { $0.path }
             if !recentPaths.isEmpty {
                 let dirs = Set(recentPaths.compactMap { path -> String? in
@@ -754,7 +819,7 @@ enum AgentPromptBuilder {
         }
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
-        if !folder.isEmpty {
+        if canUseActions, !folder.isEmpty {
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
             if FileManager.default.fileExists(atPath: historyPath) {
                 contextParts.append("Session history: \(historyPath)")
@@ -762,7 +827,7 @@ enum AgentPromptBuilder {
         }
 
         let readfilePath = NSHomeDirectory() + "/.astra/tools/readfile"
-        if FileManager.default.isExecutableFile(atPath: readfilePath) {
+        if canUseActions, FileManager.default.isExecutableFile(atPath: readfilePath) {
             contextParts.append("Document reader: `readfile <path>` reads .docx/.pdf/.xlsx/.pptx and more")
         }
 

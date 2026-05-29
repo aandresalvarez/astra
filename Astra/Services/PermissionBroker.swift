@@ -167,7 +167,10 @@ enum PermissionBroker {
 
     private static func rawApprovalGrants(for request: PermissionRequest) -> [PermissionGrant] {
         switch request {
-        case .tool(let name, _):
+        case .tool(let name, let context):
+            if isLocalBrowserApprovalTool(normalizedToolName(name)) {
+                return browserApprovalGrants(action: name, context: context)
+            }
             return safeProviderToolGrant(name).map { [$0] } ?? []
         case .shell(let command, _):
             return shellApprovalGrants(command: command)
@@ -181,8 +184,17 @@ enum PermissionBroker {
                 grants.append(providerGrant)
             }
             return grants
-        case .network(_, let toolName):
-            return toolName.flatMap(safeProviderToolGrant).map { [$0] } ?? []
+        case .network(let url, let toolName):
+            var grants: [PermissionGrant] = []
+            if let pattern = networkApprovalPattern(for: url) {
+                grants.append(.networkPattern(pattern: pattern))
+            }
+            if let providerGrant = toolName.flatMap(safeProviderToolGrant) {
+                grants.append(providerGrant)
+            } else if let providerGrant = safeProviderToolGrant("WebFetch") {
+                grants.append(providerGrant)
+            }
+            return grants
         case .credential:
             return []
         case .providerNativePrompt(let toolName, let context):
@@ -314,6 +326,20 @@ enum PermissionBroker {
         return .providerTool(name: canonical)
     }
 
+    private static func networkApprovalPattern(for rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              components.host?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              components.user == nil,
+              components.password == nil else {
+            return nil
+        }
+        components.fragment = nil
+        return components.url?.absoluteString
+    }
+
     private static func shellApprovalGrants(command: String?) -> [PermissionGrant] {
         guard let command else { return [] }
         let segments = actionableShellSegments(command).filter { !isBenignShellSetupSegment($0) }
@@ -390,6 +416,8 @@ enum PermissionBroker {
             return nonEmpty(path) != nil && nonEmpty(access) != nil
         case .networkPattern(let pattern):
             return nonEmpty(pattern) != nil
+        case .browserAction(let action, let target):
+            return isSafeBrowserActionGrant(action: action, target: target)
         }
     }
 
@@ -397,9 +425,47 @@ enum PermissionBroker {
         switch grant {
         case .shellCommand:
             return ShellCommandRiskClassifier.allowsTaskScopedReuse(grant)
+        case .browserAction:
+            return false
         default:
             return true
         }
+    }
+
+    private static func browserApprovalGrants(action: String, context: String?) -> [PermissionGrant] {
+        let normalizedAction = normalizedToolName(action)
+        guard isLocalBrowserApprovalTool(normalizedAction),
+              let target = nonEmpty(context),
+              isSafeBrowserActionGrant(action: normalizedAction, target: target) else {
+            return []
+        }
+        return [.browserAction(action: normalizedAction, target: target)]
+    }
+
+    private static func isSafeBrowserActionGrant(action: String, target: String) -> Bool {
+        let action = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isLocalBrowserApprovalTool(action),
+              !target.isEmpty,
+              target.count <= 500,
+              action.rangeOfCharacter(from: grantMetacharacters) == nil,
+              target.rangeOfCharacter(from: browserGrantRejectedCharacters) == nil else {
+            return false
+        }
+        return true
+    }
+
+    private static func isLocalBrowserApprovalTool(_ action: String) -> Bool {
+        switch action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "browser.click", "browser.type":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static var browserGrantRejectedCharacters: CharacterSet {
+        CharacterSet(charactersIn: "\n\r")
     }
 
     private static func isSafeToolGrantName(_ name: String) -> Bool {

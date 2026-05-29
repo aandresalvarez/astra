@@ -8,6 +8,7 @@ final class AgentRuntimeWorker {
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner = AgentRuntimeProcessRunner()
+    private var localAgentOrchestrator: LocalAgentOrchestrator?
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
@@ -243,6 +244,7 @@ final class AgentRuntimeWorker {
         message: String,
         run: TaskRun?
     ) {
+        Self.removePrematurePlanCompletionEvents(task: task, run: run, modelContext: modelContext)
         let notice = TaskEvent(
             task: task,
             type: "system.info",
@@ -255,6 +257,24 @@ final class AgentRuntimeWorker {
         task.updatedAt = Date()
         task.markUnreadForCurrentStatus(at: task.updatedAt)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    @MainActor
+    private static func removePrematurePlanCompletionEvents(
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) {
+        let events = task.events.filter { event in
+            event.type == "task.completed" && (run == nil || event.run === run)
+        }
+        for event in events {
+            modelContext.delete(event)
+        }
+        if !events.isEmpty {
+            task.completedAt = nil
+            task.updatedAt = Date()
+        }
     }
 
     /// Continue an existing session with a follow-up message (HITL flow).
@@ -351,6 +371,29 @@ final class AgentRuntimeWorker {
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
 
+        let localAgentEnabled = localAgentModeEnabled(for: selectedRuntime)
+        if !localAgentEnabled, let blockReason = TextOnlyRuntimeGuard.blockReason(
+            task: task,
+            runtime: selectedRuntime,
+            contextText: [promptOverride ?? "", sessionMessage ?? "", startPayload].joined(separator: "\n")
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "reason": TextOnlyRuntimeGuard.stopReason,
+                "runtime": selectedRuntime.rawValue,
+                "phase": auditPhase
+            ], level: .warning)
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = TextOnlyRuntimeGuard.stopReason
+            task.status = .pendingUser
+            task.updatedAt = Date()
+            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            let event = TaskEvent(task: task, type: "error", payload: blockReason, run: run)
+            modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
         guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
@@ -443,7 +486,9 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
-        let prompt = promptOverride ?? buildPrompt(for: task)
+        let prompt = localAgentEnabled
+            ? LocalAgentOrchestrator.buildInitialPrompt(for: task, promptOverride: promptOverride)
+            : (promptOverride ?? buildPrompt(for: task))
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
@@ -500,80 +545,101 @@ final class AgentRuntimeWorker {
 
         let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
-            supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
+            supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol,
+            stripsReasoningTags: runtimeAdapter.id == .localMLX
         )
         let recordingState = AgentEventRecordingState()
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
-        let result = await processRunner.runRuntimeProcess(
-            adapter: runtimeAdapter,
-            prompt: prompt,
-            task: task,
-            workspacePath: executionPath,
-            executablePath: launchSettings.executablePath,
-            homeDirectory: launchSettings.homeDirectory,
-            permissionPolicy: runPermissionPolicy,
-            executionPolicy: launchExecutionPolicy,
-            permissionManifest: manifest,
-            budgetEnforcementMode: budgetEnforcementMode,
-            timeoutSeconds: timeoutSeconds,
-            onLine: { line, parsesJSONLines in
-                PerformanceSignposts.processStreamLine {
-                    streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
-                    streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
-                    let parsedBatch = PerformanceSignposts.parseProviderStream {
-                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
-                    }
-                    parsedBatch.recordParsed(to: streamTelemetry)
-                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
-                    let emittedEvents = parsedBatch.events.flatMap {
-                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
-                    }
-                    let emittedBatch = AgentRuntimeStreamEventBatch(
-                        representation: parsedBatch.representation,
-                        events: emittedEvents
-                    )
-                    emittedBatch.recordEmitted(to: streamTelemetry)
-                    emittedBatch.recordEmitted(to: streamDebugCapture)
-                    for filtered in emittedEvents {
-                        pendingEvents.add { [weak self] in
-                            guard self != nil else { return }
-                            PerformanceSignposts.persistProviderEvent {
-                                runtimeAdapter.recordWorkerStreamEvent(
-                                    filtered,
-                                    mode: recordingMode,
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    recordingState: recordingState
-                                )
-                            }
-                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                                onEvent(parsed)
+        let result: AgentProcessResult
+        if localAgentEnabled {
+            let orchestrator = LocalAgentOrchestrator()
+            localAgentOrchestrator = orchestrator
+            result = await orchestrator.run(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                prompt: prompt,
+                workspacePath: executionPath,
+                executablePath: launchSettings.executablePath,
+                modelDirectory: launchSettings.homeDirectory,
+                permissionPolicy: runPermissionPolicy,
+                permissionManifest: manifest,
+                timeoutSeconds: timeoutSeconds,
+                onEvent: onEvent
+            )
+            localAgentOrchestrator = nil
+        } else {
+            result = await processRunner.runRuntimeProcess(
+                adapter: runtimeAdapter,
+                prompt: prompt,
+                task: task,
+                workspacePath: executionPath,
+                executablePath: launchSettings.executablePath,
+                homeDirectory: launchSettings.homeDirectory,
+                permissionPolicy: runPermissionPolicy,
+                executionPolicy: launchExecutionPolicy,
+                permissionManifest: manifest,
+                budgetEnforcementMode: budgetEnforcementMode,
+                timeoutSeconds: timeoutSeconds,
+                onLine: { line, parsesJSONLines in
+                    PerformanceSignposts.processStreamLine {
+                        streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
+                        streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
+                        let parsedBatch = PerformanceSignposts.parseProviderStream {
+                            runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
+                        }
+                        parsedBatch.recordParsed(to: streamTelemetry)
+                        parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
+                        let emittedEvents = parsedBatch.events.flatMap {
+                            runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
+                        }
+                        let emittedBatch = AgentRuntimeStreamEventBatch(
+                            representation: parsedBatch.representation,
+                            events: emittedEvents
+                        )
+                        emittedBatch.recordEmitted(to: streamTelemetry)
+                        emittedBatch.recordEmitted(to: streamDebugCapture)
+                        for filtered in emittedEvents {
+                            pendingEvents.add { [weak self] in
+                                guard self != nil else { return }
+                                PerformanceSignposts.persistProviderEvent {
+                                    runtimeAdapter.recordWorkerStreamEvent(
+                                        filtered,
+                                        mode: recordingMode,
+                                        task: task,
+                                        run: run,
+                                        modelContext: modelContext,
+                                        recordingState: recordingState
+                                    )
+                                }
+                                if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
+                                    onEvent(parsed)
+                                }
                             }
                         }
                     }
                 }
-            }
-        )
-        let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
-        flushedBatch.recordEmitted(to: streamTelemetry)
-        flushedBatch.recordEmitted(to: streamDebugCapture)
-        for event in flushedBatch.events {
-            pendingEvents.add { [weak self] in
-                guard self != nil else { return }
-                PerformanceSignposts.persistProviderEvent {
-                    runtimeAdapter.recordWorkerStreamEvent(
-                        event,
-                        mode: recordingMode,
-                        task: task,
-                        run: run,
-                        modelContext: modelContext,
-                        recordingState: recordingState
-                    )
-                }
-                if let parsed = runtimeAdapter.callbackEvent(from: event) {
-                    onEvent(parsed)
+            )
+            let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
+            flushedBatch.recordEmitted(to: streamTelemetry)
+            flushedBatch.recordEmitted(to: streamDebugCapture)
+            for event in flushedBatch.events {
+                pendingEvents.add { [weak self] in
+                    guard self != nil else { return }
+                    PerformanceSignposts.persistProviderEvent {
+                        runtimeAdapter.recordWorkerStreamEvent(
+                            event,
+                            mode: recordingMode,
+                            task: task,
+                            run: run,
+                            modelContext: modelContext,
+                            recordingState: recordingState
+                        )
+                    }
+                    if let parsed = runtimeAdapter.callbackEvent(from: event) {
+                        onEvent(parsed)
+                    }
                 }
             }
         }
@@ -868,6 +934,7 @@ final class AgentRuntimeWorker {
     @MainActor
     func cancel() {
         cancellationRequested = true
+        localAgentOrchestrator?.cancel()
         processRunner.cancel()
     }
 
@@ -1412,6 +1479,10 @@ final class AgentRuntimeWorker {
 
     func buildPrompt(for task: AgentTask) -> String {
         AgentPromptBuilder.buildPrompt(for: task)
+    }
+
+    private func localAgentModeEnabled(for runtime: AgentRuntimeID) -> Bool {
+        runtime == .localMLX && LocalModelSettingsStore.experimentalToolsEnabled()
     }
 
     @MainActor

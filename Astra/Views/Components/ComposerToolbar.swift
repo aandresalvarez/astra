@@ -34,6 +34,145 @@ enum ComposerToolbarPresentation {
     static let submitButtonSize: CGFloat = 30
     static let submitIconSize: CGFloat = 13
     static let permissionModeUsesFlatChrome = true
+
+    static func providerMenuRuntimes(
+        from readinessStates: [AgentRuntimeID: RuntimeReadinessState],
+        registeredRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
+    ) -> [AgentRuntimeID] {
+        readinessStates.isEmpty ? [] : registeredRuntimes
+    }
+
+    static func runtimeMenuStatusLabel(for state: RuntimeReadinessState?) -> String {
+        switch state {
+        case .ready:
+            return "Ready"
+        case .warning:
+            return "Review"
+        case .blocked:
+            return "Setup needed"
+        case nil:
+            return "Checking"
+        }
+    }
+
+    static func runtimeMenuDisplayName(
+        _ runtime: AgentRuntimeID,
+        localAgentEnabled: Bool = LocalModelSettingsStore.experimentalToolsEnabled()
+    ) -> String {
+        guard runtime == .localMLX else { return runtime.displayName }
+        return localAgentEnabled ? "Local MLX (Local Agent)" : "Local MLX (Local Chat)"
+    }
+
+    static func runtimeMenuHelp(
+        _ runtime: AgentRuntimeID,
+        state: RuntimeReadinessState?,
+        model: String,
+        budget: Int,
+        enforcementMode: BudgetEnforcementMode,
+        localAgentEnabled: Bool = LocalModelSettingsStore.experimentalToolsEnabled(),
+        localAgentCapabilities: LocalAgentToolCapabilities = .current()
+    ) -> String {
+        if state != .ready {
+            return "\(runtimeMenuDisplayName(runtime, localAgentEnabled: localAgentEnabled)) setup is not ready. Finish provider setup before running a task."
+        }
+        if runtime == .localMLX {
+            if localAgentEnabled {
+                return "Local Agent is experimental. It can read workspace context and use enabled ASTRA-brokered tools: \(localAgentCapabilities.enabledSummary). Other browser page changes remain disabled."
+            }
+            return "Private Local Chat analyzes text you provide on this Mac. It cannot use ASTRA tools, connectors, browser sessions, shell commands, workspace files, or artifacts."
+        }
+        return "\(runtime.displayName) · \(menuModelDisplayName(model)) · \(menuBudgetSummary(budget)) · \(enforcementMode.label)"
+    }
+
+    private static func menuModelDisplayName(_ model: String) -> String {
+        model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func menuBudgetSummary(_ budget: Int) -> String {
+        budget == 0 ? "∞" : "\(budget / 1000)k"
+    }
+
+    static func localMLXTaskStatusOverride(
+        taskStatus: TaskStatus,
+        runStatus: RunStatus,
+        stopReason rawStopReason: String
+    ) -> ComposerTaskStatusPresentation? {
+        let stopReason = rawStopReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = stopReason.lowercased()
+
+        if stopReason == TextOnlyRuntimeGuard.stopReason {
+            return ComposerTaskStatusPresentation(
+                label: "Local Chat",
+                icon: "text.bubble",
+                color: Stanford.poppy,
+                help: "Local Chat is text-only. Turn on Local Agent or choose a CLI provider for tool, connector, browser, or file work."
+            )
+        }
+
+        if normalized == "permission_approval_required" {
+            return ComposerTaskStatusPresentation(
+                label: "Approval needed",
+                icon: "hand.raised",
+                color: Stanford.pendingUser,
+                help: "Local Agent is paused for your approval before ASTRA runs the requested brokered action."
+            )
+        }
+
+        switch normalized {
+        case "local_agent_asked_user":
+            return ComposerTaskStatusPresentation(
+                label: "Needs answer",
+                icon: "person.crop.circle.badge.questionmark",
+                color: Stanford.pendingUser,
+                help: "Local Agent needs your input before it can continue."
+            )
+        case "local_agent_missing_tool_observation":
+            return ComposerTaskStatusPresentation(
+                label: "Blocked",
+                icon: "shield.slash",
+                color: Stanford.poppy,
+                help: "Local Agent stopped because it tried to finish without an ASTRA tool observation."
+            )
+        case "local_agent_tool_budget_exceeded":
+            return ComposerTaskStatusPresentation(
+                label: "Tool budget",
+                icon: "exclamationmark.triangle.fill",
+                color: Stanford.failed,
+                help: "Local Agent reached the tool-call limit before finishing."
+            )
+        case "local_agent_invalid_action":
+            return ComposerTaskStatusPresentation(
+                label: "Stopped",
+                icon: "octagon",
+                color: Stanford.poppy,
+                help: "Local Agent could not produce a valid ASTRA action after repair attempts."
+            )
+        case "local_agent_max_turns":
+            return ComposerTaskStatusPresentation(
+                label: "Turn limit",
+                icon: "octagon",
+                color: Stanford.poppy,
+                help: "Local Agent reached the turn limit before finishing."
+            )
+        case "policy_violation":
+            return ComposerTaskStatusPresentation(
+                label: "Blocked",
+                icon: "shield.slash",
+                color: Stanford.poppy,
+                help: "ASTRA stopped Local Agent because the requested action is outside the current policy."
+            )
+        default:
+            guard taskStatus == .cancelled || runStatus == .cancelled || normalized == "cancelled" || normalized == "local_agent_cancelled" else {
+                return nil
+            }
+            return ComposerTaskStatusPresentation(
+                label: "Cancelled",
+                icon: "xmark.circle.fill",
+                color: Stanford.coolGrey,
+                help: "Local Agent was stopped before completion."
+            )
+        }
+    }
 }
 
 /// Shared bottom toolbar for both new-task and follow-up composers.
@@ -297,8 +436,7 @@ struct ComposerToolbar: View {
             Menu {
                 let runtimes = selectableRuntimes
                 if runtimes.isEmpty {
-                    Label(runtimeReadinessStates.isEmpty ? "Checking providers" : "No ready providers",
-                          systemImage: runtimeReadinessStates.isEmpty ? "clock" : "exclamationmark.triangle")
+                    Label("Checking providers", systemImage: "clock")
                 }
                 ForEach(runtimes) { runtime in
                     Button {
@@ -312,10 +450,20 @@ struct ComposerToolbar: View {
                         )
                     } label: {
                         HStack {
-                            Text(runtime.displayName)
+                            Text(ComposerToolbarPresentation.runtimeMenuDisplayName(runtime))
+                            Text(ComposerToolbarPresentation.runtimeMenuStatusLabel(
+                                for: runtimeReadinessStates[runtime]
+                            ))
                             if resolvedRuntime == runtime { Image(systemName: "checkmark") }
                         }
                     }
+                    .help(ComposerToolbarPresentation.runtimeMenuHelp(
+                        runtime,
+                        state: runtimeReadinessStates[runtime],
+                        model: model,
+                        budget: budget,
+                        enforcementMode: budgetEnforcementMode
+                    ))
                 }
             } label: {
                 Label("Provider", systemImage: "server.rack")
@@ -922,14 +1070,14 @@ struct ComposerToolbar: View {
     }
 
     private var displayedRuntime: AgentRuntimeID? {
-        if runtimeReadinessStates[resolvedRuntime] == .ready {
+        if selectableRuntimes.contains(resolvedRuntime) {
             return resolvedRuntime
         }
         return selectableRuntimes.first
     }
 
     private var selectableRuntimes: [AgentRuntimeID] {
-        RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
+        ComposerToolbarPresentation.providerMenuRuntimes(from: runtimeReadinessStates)
     }
 
     private var runtimeStatusHelp: String {
@@ -937,9 +1085,15 @@ struct ComposerToolbar: View {
             return "Checking provider readiness"
         }
         guard let displayedRuntime else {
-            return "No ready provider. Finish CLI setup before running a task."
+            return "No providers are registered."
         }
-        return "\(displayedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)"
+        return ComposerToolbarPresentation.runtimeMenuHelp(
+            displayedRuntime,
+            state: runtimeReadinessStates[displayedRuntime],
+            model: model,
+            budget: budget,
+            enforcementMode: budgetEnforcementMode
+        )
     }
 
     private func runtimeStatusText(includeRuntime: Bool) -> String {
@@ -949,7 +1103,17 @@ struct ComposerToolbar: View {
         guard let displayedRuntime else {
             return "Provider setup needed"
         }
-        let modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
+        let modelPart: String
+        switch runtimeReadinessStates[displayedRuntime] {
+        case .ready:
+            modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
+        case .warning:
+            modelPart = "Review setup"
+        case .blocked:
+            modelPart = "Setup needed"
+        case nil:
+            modelPart = "Checking"
+        }
         return includeRuntime
             ? "\(shortRuntimeName(displayedRuntime)) · \(modelPart) · \(budgetSummary(budget))"
             : "\(modelPart) · \(budgetSummary(budget))"
@@ -960,6 +1124,7 @@ struct ComposerToolbar: View {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
         case .antigravityCLI: "Antigravity"
+        case .localMLX: LocalModelSettingsStore.experimentalToolsEnabled() ? "Local Agent" : "Local Chat"
         default: runtime.displayName
         }
     }

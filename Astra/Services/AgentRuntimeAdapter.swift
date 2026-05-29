@@ -396,6 +396,10 @@ struct AgentRuntimeAdapterCatalog {
         descriptor(for: runtime).supportsAstraRunProtocol
     }
 
+    func executionCapabilities(for runtime: AgentRuntimeID) -> AgentRuntimeExecutionCapabilities {
+        descriptor(for: runtime).executionCapabilities
+    }
+
     func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
         guard let adapter = adapterIfRegistered(for: runtime) else {
             preconditionFailure("No AgentRuntimeAdapter registered for runtime '\(runtime.rawValue)'")
@@ -412,7 +416,8 @@ struct AgentRuntimeAdapterCatalog {
             authHint: "",
             defaultModel: "default",
             defaultModels: ["default"],
-            supportsAstraRunProtocol: false
+            supportsAstraRunProtocol: false,
+            executionCapabilities: .textOnly
         )
     }
 }
@@ -443,7 +448,8 @@ enum BuiltInAgentRuntimeAdapterProviders {
         [
             ClaudeCodeRuntimeAdapterProvider(),
             CopilotCLIRuntimeAdapterProvider(),
-            AntigravityCLIRuntimeAdapterProvider()
+            AntigravityCLIRuntimeAdapterProvider(),
+            LocalMLXRuntimeAdapterProvider()
         ]
     }
 }
@@ -498,6 +504,10 @@ enum AgentRuntimeAdapterRegistry {
         liveCatalog.supportsAstraRunProtocol(for: runtime)
     }
 
+    static func executionCapabilities(for runtime: AgentRuntimeID) -> AgentRuntimeExecutionCapabilities {
+        liveCatalog.executionCapabilities(for: runtime)
+    }
+
     static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
         liveCatalog.adapter(for: runtime)
     }
@@ -545,10 +555,54 @@ struct AgentRuntimeProcessLaunchPlan {
     let environment: [String: String]
     let browserShimDirectory: String?
     let providerVersion: String?
+    var eventStream: AgentRuntimeProcessEventStream = .standardOutput
+    var controlStream: AgentRuntimeProcessControlStream = .none
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
+}
+
+enum AgentRuntimeProcessEventStream: Equatable, Sendable {
+    case standardOutput
+    case fileDescriptor(Int32)
+
+    var dedicatedFileDescriptor: Int32? {
+        if case .fileDescriptor(let fd) = self {
+            return fd
+        }
+        return nil
+    }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .standardOutput:
+            return "stdout"
+        case .fileDescriptor(let fd):
+            return "fd\(fd)"
+        }
+    }
+}
+
+enum AgentRuntimeProcessControlStream: Equatable, Sendable {
+    case none
+    case fileDescriptor(Int32)
+
+    var dedicatedFileDescriptor: Int32? {
+        if case .fileDescriptor(let fd) = self {
+            return fd
+        }
+        return nil
+    }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .none:
+            return "none"
+        case .fileDescriptor(let fd):
+            return "fd\(fd)"
+        }
+    }
 }
 
 enum AgentRuntimeRecordingMode {

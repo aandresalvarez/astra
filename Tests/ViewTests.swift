@@ -1517,6 +1517,299 @@ struct TaskThreadSnapshotTests {
         }
     }
 
+    @Test("Local Agent watchdog is visible in run activity")
+    func localAgentWatchdogCreatesRunNotice() {
+        let task = makeTask(status: .pendingUser)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "local_agent_invalid_action"
+        let events = [
+            makeEvent(
+                task: task,
+                type: "local_agent.watchdog",
+                payload: #"{"phase":"action_parse","reason":"invalid_action_repair_budget_exhausted","severity":"error","max_repairs":"2"}"#,
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let notice = activity.notices.first!
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
+
+        #expect(activity.notices.count == 1)
+        #expect(notice.type == "local_agent.watchdog")
+        #expect(TaskRunNoticePresentationRules.shouldShowInline(notice, for: visibleRun))
+        #expect(presentation.issues.count == 1)
+        #expect(presentation.issues.first?.title == "Local Agent watchdog")
+        #expect(presentation.issues.first?.summary.contains("invalid action repair budget exhausted") == true)
+        #expect(presentation.issues.first?.summary.contains("Suggested next step") == true)
+        #expect(presentation.issues.first?.summary.contains("Retry with a narrower task") == true)
+    }
+
+    @Test("Local Agent watchdog recovery suggestions cover memory pressure and repair failures")
+    func localAgentWatchdogRecoverySuggestions() {
+        let cases = [
+            (
+                #"{"phase":"inference","reason":"memory_pressure","severity":"warning"}"#,
+                "lower the Local MLX context limit"
+            ),
+            (
+                #"{"phase":"action_parse","reason":"invalid_action_repair_budget_exhausted","severity":"error"}"#,
+                "Retry with a narrower task"
+            ),
+            (
+                #"{"phase":"finalization","reason":"missing_tool_observation_repair_budget_exhausted","severity":"error"}"#,
+                "concrete tool-backed request"
+            )
+        ]
+
+        for (payload, expectedRecovery) in cases {
+            let notice = TaskRunNotice(id: UUID(), type: "local_agent.watchdog", payload: payload)
+            let presentation = RunIssuePresentation(notice: notice)
+
+            #expect(presentation.summary.contains("Suggested next step"))
+            #expect(presentation.summary.contains(expectedRecovery))
+        }
+    }
+
+    @Test("Local Agent metrics are exposed as technical run output")
+    func localAgentMetricsCreateTechnicalSummary() {
+        let task = makeTask(status: .completed)
+        task.runtimeID = AgentRuntimeID.localMLX.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        let events = [
+            makeEvent(
+                task: task,
+                type: "local_agent.metrics",
+                payload: #"{"active_memory_bytes":"1048576","duration_ms":"1250","fake_completion_repairs":"0","first_token_latency_ms":"87","helper_duration_ms":"900","invalid_action_repairs":"1","memory_diagnostics":"1","missing_tool_final_repairs":"0","model_load_ms":"240","parse_success_rate":"0.67","peak_memory_bytes":"2097152","policy_approval_requests":"0","policy_decisions":"2","policy_denial_rate":"0.00","policy_violations":"0","prompt_tokens_per_second":"20.00","status":"completed","stop_reason":"completed","tokens_per_second":"12.50","tool_calls":"2","tool_errors":"1","tool_success_rate":"0.50","tool_successes":"1","turns":"3","watchdog_warnings":"1"}"#,
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
+
+        #expect(activity.notices.count == 1)
+        #expect(activity.notices.first?.type == "local_agent.metrics")
+        #expect(presentation.issues.isEmpty)
+        #expect(presentation.technicalOutputs.count == 1)
+        #expect(presentation.technicalOutputs.first?.title == "Local Agent metrics")
+        #expect(presentation.technicalOutputs.first?.summary.contains("Tool calls: 2") == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Tool errors" && $0.value == "1"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Watchdog warnings" && $0.value == "1"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Parse success" && $0.value == "67%"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Tool success" && $0.value == "50%"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Policy denial" && $0.value == "0%"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "TTFT" && $0.value == "87 ms"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Throughput" && $0.value == "12.50 tok/s"
+        } == true)
+        #expect(presentation.technicalOutputs.first?.facts.contains {
+            $0.title == "Peak memory" && $0.value.contains("2")
+        } == true)
+    }
+
+    @Test("Local Agent run summary compacts tools, approvals, files, connectors, and performance")
+    func localAgentRunSummaryCompactsRunEvidence() throws {
+        let task = makeTask(status: .completed)
+        task.runtimeID = AgentRuntimeID.localMLX.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.runtimeID = AgentRuntimeID.localMLX.rawValue
+        run.stopReason = "completed"
+        run.completedAt = run.startedAt.addingTimeInterval(2)
+        run.tokensUsed = 120
+        run.inputTokens = 96
+        run.outputTokens = 24
+        run.appendFileChange(StoredFileChange(
+            from: FileChange(
+                path: "/tmp/astra-task/reports/local-summary.md",
+                changeType: .write,
+                content: "summary",
+                oldString: nil,
+                newString: nil,
+                timestamp: Date(timeIntervalSince1970: 1)
+            )
+        ))
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: workspace.search: {"query":"Local Agent"}"#,
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: github.search: {"query":"repo:susom/astra local mlx"}"#,
+                timestamp: Date(timeIntervalSince1970: 2),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: task.write_output: {"path":"reports/local-summary.md"}"#,
+                timestamp: Date(timeIntervalSince1970: 3),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: browser.click: {"controlID":"save-button"}"#,
+                timestamp: Date(timeIntervalSince1970: 3.25),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: browser.type: {"selector":"input[name=q]","text":"local model"}"#,
+                timestamp: Date(timeIntervalSince1970: 3.5),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "permission.approval.requested",
+                payload: """
+                Permission requested for tool: Write.
+                Why approval is needed: Local Agent wants to create a task output.
+                Detail: reports/local-summary.md
+                Runtime grant: task.write_output:reports/local-summary.md
+                """,
+                timestamp: Date(timeIntervalSince1970: 4),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "local_agent.metrics",
+                payload: #"{"duration_ms":"1250","input_tokens":"96","output_tokens":"24","policy_approval_requests":"1","status":"completed","stop_reason":"completed","tool_calls":"3","turns":"4"}"#,
+                timestamp: Date(timeIntervalSince1970: 5),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
+
+        let summary = try #require(presentation.localAgentSummary)
+        #expect(summary.facts.contains {
+            $0.title == "Tools used"
+                && $0.value.contains("workspace.search")
+                && $0.value.contains("github.search")
+                && $0.value.contains("task.write_output")
+                && $0.value.contains("browser.click")
+                && $0.value.contains("browser.type")
+        })
+        #expect(summary.facts.contains { $0.title == "Approvals requested" && $0.value == "1" })
+        #expect(summary.facts.contains {
+            $0.title == "Files touched" && $0.value.contains("reports/local-summary.md")
+        })
+        #expect(summary.facts.contains { $0.title == "Connectors read" && $0.value == "GitHub" })
+        #expect(summary.facts.contains {
+            $0.title == "Browser actions"
+                && $0.value.contains("click: save-button")
+                && $0.value.contains("type: input[name=q]")
+        })
+        #expect(summary.facts.contains { $0.title == "Stop reason" && $0.value == "completed" })
+        #expect(summary.facts.contains {
+            $0.title == "Performance"
+                && $0.value.contains("1.25s")
+                && $0.value.contains("4 turns")
+                && $0.value.contains("3 tool calls")
+                && $0.value.contains("120 tokens")
+        })
+    }
+
+    @Test("Local Agent run summary stays scoped to the Local MLX runtime")
+    func localAgentRunSummaryRequiresLocalRuntime() {
+        let task = makeTask(status: .completed)
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: #"Using tool: github.search: {"query":"repo:susom/astra"}"#,
+                timestamp: Date(timeIntervalSince1970: 1),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "local_agent.metrics",
+                payload: #"{"status":"completed","stop_reason":"completed","tool_calls":"1"}"#,
+                timestamp: Date(timeIntervalSince1970: 2),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+        let visibleRun = snapshot.latestRun!
+        let activity = snapshot.activity(for: visibleRun)
+        let presentation = RunActivityPresentation(
+            run: visibleRun,
+            activity: activity,
+            notices: activity.notices
+        )
+
+        #expect(presentation.localAgentSummary == nil)
+    }
+
     @Test("Provider error event is visible in run activity")
     func providerErrorCreatesRunNotice() {
         let task = makeTask(status: .failed)

@@ -366,6 +366,26 @@ enum AgentEventRecorder {
     }
 
     @MainActor
+    static func recordLocalModelEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Local MLX",
+            permissionSource: "local_model_stream",
+            unknownEventName: "unknown_local_model_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
     private static func recordProviderAgentEvent(
         _ event: AgentEvent,
         providerDisplayName: String,
@@ -455,6 +475,10 @@ enum AgentEventRecorder {
                 modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
             }
 
+        case .diagnostic(let kind, let message):
+            recordingState?.breakConversationCoalescing(for: run)
+            modelContext.insert(TaskEvent(task: task, type: "system.info", payload: "[\(kind)] \(String(message.prefix(10000)))", run: run))
+
         case .completed(let summary):
             recordingState?.breakConversationCoalescing(for: run)
             if let summary, run.output.isEmpty {
@@ -498,6 +522,8 @@ enum AgentEventRecorder {
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):
             return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .diagnostic:
+            return nil
         case .astraProtocol(let event):
             return .astraProtocol(event)
         case .completed(let summary):

@@ -348,6 +348,40 @@ struct AgentPolicyTests {
         #expect(Set(executionPolicy.permissionGrantsOverride ?? []) == Set(structuredGrants))
     }
 
+    @Test("Broker scopes network approvals to the requested URL")
+    func brokerScopesNetworkApprovalsToRequestedURL() {
+        let grants = PermissionBroker.approvalGrants(for: .network(
+            url: "https://example.com/data.json?limit=1#fragment",
+            toolName: "WebFetch"
+        ))
+
+        #expect(grants.contains(.networkPattern(pattern: "https://example.com/data.json?limit=1")))
+        #expect(grants.contains(.providerTool(name: "WebFetch")))
+        #expect(!grants.contains(.networkPattern(pattern: "https://example.com/*")))
+    }
+
+    @Test("Broker scopes browser click approvals to the requested target")
+    func brokerScopesBrowserClickApprovalsToRequestedTarget() {
+        let grants = PermissionBroker.approvalGrants(for: .tool(
+            name: "browser.click",
+            context: "analysis:ana_1#save-button"
+        ))
+
+        #expect(grants == [.browserAction(action: "browser.click", target: "analysis:ana_1#save-button")])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .localMLX).isEmpty)
+    }
+
+    @Test("Broker scopes browser typing approvals to the requested target")
+    func brokerScopesBrowserTypeApprovalsToRequestedTarget() {
+        let grants = PermissionBroker.approvalGrants(for: .tool(
+            name: "browser.type",
+            context: "selector:input[name=q]"
+        ))
+
+        #expect(grants == [.browserAction(action: "browser.type", target: "selector:input[name=q]")])
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .localMLX).isEmpty)
+    }
+
     @Test("Broker repairs stale structured shell grants from the typed request")
     func brokerRepairsStaleStructuredShellGrantsFromTypedRequest() throws {
         let request = PermissionRequest.shell(

@@ -89,6 +89,189 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("JIRA_PROJECTS: STAR"))
     }
 
+    @Test("Local chat prompt hides unavailable action capabilities")
+    func localChatPromptHidesUnavailableActionCapabilities() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Local Jira Workspace", primaryPath: "/tmp/local-jira-workspace")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API and curl to read STAR stories."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.configKeys = ["JIRA_PROJECTS"]
+        jiraConnector.configValues = ["STAR"]
+        context.insert(jiraConnector)
+
+        let jiraTool = LocalTool(
+            name: "jira-cli",
+            toolDescription: "Jira command line helper",
+            toolType: "cli",
+            command: "jira"
+        )
+        jiraTool.isGlobal = true
+        jiraTool.skill = jiraSkill
+        context.insert(jiraTool)
+
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString]
+        workspace.enabledGlobalToolIDs = [jiraTool.id.uuidString]
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Read latest STAR stories from Jira",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Local Chat Mode:"))
+        #expect(prompt.contains("cannot execute shell commands"))
+        #expect(prompt.contains("Unavailable in this Local Chat run"))
+        #expect(!prompt.contains("Behavioral Instructions (from Skills):"))
+        #expect(!prompt.contains("[Jira Agent]:"))
+        #expect(!prompt.contains("Available Connectors"))
+        #expect(!prompt.contains("Available CLI/Script Tools"))
+        #expect(!prompt.contains("Use Jira REST API and curl"))
+        #expect(!prompt.contains("JIRA_PROJECTS: STAR"))
+        #expect(!prompt.contains("Bash("))
+    }
+
+    @Test("Text-only runtime guard blocks connector action requests")
+    func textOnlyRuntimeGuardBlocksConnectorActionRequests() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Guard Jira Workspace", primaryPath: "/tmp/guard-jira-workspace")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        context.insert(jiraSkill)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "Read the latest stories in STAR from Jira",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let reason = try #require(TextOnlyRuntimeGuard.blockReason(task: task, runtime: .localMLX))
+        #expect(reason.contains("Local Chat can answer from text"))
+        #expect(reason.contains("cannot use ASTRA tools"))
+
+        let chatOnly = AgentTask(
+            title: "Say hi",
+            goal: "Hi, who are you?",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(chatOnly)
+        try context.save()
+        #expect(TextOnlyRuntimeGuard.blockReason(task: chatOnly, runtime: .localMLX) == nil)
+    }
+
+    @Test("Text-only runtime guard blocks workspace file read requests")
+    func textOnlyRuntimeGuardBlocksWorkspaceFileReadRequests() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Guard File Workspace", primaryPath: "/tmp/guard-file-workspace")
+        context.insert(workspace)
+
+        let fileReadTask = AgentTask(
+            title: "Read README",
+            goal: "Read README.md and summarize the setup instructions",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(fileReadTask)
+
+        let pastedTextTask = AgentTask(
+            title: "Summarize pasted text",
+            goal: "Summarize this pasted note: Local models should stay private and text-only.",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(pastedTextTask)
+        try context.save()
+
+        let reason = try #require(TextOnlyRuntimeGuard.blockReason(task: fileReadTask, runtime: .localMLX))
+        #expect(reason.contains("Local Chat can answer from text"))
+        #expect(TextOnlyRuntimeGuard.blockReason(task: pastedTextTask, runtime: .localMLX) == nil)
+    }
+
+    @Test("Text-only runtime guard blocks non-chat action surfaces")
+    func textOnlyRuntimeGuardBlocksNonChatActionSurfaces() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Guard Action Workspace", primaryPath: "/tmp/guard-action-workspace")
+        context.insert(workspace)
+
+        let blockedGoals = [
+            "Open https://example.com in the browser and summarize the web page",
+            "Read the latest task output artifact and summarize it",
+            "Run swift test and debug any failures",
+            "Fetch https://api.github.com/repos/susom/astra/issues and summarize the response",
+            "Edit Package.swift to add the missing dependency",
+            "Create .astra/tasks/report.md with the findings",
+            "Create a new branch for this work",
+            "Open a PR for the Local MLX changes",
+            "Send a message to the release channel",
+            "Schedule a reminder to check this task tomorrow",
+            "Post a comment on GitHub issue 389 with these details"
+        ]
+
+        for goal in blockedGoals {
+            let task = AgentTask(
+                title: "Blocked local chat action",
+                goal: goal,
+                workspace: workspace,
+                runtime: .localMLX
+            )
+            context.insert(task)
+            try context.save()
+
+            let reason = TextOnlyRuntimeGuard.blockReason(task: task, runtime: .localMLX)
+            #expect(reason != nil, "Expected Local Chat guard to block: \(goal)")
+            #expect(reason?.contains("Local Chat can answer from text") == true)
+        }
+
+        let pastedTextTask = AgentTask(
+            title: "Pasted text",
+            goal: "Summarize this pasted note about API design; use only the text below.",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(pastedTextTask)
+        try context.save()
+
+        #expect(TextOnlyRuntimeGuard.blockReason(task: pastedTextTask, runtime: .localMLX) == nil)
+    }
+
     @Test("Runtime connector resolution ignores stale duplicate when a configured connector exists")
     func runtimeConnectorResolutionIgnoresStaleDuplicateWhenConfiguredConnectorExists() throws {
         let container = try makeTaskCapabilityResolverContainer()

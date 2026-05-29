@@ -62,6 +62,10 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
             title = "Permission requested"
             summary = approval.noticeBody
             severity = .info
+        case "local_agent.watchdog":
+            title = "Local Agent watchdog"
+            summary = Self.localAgentWatchdogBody(for: payload)
+            severity = .warning
         case "error" where Self.looksPolicyBlocked(payload):
             title = "Policy blocked this run"
             summary = "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
@@ -105,13 +109,40 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
         }
         return String(payload.prefix(220))
     }
+
+    private static func localAgentWatchdogBody(for payload: String) -> String {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return payload.isEmpty ? "Local Agent recorded a watchdog warning." : String(payload.prefix(220))
+        }
+        let rawReason = json["reason"] as? String ?? "watchdog warning"
+        let reason = rawReason
+            .replacingOccurrences(of: "_", with: " ")
+        let phase = (json["phase"] as? String ?? "local agent")
+            .replacingOccurrences(of: "_", with: " ")
+        var parts = ["Local Agent reported \(reason) during \(phase)."]
+        if let tool = json["tool"] as? String {
+            parts.append("Tool: \(tool).")
+        }
+        if let duration = json["duration_ms"] as? String {
+            parts.append("Duration: \(duration) ms.")
+        }
+        if let timeout = json["timeout_seconds"] as? String {
+            parts.append("Timeout: \(timeout) seconds.")
+        }
+        let recovery = (json["recovery"] as? String) ?? LocalAgentRecoverySuggestions.suggestion(for: rawReason)
+        if let recovery, !recovery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("Suggested next step: \(recovery)")
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 enum TaskRunNoticePresentationRules {
     static func shouldShowInline(_ notice: TaskRunNotice, for run: TaskRunSnapshot) -> Bool {
         guard !run.hasVPNWarning || notice.type != "error" else { return false }
         switch notice.type {
-        case "error", "budget.exceeded", "budget.warning":
+        case "error", "budget.exceeded", "budget.warning", "local_agent.watchdog":
             return true
         default:
             return false
@@ -282,6 +313,221 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
     }
 }
 
+struct LocalAgentRunSummaryPresentation: Identifiable, Hashable, Sendable {
+    let id: String
+    let facts: [RunFactPresentation]
+
+    init?(
+        run: TaskRunSnapshot,
+        activity: TaskRunActivity,
+        metricsPayload: String?
+    ) {
+        guard Self.isLocalAgentRun(run: run, activity: activity, metricsPayload: metricsPayload) else {
+            return nil
+        }
+
+        id = "local-agent-run-summary-\(run.id.uuidString)"
+        let metrics = metricsPayload.flatMap(PayloadFormatter.jsonObject(from:)) as? [String: Any] ?? [:]
+        let tools = Self.toolSummaries(activity.toolCalls)
+        let approvals = Self.approvalCount(activity: activity, metrics: metrics)
+        let files = Self.fileTouchSummaries(fileChanges: activity.fileChanges, toolCalls: activity.toolCalls)
+        let connectors = Self.connectorSummaries(activity.toolCalls)
+        let browserActions = Self.browserActionSummaries(activity.toolCalls)
+
+        var rows: [RunFactPresentation] = [
+            .init(title: "Tools used", value: compactList(tools, empty: "None")),
+            .init(title: "Approvals requested", value: approvals == 0 ? "None" : String(approvals)),
+            .init(title: "Files touched", value: compactList(files, limit: 4, empty: "None"), isMonospaced: !files.isEmpty),
+            .init(title: "Connectors read", value: compactList(connectors, limit: 4, empty: "None")),
+            .init(title: "Browser actions", value: compactList(browserActions, limit: 4, empty: "None")),
+            .init(title: "Stop reason", value: Self.stopReason(run: run, metrics: metrics))
+        ]
+
+        if let performance = Self.performanceSummary(run: run, metrics: metrics) {
+            rows.append(.init(title: "Performance", value: performance))
+        }
+        facts = rows
+    }
+
+    private static func isLocalAgentRun(
+        run: TaskRunSnapshot,
+        activity: TaskRunActivity,
+        metricsPayload: String?
+    ) -> Bool {
+        guard run.runtimeID == AgentRuntimeID.localMLX.rawValue else { return false }
+        if metricsPayload != nil { return true }
+        return activity.toolCalls.contains { isLocalAgentTool($0.toolName) }
+    }
+
+    private static func isLocalAgentTool(_ toolName: String) -> Bool {
+        toolName.contains(".") || toolName == "task.write_output"
+    }
+
+    private static func toolSummaries(_ calls: [TaskToolCall]) -> [String] {
+        countedSummaries(
+            calls.map(\.toolName).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+    }
+
+    private static func approvalCount(activity: TaskRunActivity, metrics: [String: Any]) -> Int {
+        let visibleApprovals = activity.notices.filter { $0.type == "permission.approval.requested" }.count
+        guard visibleApprovals == 0,
+              let metricsCount = intMetric("policy_approval_requests", in: metrics) else {
+            return visibleApprovals
+        }
+        return metricsCount
+    }
+
+    private static func fileTouchSummaries(
+        fileChanges: [StoredFileChange],
+        toolCalls: [TaskToolCall]
+    ) -> [String] {
+        var paths = fileChanges.map(\.path)
+        for call in toolCalls where call.toolName == "task.write_output" {
+            if let path = argumentObject(for: call)?["path"].flatMap(PayloadFormatter.displayString),
+               !path.isEmpty {
+                paths.append(path)
+            }
+        }
+        return unique(paths)
+    }
+
+    private static func connectorSummaries(_ calls: [TaskToolCall]) -> [String] {
+        let connectors = calls.compactMap { connectorLabel(for: $0.toolName) }
+        return countedSummaries(connectors)
+    }
+
+    private static func connectorLabel(for toolName: String) -> String? {
+        switch toolName {
+        case "jira.search": "Jira"
+        case "github.search": "GitHub"
+        case "google_drive.search", "google_drive.read", "google.drive.search", "drive.search": "Google Drive"
+        case "gmail.search", "gmail.read": "Gmail"
+        case "slack.search", "slack.thread": "Slack"
+        default: nil
+        }
+    }
+
+    private static func browserActionSummaries(_ calls: [TaskToolCall]) -> [String] {
+        countedSummaries(calls.compactMap { call in
+            guard call.toolName.hasPrefix("browser.") else { return nil }
+            let action = String(call.toolName.dropFirst("browser.".count))
+            guard !action.isEmpty else { return nil }
+            guard let target = browserTargetSummary(for: call) else {
+                return action
+            }
+            return "\(action): \(target)"
+        })
+    }
+
+    private static func browserTargetSummary(for call: TaskToolCall) -> String? {
+        guard let arguments = argumentObject(for: call) else { return nil }
+        let targetKeys = ["target", "selector", "controlID", "controlId", "analysisID", "analysisId", "url"]
+        for key in targetKeys {
+            if let value = arguments[key].flatMap(PayloadFormatter.displayString)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        if let text = arguments["text"].flatMap(PayloadFormatter.displayString),
+           !text.isEmpty {
+            return "\(text.count) characters"
+        }
+        return nil
+    }
+
+    private static func stopReason(run: TaskRunSnapshot, metrics: [String: Any]) -> String {
+        let runStopReason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !runStopReason.isEmpty { return runStopReason }
+        return metricString("stop_reason", in: metrics) ?? run.status.rawValue
+    }
+
+    private static func performanceSummary(run: TaskRunSnapshot, metrics: [String: Any]) -> String? {
+        var parts: [String] = []
+        if let duration = intMetric("duration_ms", in: metrics) {
+            parts.append(formatDuration(milliseconds: duration))
+        } else if let completedAt = run.completedAt {
+            parts.append(formatDuration(milliseconds: max(0, Int(completedAt.timeIntervalSince(run.startedAt) * 1_000))))
+        }
+        if let turns = metricString("turns", in: metrics), !turns.isEmpty {
+            parts.append("\(turns) \(turns == "1" ? "turn" : "turns")")
+        }
+        if let toolCalls = metricString("tool_calls", in: metrics), !toolCalls.isEmpty {
+            parts.append("\(toolCalls) tool \(toolCalls == "1" ? "call" : "calls")")
+        }
+        let tokens = tokenCount(run: run, metrics: metrics)
+        if tokens > 0 {
+            parts.append("\(tokens) tokens")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    private static func tokenCount(run: TaskRunSnapshot, metrics: [String: Any]) -> Int {
+        if let input = intMetric("input_tokens", in: metrics),
+           let output = intMetric("output_tokens", in: metrics),
+           input + output > 0 {
+            return input + output
+        }
+        return run.tokensUsed
+    }
+
+    private static func formatDuration(milliseconds: Int) -> String {
+        if milliseconds < 1_000 {
+            return "\(milliseconds) ms"
+        }
+        return String(format: "%.2fs", Double(milliseconds) / 1_000)
+    }
+
+    private static func metricString(_ key: String, in object: [String: Any]) -> String? {
+        object[key].flatMap(PayloadFormatter.displayString)
+    }
+
+    private static func intMetric(_ key: String, in object: [String: Any]) -> Int? {
+        guard let value = object[key] else { return nil }
+        if let intValue = value as? Int { return intValue }
+        if let string = PayloadFormatter.displayString(value) { return Int(string) }
+        return nil
+    }
+
+    private static func argumentObject(for call: TaskToolCall) -> [String: Any]? {
+        guard let detail = call.detail,
+              let object = PayloadFormatter.jsonObject(from: detail) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func countedSummaries(_ values: [String]) -> [String] {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for rawValue in values {
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            if counts[value] == nil {
+                order.append(value)
+            }
+            counts[value, default: 0] += 1
+        }
+        return order.map { value in
+            let count = counts[value, default: 0]
+            return count > 1 ? "\(value) x\(count)" : value
+        }
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        for rawValue in values {
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, !seen.contains(value) else { continue }
+            seen.insert(value)
+            result.append(value)
+        }
+        return result
+    }
+}
+
 struct RunActivityPresentation: Hashable, Sendable {
     let issues: [RunIssuePresentation]
     let approvals: [RuntimePermissionApprovalNoticePresentation]
@@ -289,6 +535,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     let tools: [ToolActivityPresentation]
     let files: [StoredFileChange]
     let policy: PolicySummaryPresentation?
+    let localAgentSummary: LocalAgentRunSummaryPresentation?
     let technicalOutputs: [TechnicalOutputPresentation]
     let stats: [RunFactPresentation]
 
@@ -303,10 +550,15 @@ struct RunActivityPresentation: Hashable, Sendable {
         var approvalRows: [RuntimePermissionApprovalNoticePresentation] = []
         var technicalRows: [TechnicalOutputPresentation] = []
         let permissionSummaryPayload = notices.last(where: { $0.type == "astra.permission_summary" })?.payload
+        let localAgentMetricsPayload = notices.last(where: { $0.type == "local_agent.metrics" })?.payload
 
         for notice in notices where notice.type != "astra.permission_summary" {
             if notice.type == "permission.approval.requested" {
                 approvalRows.append(RuntimePermissionApprovalNoticePresentation(notice: notice))
+                continue
+            }
+            if notice.type == "local_agent.metrics" {
+                technicalRows.append(Self.localAgentMetricsOutput(notice))
                 continue
             }
 
@@ -338,12 +590,17 @@ struct RunActivityPresentation: Hashable, Sendable {
             manifest: activity.permissionManifest,
             permissionSummaryPayload: permissionSummaryPayload
         )
+        localAgentSummary = LocalAgentRunSummaryPresentation(
+            run: run,
+            activity: activity,
+            metricsPayload: localAgentMetricsPayload
+        )
         technicalOutputs = technicalRows
         stats = Self.statsFacts(for: run)
     }
 
     var hasVisibleDetails: Bool {
-        !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+        !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || localAgentSummary != nil || !technicalOutputs.isEmpty || !stats.isEmpty
     }
 
     private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {
@@ -389,6 +646,109 @@ struct RunActivityPresentation: Hashable, Sendable {
             rawPayload: summary.rawPayload,
             severity: .info
         )
+    }
+
+    private static func localAgentMetricsOutput(_ notice: TaskRunNotice) -> TechnicalOutputPresentation {
+        let summary = PayloadFormatter.summary(for: notice.payload)
+        var facts = summary.facts
+        if let object = PayloadFormatter.jsonObject(from: notice.payload) as? [String: Any] {
+            facts = Self.localAgentMetricFacts(object) + facts.filter { existing in
+                !Self.localAgentMetricFactTitles.contains(existing.title)
+            }
+        }
+        return TechnicalOutputPresentation(
+            id: "local-agent-metrics-\(notice.id.uuidString)",
+            title: "Local Agent metrics",
+            summary: Self.localAgentMetricsSummary(from: notice.payload),
+            facts: facts,
+            rawPayload: summary.rawPayload,
+            severity: .info
+        )
+    }
+
+    private static let localAgentMetricFactTitles: Set<String> = [
+        "Status", "Stop reason", "Turns", "Tool calls", "Tool successes", "Tool errors",
+        "Policy decisions", "Policy approvals", "Policy violations", "Invalid repairs",
+        "Missing-observation repairs", "Fake-completion repairs", "Parse success",
+        "Tool success", "Policy denial", "Memory diagnostics", "Watchdog warnings", "Duration",
+        "Helper duration", "TTFT", "Throughput", "Prompt throughput", "Model load",
+        "Active memory", "Peak memory", "Cache memory", "Memory limit", "Cache limit",
+        "Memory budget", "Cancellation latency"
+    ]
+
+    private static func localAgentMetricFacts(_ object: [String: Any]) -> [RunFactPresentation] {
+        [
+            ("Status", "status", false),
+            ("Stop reason", "stop_reason", false),
+            ("Turns", "turns", false),
+            ("Tool calls", "tool_calls", false),
+            ("Tool successes", "tool_successes", false),
+            ("Tool errors", "tool_errors", false),
+            ("Policy decisions", "policy_decisions", false),
+            ("Policy approvals", "policy_approval_requests", false),
+            ("Policy violations", "policy_violations", false),
+            ("Invalid repairs", "invalid_action_repairs", false),
+            ("Missing-observation repairs", "missing_tool_final_repairs", false),
+            ("Fake-completion repairs", "fake_completion_repairs", false),
+            ("Parse success", "parse_success_rate", false),
+            ("Tool success", "tool_success_rate", false),
+            ("Policy denial", "policy_denial_rate", false),
+            ("Memory diagnostics", "memory_diagnostics", false),
+            ("Watchdog warnings", "watchdog_warnings", false),
+            ("Duration", "duration_ms", false),
+            ("Helper duration", "helper_duration_ms", false),
+            ("TTFT", "first_token_latency_ms", false),
+            ("Throughput", "tokens_per_second", false),
+            ("Prompt throughput", "prompt_tokens_per_second", false),
+            ("Model load", "model_load_ms", false),
+            ("Active memory", "active_memory_bytes", false),
+            ("Peak memory", "peak_memory_bytes", false),
+            ("Cache memory", "cache_memory_bytes", false),
+            ("Memory limit", "memory_limit_bytes", false),
+            ("Cache limit", "cache_limit_bytes", false),
+            ("Memory budget", "memory_budget_bytes", false),
+            ("Cancellation latency", "cancellation_latency_ms", false)
+        ].compactMap { title, key, isMonospaced in
+            guard let value = metricString(key, in: object),
+                  !value.isEmpty else {
+                return nil
+            }
+            let displayed = localAgentMetricDisplayValue(value, key: key)
+            return RunFactPresentation(title: title, value: displayed, isMonospaced: isMonospaced)
+        }
+    }
+
+    private static func localAgentMetricDisplayValue(_ value: String, key: String) -> String {
+        if key.hasSuffix("_ms") {
+            return "\(value) ms"
+        }
+        if key.hasSuffix("_bytes"), let bytes = Int64(value) {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
+        }
+        if key.hasSuffix("_rate"), let rate = Double(value) {
+            return String(format: "%.0f%%", max(0, rate) * 100)
+        }
+        if key.hasSuffix("_per_second") {
+            return "\(value) tok/s"
+        }
+        return value
+    }
+
+    private static func localAgentMetricsSummary(from payload: String) -> String {
+        guard let object = PayloadFormatter.jsonObject(from: payload) as? [String: Any] else {
+            return "Local Agent metrics recorded."
+        }
+        let status = metricString("status", in: object) ?? "unknown"
+        let stopReason = metricString("stop_reason", in: object) ?? "unknown"
+        let tools = metricString("tool_calls", in: object) ?? "0"
+        let repairs = metricString("invalid_action_repairs", in: object) ?? "0"
+        let watchdogs = metricString("watchdog_warnings", in: object) ?? "0"
+        return "Status: \(status). Stop reason: \(stopReason). Tool calls: \(tools). Repairs: \(repairs). Watchdogs: \(watchdogs)."
+    }
+
+    private static func metricString(_ key: String, in object: [String: Any]) -> String? {
+        guard let value = object[key] else { return nil }
+        return PayloadFormatter.displayString(value)
     }
 
     private static func statsFacts(for run: TaskRunSnapshot) -> [RunFactPresentation] {
@@ -528,7 +888,7 @@ enum PayloadFormatter {
         }
     }
 
-    private static func displayString(_ value: Any) -> String? {
+    static func displayString(_ value: Any) -> String? {
         if let value = value as? String {
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }

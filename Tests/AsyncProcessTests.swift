@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ASTRACore
 @testable import ASTRA
 
 @Suite("AsyncProcessRunner")
@@ -69,5 +70,33 @@ struct AsyncProcessRunnerTests {
         let result = await processResult
         #expect(didRunConcurrently)
         #expect(result.exitCode == 0)
+    }
+
+    @Test("ProcessBinaryRunner terminates a child process when cancelled")
+    func processBinaryRunnerTerminatesChildProcessWhenCancelled() async {
+        let runner = ProcessBinaryRunner()
+        let started = Date()
+        let task = Task {
+            await runner.run(
+                path: "/bin/sleep",
+                args: ["5"],
+                timeout: 30,
+                environment: nil
+            )
+        }
+
+        try? await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        let result = await task.value
+
+        #expect(Date().timeIntervalSince(started) < 2)
+        switch result.outcome {
+        case .exited(let code):
+            #expect(code != 0)
+        case .timedOut:
+            break
+        case .launchFailed(let reason):
+            Issue.record("Expected cancellation to terminate /bin/sleep, got launch failure: \(reason)")
+        }
     }
 }

@@ -48,6 +48,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
     public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
     public static let antigravityCLI = AgentRuntimeID(staticRawValue: "antigravity_cli")
+    public static let localMLX = AgentRuntimeID(staticRawValue: "local_mlx")
 
     public var id: String { rawValue }
 
@@ -56,6 +57,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
         case .claudeCode: "Claude Code"
         case .copilotCLI: "GitHub Copilot CLI"
         case .antigravityCLI: "Google Antigravity CLI"
+        case .localMLX: "Local MLX"
         default: rawValue
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
@@ -79,6 +81,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let defaultModel: String
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
+    public let executionCapabilities: AgentRuntimeExecutionCapabilities
 
     public init(
         id: AgentRuntimeID,
@@ -89,7 +92,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         prerequisite: CLIPrerequisite? = nil,
         defaultModel: String? = nil,
         defaultModels: [String],
-        supportsAstraRunProtocol: Bool
+        supportsAstraRunProtocol: Bool,
+        executionCapabilities: AgentRuntimeExecutionCapabilities = .providerHarness
     ) {
         self.id = id
         self.displayName = displayName
@@ -106,8 +110,73 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.defaultModel = defaultModel ?? defaultModels.first ?? "default"
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
+        self.executionCapabilities = executionCapabilities
     }
 
+}
+
+public struct AgentRuntimeExecutionCapabilities: Sendable, Equatable {
+    public let supportsTextOnly: Bool
+    public let supportsAstraBrokeredTools: Bool
+    public let supportsProviderNativeTools: Bool
+    public let supportsConnectors: Bool
+    public let supportsBrowserRead: Bool
+    public let supportsBrowserMutation: Bool
+    public let supportsFileWrite: Bool
+    public let supportsShell: Bool
+    public let supportsNetwork: Bool
+
+    public init(
+        supportsTextOnly: Bool = true,
+        supportsAstraBrokeredTools: Bool = false,
+        supportsProviderNativeTools: Bool = false,
+        supportsConnectors: Bool = false,
+        supportsBrowserRead: Bool = false,
+        supportsBrowserMutation: Bool = false,
+        supportsFileWrite: Bool = false,
+        supportsShell: Bool = false,
+        supportsNetwork: Bool = false
+    ) {
+        self.supportsTextOnly = supportsTextOnly
+        self.supportsAstraBrokeredTools = supportsAstraBrokeredTools
+        self.supportsProviderNativeTools = supportsProviderNativeTools
+        self.supportsConnectors = supportsConnectors
+        self.supportsBrowserRead = supportsBrowserRead
+        self.supportsBrowserMutation = supportsBrowserMutation
+        self.supportsFileWrite = supportsFileWrite
+        self.supportsShell = supportsShell
+        self.supportsNetwork = supportsNetwork
+    }
+
+    public var canExecuteActions: Bool {
+        supportsAstraBrokeredTools || supportsProviderNativeTools
+    }
+
+    public static let textOnly = AgentRuntimeExecutionCapabilities()
+
+    public static let providerHarness = AgentRuntimeExecutionCapabilities(
+        supportsTextOnly: true,
+        supportsAstraBrokeredTools: false,
+        supportsProviderNativeTools: true,
+        supportsConnectors: true,
+        supportsBrowserRead: true,
+        supportsBrowserMutation: true,
+        supportsFileWrite: true,
+        supportsShell: true,
+        supportsNetwork: true
+    )
+
+    public static let astraBrokeredTools = AgentRuntimeExecutionCapabilities(
+        supportsTextOnly: true,
+        supportsAstraBrokeredTools: true,
+        supportsProviderNativeTools: false,
+        supportsConnectors: true,
+        supportsBrowserRead: true,
+        supportsBrowserMutation: true,
+        supportsFileWrite: true,
+        supportsShell: true,
+        supportsNetwork: true
+    )
 }
 
 public enum AgentEvent: Sendable, Equatable {
@@ -119,6 +188,7 @@ public enum AgentEvent: Sendable, Equatable {
     case fileChange(path: String, kind: String, summary: String?)
     case permissionRequested(tool: String, reason: String)
     case stats(inputTokens: Int, outputTokens: Int, costUSD: Double?, durationMs: Int?, turns: Int?)
+    case diagnostic(kind: String, message: String)
     case astraProtocol(AstraRunProtocolParsedEvent)
     case completed(summary: String?)
     case failed(message: String)
