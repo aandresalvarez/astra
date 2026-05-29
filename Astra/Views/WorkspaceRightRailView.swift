@@ -208,6 +208,7 @@ struct WorkspaceRightRailView: View {
     @State private var scrollMetrics = RightRailScrollMetrics()
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
+    @State private var hasGitRepositories = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -400,6 +401,12 @@ struct WorkspaceRightRailView: View {
         return VStack(alignment: .leading, spacing: panelSpacing) {
             capabilityHealthPanel(snapshot)
 
+            if hasGitRepositories {
+                floatingContextSection {
+                    WorkspaceGitSectionView(workspace: workspace, isCompact: isCompact)
+                }
+            }
+
             floatingContextSection {
                 workspaceSetupChecklistPanel
             }
@@ -410,8 +417,15 @@ struct WorkspaceRightRailView: View {
             loadSSHConnections()
             refreshApprovedCapabilities()
             applyConfigureDefaults()
+            checkGitRepositories()
         }
-        .onChange(of: workspace.primaryPath) { loadSSHConnections() }
+        .onChange(of: workspace.primaryPath) {
+            loadSSHConnections()
+            checkGitRepositories()
+        }
+        .onChange(of: workspace.additionalPaths) {
+            checkGitRepositories()
+        }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
             if !sshConnections.isEmpty {
@@ -2364,6 +2378,18 @@ struct WorkspaceRightRailView: View {
             return
         }
         sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+    }
+
+    private func checkGitRepositories() {
+        Task {
+            let repos = await GitService.shared.scanForGitRepositories(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            )
+            await MainActor.run {
+                self.hasGitRepositories = !repos.isEmpty
+            }
+        }
     }
 
     private func applyConfigureDefaults() {

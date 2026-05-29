@@ -1633,7 +1633,7 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
                 if run.status == .running {
-                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText)))
+                    Text(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText))
                         .font(Stanford.chatBody())
                         .foregroundStyle(Stanford.readingText)
                         .textSelection(.enabled)
