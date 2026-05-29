@@ -62,6 +62,79 @@ private enum RunNoticeProminence {
     case detail
 }
 
+/// Streaming agent text rendered as plain `Text` while the run is live. Isolated
+/// into its own `View` so SwiftUI can diff this subtree independently from the
+/// rest of the agent bubble — the bubble re-evaluates often as bucketed snapshot
+/// updates flow in, but only this view's body actually depends on `displayText`.
+private struct StreamingAgentTextView: View {
+    let displayText: String
+
+    var body: some View {
+        Text(MarkdownTextView.normalizedStreamingText(displayText))
+            .font(Stanford.chatBody())
+            .foregroundStyle(Stanford.readingText)
+            .textSelection(.enabled)
+            .lineSpacing(Stanford.chatBodyLineSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Completed agent markdown body. Equatable on its inputs so SwiftUI skips the
+/// expensive `MarkdownTextView` parse when neither the text nor the callback
+/// identity has changed.
+private struct CompletedAgentMarkdownView: View, Equatable {
+    let displayText: String
+    let onSuggestedNextStep: ((String) -> Void)?
+
+    var body: some View {
+        MarkdownTextView(
+            text: displayText,
+            maxContentWidth: Stanford.chatParagraphMaxWidth,
+            onSuggestedNextStep: onSuggestedNextStep
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    static func == (lhs: CompletedAgentMarkdownView, rhs: CompletedAgentMarkdownView) -> Bool {
+        lhs.displayText == rhs.displayText
+            && ((lhs.onSuggestedNextStep == nil) == (rhs.onSuggestedNextStep == nil))
+    }
+}
+
+/// Generated-files attachment list rendered for a finished agent turn. Pulled
+/// into its own struct so the parent bubble does not re-evaluate this `ForEach`
+/// each time unrelated bubble state changes.
+private struct AgentGeneratedFilesListView: View {
+    let paths: [String]
+    let onOpen: ((String) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(paths, id: \.self) { path in
+                Button {
+                    if let onOpen {
+                        onOpen(path)
+                    } else {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: Formatters.fileIcon(for: path))
+                            .font(Stanford.ui(11))
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(Stanford.caption(12))
+                            .underline()
+                    }
+                    .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
+            }
+        }
+    }
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -1625,47 +1698,22 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
                 if run.status == .running {
-                    Text(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText))
-                        .font(Stanford.chatBody())
-                        .foregroundStyle(Stanford.readingText)
-                        .textSelection(.enabled)
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    StreamingAgentTextView(displayText: outputPresentation.displayText)
                 } else {
-                    MarkdownTextView(
-                        text: outputPresentation.displayText,
-                        maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    CompletedAgentMarkdownView(
+                        displayText: outputPresentation.displayText,
                         onSuggestedNextStep: pursueSuggestedNextStep
                     )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    .equatable()
                 }
             }
 
             // Generated files belong with the finished turn, not the live progress row.
             if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
-                        Button {
-                            if let onOpenGeneratedFile {
-                                onOpenGeneratedFile(path)
-                            } else {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: Formatters.fileIcon(for: path))
-                                    .font(Stanford.ui(11))
-                                Text(URL(fileURLWithPath: path).lastPathComponent)
-                                    .font(Stanford.caption(12))
-                                    .underline()
-                            }
-                            .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
-                    }
-                }
+                AgentGeneratedFilesListView(
+                    paths: threadViewModel.generatedFilePaths,
+                    onOpen: onOpenGeneratedFile
+                )
             }
 
             if protocolState.hasCompletion {

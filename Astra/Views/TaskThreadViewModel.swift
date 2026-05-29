@@ -9,11 +9,15 @@ final class TaskThreadViewModel {
     private var snapshotTask: Task<Void, Never>?
     private var generatedFilesTask: Task<Void, Never>?
     private var expansionRunCount: Int = 50
+    private var lastSnapshotApplyAt: Date = .distantPast
+
+    private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
 
     func reset(for task: AgentTask) {
         expansionRunCount = 50
         snapshotTrigger = nil
         snapshotTask?.cancel()
+        lastSnapshotApplyAt = .distantPast
         snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
         refreshSnapshot(for: task)
         refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
@@ -39,10 +43,21 @@ final class TaskThreadViewModel {
         ]
 
         snapshotTask?.cancel()
+        let isLive = trigger.status == .running
+            || trigger.status == .queued
+            || trigger.latestRunStatus == .running
+        let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
+        let minimumInterval = Self.liveSnapshotMinimumInterval
+        let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
         snapshotTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                if Task.isCancelled { return }
+            }
             let builtSnapshot = await TaskThreadSnapshot.buildAsync(input: input, fields: fields)
             guard !Task.isCancelled else { return }
             self?.snapshot = builtSnapshot
+            self?.lastSnapshotApplyAt = Date()
             Self.logSnapshotState(
                 snapshot: builtSnapshot,
                 trigger: trigger,
