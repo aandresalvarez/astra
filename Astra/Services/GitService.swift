@@ -15,8 +15,27 @@ struct GitStatusFile: Identifiable, Hashable {
 
 class GitService {
     static let shared = GitService()
-    
+
     private init() {}
+
+    private let indexLock = NSLock()
+    private var _indexBusy = false
+
+    /// Acquires a logical lock so only one index-writing batch runs at a time.
+    /// Returns false if another batch is already running.
+    func acquireIndexGuard() -> Bool {
+        indexLock.lock()
+        defer { indexLock.unlock() }
+        if _indexBusy { return false }
+        _indexBusy = true
+        return true
+    }
+
+    func releaseIndexGuard() {
+        indexLock.lock()
+        defer { indexLock.unlock() }
+        _indexBusy = false
+    }
 
     /// Scans a workspace's primary path and additional paths for folders containing a `.git` subdirectory.
     func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo] {
@@ -104,34 +123,39 @@ class GitService {
     
     func getStatusFiles(at repoPath: String) async -> [GitStatusFile] {
         do {
-            let output = try await runGit(at: repoPath, arguments: ["status", "--porcelain"])
-            var files: [GitStatusFile] = []
-            let lines = output.split(separator: "\n")
-            
-            for line in lines {
-                guard line.count >= 3 else { continue }
-                let xIndex = line.index(line.startIndex, offsetBy: 0)
-                let yIndex = line.index(line.startIndex, offsetBy: 1)
-                let x = String(line[xIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-                let y = String(line[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                let fileStartIndex = line.index(line.startIndex, offsetBy: 3)
-                let relativePath = String(line[fileStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                // If X is not empty, it means there are changes in the staging index
-                if !x.isEmpty {
-                    files.append(GitStatusFile(relativePath: relativePath, status: x, isStaged: true))
-                }
-                // If Y is not empty, it means there are unstaged changes in the worktree
-                if !y.isEmpty || (x == "?" && y == "?") {
-                    let status = (x == "?" && y == "?") ? "?" : y
-                    files.append(GitStatusFile(relativePath: relativePath, status: status, isStaged: false))
-                }
-            }
-            return files
+            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain"])
+            return GitService.parseStatusPorcelain(output)
         } catch {
             return []
         }
+    }
+
+    static func parseStatusPorcelain(_ output: String) -> [GitStatusFile] {
+        var files: [GitStatusFile] = []
+        let lines = output.split(separator: "\n")
+
+        for line in lines {
+            guard line.count >= 3 else { continue }
+            let xIndex = line.index(line.startIndex, offsetBy: 0)
+            let yIndex = line.index(line.startIndex, offsetBy: 1)
+            let x = String(line[xIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let y = String(line[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let fileStartIndex = line.index(line.startIndex, offsetBy: 3)
+            let relativePath = String(line[fileStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if x == "?" && y == "?" {
+                files.append(GitStatusFile(relativePath: relativePath, status: "?", isStaged: false))
+            } else {
+                if !x.isEmpty {
+                    files.append(GitStatusFile(relativePath: relativePath, status: x, isStaged: true))
+                }
+                if !y.isEmpty {
+                    files.append(GitStatusFile(relativePath: relativePath, status: y, isStaged: false))
+                }
+            }
+        }
+        return files
     }
     
     func stageFile(_ relativePath: String, at repoPath: String) async throws {
@@ -161,14 +185,135 @@ class GitService {
     func push(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["push"])
     }
+
+    func pullRebase(at repoPath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["pull", "--rebase"])
+    }
+
+    /// Returns ahead/behind counts vs. the upstream tracking branch. Returns nil when no upstream is configured.
+    func getAheadBehind(at repoPath: String) async -> (ahead: Int, behind: Int)? {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["rev-list", "--left-right", "--count", "@{u}...HEAD"]
+            )
+            let parts = output
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(whereSeparator: { $0 == "\t" || $0 == " " })
+            guard parts.count >= 2,
+                  let behind = Int(parts[0]),
+                  let ahead = Int(parts[1]) else { return nil }
+            return (ahead, behind)
+        } catch {
+            return nil
+        }
+    }
+
+    func hasUpstream(at repoPath: String) async -> Bool {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+            )
+            return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /// Returns the staged diff (for commit message generation). Truncated to `limit` bytes.
+    func getStagedDiff(at repoPath: String, limit: Int = 8 * 1024) async -> String {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--cached"])
+            if output.utf8.count <= limit { return output }
+            let prefix = String(output.prefix(limit))
+            return prefix + "\n…[truncated]"
+        } catch {
+            return ""
+        }
+    }
+
+    /// Returns the most recent N commit subjects from HEAD for tone matching.
+    func getRecentCommitSubjects(at repoPath: String, count: Int = 5) async -> [String] {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["log", "-n", "\(count)", "--pretty=%s"]
+            )
+            return output
+                .split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } catch {
+            return []
+        }
+    }
+
+    /// Returns the merge-base ref between two refs (typically `origin/main` and HEAD).
+    func getMergeBase(at repoPath: String, refA: String, refB: String) async -> String? {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["merge-base", refA, refB])
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            return nil
+        }
+    }
+
+    /// Returns the default upstream base branch, e.g. "origin/main", as detected from refs/remotes/origin/HEAD.
+    func getDefaultBaseBranch(at repoPath: String) async -> String {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["symbolic-ref", "refs/remotes/origin/HEAD"]
+            )
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("refs/remotes/") {
+                return String(trimmed.dropFirst("refs/remotes/".count))
+            }
+        } catch {
+            // ignore
+        }
+        return "origin/main"
+    }
+
+    /// Returns the formatted log between `base..branch` for PR body generation.
+    func getBranchLog(at repoPath: String, base: String, branch: String, limit: Int = 30) async -> String {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: [
+                    "log",
+                    "\(base)..\(branch)",
+                    "-n", "\(limit)",
+                    "--pretty=- %s%n%w(0,2,2)%b"
+                ]
+            )
+            return output
+        } catch {
+            return ""
+        }
+    }
+
+    /// Returns the diffstat of `base...branch` for PR body generation.
+    func getBranchDiffStat(at repoPath: String, base: String, branch: String) async -> String {
+        do {
+            return try await runGit(
+                at: repoPath,
+                arguments: ["diff", "--stat", "\(base)...\(branch)"]
+            )
+        } catch {
+            return ""
+        }
+    }
     
     func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
         var additions = 0
         var deletions = 0
         
         do {
-            let unstagedOutput = try await runGit(at: repoPath, arguments: ["diff", "--numstat"])
-            let stagedOutput = try await runGit(at: repoPath, arguments: ["diff", "--cached", "--numstat"])
+            let unstagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--numstat"])
+            let stagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--cached", "--numstat"])
             
             let allLines = unstagedOutput.split(separator: "\n") + stagedOutput.split(separator: "\n")
             for line in allLines {

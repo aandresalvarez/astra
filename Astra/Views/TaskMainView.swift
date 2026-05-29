@@ -529,6 +529,11 @@ struct TaskMainView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration
         )
+        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
+        // the running task when the signature changes, causing withTaskGroup's for-await loop to
+        // exit early with fewer entries than registered runtimes. Writing partial states would
+        // drop providers from the menu until the replacement task completes.
+        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
     }

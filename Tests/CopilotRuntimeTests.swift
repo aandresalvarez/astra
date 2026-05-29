@@ -611,8 +611,8 @@ struct CopilotCLICommandPlanningTests {
         )
 
         let pathParts = plan.environment["PATH", default: ""].split(separator: ":").map(String.init)
-        let shimIndex = try #require(pathParts.firstIndex(of: "/tmp/task-browser-bin"))
-        let astraToolsIndex = try #require(pathParts.firstIndex(of: RuntimePathResolver.astraToolsPath))
+        let shimIndex = try #require(pathParts.lastIndex(of: "/tmp/task-browser-bin"))
+        let astraToolsIndex = try #require(pathParts.lastIndex(of: RuntimePathResolver.astraToolsPath))
 
         #expect(shimIndex < astraToolsIndex)
     }
