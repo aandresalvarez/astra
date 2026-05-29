@@ -114,8 +114,8 @@ final class TaskLifecycleCoordinator {
             return
         }
 
-        if shouldDismissWithoutMarkingCompleted(task) {
-            dismissWithoutMarkingCompleted(task)
+        if let latestRun = dismissibleLatestRun(for: task) {
+            dismissWithoutMarkingCompleted(task, latestRun: latestRun)
             return
         }
 
@@ -129,15 +129,18 @@ final class TaskLifecycleCoordinator {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
-    private func shouldDismissWithoutMarkingCompleted(_ task: AgentTask) -> Bool {
-        guard task.status == .pendingUser else { return false }
-        guard !hasOpenRuntimePermissionApprovalRequest(task) else { return false }
+    private func dismissibleLatestRun(for task: AgentTask) -> TaskRun? {
+        guard task.status == .pendingUser else { return nil }
+        guard !hasOpenRuntimePermissionApprovalRequest(task) else { return nil }
 
         let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
-        return PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: latestRun) != nil
+        guard PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: latestRun) != nil else {
+            return nil
+        }
+        return latestRun
     }
 
-    private func dismissWithoutMarkingCompleted(_ task: AgentTask) {
+    private func dismissWithoutMarkingCompleted(_ task: AgentTask, latestRun: TaskRun) {
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": "dismiss_without_completion"
         ])
@@ -148,7 +151,8 @@ final class TaskLifecycleCoordinator {
         let event = TaskEvent(
             task: task,
             type: "task.dismissed",
-            payload: "Task dismissed by user without marking it completed."
+            payload: "Task dismissed by user without marking it completed.",
+            run: latestRun
         )
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
