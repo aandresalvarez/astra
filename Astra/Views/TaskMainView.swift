@@ -49,6 +49,14 @@ private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     }
 }
 
+private struct ChatTopPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = -.infinity
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private enum RunNoticeProminence {
     case actionable
     case detail
@@ -99,6 +107,8 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
+    @State private var isExpandingWindow = false
+    @State private var expansionAnchorItemID: String?
     @State private var runtimeHealthNow = Date()
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
@@ -369,6 +379,8 @@ struct TaskMainView: View {
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
             pendingInitialChatScrollTaskID = task.id
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
             runtimeHealthNow = Date()
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
@@ -882,6 +894,10 @@ struct TaskMainView: View {
             GeometryReader { viewport in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chatTop")
+                            .background(chatTopPositionReader())
                         chatThreadContent
                         Color.clear
                             .frame(height: 1)
@@ -899,6 +915,9 @@ struct TaskMainView: View {
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                }
+                .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
+                    handleChatTopPositionChange(topMinY: topMinY)
                 }
                 .onAppear {
                     scrollChatToBottom(proxy, animated: false)
@@ -941,6 +960,23 @@ struct TaskMainView: View {
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
             agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
                 .padding(.horizontal, 14)
+        }
+
+        if currentThreadSnapshot.omittedRunCount > 0 {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: 40)
+                Text("Earlier activity")
+                    .font(Stanford.chatMeta(11))
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.6))
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 14)
         }
 
         ForEach(currentThreadSnapshot.conversationItems) { item in
@@ -1296,6 +1332,24 @@ struct TaskMainView: View {
         }
     }
 
+    private func chatTopPositionReader() -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: ChatTopPositionPreferenceKey.self,
+                value: proxy.frame(in: .named("task-chat-scroll")).minY
+            )
+        }
+    }
+
+    private func handleChatTopPositionChange(topMinY: CGFloat) {
+        guard topMinY > -300 else { return }
+        guard currentThreadSnapshot.omittedRunCount > 0 else { return }
+        guard !isExpandingWindow else { return }
+        isExpandingWindow = true
+        expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
+        threadViewModel.expandWindow(for: task)
+    }
+
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
         if hasUnseenChatActivity && !isChatAtBottom {
@@ -1338,6 +1392,15 @@ struct TaskMainView: View {
         proxy: ScrollViewProxy
     ) {
         guard oldSignature != newSignature else { return }
+
+        if let anchorID = expansionAnchorItemID {
+            expansionAnchorItemID = nil
+            isExpandingWindow = false
+            DispatchQueue.main.async {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            return
+        }
 
         if pendingInitialChatScrollTaskID == task.id {
             scrollChatToBottomAfterLayout(proxy, animated: false)
@@ -5099,7 +5162,7 @@ struct MarkdownTextView: View {
 
     private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
         let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
-        cache.countLimit = 200
+        cache.countLimit = 500
         return cache
     }()
 

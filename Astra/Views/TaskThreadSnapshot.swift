@@ -143,8 +143,8 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask) {
-        let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs)
+    init(task: AgentTask, maxRuns: Int = 50) {
+        let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
             goal: task.goal,
             createdAt: task.createdAt,
@@ -192,7 +192,7 @@ struct TaskThreadSnapshotInput: Sendable {
 }
 
 private struct TaskThreadSnapshotWindow {
-    private static let maxRuns = 80
+    private static let defaultMaxRuns = 50
     private static let maxEvents = 1_200
     private static let maxToolResultsPerRun = 12
     private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
@@ -204,12 +204,12 @@ private struct TaskThreadSnapshotWindow {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(events allEvents: [TaskEvent], runs allRuns: [TaskRun]) {
+    init(events allEvents: [TaskEvent], runs allRuns: [TaskRun], maxRuns: Int = defaultMaxRuns) {
         totalEventCount = allEvents.count
         totalRunCount = allRuns.count
 
         let sortedRuns = allRuns.sorted { $0.startedAt < $1.startedAt }
-        runs = Array(sortedRuns.suffix(Self.maxRuns))
+        runs = Array(sortedRuns.suffix(maxRuns))
         let keptRunIDs = Set(runs.map(\.id))
 
         let sortedEvents = allEvents.sorted { $0.timestamp < $1.timestamp }

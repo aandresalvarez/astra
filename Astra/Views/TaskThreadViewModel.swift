@@ -8,8 +8,10 @@ final class TaskThreadViewModel {
     private var snapshotTrigger: TaskThreadSnapshotTrigger?
     private var snapshotTask: Task<Void, Never>?
     private var generatedFilesTask: Task<Void, Never>?
+    private var expansionRunCount: Int = 50
 
     func reset(for task: AgentTask) {
+        expansionRunCount = 50
         snapshotTrigger = nil
         snapshotTask?.cancel()
         snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
@@ -21,7 +23,7 @@ final class TaskThreadViewModel {
         let trigger = TaskThreadSnapshotTrigger(task: task)
         guard snapshotTrigger != trigger else { return }
         snapshotTrigger = trigger
-        let input = TaskThreadSnapshotInput(task: task)
+        let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
         let fields = [
             "task_id": String(task.id.uuidString.prefix(8)),
             "event_count": String(trigger.eventCount),
@@ -48,6 +50,13 @@ final class TaskThreadViewModel {
                 workspaceID: task.workspace?.id
             )
         }
+    }
+
+    func expandWindow(for task: AgentTask) {
+        guard snapshot?.omittedRunCount ?? 0 > 0 else { return }
+        expansionRunCount += 50
+        snapshotTrigger = nil
+        refreshSnapshot(for: task)
     }
 
     func refreshGeneratedFiles(folder: String) {

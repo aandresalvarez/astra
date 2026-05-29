@@ -22,8 +22,8 @@ enum MarkdownLinkifier {
 
     private static let cache: NSCache<NSString, CacheEntry> = {
         let cache = NSCache<NSString, CacheEntry>()
-        cache.countLimit = 512
-        cache.totalCostLimit = 2_000_000
+        cache.countLimit = 1024
+        cache.totalCostLimit = 4_000_000
         return cache
     }()
 
