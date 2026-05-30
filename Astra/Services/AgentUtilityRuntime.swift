@@ -1,26 +1,6 @@
 import Foundation
 import ASTRACore
 
-// #region agent log
-private func _utilDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
-    let payload: [String: Any] = [
-        "sessionId": "57c8bc", "runId": "helper-fix", "hypothesisId": hypothesis,
-        "location": location, "message": message, "data": data,
-        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-    ]
-    guard let d = try? JSONSerialization.data(withJSONObject: payload),
-          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-        defer { try? h.close() }
-        h.seekToEndOfFile()
-        try? h.write(contentsOf: line)
-    } else {
-        try? line.write(to: url)
-    }
-}
-// #endregion
-
 struct AgentUtilityRuntimeConfiguration: Equatable {
     var runtime: AgentRuntimeID
     var model: String
@@ -98,11 +78,7 @@ enum AgentUtilityRuntimeRunner {
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode = .none
     ) async -> AgentUtilityRunResult {
-        // #region agent log
-        let _dbgStart = Date()
-        _utilDebugLog("AgentUtilityRuntime.swift:runPrompt-enter", "utility prompt start", ["runtime": configuration.runtime.rawValue, "model": configuration.model, "executable": configuration.executablePath(for: configuration.runtime), "promptLen": prompt.count, "toolMode": "\(toolMode)"], "E,F,H")
-        // #endregion
-        let result = await AgentRuntimeAdapterRegistry
+        await AgentRuntimeAdapterRegistry
             .adapter(for: configuration.runtime)
             .runUtilityPrompt(
                 prompt,
@@ -110,9 +86,5 @@ enum AgentUtilityRuntimeRunner {
                 configuration: configuration,
                 toolMode: toolMode
             )
-        // #region agent log
-        _utilDebugLog("AgentUtilityRuntime.swift:runPrompt-exit", "utility prompt end", ["runtime": configuration.runtime.rawValue, "exitCode": result.exitCode, "outputLen": result.output.count, "errorPrefix": String(result.error.prefix(200)), "elapsedMs": Int(Date().timeIntervalSince(_dbgStart) * 1000)], "E,F")
-        // #endregion
-        return result
     }
 }

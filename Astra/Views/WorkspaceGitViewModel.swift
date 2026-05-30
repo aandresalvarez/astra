@@ -3,26 +3,6 @@ import SwiftUI
 import Combine
 import ASTRACore
 
-// #region agent log
-private func _gitVMDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
-    let payload: [String: Any] = [
-        "sessionId": "57c8bc", "runId": "post-fix", "hypothesisId": hypothesis,
-        "location": location, "message": message, "data": data,
-        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-    ]
-    guard let d = try? JSONSerialization.data(withJSONObject: payload),
-          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-        defer { try? h.close() }
-        h.seekToEndOfFile()
-        try? h.write(contentsOf: line)
-    } else {
-        try? line.write(to: url)
-    }
-}
-// #endregion
-
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {
     // Repositories
@@ -275,9 +255,6 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func commitFromSheet(message: String, includeUnstaged: Bool, andPush: Bool) {
         guard let repo = selectedRepository else { return }
-        // #region agent log
-        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "enter", ["andPush": andPush, "includeUnstaged": includeUnstaged, "messageBlank": message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty], "A,B,C")
-        // #endregion
         isSyncing = true
         Task {
             do {
@@ -297,9 +274,6 @@ final class WorkspaceGitViewModel: ObservableObject {
                 if finalMessage.isEmpty {
                     AppLogger.info("Auto-generating commit message", category: "Git")
                     isSuggestingCommit = true
-                    // #region agent log
-                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "before suggestCommitMessage", [:], "C")
-                    // #endregion
                     let diff = await GitService.shared.getStagedDiff(at: repo.path)
                     let recent = await GitService.shared.getRecentCommitSubjects(at: repo.path)
                     let suggestion = try await makeAuthoringService().suggestCommitMessage(
@@ -307,9 +281,6 @@ final class WorkspaceGitViewModel: ObservableObject {
                         diff: diff,
                         recentSubjects: recent
                     )
-                    // #region agent log
-                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after suggestCommitMessage", ["len": suggestion.formatted.count], "C")
-                    // #endregion
                     finalMessage = suggestion.formatted
                     isSuggestingCommit = false
                 }
@@ -322,13 +293,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 if andPush {
                     if self.hasUpstream {
                         AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(self.ahead)"])
-                        // #region agent log
-                        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "before push", ["ahead": self.ahead, "hasUpstream": self.hasUpstream], "A")
-                        // #endregion
                         try await GitService.shared.push(at: repo.path)
-                        // #region agent log
-                        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after push", [:], "A")
-                        // #endregion
                     } else {
                         AppLogger.warning("Cannot push — no upstream branch", category: "Git")
                     }
@@ -341,9 +306,6 @@ final class WorkspaceGitViewModel: ObservableObject {
                 self.errorMessage = error.localizedDescription
                 isSuggestingCommit = false
             }
-            // #region agent log
-            _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "finished — isSyncing reset", [:], "A,B,C")
-            // #endregion
             isSyncing = false
         }
     }

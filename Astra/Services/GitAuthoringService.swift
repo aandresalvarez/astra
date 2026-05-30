@@ -4,7 +4,7 @@ import ASTRACore
 // #region agent log
 private func _gitAuthDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
     let payload: [String: Any] = [
-        "sessionId": "57c8bc", "runId": "helper-fix", "hypothesisId": hypothesis,
+        "sessionId": "57c8bc", "runId": "cross-provider", "hypothesisId": hypothesis,
         "location": location, "message": message, "data": data,
         "timestamp": Int(Date().timeIntervalSince1970 * 1000)
     ]
@@ -177,7 +177,7 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
     private func runWithTimeout(prompt: String, repoPath: String) async -> AgentUtilityRunResult {
         // #region agent log
         let _dbgStart = Date()
-        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-enter", "authoring start", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "promptLen": prompt.count, "timeoutSeconds": timeoutSeconds], "E,F,H")
+        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-enter", "authoring start", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "promptLen": prompt.count, "timeoutSeconds": timeoutSeconds], "M,N")
         // #endregion
         let timeoutNanos = UInt64(max(1, timeoutSeconds)) * 1_000_000_000
         let runtimeConfiguration = utilityRuntime
@@ -213,7 +213,7 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             return AgentUtilityRunResult(exitCode: 124, output: "", error: "Timed out after \(self.timeoutSeconds)s")
         }
         // #region agent log
-        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-result", "authoring result", ["timedOut": result.exitCode == 124, "exitCode": result.exitCode, "outputLen": result.output.count, "errorPrefix": String(result.error.prefix(200)), "elapsedMs": Int(Date().timeIntervalSince(_dbgStart) * 1000)], "E,F")
+        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-result", "authoring result", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "timedOut": result.exitCode == 124, "exitCode": result.exitCode, "outputLen": result.output.count, "errorPrefix": String(result.error.prefix(200)), "elapsedMs": Int(Date().timeIntervalSince(_dbgStart) * 1000)], "M,N")
         // #endregion
         return result
     }
