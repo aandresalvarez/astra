@@ -1,5 +1,25 @@
 import Foundation
 
+// #region agent log
+private func _gitDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "post-fix", "hypothesisId": hypothesis,
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 struct GitRepositoryInfo: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -60,29 +80,61 @@ class GitService {
     
     /// Spawns a git subprocess and returns standard output or throws standard error.
     private func runGit(at repoPath: String, arguments: [String]) async throws -> String {
+        let command = (["git"] + arguments).joined(separator: " ")
+        AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", repoPath] + arguments
-        
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        
+
+        // #region agent log
+        _gitDebugLog("GitService.swift:runGit-enter", "git start", ["args": arguments], "A,B")
+        // #endregion
         try process.run()
-        
-        // Asynchronously wait for exit to prevent blocking the main thread
+
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            // Drain stdout and stderr concurrently while the process is still
+            // running. Reading only after `waitUntilExit()` deadlocks whenever a
+            // stream exceeds the OS pipe buffer (~64KB), because the child blocks
+            // writing while the parent blocks waiting for exit. Concurrent reads
+            // keep both pipes empty so the child can always make progress.
+            let drainQueue = DispatchQueue(label: "com.coral.astra.git-drain", attributes: .concurrent)
+            let group = DispatchGroup()
+            var outData = Data()
+            var errData = Data()
+
+            group.enter()
+            drainQueue.async {
+                outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            group.enter()
+            drainQueue.async {
+                errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+
+            group.notify(queue: drainQueue) {
                 process.waitUntilExit()
-                
+
+                // #region agent log
+                _gitDebugLog("GitService.swift:runGit-exit", "git exit", ["args": arguments, "exitCode": Int(process.terminationStatus), "stdoutBytes": outData.count], "A,B")
+                // #endregion
+
                 if process.terminationStatus != 0 {
-                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                     let errString = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    AppLogger.error("git command failed: \(command) — \(errString)", category: "Git")
                     continuation.resume(throwing: NSError(domain: "GitError", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errString]))
                 } else {
-                    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
                     let outString = String(data: outData, encoding: .utf8) ?? ""
+                    // #region agent log
+                    _gitDebugLog("GitService.swift:runGit-read", "git stdout read", ["args": arguments, "stdoutBytes": outData.count], "B")
+                    // #endregion
                     continuation.resume(returning: outString)
                 }
             }

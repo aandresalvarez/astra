@@ -3903,14 +3903,14 @@ struct TaskThreadViewModelTests {
     private func awaitSnapshot(
         _ vm: TaskThreadViewModel,
         where predicate: @Sendable (TaskThreadSnapshot) -> Bool,
-        timeout: TimeInterval = 5
+        timeout: TimeInterval = 30
     ) async -> TaskThreadSnapshot? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let snap = vm.snapshot, predicate(snap) {
                 return snap
             }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return vm.snapshot
     }

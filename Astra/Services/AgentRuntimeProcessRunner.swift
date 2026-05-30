@@ -330,24 +330,21 @@ final class AgentRuntimeProcessRunner {
         taskEnv: [String: String],
         includeClaudeTeamFlag: Bool
     ) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        var pathParts = [env["PATH"] ?? ""]
-        pathParts.append(contentsOf: pathPrefix(for: task, taskEnv: taskEnv))
-        var pathSuffix = RuntimePathResolver.shellPathSuffix
-        if hasActiveCLITools(task) || taskEnv["ASTRA_BROWSER_URL"] != nil {
-            pathSuffix += ":\(RuntimePathResolver.astraToolsPath)"
-        }
-        pathParts.append(pathSuffix)
-        env["PATH"] = pathParts.filter { !$0.isEmpty }.joined(separator: ":")
+        let prefixPaths = pathPrefix(for: task, taskEnv: taskEnv)
+        var extraVars: [String: String] = [:]
         if includeClaudeTeamFlag {
-            env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+            extraVars["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         }
         for (key, value) in claudeProviderEnvironment() {
-            env[key] = value
+            extraVars[key] = value
         }
         for (key, value) in taskEnv {
-            env[key] = value
+            extraVars[key] = value
         }
+        var env = RuntimeProcessEnvironment.enriched(
+            additionalPaths: prefixPaths,
+            extraVariables: extraVars
+        )
         if !taskEnv.isEmpty {
             AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
                 "phase": phase,

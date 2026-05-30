@@ -3,6 +3,26 @@ import SwiftUI
 import Combine
 import ASTRACore
 
+// #region agent log
+private func _gitVMDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "post-fix", "hypothesisId": hypothesis,
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {
     // Repositories
@@ -55,7 +75,7 @@ final class WorkspaceGitViewModel: ObservableObject {
             rawValue: UserDefaults.standard.string(forKey: "defaultRuntimeID")
         )
         let model = RuntimeModelAvailability.normalizedModel(
-            UserDefaults.standard.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model,
+            UserDefaults.standard.string(forKey: "validationModel") ?? "claude-haiku-4-5-20251001",
             for: runtime
         )
         return AgentGitAuthoringService(
@@ -100,10 +120,15 @@ final class WorkspaceGitViewModel: ObservableObject {
         await refreshRepoDetails()
     }
 
-    func refreshRepoDetails() async {
+    func refreshRepoDetails(force: Bool = false) async {
         guard let repo = selectedRepository else { return }
-        guard GitService.shared.acquireIndexGuard() else { return }
-        defer { GitService.shared.releaseIndexGuard() }
+        if !force {
+            guard GitService.shared.acquireIndexGuard() else {
+                AppLogger.debug("Git refresh skipped — another refresh in progress", category: "Git")
+                return
+            }
+        }
+        defer { if !force { GitService.shared.releaseIndexGuard() } }
 
         async let branch = GitService.shared.getCurrentBranch(at: repo.path)
         async let localBranches = GitService.shared.getLocalBranches(at: repo.path)
@@ -132,12 +157,14 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func checkout(branch: String) {
         guard let repo = selectedRepository else { return }
+        AppLogger.audit(.gitCheckout, category: "Git", fields: ["branch": branch])
         Task {
             do {
                 try await GitService.shared.checkoutBranch(branch, at: repo.path)
                 self.errorMessage = nil
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Checkout failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -145,14 +172,16 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func createAndCheckoutBranch() {
         guard let repo = selectedRepository, !newBranchName.isEmpty else { return }
+        AppLogger.audit(.gitBranchCreated, category: "Git", fields: ["branch": newBranchName, "from": currentBranch])
         Task {
             do {
                 try await GitService.shared.createBranch(newBranchName, from: currentBranch, at: repo.path)
                 self.newBranchName = ""
                 self.showNewBranchPopover = false
                 self.errorMessage = nil
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Create branch failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -162,11 +191,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func stage(file: GitStatusFile) {
         guard let repo = selectedRepository else { return }
+        AppLogger.audit(.gitStageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
                 try await GitService.shared.stageFile(file.relativePath, at: repo.path)
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Stage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -174,11 +205,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func stageAll() {
         guard let repo = selectedRepository else { return }
+        AppLogger.audit(.gitStageFile, category: "Git", fields: ["scope": "all"])
         Task {
             do {
                 try await GitService.shared.stageAll(at: repo.path)
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Stage all failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -186,11 +219,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func unstage(file: GitStatusFile) {
         guard let repo = selectedRepository else { return }
+        AppLogger.audit(.gitUnstageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
                 try await GitService.shared.unstageFile(file.relativePath, at: repo.path)
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Unstage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -198,11 +233,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func unstageAll() {
         guard let repo = selectedRepository else { return }
+        AppLogger.audit(.gitUnstageFile, category: "Git", fields: ["scope": "all"])
         Task {
             do {
                 try await GitService.shared.unstageAll(at: repo.path)
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Unstage all failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -212,44 +249,121 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func commitChanges() {
         guard let repo = selectedRepository, !commitMessage.isEmpty else { return }
+        AppLogger.audit(.gitCommit, category: "Git")
         Task {
             do {
                 try await GitService.shared.commit(message: commitMessage, at: repo.path)
                 self.commitMessage = ""
                 self.errorMessage = nil
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Commit failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }
     }
 
-    // MARK: - Commit or push
+    // MARK: - Commit sheet actions
 
-    var canCommitOrPush: Bool {
-        let hasStaged = statusFiles.contains(where: { $0.isStaged })
-        let hasMessage = !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasStaged && hasMessage) || ahead > 0
+    var hasChanges: Bool {
+        !statusFiles.isEmpty
     }
 
-    func commitOrPush() {
+    var canOpenCommitSheet: Bool {
+        hasChanges || ahead > 0
+    }
+
+    func commitFromSheet(message: String, includeUnstaged: Bool, andPush: Bool) {
         guard let repo = selectedRepository else { return }
-        let hasStaged = statusFiles.contains(where: { $0.isStaged })
-        let hasMessage = !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // #region agent log
+        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "enter", ["andPush": andPush, "includeUnstaged": includeUnstaged, "messageBlank": message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty], "A,B,C")
+        // #endregion
         isSyncing = true
         Task {
             do {
-                if hasStaged && hasMessage {
-                    try await GitService.shared.commit(message: commitMessage, at: repo.path)
-                    self.commitMessage = ""
+                if includeUnstaged {
+                    try await GitService.shared.stageAll(at: repo.path)
+                    await refreshRepoDetails(force: true)
                 }
-                await refreshRepoDetails()
-                if self.ahead > 0 && self.hasUpstream {
-                    try await GitService.shared.push(at: repo.path)
+
+                let hasStaged = statusFiles.contains(where: { $0.isStaged })
+                guard hasStaged else {
+                    self.errorMessage = "No staged changes to commit."
+                    isSyncing = false
+                    return
                 }
+
+                var finalMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                if finalMessage.isEmpty {
+                    AppLogger.info("Auto-generating commit message", category: "Git")
+                    isSuggestingCommit = true
+                    // #region agent log
+                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "before suggestCommitMessage", [:], "C")
+                    // #endregion
+                    let diff = await GitService.shared.getStagedDiff(at: repo.path)
+                    let recent = await GitService.shared.getRecentCommitSubjects(at: repo.path)
+                    let suggestion = try await makeAuthoringService().suggestCommitMessage(
+                        repoPath: repo.path,
+                        diff: diff,
+                        recentSubjects: recent
+                    )
+                    // #region agent log
+                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after suggestCommitMessage", ["len": suggestion.formatted.count], "C")
+                    // #endregion
+                    finalMessage = suggestion.formatted
+                    isSuggestingCommit = false
+                }
+
+                AppLogger.audit(.gitCommit, category: "Git")
+                try await GitService.shared.commit(message: finalMessage, at: repo.path)
+                self.commitMessage = ""
+                await refreshRepoDetails(force: true)
+
+                if andPush {
+                    if self.hasUpstream {
+                        AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(self.ahead)"])
+                        // #region agent log
+                        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "before push", ["ahead": self.ahead, "hasUpstream": self.hasUpstream], "A")
+                        // #endregion
+                        try await GitService.shared.push(at: repo.path)
+                        // #region agent log
+                        _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after push", [:], "A")
+                        // #endregion
+                    } else {
+                        AppLogger.warning("Cannot push — no upstream branch", category: "Git")
+                    }
+                }
+
                 self.errorMessage = nil
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Commit failed: \(error.localizedDescription)", category: "Git")
+                self.errorMessage = error.localizedDescription
+                isSuggestingCommit = false
+            }
+            // #region agent log
+            _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "finished — isSyncing reset", [:], "A,B,C")
+            // #endregion
+            isSyncing = false
+        }
+    }
+
+    func pushOnly() {
+        guard let repo = selectedRepository else { return }
+        guard hasUpstream else {
+            self.errorMessage = "No upstream branch. Push the current branch first."
+            return
+        }
+        guard ahead > 0 else { return }
+        AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(ahead)"])
+        isSyncing = true
+        Task {
+            do {
+                try await GitService.shared.push(at: repo.path)
+                self.errorMessage = nil
+                await refreshRepoDetails(force: true)
+            } catch {
+                AppLogger.error("Push failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
             isSyncing = false
@@ -264,18 +378,22 @@ final class WorkspaceGitViewModel: ObservableObject {
             self.errorMessage = "No upstream branch. Push the current branch first."
             return
         }
+        AppLogger.info("sync: ahead=\(ahead) behind=\(behind)", category: "Git")
         isSyncing = true
         Task {
             do {
                 if behind > 0 {
+                    AppLogger.audit(.gitPull, category: "Git", fields: ["behind": "\(behind)"])
                     try await GitService.shared.pullRebase(at: repo.path)
                 }
                 if ahead > 0 || behind == 0 {
+                    AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(ahead)"])
                     try await GitService.shared.push(at: repo.path)
                 }
                 self.errorMessage = nil
-                await refreshRepoDetails()
+                await refreshRepoDetails(force: true)
             } catch {
+                AppLogger.error("Sync failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
             isSyncing = false

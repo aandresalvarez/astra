@@ -12,6 +12,11 @@ final class TaskLifecycleCoordinator {
         self.taskQueue = taskQueue
     }
 
+    /// Canonical follow-up message sent when the user resumes a previously
+    /// session-backed task. Kept as a named constant so the resume contract is
+    /// traceable and independently testable.
+    static let resumeContinuationMessage = "Continue where you left off. Complete the original goal."
+
     // MARK: - Task Lifecycle
 
     func runQueue() {
@@ -99,7 +104,7 @@ final class TaskLifecycleCoordinator {
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         Task {
-            await taskQueue.continueSession(task: task, message: "Continue where you left off. Complete the original goal.", modelContext: modelContext)
+            await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
                 "source": "resume"

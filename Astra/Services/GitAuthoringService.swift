@@ -1,6 +1,26 @@
 import Foundation
 import ASTRACore
 
+// #region agent log
+private func _gitAuthDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "helper-fix", "hypothesisId": hypothesis,
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 // MARK: - Suggestion models
 
 struct CommitSuggestion: Codable, Equatable, Sendable {
@@ -155,28 +175,47 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
     }
 
     private func runWithTimeout(prompt: String, repoPath: String) async -> AgentUtilityRunResult {
-        await withTaskGroup(of: AgentUtilityRunResult.self) { group in
+        // #region agent log
+        let _dbgStart = Date()
+        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-enter", "authoring start", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "promptLen": prompt.count, "timeoutSeconds": timeoutSeconds], "E,F,H")
+        // #endregion
+        let timeoutNanos = UInt64(max(1, timeoutSeconds)) * 1_000_000_000
+        let runtimeConfiguration = utilityRuntime
+        // Race the helper against the deadline: whichever finishes first wins, and
+        // the loser is cancelled. A nil element is the timeout sentinel.
+        let result: AgentUtilityRunResult = await withTaskGroup(
+            of: AgentUtilityRunResult?.self
+        ) { group in
             group.addTask {
                 await AgentUtilityRuntimeRunner.runPrompt(
                     prompt,
                     workspacePath: repoPath,
-                    configuration: self.utilityRuntime,
+                    configuration: runtimeConfiguration,
                     toolMode: .readOnly
                 )
             }
             group.addTask {
-                let nanos = UInt64(max(1, self.timeoutSeconds)) * 1_000_000_000
-                try? await Task.sleep(nanoseconds: nanos)
+                try? await Task.sleep(nanoseconds: timeoutNanos)
+                return nil
+            }
+            defer { group.cancelAll() }
+            for await first in group {
+                if let completed = first {
+                    return completed
+                }
+                AppLogger.warning("Git authoring timed out after \(self.timeoutSeconds)s", category: "Git")
                 return AgentUtilityRunResult(
                     exitCode: 124,
                     output: "",
                     error: "Timed out after \(self.timeoutSeconds)s"
                 )
             }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
+            return AgentUtilityRunResult(exitCode: 124, output: "", error: "Timed out after \(self.timeoutSeconds)s")
         }
+        // #region agent log
+        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-result", "authoring result", ["timedOut": result.exitCode == 124, "exitCode": result.exitCode, "outputLen": result.output.count, "errorPrefix": String(result.error.prefix(200)), "elapsedMs": Int(Date().timeIntervalSince(_dbgStart) * 1000)], "E,F")
+        // #endregion
+        return result
     }
 }
 
@@ -189,12 +228,13 @@ enum GitAuthoringPromptBuilder {
             : recentSubjects.map { "- \($0)" }.joined(separator: "\n")
 
         return """
-        You are ASTRA's git commit author. Read the staged diff and propose a single, concise commit message.
+        You are ASTRA's git commit author. Using ONLY the staged diff included below, propose a single, concise commit message. Everything you need is already in this message.
 
         Return exactly one line using this prefix and no markdown fences:
         ASTRA_COMMIT_SUGGESTION {"subject":"...","body":"...","type":"feat|fix|chore|refactor|docs|test|perf|build|ci|style"}
 
         Rules:
+        - Use ONLY the diff text in this message. Do NOT use any tools, read files, run commands, or explore the repository. Answer immediately from the text below.
         - subject is at most 72 characters, imperative mood, no trailing period.
         - body is optional. When present, wrap manually at ~72 chars and explain the WHY succinctly.
         - type is the single best conventional-commit type from the list above.
@@ -204,19 +244,20 @@ enum GitAuthoringPromptBuilder {
         Recent commit subjects (for tone):
         \(recent)
 
-        Staged diff (truncated):
+        Staged diff:
         \(diff)
         """
     }
 
     static func prPrompt(branch: String, base: String, log: String, diffStat: String) -> String {
         return """
-        You are ASTRA's pull-request author. Draft a clean PR title and body for the changes between \(base) and \(branch).
+        You are ASTRA's pull-request author. Using ONLY the commit log and diffstat included below, draft a clean PR title and body for the changes between \(base) and \(branch).
 
         Return exactly one line using this prefix and no markdown fences:
         ASTRA_PR_SUGGESTION {"title":"...","body":"...markdown..."}
 
         Rules:
+        - Use ONLY the information in this message. Do NOT use any tools, read files, run commands, or explore the repository. Answer immediately from the text below.
         - title is concise, imperative, at most 80 characters, no trailing period.
         - body is GitHub-flavored markdown. Use these sections in order, omitting any that are empty:
           ## Summary

@@ -2,6 +2,26 @@ import Foundation
 import SwiftData
 import ASTRACore
 
+// #region agent log
+func _copilotUtilDebugLog(_ location: String, _ message: String, _ data: [String: Any]) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "copilot-hang", "hypothesisId": "I,J,K,L",
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 struct AgentRuntimePolicyCapabilities: Equatable, Sendable {
     var supportsOutputFormatJSON: Bool
     var supportsStreamingFlag: Bool
@@ -639,6 +659,20 @@ struct RuntimeReadinessProbeContext {
     let timeout: TimeInterval
     let detectExecutable: @Sendable (String) -> String
     let isExecutable: @Sendable (String) -> Bool
+    let processEnvironment: [String: String]
+
+    init(
+        runner: any BinaryRunner,
+        timeout: TimeInterval,
+        detectExecutable: @Sendable @escaping (String) -> String,
+        isExecutable: @Sendable @escaping (String) -> Bool
+    ) {
+        self.runner = runner
+        self.timeout = timeout
+        self.detectExecutable = detectExecutable
+        self.isExecutable = isExecutable
+        self.processEnvironment = RuntimeProcessEnvironment.enriched()
+    }
 
     func run(
         path: String,
@@ -646,7 +680,7 @@ struct RuntimeReadinessProbeContext {
         timeout overrideTimeout: TimeInterval? = nil,
         environment: [String: String]? = nil
     ) async -> RunResult {
-        await runner.run(path: path, args: args, timeout: overrideTimeout ?? timeout, environment: environment)
+        await runner.run(path: path, args: args, timeout: overrideTimeout ?? timeout, environment: environment ?? processEnvironment)
     }
 
     func checkExecutable(
@@ -670,7 +704,7 @@ struct RuntimeReadinessProbeContext {
             )
         }
 
-        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: nil)
+        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: processEnvironment)
         guard result.isSuccess else {
             return RuntimeExecutableCheckResult(
                 executable: executable,
@@ -1196,8 +1230,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     private func claudeProviderEnvironment(for configuration: RuntimeReadinessConfiguration) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
+        var env = RuntimeProcessEnvironment.enriched()
         guard configuration.claudeProvider == .vertex else { return env }
 
         let project = trimmed(configuration.vertexProjectID)
@@ -1604,7 +1637,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: 120,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: copilotHome
+            copilotHome: copilotHome,
+            disableCustomInstructions: true
         )
 
         try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
@@ -1618,7 +1652,38 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        // #region agent log
+        let _redactedArgs = plan.arguments.enumerated().map { idx, a -> String in
+            (idx > 0 && plan.arguments[idx - 1] == "--prompt") ? "<prompt:\(a.count)>" : a
+        }
+        try? prompt.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/astra_helper_prompt.txt"))
+        _copilotUtilDebugLog("AgentRuntimeAdapter.swift:copilot-util-launch", "copilot launch", [
+            "executable": plan.executablePath,
+            "workspacePath": workspacePath,
+            "args": _redactedArgs,
+            "parsesJSONLines": plan.parsesJSONLines,
+            "allowedTools": allowedTools,
+            "caps": [
+                "json": capabilities.supportsOutputFormatJSON,
+                "silent": capabilities.supportsSilent,
+                "stream": capabilities.supportsStreamingFlag,
+                "noAskUser": capabilities.supportsNoAskUser,
+                "allowAll": capabilities.supportsAllowAll,
+                "allowAllTools": capabilities.supportsAllowAllTools,
+                "reqAllowAllTools": capabilities.requiresAllowAllToolsForPrompt
+            ]
+        ])
+        // #endregion
         let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        // #region agent log
+        _copilotUtilDebugLog("AgentRuntimeAdapter.swift:copilot-util-result", "copilot result", [
+            "exitCode": result.exitCode,
+            "stdoutLen": result.stdout.count,
+            "stderrLen": result.stderr.count,
+            "stdoutPrefix": String(result.stdout.prefix(900)),
+            "stderrPrefix": String(result.stderr.prefix(900))
+        ])
+        // #endregion
         let output = plan.parsesJSONLines
             ? extractCopilotUtilityText(from: result.stdout)
             : result.stdout
@@ -2066,14 +2131,17 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             "\(Int(timeoutSeconds))s",
             "--sandbox"
         ]
-        var environment = ProcessInfo.processInfo.environment
-        environment["NO_COLOR"] = "1"
-        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
-        environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
+        var extraVars: [String: String] = [
+            "NO_COLOR": "1",
+            "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
+        ]
+        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
+        extraVars["TERM"] = parentTerm ?? "xterm-256color"
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
-            environment["HOME"] = trimmedHome
+            extraVars["HOME"] = trimmedHome
         }
+        let environment = RuntimeProcessEnvironment.enriched(extraVariables: extraVars)
 
         let result = await probes.run(
             path: executable,

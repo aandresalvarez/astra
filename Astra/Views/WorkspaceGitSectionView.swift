@@ -13,6 +13,7 @@ struct WorkspaceGitSectionView: View {
     var isCompact: Bool = false
 
     @State private var isChangesDrawerExpanded = false
+    @State private var showCommitSheet = false
     @State private var showPRDraftSheet = false
 
     var body: some View {
@@ -63,6 +64,11 @@ struct WorkspaceGitSectionView: View {
                     }
                 )
             }
+        }
+        .sheet(isPresented: $showCommitSheet) {
+            CommitSheet(viewModel: viewModel, onDismiss: {
+                showCommitSheet = false
+            })
         }
     }
 
@@ -178,7 +184,7 @@ struct WorkspaceGitSectionView: View {
 
     private var commitOrPushRow: some View {
         Button {
-            viewModel.commitOrPush()
+            showCommitSheet = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.up.circle")
@@ -199,21 +205,7 @@ struct WorkspaceGitSectionView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
-        .disabled(!viewModel.canCommitOrPush || viewModel.isSyncing)
-        .help(commitOrPushHelpText)
-    }
-
-    private var commitOrPushHelpText: String {
-        let hasStaged = viewModel.statusFiles.contains(where: { $0.isStaged })
-        let hasMessage = !viewModel.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if hasStaged && hasMessage && viewModel.ahead > 0 {
-            return "Commit staged changes, then push"
-        } else if hasStaged && hasMessage {
-            return "Commit staged changes"
-        } else if viewModel.ahead > 0 {
-            return "Push \(viewModel.ahead) commit\(viewModel.ahead == 1 ? "" : "s") to remote"
-        }
-        return "Stage changes and write a commit message, or push pending commits"
+        .disabled(!viewModel.canOpenCommitSheet || viewModel.isSyncing)
     }
 
     @ViewBuilder
@@ -329,10 +321,6 @@ struct WorkspaceGitSectionView: View {
                     .padding(.horizontal, 6)
                 }
                 .frame(maxHeight: 320)
-
-                Divider().padding(.horizontal, 8)
-                commitComposer(hasStaged: !staged.isEmpty)
-                    .padding(.horizontal, 6)
             }
         }
         .padding(.bottom, 6)
@@ -363,40 +351,6 @@ struct WorkspaceGitSectionView: View {
 
             ForEach(files) { file in
                 fileRow(file: file, action: { rowAction(file) }, icon: icon)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func commitComposer(hasStaged: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 4) {
-                TextField("Commit message…", text: $viewModel.commitMessage)
-                    .textFieldStyle(.plain)
-                    .font(Stanford.body(11))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-
-                Button {
-                    Task { await viewModel.suggestCommitMessage() }
-                } label: {
-                    if viewModel.isSuggestingCommit {
-                        ProgressView().controlSize(.mini)
-                            .frame(width: 20, height: 20)
-                    } else {
-                        Image(systemName: "sparkles")
-                            .font(Stanford.ui(11))
-                            .foregroundStyle(Stanford.lagunita)
-                            .frame(width: 20, height: 20)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isSuggestingCommit || !hasStaged)
-                .help(hasStaged
-                      ? "Suggest commit message from staged diff"
-                      : "Stage changes first")
             }
         }
     }
@@ -666,6 +620,112 @@ struct BranchPickerPopoverView: View {
             .buttonStyle(.plain)
         }
         .frame(width: 220)
+    }
+}
+
+// MARK: - Commit sheet
+
+struct CommitSheet: View {
+    @ObservedObject var viewModel: WorkspaceGitViewModel
+    let onDismiss: () -> Void
+
+    @State private var message = ""
+    @State private var includeUnstaged = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(Stanford.ui(12, weight: .medium))
+                        .foregroundStyle(Stanford.lagunita)
+                    Text(viewModel.currentBranch)
+                        .font(Stanford.ui(13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    if viewModel.additions > 0 {
+                        Text("+\(viewModel.additions)")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(Stanford.statusHealthy)
+                    }
+                    if viewModel.deletions > 0 {
+                        Text("-\(viewModel.deletions)")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(Stanford.statusError)
+                    }
+                }
+            }
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $message)
+                    .font(Stanford.body(13))
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+
+                if message.isEmpty {
+                    Text("Commit message (leave blank to generate)...")
+                        .font(Stanford.body(13))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 14)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(minHeight: 100)
+            .background(Color.primary.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            Toggle("Include unstaged changes", isOn: $includeUnstaged)
+                .font(Stanford.body(12))
+                .toggleStyle(.checkbox)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                commitButton(label: "Commit", icon: "point.topleft.down.to.point.bottomright.curvepath", andPush: false)
+                    .keyboardShortcut(.return, modifiers: .command)
+
+                commitButton(label: "Commit and push", icon: "arrow.up.circle", andPush: true)
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+
+                pushButton
+
+                Spacer()
+
+                Button("Cancel", action: onDismiss)
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 440, height: 310)
+    }
+
+    @ViewBuilder
+    private func commitButton(label: String, icon: String, andPush: Bool) -> some View {
+        Button {
+            viewModel.commitFromSheet(message: message, includeUnstaged: includeUnstaged, andPush: andPush)
+            onDismiss()
+        } label: {
+            if viewModel.isSyncing || viewModel.isSuggestingCommit {
+                ProgressView().controlSize(.small)
+            } else {
+                Label(label, systemImage: icon)
+            }
+        }
+        .disabled(viewModel.isSyncing || viewModel.isSuggestingCommit)
+    }
+
+    private var pushButton: some View {
+        Button {
+            viewModel.pushOnly()
+            onDismiss()
+        } label: {
+            Label("Push", systemImage: "arrow.up")
+        }
+        .disabled(viewModel.ahead == 0 || !viewModel.hasUpstream || viewModel.isSyncing)
     }
 }
 
