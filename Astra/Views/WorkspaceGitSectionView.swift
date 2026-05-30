@@ -216,8 +216,8 @@ struct WorkspaceGitSectionView: View {
             Text("Ready")
                 .font(Stanford.caption(12).weight(.medium))
                 .foregroundStyle(Stanford.statusHealthy)
-        } else if viewModel.ahead > 0 {
-            Label("\(viewModel.ahead)", systemImage: "arrow.up")
+        } else if viewModel.pushableCommitCount > 0 {
+            Label("\(viewModel.pushableCommitCount)", systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
                 .labelStyle(.titleAndIcon)
                 .font(Stanford.caption(12).weight(.semibold))
                 .foregroundStyle(Stanford.lagunita)
@@ -715,7 +715,7 @@ struct CommitSheet: View {
                 Label(label, systemImage: icon)
             }
         }
-        .disabled(viewModel.isSyncing || viewModel.isSuggestingCommit)
+        .disabled(!viewModel.hasChanges || viewModel.isSyncing || viewModel.isSuggestingCommit)
     }
 
     private var pushButton: some View {
@@ -723,9 +723,12 @@ struct CommitSheet: View {
             viewModel.pushOnly()
             onDismiss()
         } label: {
-            Label("Push", systemImage: "arrow.up")
+            Label(
+                viewModel.hasUpstream ? "Push" : "Publish branch",
+                systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
+            )
         }
-        .disabled(viewModel.ahead == 0 || !viewModel.hasUpstream || viewModel.isSyncing)
+        .disabled(!viewModel.canPush || viewModel.isSyncing)
     }
 }
 

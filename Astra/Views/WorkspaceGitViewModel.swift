@@ -31,6 +31,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var ahead: Int = 0
     @Published var behind: Int = 0
     @Published var hasUpstream: Bool = false
+    @Published var hasRemote: Bool = false
+    @Published var unpushedCount: Int = 0
     @Published var isSyncing: Bool = false
 
     // Helper model
@@ -116,6 +118,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         async let diffStats = GitService.shared.getDiffStats(at: repo.path)
         async let upstream = GitService.shared.hasUpstream(at: repo.path)
         async let aheadBehind = GitService.shared.getAheadBehind(at: repo.path)
+        async let remote = GitService.shared.hasRemote(at: repo.path)
+        async let unpushed = GitService.shared.getUnpushedCommitCount(at: repo.path)
 
         self.currentBranch = await branch
         self.branches = await localBranches
@@ -124,6 +128,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.additions = stats.additions
         self.deletions = stats.deletions
         self.hasUpstream = await upstream
+        self.hasRemote = await remote
+        self.unpushedCount = await unpushed
         if let ab = await aheadBehind {
             self.ahead = ab.ahead
             self.behind = ab.behind
@@ -131,6 +137,20 @@ final class WorkspaceGitViewModel: ObservableObject {
             self.ahead = 0
             self.behind = 0
         }
+    }
+
+    /// Number of local commits not yet on a remote, regardless of whether an
+    /// upstream is configured. When an upstream exists this matches `ahead`;
+    /// otherwise it reflects commits on an as-yet-unpublished branch.
+    var pushableCommitCount: Int {
+        hasUpstream ? ahead : unpushedCount
+    }
+
+    /// True when there is somewhere to push and unpushed work to send.
+    /// False when in sync with the remote or when no remote is configured.
+    var canPush: Bool {
+        guard hasRemote else { return false }
+        return pushableCommitCount > 0
     }
 
     // MARK: - Branches
@@ -250,7 +270,24 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     var canOpenCommitSheet: Bool {
-        hasChanges || ahead > 0
+        hasChanges || canPush
+    }
+
+    /// Pushes the current branch, publishing it with `--set-upstream` when no
+    /// upstream is configured yet. Centralizes push semantics so the commit
+    /// sheet and the standalone push action behave identically.
+    private func performPush(repoPath: String) async throws {
+        if hasUpstream {
+            try await GitService.shared.push(at: repoPath)
+        } else {
+            let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !branch.isEmpty, branch != "unknown" else {
+                throw NSError(domain: "GitError", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot determine the current branch to publish."
+                ])
+            }
+            try await GitService.shared.pushSetUpstream(branch: branch, at: repoPath)
+        }
     }
 
     func commitFromSheet(message: String, includeUnstaged: Bool, andPush: Bool) {
@@ -291,12 +328,11 @@ final class WorkspaceGitViewModel: ObservableObject {
                 await refreshRepoDetails(force: true)
 
                 if andPush {
-                    if self.hasUpstream {
-                        AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(self.ahead)"])
-                        try await GitService.shared.push(at: repo.path)
-                    } else {
-                        AppLogger.warning("Cannot push — no upstream branch", category: "Git")
-                    }
+                    AppLogger.audit(.gitPush, category: "Git", fields: [
+                        "ahead": "\(self.pushableCommitCount)",
+                        "published": self.hasUpstream ? "true" : "false"
+                    ])
+                    try await performPush(repoPath: repo.path)
                 }
 
                 self.errorMessage = nil
@@ -312,16 +348,19 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func pushOnly() {
         guard let repo = selectedRepository else { return }
-        guard hasUpstream else {
-            self.errorMessage = "No upstream branch. Push the current branch first."
+        guard hasRemote else {
+            self.errorMessage = "No remote configured. Add a remote before pushing."
             return
         }
-        guard ahead > 0 else { return }
-        AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(ahead)"])
+        guard canPush else { return }
+        AppLogger.audit(.gitPush, category: "Git", fields: [
+            "ahead": "\(pushableCommitCount)",
+            "published": hasUpstream ? "true" : "false"
+        ])
         isSyncing = true
         Task {
             do {
-                try await GitService.shared.push(at: repo.path)
+                try await performPush(repoPath: repo.path)
                 self.errorMessage = nil
                 await refreshRepoDetails(force: true)
             } catch {

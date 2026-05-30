@@ -411,6 +411,42 @@ class GitService {
         _ = try await runGit(at: repoPath, arguments: ["pull", "--rebase"], timeout: Self.networkGitTimeout)
     }
 
+    /// Pushes the current branch and sets `origin/<branch>` as its upstream.
+    /// Used to publish a branch that has never been pushed before.
+    func pushSetUpstream(branch: String, at repoPath: String) async throws {
+        _ = try await runGit(
+            at: repoPath,
+            arguments: ["push", "--set-upstream", "origin", branch],
+            timeout: Self.networkGitTimeout
+        )
+    }
+
+    /// Returns true when the repository has at least one configured remote.
+    func hasRemote(at repoPath: String) async -> Bool {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["remote"])
+            return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /// Returns the number of commits reachable from HEAD that are not present on
+    /// any remote-tracking branch. This is upstream-independent: it reports
+    /// unpushed work even for a branch that has never been published, and is 0
+    /// once every local commit exists on a remote.
+    func getUnpushedCommitCount(at repoPath: String) async -> Int {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["rev-list", "--count", "HEAD", "--not", "--remotes"]
+            )
+            return Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        } catch {
+            return 0
+        }
+    }
+
     /// Returns ahead/behind counts vs. the upstream tracking branch. Returns nil when no upstream is configured.
     func getAheadBehind(at repoPath: String) async -> (ahead: Int, behind: Int)? {
         do {
