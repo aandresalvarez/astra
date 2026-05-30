@@ -157,4 +157,183 @@ struct AgentUtilityRuntimeTests {
         #expect(args.contains("--allow-tool"))
         #expect(args.contains("read"))
     }
+
+    // MARK: - Stdin + utility helper regressions
+
+    private func writeExecutableScript(at url: URL, contents: String) throws {
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func stdinGuardPrefix() -> String {
+        """
+        if IFS= read -r -t 1 _; then
+          echo STDIN_OPEN >&2
+          exit 99
+        fi
+        """
+    }
+
+    private func modernCopilotHelpText() -> String {
+        """
+        --output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR
+        --no-custom-instructions --allow-all-tools required for non-interactive mode
+        """
+    }
+
+    @Test("Claude utility uses closed stdin")
+    func claudeUtilityUsesClosedStdin() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-claude-stdin-\(UUID().uuidString)", isDirectory: true)
+        let fakeClaude = root.appendingPathComponent("claude")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        \(stdinGuardPrefix())
+        printf '%s\\n' 'ASTRA_COMMIT_SUGGESTION {"subject":"stdin ok","body":"","type":"test"}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeClaude, contents: script)
+
+        let start = Date()
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).runUtilityPrompt(
+            "Summarize diff",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .claudeCode,
+                model: "claude-haiku-4-5-20251001",
+                claudePath: fakeClaude.path
+            ),
+            toolMode: .readOnly
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 3, "Claude utility blocked on stdin for \(elapsed)s")
+        #expect(result.exitCode == 0)
+        #expect(result.output.contains("stdin ok"))
+    }
+
+    @Test("Copilot utility uses closed stdin")
+    func copilotUtilityUsesClosedStdin() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-stdin-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        \(stdinGuardPrefix())
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot stdin ok"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let start = Date()
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Summarize diff",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path
+            ),
+            toolMode: .readOnly
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 3, "Copilot utility blocked on stdin for \(elapsed)s")
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Copilot stdin ok")
+    }
+
+    @Test("Antigravity utility uses closed stdin")
+    func antigravityUtilityUsesClosedStdin() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-agy-stdin-\(UUID().uuidString)", isDirectory: true)
+        let fakeAgy = root.appendingPathComponent("agy")
+        let providerHome = root.appendingPathComponent("agy-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        \(stdinGuardPrefix())
+        printf '%s\\n' 'ASTRA_COMMIT_SUGGESTION {"subject":"agy stdin ok","body":"","type":"test"}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeAgy, contents: script)
+
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(fakeAgy.path, for: .antigravityCLI)
+        settings.setHomeDirectory(providerHome.path, for: .antigravityCLI)
+
+        let start = Date()
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI).runUtilityPrompt(
+            "Summarize diff",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .antigravityCLI,
+                model: "default",
+                providerSettings: settings
+            ),
+            toolMode: .readOnly
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 3, "Antigravity utility blocked on stdin for \(elapsed)s")
+        #expect(result.exitCode == 0)
+        #expect(result.output.contains("agy stdin ok"))
+    }
+
+    @Test("Copilot utility passes no-custom-instructions for git helper")
+    func copilotUtilityPassesNoCustomInstructions() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-args-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let argsFile = root.appendingPathComponent("args.txt")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Args captured"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Summarize diff",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path
+            ),
+            toolMode: .readOnly
+        )
+
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(result.exitCode == 0)
+        #expect(args.contains("--no-custom-instructions"))
+    }
 }

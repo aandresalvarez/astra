@@ -1,25 +1,5 @@
 import Foundation
 
-// #region agent log
-private func _gitDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
-    let payload: [String: Any] = [
-        "sessionId": "57c8bc", "runId": "claude-hang", "hypothesisId": hypothesis,
-        "location": location, "message": message, "data": data,
-        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-    ]
-    guard let d = try? JSONSerialization.data(withJSONObject: payload),
-          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-        defer { try? h.close() }
-        h.seekToEndOfFile()
-        try? h.write(contentsOf: line)
-    } else {
-        try? line.write(to: url)
-    }
-}
-// #endregion
-
 struct GitRepositoryInfo: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -31,6 +11,105 @@ struct GitStatusFile: Identifiable, Hashable {
     let relativePath: String
     let status: String // "M", "A", "D", "?", "R"
     let isStaged: Bool
+}
+
+/// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
+///
+/// Encapsulates the concurrency-sensitive state shared between the stdout/stderr
+/// readability handlers, the termination handler, and the timeout watchdog so
+/// `GitService.runGit` resumes its continuation exactly once, regardless of the
+/// order in which those events fire.
+private final class GitProcessState: @unchecked Sendable {
+    enum Stream { case standardOutput, standardError }
+
+    private let lock = NSLock()
+    private var outData = Data()
+    private var errData = Data()
+    private var outClosed = false
+    private var errClosed = false
+    private var exitStatus: Int32?
+    private var command = ""
+    private var terminalError: Error?
+    private var outcomeConsumed = false
+
+    func append(_ chunk: Data, to stream: Stream) {
+        lock.lock(); defer { lock.unlock() }
+        switch stream {
+        case .standardOutput: outData.append(chunk)
+        case .standardError: errData.append(chunk)
+        }
+    }
+
+    func markStreamClosed(_ stream: Stream) {
+        lock.lock(); defer { lock.unlock() }
+        switch stream {
+        case .standardOutput: outClosed = true
+        case .standardError: errClosed = true
+        }
+    }
+
+    func markExited(status: Int32, command: String) {
+        lock.lock(); defer { lock.unlock() }
+        exitStatus = status
+        self.command = command
+    }
+
+    func markTimedOut(after seconds: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        if terminalError == nil {
+            terminalError = NSError(
+                domain: "GitError",
+                code: 124,
+                userInfo: [NSLocalizedDescriptionKey: "git timed out after \(Int(seconds))s"]
+            )
+        }
+    }
+
+    func markLaunchFailure(_ error: Error) {
+        lock.lock(); defer { lock.unlock() }
+        if terminalError == nil { terminalError = error }
+    }
+
+    /// True once a terminal outcome is known: either a fatal error (timeout /
+    /// launch failure) occurred, or the process exited and both streams drained.
+    var isComplete: Bool {
+        lock.lock(); defer { lock.unlock() }
+        if terminalError != nil { return true }
+        return exitStatus != nil && outClosed && errClosed
+    }
+
+    var hasFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return outcomeConsumed
+    }
+
+    /// Returns the resolved outcome exactly once; subsequent calls return nil.
+    fileprivate func consumeOutcome() -> ResolvedOutcome? {
+        lock.lock(); defer { lock.unlock() }
+        guard !outcomeConsumed else { return nil }
+        if let terminalError {
+            outcomeConsumed = true
+            return .failure(terminalError)
+        }
+        guard let exitStatus, outClosed, errClosed else { return nil }
+        outcomeConsumed = true
+        if exitStatus != 0 {
+            let message = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            AppLogger.error("git command failed: \(command) — \(message)", category: "Git")
+            return .failure(NSError(
+                domain: "GitError",
+                code: Int(exitStatus),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            ))
+        }
+        return .success(String(data: outData, encoding: .utf8) ?? "")
+    }
+
+    enum ResolvedOutcome {
+        case success(String)
+        case failure(Error)
+    }
 }
 
 class GitService {
@@ -78,11 +157,33 @@ class GitService {
         return repos
     }
     
+    /// Default wall-clock budget for local index/read git operations.
+    private static let defaultGitTimeout: TimeInterval = 30
+    /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
+    private static let networkGitTimeout: TimeInterval = 300
+
     /// Spawns a git subprocess and returns standard output or throws standard error.
-    private func runGit(at repoPath: String, arguments: [String]) async throws -> String {
+    ///
+    /// Robustness guarantees (a single git invocation must never be able to
+    /// deadlock the Repository panel):
+    /// - `stdin` is detached to `/dev/null` and interactive prompts are disabled
+    ///   so git can never block waiting for credentials, a username, or a pager
+    ///   inside a GUI process that has no controlling terminal.
+    /// - stdout/stderr are drained with non-blocking readability handlers, so a
+    ///   stream larger than the OS pipe buffer (~64KB) can never wedge the child.
+    /// - Completion fires when the process exits and both streams reach EOF, or
+    ///   when the hard `timeout` elapses — whichever comes first. A lingering
+    ///   grandchild that keeps a pipe open therefore cannot stall us forever.
+    /// - The continuation is resumed exactly once, guarded by a lock.
+    private func runGit(
+        at repoPath: String,
+        arguments: [String],
+        timeout: TimeInterval? = nil
+    ) async throws -> String {
         let command = (["git"] + arguments).joined(separator: " ")
         AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
 
+        let budget = timeout ?? Self.defaultGitTimeout
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", repoPath] + arguments
@@ -91,48 +192,81 @@ class GitService {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        // Detach stdin: a GUI process has no tty, so any git command that tries
+        // to read input (credential/username prompts) would otherwise block
+        // forever. An empty, closed stdin makes such reads return EOF instantly.
+        process.standardInput = FileHandle.nullDevice
+        // Force fully non-interactive, non-paged behavior regardless of the
+        // user's global git config.
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_PAGER"] = "cat"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        process.environment = environment
 
-        // #region agent log
-        _gitDebugLog("GitService.swift:runGit-enter", "git start", ["args": arguments], "P,R")
-        // #endregion
-        try process.run()
+        let state = GitProcessState()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Drain stdout and stderr concurrently while the process is still
-            // running. Reading only after `waitUntilExit()` deadlocks whenever a
-            // stream exceeds the OS pipe buffer (~64KB), because the child blocks
-            // writing while the parent blocks waiting for exit. Concurrent reads
-            // keep both pipes empty so the child can always make progress.
-            let drainQueue = DispatchQueue(label: "com.coral.astra.git-drain", attributes: .concurrent)
-            let group = DispatchGroup()
-            var outData = Data()
-            var errData = Data()
-
-            group.enter()
-            drainQueue.async {
-                outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-            group.enter()
-            drainQueue.async {
-                errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-
-            group.notify(queue: drainQueue) {
-                process.waitUntilExit()
-                // #region agent log
-                _gitDebugLog("GitService.swift:runGit-exit", "git exit", ["args": arguments, "exitCode": Int(process.terminationStatus), "stdoutBytes": outData.count], "P,R")
-                // #endregion
-
-                if process.terminationStatus != 0 {
-                    let errString = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    AppLogger.error("git command failed: \(command) — \(errString)", category: "Git")
-                    continuation.resume(throwing: NSError(domain: "GitError", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errString]))
-                } else {
-                    let outString = String(data: outData, encoding: .utf8) ?? ""
-                    continuation.resume(returning: outString)
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            let finalize: () -> Void = { [outPipe, errPipe] in
+                guard let outcome = state.consumeOutcome() else { return }
+                outPipe.fileHandleForReading.readabilityHandler = nil
+                errPipe.fileHandleForReading.readabilityHandler = nil
+                try? outPipe.fileHandleForReading.close()
+                try? errPipe.fileHandleForReading.close()
+                switch outcome {
+                case let .success(output):
+                    continuation.resume(returning: output)
+                case let .failure(error):
+                    continuation.resume(throwing: error)
                 }
+            }
+
+            outPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    state.markStreamClosed(.standardOutput)
+                } else {
+                    state.append(chunk, to: .standardOutput)
+                }
+                if state.isComplete { finalize() }
+            }
+            errPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    state.markStreamClosed(.standardError)
+                } else {
+                    state.append(chunk, to: .standardError)
+                }
+                if state.isComplete { finalize() }
+            }
+
+            process.terminationHandler = { proc in
+                state.markExited(status: proc.terminationStatus, command: command)
+                if state.isComplete { finalize() }
+            }
+
+            // Hard safety net: terminate a stuck git process so a single hung
+            // subprocess can never deadlock the whole Repository panel.
+            DispatchQueue.global().asyncAfter(deadline: .now() + budget) {
+                guard !state.hasFinished else { return }
+                AppLogger.error("git command timed out after \(Int(budget))s: \(command)", category: "Git")
+                process.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if process.isRunning {
+                        kill(process.processIdentifier, SIGKILL)
+                    }
+                }
+                state.markTimedOut(after: budget)
+                finalize()
+            }
+
+            do {
+                try process.run()
+            } catch {
+                state.markLaunchFailure(error)
+                finalize()
             }
         }
     }
@@ -227,15 +361,15 @@ class GitService {
     }
     
     func pull(at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["pull"])
+        _ = try await runGit(at: repoPath, arguments: ["pull"], timeout: Self.networkGitTimeout)
     }
     
     func push(at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["push"])
+        _ = try await runGit(at: repoPath, arguments: ["push"], timeout: Self.networkGitTimeout)
     }
 
     func pullRebase(at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["pull", "--rebase"])
+        _ = try await runGit(at: repoPath, arguments: ["pull", "--rebase"], timeout: Self.networkGitTimeout)
     }
 
     /// Returns ahead/behind counts vs. the upstream tracking branch. Returns nil when no upstream is configured.

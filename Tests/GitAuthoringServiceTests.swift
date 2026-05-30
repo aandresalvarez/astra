@@ -246,6 +246,36 @@ struct GitAuthoringServiceTests {
         #expect(prompt.contains("\"type\""))
     }
 
+    @Test("Commit prompt forbids tool use and exploration")
+    func commitPromptForbidsToolUse() {
+        let prompt = GitAuthoringPromptBuilder.commitPrompt(
+            diff: "diff --git a/foo b/foo",
+            recentSubjects: ["fix: prior"]
+        )
+        #expect(prompt.contains("Do NOT use any tools"))
+        #expect(prompt.contains("Answer immediately"))
+        #expect(prompt.contains("Staged diff:"))
+    }
+
+    @Test("Commit prompt does not invite repository exploration")
+    func commitPromptDoesNotInviteExploration() {
+        let prompt = GitAuthoringPromptBuilder.commitPrompt(diff: "diff", recentSubjects: [])
+        #expect(!prompt.contains("Read the staged diff"))
+        #expect(!prompt.contains("(truncated)"))
+    }
+
+    @Test("PR prompt forbids tool use and exploration")
+    func prPromptForbidsToolUse() {
+        let prompt = GitAuthoringPromptBuilder.prPrompt(
+            branch: "feat/x",
+            base: "main",
+            log: "- feat: thing",
+            diffStat: "1 file changed"
+        )
+        #expect(prompt.contains("Do NOT use any tools"))
+        #expect(prompt.contains("Answer immediately"))
+    }
+
     @Test("PR prompt includes branch, base, log and diffstat")
     func prPromptIncludesContext() {
         let prompt = GitAuthoringPromptBuilder.prPrompt(

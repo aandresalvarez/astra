@@ -1,26 +1,6 @@
 import Foundation
 import ASTRACore
 
-// #region agent log
-private func _gitAuthDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
-    let payload: [String: Any] = [
-        "sessionId": "57c8bc", "runId": "cross-provider", "hypothesisId": hypothesis,
-        "location": location, "message": message, "data": data,
-        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-    ]
-    guard let d = try? JSONSerialization.data(withJSONObject: payload),
-          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-        defer { try? h.close() }
-        h.seekToEndOfFile()
-        try? h.write(contentsOf: line)
-    } else {
-        try? line.write(to: url)
-    }
-}
-// #endregion
-
 // MARK: - Suggestion models
 
 struct CommitSuggestion: Codable, Equatable, Sendable {
@@ -175,10 +155,6 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
     }
 
     private func runWithTimeout(prompt: String, repoPath: String) async -> AgentUtilityRunResult {
-        // #region agent log
-        let _dbgStart = Date()
-        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-enter", "authoring start", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "promptLen": prompt.count, "timeoutSeconds": timeoutSeconds], "M,N")
-        // #endregion
         let timeoutNanos = UInt64(max(1, timeoutSeconds)) * 1_000_000_000
         let runtimeConfiguration = utilityRuntime
         // Race the helper against the deadline: whichever finishes first wins, and
@@ -212,9 +188,6 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             }
             return AgentUtilityRunResult(exitCode: 124, output: "", error: "Timed out after \(self.timeoutSeconds)s")
         }
-        // #region agent log
-        _gitAuthDebugLog("GitAuthoringService.swift:runWithTimeout-result", "authoring result", ["runtime": utilityRuntime.runtime.rawValue, "model": utilityRuntime.model, "timedOut": result.exitCode == 124, "exitCode": result.exitCode, "outputLen": result.output.count, "errorPrefix": String(result.error.prefix(200)), "elapsedMs": Int(Date().timeIntervalSince(_dbgStart) * 1000)], "M,N")
-        // #endregion
         return result
     }
 }
