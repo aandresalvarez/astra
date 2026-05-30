@@ -1,6 +1,6 @@
 # Stanford ASTRA
 
-Welcome to  ASTRA: a Stanford-inspired macOS app for supervising delegated AI work.
+Welcome to ASTRA: a Stanford-inspired macOS app for supervising delegated AI work.
 
 ASTRA stands for **Agent Routines for Tasks, Runs, and Automation**. It helps you create durable workspaces, assign AI-powered tasks, review what changed, and decide when an agent should keep going, pause, or ask for help.
 
