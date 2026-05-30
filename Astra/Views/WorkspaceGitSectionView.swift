@@ -54,7 +54,11 @@ struct WorkspaceGitSectionView: View {
             if let draft = viewModel.prDraft {
                 PRDraftSheet(
                     draft: draft,
-                    onCopyAndOpen: { edited in
+                    onCreate: { edited in
+                        viewModel.createPullRequest(with: edited)
+                        showPRDraftSheet = false
+                    },
+                    onOpenInBrowser: { edited in
                         viewModel.openPullRequestURL(with: edited)
                         showPRDraftSheet = false
                     },
@@ -781,18 +785,33 @@ struct CommitSheet: View {
 
 struct PRDraftSheet: View {
     let draft: PRSuggestion
-    let onCopyAndOpen: (PRSuggestion) -> Void
+    let onCreate: (PRSuggestion) -> Void
+    let onOpenInBrowser: (PRSuggestion) -> Void
     let onCancel: () -> Void
 
     @State private var title: String
     @State private var bodyText: String
 
-    init(draft: PRSuggestion, onCopyAndOpen: @escaping (PRSuggestion) -> Void, onCancel: @escaping () -> Void) {
+    init(
+        draft: PRSuggestion,
+        onCreate: @escaping (PRSuggestion) -> Void,
+        onOpenInBrowser: @escaping (PRSuggestion) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
         self.draft = draft
-        self.onCopyAndOpen = onCopyAndOpen
+        self.onCreate = onCreate
+        self.onOpenInBrowser = onOpenInBrowser
         self.onCancel = onCancel
         self._title = State(initialValue: draft.title)
         self._bodyText = State(initialValue: draft.body)
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var currentDraft: PRSuggestion {
+        PRSuggestion(title: title, body: bodyText)
     }
 
     var body: some View {
@@ -821,19 +840,28 @@ struct PRDraftSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
+
                 Spacer()
+
                 Button {
-                    onCopyAndOpen(PRSuggestion(title: title, body: bodyText))
+                    onOpenInBrowser(currentDraft)
                 } label: {
-                    Label("Copy & Open GitHub", systemImage: "arrow.up.right.square")
+                    Label("Open in GitHub", systemImage: "arrow.up.right.square")
+                }
+                .disabled(trimmedTitle.isEmpty)
+
+                Button {
+                    onCreate(currentDraft)
+                } label: {
+                    Label("Create Pull Request", systemImage: "arrow.triangle.pull")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Stanford.lagunita)
                 .keyboardShortcut(.defaultAction)
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(trimmedTitle.isEmpty)
             }
         }
         .padding(16)

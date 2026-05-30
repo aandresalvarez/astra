@@ -13,6 +13,24 @@ struct GitStatusFile: Identifiable, Hashable {
     let isStaged: Bool
 }
 
+/// Failure modes for GitHub operations performed through the `gh` CLI.
+enum GitHubCLIError: LocalizedError {
+    case notInstalled
+    case notAuthenticated(String)
+    case commandFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notInstalled:
+            return "GitHub CLI (gh) is not installed."
+        case let .notAuthenticated(detail):
+            return "GitHub CLI is not authenticated. Run `gh auth login`. (\(detail))"
+        case let .commandFailed(detail):
+            return detail.isEmpty ? "gh pr create failed." : detail
+        }
+    }
+}
+
 /// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
 ///
 /// Encapsulates the concurrency-sensitive state shared between the stdout/stderr
@@ -208,13 +226,17 @@ class GitService {
         arguments: [String],
         environment: [String: String],
         timeout: TimeInterval,
-        label: String
+        label: String,
+        currentDirectory: String? = nil
     ) async throws -> String {
         let command = label
         let budget = timeout
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
+        if let currentDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory)
+        }
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -429,6 +451,82 @@ class GitService {
         } catch {
             return false
         }
+    }
+
+    /// Creates a GitHub pull request via the `gh` CLI and returns the new PR URL.
+    ///
+    /// Reuses the user's existing `gh` authentication rather than storing a
+    /// GitHub token. Throws `GitHubCLIError` when `gh` is missing, unauthenticated,
+    /// or the command fails, so callers can fall back to the web compare flow.
+    func createPullRequest(
+        repoPath: String,
+        base: String,
+        head: String,
+        title: String,
+        body: String,
+        ghPathOverride: String? = nil
+    ) async throws -> String {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            throw GitHubCLIError.notInstalled
+        }
+
+        let normalizedBase = GitService.normalizeBaseBranch(base)
+        let arguments = [
+            "pr", "create",
+            "--base", normalizedBase,
+            "--head", head,
+            "--title", title,
+            "--body", body
+        ]
+        do {
+            let output = try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: Self.networkGitTimeout,
+                label: "gh pr create",
+                currentDirectory: repoPath
+            )
+            guard let url = GitService.firstURL(in: output) else {
+                throw GitHubCLIError.commandFailed(output.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            return url
+        } catch let error as GitHubCLIError {
+            throw error
+        } catch let error as NSError {
+            let message = error.localizedDescription
+            // `gh` reports an existing PR with its URL — treat that as success.
+            if let existing = GitService.firstURL(in: message) {
+                return existing
+            }
+            if message.localizedCaseInsensitiveContains("auth")
+                || message.localizedCaseInsensitiveContains("logged") {
+                throw GitHubCLIError.notAuthenticated(message)
+            }
+            throw GitHubCLIError.commandFailed(message)
+        }
+    }
+
+    /// Strips a leading `<remote>/` (e.g. `origin/`) from a base ref so it is a
+    /// plain branch name suitable for `gh pr create --base`.
+    static func normalizeBaseBranch(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("origin/") {
+            return String(trimmed.dropFirst("origin/".count))
+        }
+        return trimmed
+    }
+
+    /// Returns the first http(s) URL found in arbitrary CLI output.
+    static func firstURL(in text: String) -> String? {
+        for token in text.split(whereSeparator: { $0.isWhitespace }) {
+            let candidate = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "()<>\"'"))
+            if candidate.hasPrefix("https://") || candidate.hasPrefix("http://") {
+                return candidate
+            }
+        }
+        return nil
     }
 
     /// Returns the number of commits reachable from HEAD that are not present on

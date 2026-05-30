@@ -453,6 +453,53 @@ final class WorkspaceGitViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Pull request creation
+
+    /// Creates the pull request directly via the `gh` CLI and opens it in the
+    /// browser. Falls back to the GitHub web compare flow when `gh` is missing
+    /// or unauthenticated, so the action always results in a usable next step.
+    func createPullRequest(with draft: PRSuggestion) {
+        guard let repo = selectedRepository else { return }
+        guard hasUpstream else {
+            self.errorMessage = "Push the current branch before creating a pull request."
+            return
+        }
+        isSuggestingPR = true
+        Task {
+            let base = await GitService.shared.getDefaultBaseBranch(at: repo.path)
+            do {
+                let url = try await GitService.shared.createPullRequest(
+                    repoPath: repo.path,
+                    base: base,
+                    head: currentBranch,
+                    title: draft.title,
+                    body: draft.body
+                )
+                AppLogger.info("Created pull request via gh", category: "Git")
+                await MainActor.run {
+                    #if os(macOS)
+                    if let prURL = URL(string: url) { NSWorkspace.shared.open(prURL) }
+                    #endif
+                    self.prDraft = nil
+                    self.errorMessage = nil
+                }
+            } catch let error as GitHubCLIError {
+                // Graceful fallback to the web compare page.
+                AppLogger.warning("gh pr create unavailable: \(error.localizedDescription)", category: "Git")
+                if case .commandFailed(let detail) = error {
+                    self.errorMessage = detail
+                } else {
+                    self.errorMessage = "\(error.localizedDescription) Opening GitHub instead."
+                }
+                openPullRequestURL(with: draft)
+            } catch {
+                AppLogger.error("Create pull request failed: \(error.localizedDescription)", category: "Git")
+                self.errorMessage = error.localizedDescription
+            }
+            isSuggestingPR = false
+        }
+    }
+
     // MARK: - Pull request URL
 
     /// Opens the GitHub PR compare URL with the optional draft pre-filled via `?expand=1&title=...&body=...`.
