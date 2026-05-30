@@ -204,6 +204,41 @@ struct GitAuthoringRegressionTests {
         #expect(elapsed < 15, "Push hung for \(elapsed)s — possible credential prompt block")
     }
 
+    /// The hard timeout watchdog must kill a genuinely hung subprocess and
+    /// resume promptly, so a single stuck git call can never deadlock the
+    /// Repository panel (the original "spinner forever" regression).
+    @Test("runProcess timeout kills a hung subprocess and resumes fast")
+    func runProcessTimeoutKillsHungSubprocess() async throws {
+        let start = Date()
+        var didThrow = false
+        do {
+            _ = try await GitService.shared.runProcessForTesting(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "sleep 30"],
+                timeout: 1
+            )
+            Issue.record("Expected timeout error from hung subprocess")
+        } catch {
+            didThrow = true
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(didThrow, "A hung subprocess should surface a timeout error")
+        #expect(elapsed < 5, "Timeout watchdog took \(elapsed)s — expected ~1s budget")
+    }
+
+    /// Even when a subprocess emits more than the OS pipe buffer (~64KB) the
+    /// non-blocking drain must return the full output without wedging.
+    @Test("runProcess drains output larger than the pipe buffer")
+    func runProcessDrainsLargeOutput() async throws {
+        let output = try await GitService.shared.runProcessForTesting(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "for i in $(seq 1 5000); do echo 0123456789012345678901234567890123456789; done"],
+            timeout: 10
+        )
+        #expect(output.utf8.count > 200_000, "Expected large drained output, got \(output.utf8.count) bytes")
+    }
+
     @Test("runWithTimeout honors deadline when helper is slow")
     func runWithTimeoutHonorsDeadline() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -162,46 +162,65 @@ class GitService {
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
     private static let networkGitTimeout: TimeInterval = 300
 
-    /// Spawns a git subprocess and returns standard output or throws standard error.
+    /// Builds the non-interactive environment used for every git invocation.
     ///
-    /// Robustness guarantees (a single git invocation must never be able to
-    /// deadlock the Repository panel):
-    /// - `stdin` is detached to `/dev/null` and interactive prompts are disabled
-    ///   so git can never block waiting for credentials, a username, or a pager
-    ///   inside a GUI process that has no controlling terminal.
+    /// Disables terminal prompts, pagers, and optional index locks so git can
+    /// never block waiting for a controlling terminal that a GUI process lacks.
+    private static func gitEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_PAGER"] = "cat"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        return environment
+    }
+
+    /// Spawns a git subprocess and returns standard output or throws standard error.
+    private func runGit(
+        at repoPath: String,
+        arguments: [String],
+        timeout: TimeInterval? = nil
+    ) async throws -> String {
+        AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
+        return try await runProcess(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git", "-C", repoPath] + arguments,
+            environment: Self.gitEnvironment(),
+            timeout: timeout ?? Self.defaultGitTimeout,
+            label: (["git"] + arguments).joined(separator: " ")
+        )
+    }
+
+    /// Runs an external process and returns standard output, or throws on a
+    /// non-zero exit, a launch failure, or a timeout.
+    ///
+    /// Robustness guarantees (a single invocation must never be able to deadlock
+    /// the caller):
+    /// - `stdin` is detached to `/dev/null` so the child can never block waiting
+    ///   for interactive input inside a process that has no controlling terminal.
     /// - stdout/stderr are drained with non-blocking readability handlers, so a
     ///   stream larger than the OS pipe buffer (~64KB) can never wedge the child.
     /// - Completion fires when the process exits and both streams reach EOF, or
     ///   when the hard `timeout` elapses — whichever comes first. A lingering
     ///   grandchild that keeps a pipe open therefore cannot stall us forever.
     /// - The continuation is resumed exactly once, guarded by a lock.
-    private func runGit(
-        at repoPath: String,
+    private func runProcess(
+        executableURL: URL,
         arguments: [String],
-        timeout: TimeInterval? = nil
+        environment: [String: String],
+        timeout: TimeInterval,
+        label: String
     ) async throws -> String {
-        let command = (["git"] + arguments).joined(separator: " ")
-        AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
-
-        let budget = timeout ?? Self.defaultGitTimeout
+        let command = label
+        let budget = timeout
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", repoPath] + arguments
+        process.executableURL = executableURL
+        process.arguments = arguments
 
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        // Detach stdin: a GUI process has no tty, so any git command that tries
-        // to read input (credential/username prompts) would otherwise block
-        // forever. An empty, closed stdin makes such reads return EOF instantly.
         process.standardInput = FileHandle.nullDevice
-        // Force fully non-interactive, non-paged behavior regardless of the
-        // user's global git config.
-        var environment = ProcessInfo.processInfo.environment
-        environment["GIT_TERMINAL_PROMPT"] = "0"
-        environment["GIT_PAGER"] = "cat"
-        environment["GIT_OPTIONAL_LOCKS"] = "0"
         process.environment = environment
 
         let state = GitProcessState()
@@ -270,7 +289,27 @@ class GitService {
             }
         }
     }
-    
+
+    #if DEBUG
+    /// Test seam: exercises the exact `runProcess` machinery (drain, timeout,
+    /// exactly-once completion) against an arbitrary executable so regression
+    /// tests can prove a hung subprocess is killed within its budget rather than
+    /// deadlocking forever.
+    func runProcessForTesting(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async throws -> String {
+        try await runProcess(
+            executableURL: executableURL,
+            arguments: arguments,
+            environment: ProcessInfo.processInfo.environment,
+            timeout: timeout,
+            label: ([executableURL.lastPathComponent] + arguments).joined(separator: " ")
+        )
+    }
+    #endif
+
     func getCurrentBranch(at repoPath: String) async -> String {
         do {
             let output = try await runGit(at: repoPath, arguments: ["branch", "--show-current"])
