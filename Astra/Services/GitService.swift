@@ -1,5 +1,25 @@
 import Foundation
 
+// #region agent log
+private func _gitDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "claude-hang", "hypothesisId": hypothesis,
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 struct GitRepositoryInfo: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -72,6 +92,9 @@ class GitService {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
+        // #region agent log
+        _gitDebugLog("GitService.swift:runGit-enter", "git start", ["args": arguments], "P,R")
+        // #endregion
         try process.run()
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -98,6 +121,9 @@ class GitService {
 
             group.notify(queue: drainQueue) {
                 process.waitUntilExit()
+                // #region agent log
+                _gitDebugLog("GitService.swift:runGit-exit", "git exit", ["args": arguments, "exitCode": Int(process.terminationStatus), "stdoutBytes": outData.count], "P,R")
+                // #endregion
 
                 if process.terminationStatus != 0 {
                     let errString = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

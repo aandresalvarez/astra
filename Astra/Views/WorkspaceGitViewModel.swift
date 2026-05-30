@@ -3,6 +3,26 @@ import SwiftUI
 import Combine
 import ASTRACore
 
+// #region agent log
+private func _gitVMDebugLog(_ location: String, _ message: String, _ data: [String: Any], _ hypothesis: String) {
+    let payload: [String: Any] = [
+        "sessionId": "57c8bc", "runId": "claude-hang", "hypothesisId": hypothesis,
+        "location": location, "message": message, "data": data,
+        "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    guard let d = try? JSONSerialization.data(withJSONObject: payload),
+          let line = (String(data: d, encoding: .utf8).map { $0 + "\n" })?.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/Users/alvaro1/Documents/Coral/Code/Astra/.cursor/debug-57c8bc.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        h.seekToEndOfFile()
+        try? h.write(contentsOf: line)
+    } else {
+        try? line.write(to: url)
+    }
+}
+// #endregion
+
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {
     // Repositories
@@ -258,10 +278,16 @@ final class WorkspaceGitViewModel: ObservableObject {
         isSyncing = true
         Task {
             do {
+                // #region agent log
+                _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "enter", ["messageBlank": message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "includeUnstaged": includeUnstaged], "P,Q,R")
+                // #endregion
                 if includeUnstaged {
                     try await GitService.shared.stageAll(at: repo.path)
                     await refreshRepoDetails(force: true)
                 }
+                // #region agent log
+                _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after stageAll+refresh", [:], "R")
+                // #endregion
 
                 let hasStaged = statusFiles.contains(where: { $0.isStaged })
                 guard hasStaged else {
@@ -275,8 +301,18 @@ final class WorkspaceGitViewModel: ObservableObject {
                     AppLogger.info("Auto-generating commit message", category: "Git")
                     isSuggestingCommit = true
                     let diff = await GitService.shared.getStagedDiff(at: repo.path)
+                    // #region agent log
+                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after getStagedDiff", ["diffLen": diff.count], "P")
+                    // #endregion
                     let recent = await GitService.shared.getRecentCommitSubjects(at: repo.path)
-                    let suggestion = try await makeAuthoringService().suggestCommitMessage(
+                    // #region agent log
+                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after getRecentCommitSubjects", ["recentCount": recent.count], "P")
+                    // #endregion
+                    let service = makeAuthoringService()
+                    // #region agent log
+                    _gitVMDebugLog("WorkspaceGitViewModel.swift:commitFromSheet", "after makeAuthoringService", ["runtime": service.utilityRuntime.runtime.rawValue, "model": service.utilityRuntime.model], "Q")
+                    // #endregion
+                    let suggestion = try await service.suggestCommitMessage(
                         repoPath: repo.path,
                         diff: diff,
                         recentSubjects: recent
