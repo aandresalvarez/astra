@@ -15,16 +15,24 @@ struct WorkspaceGitSectionView: View {
     @State private var isChangesDrawerExpanded = false
     @State private var showCommitSheet = false
     @State private var showPRDraftSheet = false
+    @State private var showLocationPopover = false
+
+    // Row scale shared with the sibling rail panels (Capabilities, Workspace
+    // setup) so the Repository card reads as part of the same vertical menu.
+    private static let rowIconGlyphSize: CGFloat = 20
+    private static let rowIconFrame: CGFloat = 40
+    private static let rowIconSpacing: CGFloat = 14
+    private static let rowMinHeight: CGFloat = 48
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: isCompact ? 14 : Stanford.railSectionContentSpacing) {
             header
 
             if let error = viewModel.errorMessage {
                 errorBanner(error)
             }
 
-            VStack(spacing: 1) {
+            VStack(spacing: 0) {
                 branchRow
                 rowDivider
 
@@ -42,8 +50,6 @@ struct WorkspaceGitSectionView: View {
                 rowDivider
                 createPullRequestRow
             }
-            .background(Color.primary.opacity(0.015))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .onAppear {
             viewModel.setup(for: workspace)
@@ -85,20 +91,18 @@ struct WorkspaceGitSectionView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(Stanford.ui(13, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Repository")
-                    .font(Stanford.ui(13, weight: .semibold))
-                    .foregroundStyle(.primary)
-            }
-            Spacer()
+        HStack(alignment: .center, spacing: 10) {
+            Text("Repository")
+                .font(Stanford.ui(17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
             if viewModel.isSyncing {
                 ProgressView().controlSize(.small)
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     if viewModel.repositories.count > 1 {
                         repositoryMenu
                     }
@@ -106,7 +110,6 @@ struct WorkspaceGitSectionView: View {
                 }
             }
         }
-        .padding(.bottom, 2)
     }
 
     /// Direct refresh action — surfaced inline rather than buried in a menu,
@@ -116,12 +119,12 @@ struct WorkspaceGitSectionView: View {
             Task { await viewModel.scanRepositories() }
         } label: {
             Image(systemName: "arrow.clockwise")
-                .font(Stanford.ui(13, weight: .medium))
+                .font(Stanford.ui(15, weight: .medium))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: 18, height: 18)
+        .frame(width: 22, height: 22)
         .help("Refresh status")
     }
 
@@ -144,7 +147,7 @@ struct WorkspaceGitSectionView: View {
             }
         } label: {
             Image(systemName: "folder")
-                .font(Stanford.ui(13, weight: .medium))
+                .font(Stanford.ui(15, weight: .medium))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
         }
@@ -183,12 +186,35 @@ struct WorkspaceGitSectionView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    /// Row separator that begins after the leading icon column (lean UI rule:
-    /// start dividers after the icon, not at the card edge).
+    /// Row separator that begins after the leading icon column, matching the
+    /// sibling rail panels (`checklistDivider`): start after the 40pt icon
+    /// frame, low opacity, no table-like trailing rule.
     private var rowDivider: some View {
         Divider()
-            .padding(.leading, 36)
-            .padding(.trailing, 8)
+            .opacity(0.22)
+            .padding(.leading, Self.rowIconFrame)
+    }
+
+    /// Shared leading icon for every collapsed row, sized to the rail's row
+    /// grammar (20pt glyph centered in a 40pt column) so the Repository card
+    /// scans at the same rhythm as Capabilities and Workspace setup.
+    private func rowIcon(_ name: String, color: Color = Stanford.lagunita) -> some View {
+        Image(systemName: name)
+            .font(Stanford.ui(Self.rowIconGlyphSize, weight: .medium))
+            .foregroundStyle(color)
+            .frame(width: Self.rowIconFrame)
+    }
+
+    private func rowTitle(_ text: String) -> some View {
+        Text(text)
+            .font(Stanford.ui(16, weight: .semibold))
+            .foregroundStyle(.primary)
+    }
+
+    private var rowDisclosureChevron: some View {
+        Image(systemName: "chevron.down")
+            .font(Stanford.ui(11, weight: .semibold))
+            .foregroundStyle(.tertiary)
     }
 
     // MARK: - Branch row
@@ -197,26 +223,21 @@ struct WorkspaceGitSectionView: View {
         Button {
             viewModel.showBranchPickerPopover = true
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 16)
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("arrow.triangle.branch")
+                rowTitle("Branch")
 
-                Text(viewModel.currentBranch.isEmpty ? "Select Branch" : viewModel.currentBranch)
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+
+                Text(viewModel.currentBranch.isEmpty ? "Select…" : viewModel.currentBranch)
+                    .font(Stanford.caption(13).weight(.medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                Image(systemName: "chevron.down")
-                    .font(Stanford.ui(9, weight: .bold))
-                    .foregroundStyle(.secondary)
-
-                Spacer()
+                rowDisclosureChevron
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: Self.rowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
@@ -227,66 +248,37 @@ struct WorkspaceGitSectionView: View {
 
     // MARK: - Working location row
 
-    /// Shows the checkout new chats run in (Root or a worktree) and offers a
-    /// menu to switch between them or open full worktree management. Existing
-    /// threads keep their own pinned location — this only steers new work.
+    /// Shows the checkout new chats run in (Root or a worktree). Tapping opens
+    /// a popover to switch location or open full worktree management — the same
+    /// Button+popover grammar as the branch row. Existing threads keep their own
+    /// pinned location; this only steers new work.
     private var workingLocationRow: some View {
-        Menu {
-            Section("Switch working location") {
-                Button {
-                    viewModel.switchToRoot()
-                } label: {
-                    locationMenuLabel(title: "Root", isActive: !viewModel.isUsingWorktree)
-                }
-
-                ForEach(viewModel.worktrees.filter { !$0.isPrimary }) { worktree in
-                    Button {
-                        viewModel.switchWorkingLocation(to: worktree)
-                    } label: {
-                        locationMenuLabel(
-                            title: worktree.displayName,
-                            isActive: viewModel.activeWorkingPath == worktree.path
-                        )
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                viewModel.isManagingWorktrees = true
-            } label: {
-                Label("Manage worktrees…", systemImage: "square.split.2x1")
-            }
+        Button {
+            showLocationPopover = true
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: viewModel.isUsingWorktree ? "square.split.2x1" : "house")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 16)
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon(viewModel.isUsingWorktree ? "square.split.2x1" : "house")
+                rowTitle("Working in")
 
-                Text("Working in")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
-
-                Spacer()
+                Spacer(minLength: 8)
 
                 Text(workingLocationLabel)
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.caption(13).weight(.medium))
                     .foregroundStyle(viewModel.isUsingWorktree ? Stanford.lagunita : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(Stanford.ui(9, weight: .bold))
-                    .foregroundStyle(.secondary)
+                rowDisclosureChevron
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: Self.rowMinHeight)
             .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(RowButtonStyle())
+        .popover(isPresented: $showLocationPopover, arrowEdge: .trailing) {
+            WorktreeLocationPopoverView(viewModel: viewModel) {
+                showLocationPopover = false
+            }
+        }
         .help("Choose the checkout new chats run in")
     }
 
@@ -296,37 +288,21 @@ struct WorkspaceGitSectionView: View {
             ?? URL(fileURLWithPath: viewModel.activeWorkingPath ?? "").lastPathComponent
     }
 
-    @ViewBuilder
-    private func locationMenuLabel(title: String, isActive: Bool) -> some View {
-        if isActive {
-            Label(title, systemImage: "checkmark")
-        } else {
-            Text(title)
-        }
-    }
-
     // MARK: - Commit or push row
 
     private var commitOrPushRow: some View {
         Button {
             showCommitSheet = true
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.up.circle")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 16)
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("arrow.up.circle")
+                rowTitle("Commit or push")
 
-                Text("Commit or push")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
-
-                Spacer()
+                Spacer(minLength: 8)
 
                 commitOrPushBadge
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: Self.rowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
@@ -339,17 +315,17 @@ struct WorkspaceGitSectionView: View {
         let hasMessage = !viewModel.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasStaged && hasMessage {
             Text("Ready")
-                .font(Stanford.caption(12).weight(.medium))
+                .font(Stanford.caption(13).weight(.medium))
                 .foregroundStyle(Stanford.statusHealthy)
         } else if viewModel.pushableCommitCount > 0 {
             Label("\(viewModel.pushableCommitCount)", systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
                 .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(12).weight(.semibold))
+                .font(Stanford.caption(13).weight(.semibold))
                 .foregroundStyle(Stanford.lagunita)
         } else if viewModel.behind > 0 {
             Label("\(viewModel.behind)", systemImage: "arrow.down")
                 .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(12).weight(.semibold))
+                .font(Stanford.caption(13).weight(.semibold))
                 .foregroundStyle(Stanford.statusInfo)
         }
     }
@@ -362,27 +338,20 @@ struct WorkspaceGitSectionView: View {
                 isChangesDrawerExpanded.toggle()
             }
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "plus.forwardslash.minus")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 16)
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("plus.forwardslash.minus")
+                rowTitle("Changes")
 
-                Text("Changes")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
-
-                Spacer()
+                Spacer(minLength: 8)
 
                 changesBadge
 
                 Image(systemName: "chevron.right")
-                    .font(Stanford.ui(9, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .font(Stanford.ui(11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(isChangesDrawerExpanded ? 90 : 0))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: Self.rowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle(isExpanded: isChangesDrawerExpanded))
@@ -394,23 +363,23 @@ struct WorkspaceGitSectionView: View {
         switch viewModel.changesSummary {
         case .clean:
             Text("Clean")
-                .font(Stanford.caption(12).weight(.medium))
+                .font(Stanford.caption(13).weight(.medium))
                 .foregroundStyle(Stanford.statusHealthy)
         case let .modified(additions, deletions, fileCount):
             if additions == 0 && deletions == 0 {
                 Text("\(fileCount) changed")
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.caption(13).weight(.medium))
                     .foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 6) {
                     if additions > 0 {
                         Text("+\(additions)")
-                            .font(Stanford.caption(12).weight(.semibold))
+                            .font(Stanford.caption(13).weight(.semibold))
                             .foregroundStyle(Stanford.statusHealthy)
                     }
                     if deletions > 0 {
                         Text("-\(deletions)")
-                            .font(Stanford.caption(12).weight(.semibold))
+                            .font(Stanford.caption(13).weight(.semibold))
                             .foregroundStyle(Stanford.statusError)
                     }
                 }
@@ -428,10 +397,10 @@ struct WorkspaceGitSectionView: View {
                         .font(Stanford.ui(12))
                         .foregroundStyle(Stanford.statusHealthy)
                     Text("Working tree clean")
-                        .font(Stanford.caption(11))
+                        .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 10)
+                .padding(.leading, Self.rowIconFrame)
                 .padding(.vertical, 8)
             } else {
                 let staged = viewModel.statusFiles.filter { $0.isStaged }
@@ -463,13 +432,13 @@ struct WorkspaceGitSectionView: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 6)
+                    .padding(.leading, Self.rowIconFrame)
+                    .padding(.trailing, 4)
                 }
                 .frame(maxHeight: 320)
             }
         }
         .padding(.bottom, 6)
-        .background(Color.primary.opacity(0.01))
     }
 
     @ViewBuilder
@@ -511,32 +480,26 @@ struct WorkspaceGitSectionView: View {
                 viewModel.openPullRequestURL(with: nil)
             }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: Self.rowIconSpacing) {
                 if viewModel.isSuggestingPR {
                     ProgressView()
                         .controlSize(.small)
-                        .frame(width: 16)
+                        .frame(width: Self.rowIconFrame)
                 } else {
-                    Image(systemName: "arrow.triangle.pull")
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .frame(width: 16)
+                    rowIcon("arrow.triangle.pull")
                 }
 
-                Text("Create pull request")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
+                rowTitle("Create pull request")
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 if viewModel.hasUpstream {
                     Image(systemName: "sparkles")
-                        .font(Stanford.ui(11))
+                        .font(Stanford.ui(13))
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: Self.rowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
@@ -616,6 +579,17 @@ struct RowButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Shared popover metrics
+
+/// Shared geometry for the two row-selector popovers (Branch and Working in)
+/// so both read as one component family and branch/worktree names stop
+/// truncating at narrow widths.
+private enum RepoPopover {
+    static let width: CGFloat = 280
+    static let rowVerticalPadding: CGFloat = 6
+    static let listMaxHeight: CGFloat = 200
+}
+
 // MARK: - Branch picker
 
 struct BranchPickerPopoverView: View {
@@ -678,7 +652,7 @@ struct BranchPickerPopoverView: View {
             .disabled(viewModel.newBranchName.isEmpty)
         }
         .padding(12)
-        .frame(width: 220)
+        .frame(width: RepoPopover.width)
     }
 
     private var pickerList: some View {
@@ -724,9 +698,10 @@ struct BranchPickerPopoverView: View {
                                         .foregroundStyle(.secondary)
 
                                     Text(branch)
-                                        .font(Stanford.body(12.5))
+                                        .font(Stanford.body(12.5).weight(branch == viewModel.currentBranch ? .semibold : .regular))
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
+                                        .truncationMode(.middle)
 
                                     Spacer()
 
@@ -737,7 +712,7 @@ struct BranchPickerPopoverView: View {
                                     }
                                 }
                                 .padding(.horizontal, 10)
-                                .padding(.vertical, 5.5)
+                                .padding(.vertical, RepoPopover.rowVerticalPadding)
                                 .background(Color.primary.opacity(branch == viewModel.currentBranch ? 0.04 : 0))
                                 .contentShape(Rectangle())
                             }
@@ -746,7 +721,7 @@ struct BranchPickerPopoverView: View {
                     }
                 }
             }
-            .frame(maxHeight: 180)
+            .frame(maxHeight: RepoPopover.listMaxHeight)
 
             Divider()
 
@@ -767,7 +742,120 @@ struct BranchPickerPopoverView: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(width: 220)
+        .frame(width: RepoPopover.width)
+    }
+}
+
+// MARK: - Working location picker
+
+/// Quick switcher for the checkout new chats run in. Mirrors the branch
+/// picker's popover grammar so both row selectors feel identical, and hands
+/// off to the full management sheet for create/remove.
+struct WorktreeLocationPopoverView: View {
+    @ObservedObject var viewModel: WorkspaceGitViewModel
+    let onClose: () -> Void
+
+    private var secondaryWorktrees: [GitWorktreeInfo] {
+        viewModel.worktrees.filter { !$0.isPrimary }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Working location")
+                    .font(Stanford.caption(10).weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    locationRow(
+                        icon: "house",
+                        title: "Root",
+                        isActive: !viewModel.isUsingWorktree
+                    ) {
+                        viewModel.switchToRoot()
+                        onClose()
+                    }
+
+                    ForEach(secondaryWorktrees) { worktree in
+                        locationRow(
+                            icon: "arrow.triangle.branch",
+                            title: worktree.displayName,
+                            isActive: viewModel.activeWorkingPath == worktree.path
+                        ) {
+                            viewModel.switchWorkingLocation(to: worktree)
+                            onClose()
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxHeight: RepoPopover.listMaxHeight)
+
+            Divider()
+
+            Button {
+                onClose()
+                viewModel.isManagingWorktrees = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.split.2x1")
+                        .font(Stanford.ui(10, weight: .bold))
+                    Text("Manage worktrees…")
+                        .font(Stanford.caption(11.5).weight(.medium))
+                }
+                .foregroundStyle(Stanford.lagunita)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: RepoPopover.width)
+    }
+
+    @ViewBuilder
+    private func locationRow(
+        icon: String,
+        title: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(isActive ? Stanford.lagunita : .secondary)
+                    .frame(width: 16)
+
+                Text(title)
+                    .font(Stanford.body(12.5))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(Stanford.ui(10, weight: .bold))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, RepoPopover.rowVerticalPadding)
+            .background(Color.primary.opacity(isActive ? 0.04 : 0))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -782,17 +870,15 @@ struct CommitSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(Stanford.ui(12, weight: .medium))
-                        .foregroundStyle(Stanford.lagunita)
-                    Text(viewModel.currentBranch)
-                        .font(Stanford.ui(13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text(viewModel.currentBranch)
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
                 HStack(spacing: 6) {
                     if viewModel.additions > 0 {
                         Text("+\(viewModel.additions)")
@@ -814,10 +900,10 @@ struct CommitSheet: View {
                     .padding(6)
 
                 if message.isEmpty {
-                    Text("Commit message (leave blank to generate)...")
+                    Text("Commit message (leave blank to generate)…")
                         .font(Stanford.body(13))
                         .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 11)
                         .padding(.vertical, 14)
                         .allowsHitTesting(false)
                 }
@@ -960,8 +1046,14 @@ struct PRDraftSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Open Pull Request")
-                .font(Stanford.ui(14, weight: .bold))
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.pull")
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Open Pull Request")
+                    .font(Stanford.ui(15, weight: .bold))
+                Spacer()
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Title")
@@ -978,8 +1070,9 @@ struct PRDraftSheet: View {
                     .foregroundStyle(.secondary)
                 TextEditor(text: $bodyText)
                     .font(Stanford.body(12))
+                    .scrollContentBackground(.hidden)
                     .frame(minHeight: 200)
-                    .padding(4)
+                    .padding(6)
                     .background(Color.primary.opacity(0.04))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
@@ -1076,10 +1169,10 @@ struct WorktreeSheet: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "square.split.2x1")
-                .font(Stanford.ui(14, weight: .semibold))
+                .font(Stanford.ui(15, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
             Text("Worktrees")
-                .font(Stanford.ui(14, weight: .bold))
+                .font(Stanford.ui(15, weight: .bold))
             Spacer()
             if viewModel.isSyncing {
                 ProgressView().controlSize(.small)
