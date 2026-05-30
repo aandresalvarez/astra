@@ -49,6 +49,10 @@ struct TaskSidebarContainerView: View {
             onEditSchedule: onEditSchedule,
             isSearchActive: $isSearchActive
         )
+        // Paint the warm sidebar tone over the system NavigationSplitView
+        // material. Without an opaque fill the translucent sidebar lets the
+        // desktop wallpaper bleed through the window's bottom edge.
+        .background(Stanford.sidebarBackground, ignoresSafeAreaEdges: .all)
     }
 }
 

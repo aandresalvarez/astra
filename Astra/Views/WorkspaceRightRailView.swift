@@ -3356,6 +3356,7 @@ private extension View {
     ) -> some View {
         liquidSurface(
             cornerRadius: cornerRadius,
+            tint: Stanford.warmGlassTint,
             fallbackFill: fill,
             fallbackStrokeOpacity: strokeOpacity
         )

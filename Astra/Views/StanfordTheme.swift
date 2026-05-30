@@ -132,6 +132,11 @@ enum Stanford {
         dark:  0x3A3733
     )
 
+    /// Subtle warm tint applied to macOS 26 liquid-glass surfaces so the
+    /// translucent material picks up the app's paper warmth instead of reading
+    /// as cool system grey. Kept low-opacity to preserve glass depth.
+    static let warmGlassTint = Color(light: 0xD9CBB0, dark: 0x6A5E45).opacity(0.16)
+
     // MARK: - Global UI Scale
 
     nonisolated(unsafe) private static var _cachedUIScale: Double?
@@ -467,17 +472,16 @@ extension View {
     func liquidSurface(
         cornerRadius: CGFloat = 10,
         interactive: Bool = false,
+        tint: Color? = nil,
         fallbackFill: Color = Stanford.panelBackground,
         fallbackStrokeOpacity: Double = 0.06
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(macOS 26.0, *) {
-            if interactive {
-                glassEffect(.regular.interactive(), in: shape)
-            } else {
-                glassEffect(.regular, in: shape)
-            }
+            let base: Glass = interactive ? .regular.interactive() : .regular
+            let glass: Glass = tint.map { base.tint($0) } ?? base
+            glassEffect(glass, in: shape)
         } else {
             background(shape.fill(fallbackFill))
                 .overlay {
