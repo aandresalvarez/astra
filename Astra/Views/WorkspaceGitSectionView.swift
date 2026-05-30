@@ -26,17 +26,17 @@ struct WorkspaceGitSectionView: View {
 
             VStack(spacing: 1) {
                 branchRow
-                Divider().padding(.horizontal, 8)
+                rowDivider
 
                 changesRow
                 if isChangesDrawerExpanded {
                     changesDrawer
                 }
 
-                Divider().padding(.horizontal, 8)
+                rowDivider
                 commitOrPushRow
 
-                Divider().padding(.horizontal, 8)
+                rowDivider
                 createPullRequestRow
             }
             .background(Color.primary.opacity(0.015))
@@ -92,46 +92,60 @@ struct WorkspaceGitSectionView: View {
             if viewModel.isSyncing {
                 ProgressView().controlSize(.small)
             } else {
-                Menu {
-                    Button {
-                        Task { await viewModel.scanRepositories() }
-                    } label: {
-                        Label("Refresh Status", systemImage: "arrow.clockwise")
-                    }
-
-                    if viewModel.errorMessage != nil {
-                        Button { viewModel.errorMessage = nil } label: {
-                            Label("Dismiss Errors", systemImage: "xmark.circle")
-                        }
-                    }
-
+                HStack(spacing: 10) {
                     if viewModel.repositories.count > 1 {
-                        Divider()
-                        ForEach(viewModel.repositories) { repo in
-                            Button {
-                                viewModel.selectedRepository = repo
-                            } label: {
-                                HStack {
-                                    Text(repo.name)
-                                    if repo.path == viewModel.selectedRepository?.path {
-                                        Spacer()
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
+                        repositoryMenu
                     }
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .contentShape(Rectangle())
+                    refreshButton
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 18, height: 18)
             }
         }
         .padding(.bottom, 2)
+    }
+
+    /// Direct refresh action — surfaced inline rather than buried in a menu,
+    /// since it is the only always-available header function.
+    private var refreshButton: some View {
+        Button {
+            Task { await viewModel.scanRepositories() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(Stanford.ui(13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(width: 18, height: 18)
+        .help("Refresh status")
+    }
+
+    /// Repository switcher — shown only when more than one repository exists,
+    /// so it earns its place as a menu instead of padding a single-item one.
+    private var repositoryMenu: some View {
+        Menu {
+            ForEach(viewModel.repositories) { repo in
+                Button {
+                    viewModel.selectedRepository = repo
+                } label: {
+                    HStack {
+                        Text(repo.name)
+                        if repo.path == viewModel.selectedRepository?.path {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "folder")
+                .font(Stanford.ui(13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Switch repository")
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -143,11 +157,32 @@ struct WorkspaceGitSectionView: View {
                 .font(Stanford.caption(11))
                 .foregroundStyle(Stanford.errorRed)
                 .lineLimit(2)
+
+            Spacer(minLength: 4)
+
+            Button {
+                viewModel.errorMessage = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(Stanford.ui(10, weight: .bold))
+                    .foregroundStyle(Stanford.errorRed.opacity(0.8))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Stanford.errorRed.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Row separator that begins after the leading icon column (lean UI rule:
+    /// start dividers after the icon, not at the card edge).
+    private var rowDivider: some View {
+        Divider()
+            .padding(.leading, 36)
+            .padding(.trailing, 8)
     }
 
     // MARK: - Branch row
@@ -242,9 +277,9 @@ struct WorkspaceGitSectionView: View {
             }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: isChangesDrawerExpanded ? "chevron.down" : "chevron.right")
-                    .font(Stanford.ui(11, weight: .bold))
-                    .foregroundStyle(.secondary)
+                Image(systemName: "plus.forwardslash.minus")
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
                     .frame(width: 16)
 
                 Text("Changes")
@@ -253,35 +288,53 @@ struct WorkspaceGitSectionView: View {
 
                 Spacer()
 
-                if viewModel.additions == 0 && viewModel.deletions == 0 {
-                    Text("Clean")
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.statusHealthy)
-                } else {
-                    HStack(spacing: 6) {
-                        if viewModel.additions > 0 {
-                            Text("+\(viewModel.additions)")
-                                .font(Stanford.caption(12).weight(.semibold))
-                                .foregroundStyle(Stanford.statusHealthy)
-                        }
-                        if viewModel.deletions > 0 {
-                            Text("-\(viewModel.deletions)")
-                                .font(Stanford.caption(12).weight(.semibold))
-                                .foregroundStyle(Stanford.statusError)
-                        }
-                    }
-                }
+                changesBadge
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isChangesDrawerExpanded ? 90 : 0))
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle(isExpanded: isChangesDrawerExpanded))
+        .help(isChangesDrawerExpanded ? "Hide changed files" : "Show changed files")
+    }
+
+    @ViewBuilder
+    private var changesBadge: some View {
+        switch viewModel.changesSummary {
+        case .clean:
+            Text("Clean")
+                .font(Stanford.caption(12).weight(.medium))
+                .foregroundStyle(Stanford.statusHealthy)
+        case let .modified(additions, deletions, fileCount):
+            if additions == 0 && deletions == 0 {
+                Text("\(fileCount) changed")
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 6) {
+                    if additions > 0 {
+                        Text("+\(additions)")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(Stanford.statusHealthy)
+                    }
+                    if deletions > 0 {
+                        Text("-\(deletions)")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(Stanford.statusError)
+                    }
+                }
+            }
+        }
     }
 
     private var changesDrawer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Divider().padding(.horizontal, 8)
+            rowDivider
 
             if viewModel.statusFiles.isEmpty {
                 HStack(spacing: 6) {
@@ -307,7 +360,8 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.stageAll() },
                                 files: unstaged,
                                 rowAction: { viewModel.stage(file: $0) },
-                                icon: "plus"
+                                icon: "plus",
+                                rowHelp: "Stage file"
                             )
                         }
 
@@ -318,7 +372,8 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.unstageAll() },
                                 files: staged,
                                 rowAction: { viewModel.unstage(file: $0) },
-                                icon: "minus"
+                                icon: "minus",
+                                rowHelp: "Unstage file"
                             )
                         }
                     }
@@ -338,23 +393,24 @@ struct WorkspaceGitSectionView: View {
         action: @escaping () -> Void,
         files: [GitStatusFile],
         rowAction: @escaping (GitStatusFile) -> Void,
-        icon: String
+        icon: String,
+        rowHelp: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title)
-                    .font(Stanford.caption(10).weight(.bold))
+                    .font(Stanford.caption(11).weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(actionLabel, action: action)
                     .buttonStyle(.plain)
-                    .font(Stanford.caption(9))
+                    .font(Stanford.caption(11))
                     .foregroundStyle(Stanford.lagunita)
             }
             .padding(.bottom, 2)
 
             ForEach(files) { file in
-                fileRow(file: file, action: { rowAction(file) }, icon: icon)
+                fileRow(file: file, action: { rowAction(file) }, icon: icon, help: rowHelp)
             }
         }
     }
@@ -399,6 +455,7 @@ struct WorkspaceGitSectionView: View {
         }
         .buttonStyle(RowButtonStyle())
         .disabled(viewModel.isSuggestingPR)
+        .help(viewModel.hasUpstream ? "Draft and create a pull request" : "Open GitHub to start a pull request")
         .contextMenu {
             Button("Open GitHub without draft") {
                 viewModel.openPullRequestURL(with: nil)
@@ -409,7 +466,7 @@ struct WorkspaceGitSectionView: View {
     // MARK: - File row
 
     @ViewBuilder
-    private func fileRow(file: GitStatusFile, action: @escaping () -> Void, icon: String) -> some View {
+    private func fileRow(file: GitStatusFile, action: @escaping () -> Void, icon: String, help: String) -> some View {
         HStack(spacing: 5) {
             statusBadge(for: file.status)
 
@@ -430,6 +487,7 @@ struct WorkspaceGitSectionView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .help(help)
         }
         .padding(.vertical, 2)
         .padding(.horizontal, 4)

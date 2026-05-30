@@ -153,6 +153,21 @@ final class WorkspaceGitViewModel: ObservableObject {
         return pushableCommitCount > 0
     }
 
+    /// Group-level status for the Changes row, kept in one place so the row can
+    /// carry shared status without each file repeating it (lean UI rule). Uses
+    /// the working-tree file set — not just line counts — so an untracked-only
+    /// repository is never mislabeled "Clean".
+    enum ChangesSummary: Equatable {
+        case clean
+        case modified(additions: Int, deletions: Int, fileCount: Int)
+    }
+
+    var changesSummary: ChangesSummary {
+        guard !statusFiles.isEmpty else { return .clean }
+        let fileCount = Set(statusFiles.map(\.relativePath)).count
+        return .modified(additions: additions, deletions: deletions, fileCount: fileCount)
+    }
+
     // MARK: - Branches
 
     func checkout(branch: String) {

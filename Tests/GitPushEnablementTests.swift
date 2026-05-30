@@ -116,6 +116,33 @@ struct GitPushEnablementTests {
     }
 
     @MainActor
+    @Test("Changes summary carries group status from the file set, not just line counts")
+    func changesSummaryReflectsFileSet() {
+        let vm = WorkspaceGitViewModel()
+
+        // No files → clean, regardless of stale line counts.
+        vm.statusFiles = []
+        vm.additions = 5
+        vm.deletions = 2
+        #expect(vm.changesSummary == .clean)
+
+        // Tracked edits → modified with line counts.
+        vm.statusFiles = [
+            GitStatusFile(relativePath: "a.swift", status: "M", isStaged: true),
+            GitStatusFile(relativePath: "a.swift", status: "M", isStaged: false)
+        ]
+        vm.additions = 5
+        vm.deletions = 2
+        #expect(vm.changesSummary == .modified(additions: 5, deletions: 2, fileCount: 1))
+
+        // Untracked-only (no diff line counts) must NOT read as clean.
+        vm.statusFiles = [GitStatusFile(relativePath: "new.txt", status: "?", isStaged: false)]
+        vm.additions = 0
+        vm.deletions = 0
+        #expect(vm.changesSummary == .modified(additions: 0, deletions: 0, fileCount: 1))
+    }
+
+    @MainActor
     @Test("Clean branch in sync with remote cannot open the sheet")
     func cannotOpenSheetWhenInSync() {
         let vm = WorkspaceGitViewModel()
