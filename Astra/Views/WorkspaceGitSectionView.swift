@@ -684,51 +684,96 @@ struct CommitSheet: View {
 
             Divider()
 
-            HStack(spacing: 8) {
-                commitButton(label: "Commit", icon: "point.topleft.down.to.point.bottomright.curvepath", andPush: false)
-                    .keyboardShortcut(.return, modifiers: .command)
-
-                commitButton(label: "Commit and push", icon: "arrow.up.circle", andPush: true)
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-
-                pushButton
-
-                Spacer()
-
-                Button("Cancel", action: onDismiss)
-                    .keyboardShortcut(.cancelAction)
-            }
+            actionColumn
         }
         .padding(16)
-        .frame(width: 440, height: 310)
+        .frame(width: 380, height: 392)
+    }
+
+    // MARK: - Action column
+
+    /// A single full-width column of actions so every label reads in full.
+    /// Only the actions that are meaningful for the current state are shown,
+    /// with one clear primary action emphasized.
+    @ViewBuilder
+    private var actionColumn: some View {
+        VStack(spacing: 8) {
+            if viewModel.hasChanges {
+                commitButton(label: "Commit and push", icon: "arrow.up.circle.fill", andPush: true, prominent: true)
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+
+                commitButton(label: "Commit", icon: "checkmark.circle", andPush: false, prominent: false)
+                    .keyboardShortcut(.return, modifiers: .command)
+
+                if viewModel.canPush {
+                    pushButton(prominent: false)
+                }
+            } else if viewModel.canPush {
+                pushButton(prominent: true)
+                    .keyboardShortcut(.return, modifiers: .command)
+            }
+
+            Button(action: onDismiss) {
+                Text("Cancel").frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .keyboardShortcut(.cancelAction)
+        }
     }
 
     @ViewBuilder
-    private func commitButton(label: String, icon: String, andPush: Bool) -> some View {
-        Button {
+    private func commitButton(label: String, icon: String, andPush: Bool, prominent: Bool) -> some View {
+        let button = Button {
             viewModel.commitFromSheet(message: message, includeUnstaged: includeUnstaged, andPush: andPush)
             onDismiss()
         } label: {
-            if viewModel.isSyncing || viewModel.isSuggestingCommit {
-                ProgressView().controlSize(.small)
-            } else {
-                Label(label, systemImage: icon)
-            }
+            actionLabel(label, icon: icon, busy: andPush)
         }
+        .controlSize(.large)
         .disabled(!viewModel.hasChanges || viewModel.isSyncing || viewModel.isSuggestingCommit)
+
+        if prominent {
+            button.buttonStyle(.borderedProminent).tint(Stanford.lagunita)
+        } else {
+            button.buttonStyle(.bordered)
+        }
     }
 
-    private var pushButton: some View {
-        Button {
+    @ViewBuilder
+    private func pushButton(prominent: Bool) -> some View {
+        let title = viewModel.hasUpstream ? "Push" : "Publish branch"
+        let icon = viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
+        let button = Button {
             viewModel.pushOnly()
             onDismiss()
         } label: {
-            Label(
-                viewModel.hasUpstream ? "Push" : "Publish branch",
-                systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
-            )
+            actionLabel(title, icon: icon, busy: false)
         }
+        .controlSize(.large)
         .disabled(!viewModel.canPush || viewModel.isSyncing)
+
+        if prominent {
+            button.buttonStyle(.borderedProminent).tint(Stanford.lagunita)
+        } else {
+            button.buttonStyle(.bordered)
+        }
+    }
+
+    /// Full-width label that swaps in inline progress while a long-running
+    /// commit/suggestion is in flight.
+    @ViewBuilder
+    private func actionLabel(_ title: String, icon: String, busy: Bool) -> some View {
+        Group {
+            if busy && (viewModel.isSyncing || viewModel.isSuggestingCommit) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(viewModel.isSuggestingCommit ? "Generating message…" : "Working…")
+                }
+            } else {
+                Label(title, systemImage: icon)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
