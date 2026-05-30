@@ -662,7 +662,7 @@ struct PluginCatalogView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
@@ -838,7 +838,7 @@ struct PluginCatalogView: View {
         .frame(minHeight: 92, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background {
-            shape.fill(enabled ? Color.primary.opacity(0.018) : Color(nsColor: .controlBackgroundColor))
+            shape.fill(enabled ? Color.primary.opacity(0.018) : Stanford.fog)
         }
         .overlay {
             shape.stroke(enabled ? Color.primary.opacity(0.045) : Color.primary.opacity(0.075), lineWidth: 1)
@@ -2573,7 +2573,7 @@ struct PluginInstallSheet: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -2898,7 +2898,7 @@ struct PluginInstallSheet: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)

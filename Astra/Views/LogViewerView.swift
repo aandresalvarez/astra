@@ -102,7 +102,7 @@ struct LogViewerView: View {
             logTable
         }
         .frame(minWidth: 760, minHeight: 460)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Stanford.panelBackground)
         .onAppear {
             refreshFromLogger()
         }
@@ -329,7 +329,7 @@ struct LogViewerView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(minWidth: 220, maxWidth: .infinity)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.78))
+        .background(Stanford.cardBackground.opacity(0.78))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -436,7 +436,7 @@ struct LogViewerView: View {
                 }
             }
         }
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.72))
+        .background(Stanford.cardBackground.opacity(0.72))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
