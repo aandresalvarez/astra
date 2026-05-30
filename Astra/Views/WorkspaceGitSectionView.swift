@@ -28,6 +28,9 @@ struct WorkspaceGitSectionView: View {
                 branchRow
                 rowDivider
 
+                workingLocationRow
+                rowDivider
+
                 changesRow
                 if isChangesDrawerExpanded {
                     changesDrawer
@@ -73,6 +76,9 @@ struct WorkspaceGitSectionView: View {
             CommitSheet(viewModel: viewModel, onDismiss: {
                 showCommitSheet = false
             })
+        }
+        .sheet(isPresented: $viewModel.isManagingWorktrees) {
+            WorktreeSheet(viewModel: viewModel)
         }
     }
 
@@ -216,6 +222,86 @@ struct WorkspaceGitSectionView: View {
         .buttonStyle(RowButtonStyle())
         .popover(isPresented: $viewModel.showBranchPickerPopover, arrowEdge: .trailing) {
             BranchPickerPopoverView(viewModel: viewModel)
+        }
+    }
+
+    // MARK: - Working location row
+
+    /// Shows the checkout new chats run in (Root or a worktree) and offers a
+    /// menu to switch between them or open full worktree management. Existing
+    /// threads keep their own pinned location — this only steers new work.
+    private var workingLocationRow: some View {
+        Menu {
+            Section("Switch working location") {
+                Button {
+                    viewModel.switchToRoot()
+                } label: {
+                    locationMenuLabel(title: "Root", isActive: !viewModel.isUsingWorktree)
+                }
+
+                ForEach(viewModel.worktrees.filter { !$0.isPrimary }) { worktree in
+                    Button {
+                        viewModel.switchWorkingLocation(to: worktree)
+                    } label: {
+                        locationMenuLabel(
+                            title: worktree.displayName,
+                            isActive: viewModel.activeWorkingPath == worktree.path
+                        )
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                viewModel.isManagingWorktrees = true
+            } label: {
+                Label("Manage worktrees…", systemImage: "square.split.2x1")
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: viewModel.isUsingWorktree ? "square.split.2x1" : "house")
+                    .font(Stanford.ui(13, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 16)
+
+                Text("Working in")
+                    .font(Stanford.body(13))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Text(workingLocationLabel)
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(viewModel.isUsingWorktree ? Stanford.lagunita : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(9, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Choose the checkout new chats run in")
+    }
+
+    private var workingLocationLabel: String {
+        guard viewModel.isUsingWorktree else { return "Root" }
+        return viewModel.activeWorktree?.displayName
+            ?? URL(fileURLWithPath: viewModel.activeWorkingPath ?? "").lastPathComponent
+    }
+
+    @ViewBuilder
+    private func locationMenuLabel(title: String, isActive: Bool) -> some View {
+        if isActive {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
         }
     }
 
@@ -924,6 +1010,199 @@ struct PRDraftSheet: View {
         }
         .padding(16)
         .frame(width: 520, height: 460)
+    }
+}
+
+// MARK: - Worktree management sheet
+
+/// Create, switch, and remove git worktrees. Switching here only steers where
+/// *new* chats run — existing threads stay pinned to the worktree they were
+/// created in, which is what makes parallel agent work safe.
+struct WorktreeSheet: View {
+    @ObservedObject var viewModel: WorkspaceGitViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            createSection
+
+            Divider()
+
+            Text("Worktrees")
+                .font(Stanford.caption(10).weight(.bold))
+                .foregroundStyle(.secondary)
+
+            worktreeList
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.errorRed)
+                    .lineLimit(3)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack {
+                Text("New chats start in the active location.")
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 480, height: 460)
+        .alert(
+            "Discard uncommitted changes?",
+            isPresented: Binding(
+                get: { viewModel.worktreePendingForceRemoval != nil },
+                set: { if !$0 { viewModel.worktreePendingForceRemoval = nil } }
+            ),
+            presenting: viewModel.worktreePendingForceRemoval
+        ) { worktree in
+            Button("Remove anyway", role: .destructive) {
+                viewModel.removeWorktree(worktree, force: true)
+            }
+            Button("Cancel", role: .cancel) { viewModel.worktreePendingForceRemoval = nil }
+        } message: { worktree in
+            Text("\(worktree.displayName) has uncommitted changes. Removing it deletes the checkout on disk. The branch and its commits are kept.")
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.split.2x1")
+                .font(Stanford.ui(14, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+            Text("Worktrees")
+                .font(Stanford.ui(14, weight: .bold))
+            Spacer()
+            if viewModel.isSyncing {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
+    private var createSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("New worktree")
+                .font(Stanford.caption(10).weight(.bold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("branch-name", text: $viewModel.newWorktreeBranch)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Stanford.body(12))
+                    .controlSize(.small)
+                    .onSubmit(create)
+
+                Button(action: create) {
+                    Label("Create", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Stanford.lagunita)
+                .controlSize(.small)
+                .disabled(trimmedBranch.isEmpty || viewModel.isSyncing)
+            }
+            Text("Creates a new branch off \(viewModel.currentBranch.isEmpty ? "HEAD" : viewModel.currentBranch) and focuses new chats on it.")
+                .font(Stanford.caption(10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var worktreeList: some View {
+        ScrollView {
+            VStack(spacing: 1) {
+                ForEach(viewModel.worktrees) { worktree in
+                    worktreeRow(worktree)
+                }
+            }
+        }
+        .frame(maxHeight: 220)
+        .background(Color.primary.opacity(0.015))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func worktreeRow(_ worktree: GitWorktreeInfo) -> some View {
+        let isActive = worktree.isPrimary
+            ? !viewModel.isUsingWorktree
+            : viewModel.activeWorkingPath == worktree.path
+        HStack(spacing: 10) {
+            Image(systemName: worktree.isPrimary ? "house" : "arrow.triangle.branch")
+                .font(Stanford.ui(12, weight: .medium))
+                .foregroundStyle(isActive ? Stanford.lagunita : .secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(worktree.isPrimary ? "Root" : worktree.displayName)
+                    .font(Stanford.body(12.5))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(worktree.path)
+                    .font(Stanford.ui(10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 6)
+
+            if isActive {
+                Text("Active")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .foregroundStyle(Stanford.lagunita)
+            } else {
+                Button("Switch") {
+                    if worktree.isPrimary {
+                        viewModel.switchToRoot()
+                    } else {
+                        viewModel.switchWorkingLocation(to: worktree)
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(Stanford.caption(11).weight(.medium))
+                .foregroundStyle(Stanford.lagunita)
+            }
+
+            if !worktree.isPrimary {
+                Button {
+                    attemptRemoval(worktree)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(Stanford.ui(11))
+                        .foregroundStyle(viewModel.hasActiveTaskPinned(to: worktree) ? Color.secondary : Stanford.errorRed)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.hasActiveTaskPinned(to: worktree))
+                .help(viewModel.hasActiveTaskPinned(to: worktree)
+                      ? "A running task is using this worktree"
+                      : "Remove worktree")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+
+    private var trimmedBranch: String {
+        viewModel.newWorktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func create() {
+        guard !trimmedBranch.isEmpty else { return }
+        viewModel.createWorktree(branch: trimmedBranch)
+    }
+
+    /// Removing a clean worktree succeeds immediately; a dirty one routes through
+    /// the view model's confirmation state before forcing, so we never silently
+    /// discard work.
+    private func attemptRemoval(_ worktree: GitWorktreeInfo) {
+        viewModel.errorMessage = nil
+        viewModel.removeWorktree(worktree, force: false)
     }
 }
 

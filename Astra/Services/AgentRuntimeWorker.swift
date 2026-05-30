@@ -986,6 +986,8 @@ final class AgentRuntimeWorker {
         nextTask.status = .queued
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
+        // A chained follow-up continues in the same checkout as its parent.
+        nextTask.executionRootPath = task.executionRootPath
         if !output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
         }

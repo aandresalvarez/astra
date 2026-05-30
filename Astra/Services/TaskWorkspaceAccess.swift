@@ -9,6 +9,15 @@ struct TaskWorkspaceAccess {
     }
 
     var codeWorkingDirectory: String {
+        // A thread pinned to a worktree always runs in that checkout, as long as
+        // it still exists. If the worktree was removed, fall through to the
+        // normal resolution so the thread degrades to the repository root
+        // instead of failing on a missing directory.
+        if let pinned = task.executionRootPath,
+           !pinned.isEmpty,
+           FileManager.default.fileExists(atPath: pinned) {
+            return pinned
+        }
         if let first = task.workspace?.additionalPaths.first,
            !first.isEmpty,
            FileManager.default.fileExists(atPath: first) {

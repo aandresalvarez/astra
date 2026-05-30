@@ -13,6 +13,54 @@ struct GitStatusFile: Identifiable, Hashable {
     let isStaged: Bool
 }
 
+/// A single git worktree as reported by `git worktree list --porcelain`.
+///
+/// The main worktree (the original clone) is flagged via `isPrimary` so the UI
+/// can present it as the repository "Root" rather than as a removable worktree.
+struct GitWorktreeInfo: Identifiable, Hashable {
+    var id: String { path }
+    let path: String
+    let branch: String?      // short branch name, nil when detached/bare
+    let head: String?        // commit SHA
+    let isPrimary: Bool      // the repository's main working tree
+    let isDetached: Bool
+    let isLocked: Bool
+    let isPrunable: Bool
+
+    /// Folder name, used as a stable display label when no branch is attached.
+    var folderName: String {
+        URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    /// Human-facing label: branch when available, else the folder name.
+    var displayName: String {
+        if let branch, !branch.isEmpty { return branch }
+        return folderName
+    }
+}
+
+/// Failure modes specific to git worktree management, surfaced so the UI can
+/// give actionable guidance instead of a raw git error string.
+enum GitWorktreeError: LocalizedError {
+    case branchAlreadyCheckedOut(String)
+    case invalidBranchName(String)
+    case cannotRemovePrimary
+    case worktreeDirty(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .branchAlreadyCheckedOut(branch):
+            return "Branch \"\(branch)\" is already checked out in another worktree."
+        case let .invalidBranchName(name):
+            return "\"\(name)\" is not a valid branch name."
+        case .cannotRemovePrimary:
+            return "The repository root cannot be removed as a worktree."
+        case let .worktreeDirty(path):
+            return "Worktree at \(path) has uncommitted changes. Discard or commit them first."
+        }
+    }
+}
+
 /// Failure modes for GitHub operations performed through the `gh` CLI.
 enum GitHubCLIError: LocalizedError {
     case notInstalled
@@ -690,6 +738,183 @@ class GitService {
         return (additions, deletions)
     }
     
+    // MARK: - Worktrees
+
+    /// Lists every worktree attached to the repository. The first entry is the
+    /// primary working tree (the original checkout). Returns an empty array on
+    /// failure so callers can treat "no worktrees" and "git failed" uniformly.
+    func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo] {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["worktree", "list", "--porcelain"])
+            return GitService.parseWorktreePorcelain(output)
+        } catch {
+            return []
+        }
+    }
+
+    /// Parses `git worktree list --porcelain`. Records are separated by blank
+    /// lines; the first record is always the primary working tree.
+    static func parseWorktreePorcelain(_ output: String) -> [GitWorktreeInfo] {
+        var result: [GitWorktreeInfo] = []
+        let blocks = output.components(separatedBy: "\n\n")
+        for (index, block) in blocks.enumerated() {
+            var path: String?
+            var branch: String?
+            var head: String?
+            var isDetached = false
+            var isLocked = false
+            var isPrunable = false
+
+            for rawLine in block.split(separator: "\n", omittingEmptySubsequences: true) {
+                let line = String(rawLine)
+                if line.hasPrefix("worktree ") {
+                    path = String(line.dropFirst("worktree ".count))
+                } else if line.hasPrefix("HEAD ") {
+                    head = String(line.dropFirst("HEAD ".count))
+                } else if line.hasPrefix("branch ") {
+                    let ref = String(line.dropFirst("branch ".count))
+                    branch = ref.hasPrefix("refs/heads/") ? String(ref.dropFirst("refs/heads/".count)) : ref
+                } else if line == "detached" {
+                    isDetached = true
+                } else if line == "locked" || line.hasPrefix("locked ") {
+                    isLocked = true
+                } else if line == "prunable" || line.hasPrefix("prunable ") {
+                    isPrunable = true
+                }
+            }
+
+            guard let path, !path.isEmpty else { continue }
+            result.append(GitWorktreeInfo(
+                path: path,
+                branch: branch,
+                head: head,
+                isPrimary: index == 0,
+                isDetached: isDetached,
+                isLocked: isLocked,
+                isPrunable: isPrunable
+            ))
+        }
+        return result
+    }
+
+    /// Returns true when a local branch with the given name already exists.
+    func localBranchExists(_ branch: String, at repoPath: String) async -> Bool {
+        do {
+            _ = try await runGit(
+                at: repoPath,
+                arguments: ["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"]
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Computes the app-managed on-disk location for a new worktree, namespaced
+    /// by repository so multiple repos never collide:
+    /// `<worktreesRoot>/<repoName>/<sanitized-branch>`.
+    static func worktreeLocation(
+        repoPath: String,
+        branch: String,
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
+    ) -> String {
+        let repoName = URL(fileURLWithPath: repoPath).lastPathComponent
+        let safeBranch = sanitizeForFolder(branch)
+        return URL(fileURLWithPath: worktreesRoot, isDirectory: true)
+            .appendingPathComponent(repoName, isDirectory: true)
+            .appendingPathComponent(safeBranch, isDirectory: true)
+            .path
+    }
+
+    /// Converts a branch name into a filesystem-safe folder component while
+    /// keeping it recognizable (slashes become dashes, unsafe characters drop).
+    static func sanitizeForFolder(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replaced = trimmed.replacingOccurrences(of: "/", with: "-")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let filtered = String(replaced.unicodeScalars.filter { allowed.contains($0) })
+        return filtered.isEmpty ? "worktree" : filtered
+    }
+
+    /// Creates a worktree at an app-managed location.
+    ///
+    /// When `createBranch` is true a new branch `branch` is created from `base`
+    /// (defaults to the current HEAD); otherwise an existing branch is checked
+    /// out into the new worktree. Returns the absolute worktree path on success.
+    @discardableResult
+    func addWorktree(
+        repoPath: String,
+        branch: String,
+        createBranch: Bool,
+        base: String? = nil,
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
+    ) async throws -> String {
+        let cleanBranch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanBranch.isEmpty else { throw GitWorktreeError.invalidBranchName(branch) }
+
+        let destination = GitService.worktreeLocation(
+            repoPath: repoPath,
+            branch: cleanBranch,
+            worktreesRoot: worktreesRoot
+        )
+
+        // Ensure the parent directory exists; git creates the leaf itself.
+        let parent = URL(fileURLWithPath: destination).deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        var arguments = ["worktree", "add"]
+        if createBranch {
+            arguments += ["-b", cleanBranch, destination]
+            if let base, !base.isEmpty { arguments.append(base) }
+        } else {
+            arguments += [destination, cleanBranch]
+        }
+
+        do {
+            _ = try await runGit(at: repoPath, arguments: arguments, timeout: Self.networkGitTimeout)
+        } catch let error as NSError {
+            let message = error.localizedDescription
+            if message.localizedCaseInsensitiveContains("already checked out")
+                || message.localizedCaseInsensitiveContains("already used by worktree") {
+                throw GitWorktreeError.branchAlreadyCheckedOut(cleanBranch)
+            }
+            if message.localizedCaseInsensitiveContains("not a valid")
+                || message.localizedCaseInsensitiveContains("invalid ref") {
+                throw GitWorktreeError.invalidBranchName(cleanBranch)
+            }
+            throw error
+        }
+        return destination
+    }
+
+    /// Removes a worktree. Refuses to remove the primary working tree. Without
+    /// `force`, git itself refuses to remove a worktree with local changes,
+    /// which we translate into a typed error so the UI can prompt the user.
+    func removeWorktree(repoPath: String, worktreePath: String, force: Bool = false) async throws {
+        var arguments = ["worktree", "remove"]
+        if force { arguments.append("--force") }
+        arguments.append(worktreePath)
+        do {
+            _ = try await runGit(at: repoPath, arguments: arguments)
+        } catch let error as NSError {
+            let message = error.localizedDescription
+            if message.localizedCaseInsensitiveContains("is a main working tree") {
+                throw GitWorktreeError.cannotRemovePrimary
+            }
+            if message.localizedCaseInsensitiveContains("contains modified or untracked")
+                || message.localizedCaseInsensitiveContains("use --force") {
+                throw GitWorktreeError.worktreeDirty(worktreePath)
+            }
+            throw error
+        }
+    }
+
+    /// Prunes administrative entries for worktrees whose directories were
+    /// removed out from under git, keeping `git worktree list` accurate.
+    func pruneWorktrees(at repoPath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["worktree", "prune"])
+    }
+
     func getRemoteOriginURL(at repoPath: String) async -> String? {
         do {
             let output = try await runGit(at: repoPath, arguments: ["config", "--get", "remote.origin.url"])
