@@ -4547,6 +4547,43 @@ struct AgentTaskPropertyTests {
         #expect(failedPresentation.tone == .failed)
         #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
     }
+
+    @Test("verification loader reads finished task state asynchronously")
+    @MainActor
+    func verificationLoaderReadsFinishedTaskState() async throws {
+        let root = NSTemporaryDirectory() + "verification-loader-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let workspace = makeWorkspace(name: "Verification Loader")
+        workspace.primaryPath = root
+        let task = makeTask(
+            goal: "Verify the cached presentation path",
+            status: .completed,
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Completed without automated verification."
+        run.completedAt = Date()
+        task.runs = [run]
+
+        TaskContextStateManager.refresh(task: task)
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+
+        let presentation = try #require(await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: folder
+        ))
+        let hiddenPresentation = await TaskVerificationPresentationLoader.presentation(
+            isFinished: false,
+            taskFolder: folder
+        )
+
+        #expect(presentation.title == "Completed without automated verification")
+        #expect(presentation.summary == "Manual completion")
+        #expect(hiddenPresentation == nil)
+    }
 }
 
 // MARK: - TaskRun & StoredFileChange

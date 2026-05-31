@@ -4,6 +4,10 @@ import SwiftData
 enum AgentEventCompactor {
     static let threshold = 200
     static let keepCount = 50
+
+    private enum FilePathPattern {
+        static let regex = try! NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+    }
     private static let semanticLineLimit = 12
 
     @MainActor
@@ -209,10 +213,10 @@ enum AgentEventCompactor {
     }
 
     private static func filePaths(in text: String) -> [String] {
-        guard !text.isEmpty,
-              let regex = try? NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#) else {
+        guard !text.isEmpty else {
             return []
         }
+        let regex = FilePathPattern.regex
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.matches(in: text, range: nsRange).compactMap { match -> String? in
             guard let range = Range(match.range, in: text) else { return nil }

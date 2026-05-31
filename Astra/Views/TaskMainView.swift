@@ -31,6 +31,23 @@ private struct TaskScopedStatusMessage: Equatable {
     let text: String
 }
 
+private struct TaskVerificationLoadRequest: Hashable {
+    let taskID: UUID
+    let taskStatus: TaskStatus
+    let taskUpdatedAt: Date
+    let taskFolder: String
+}
+
+enum TaskVerificationPresentationLoader {
+    static func presentation(isFinished: Bool, taskFolder: String) async -> TaskVerificationPresentation? {
+        guard isFinished, !taskFolder.isEmpty else { return nil }
+        let verification = await Task.detached(priority: .utility) {
+            TaskContextStateManager.load(taskFolder: taskFolder)?.verification
+        }.value
+        return verification.map(TaskPresentationState.verificationPresentation(for:))
+    }
+}
+
 private struct ScheduleSourceContext {
     let taskID: UUID
     let title: String
@@ -193,6 +210,8 @@ struct TaskMainView: View {
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
+    @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
+    @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -468,6 +487,9 @@ struct TaskMainView: View {
         .task(id: planStateCacheRefreshTrigger) {
             refreshPlanStateCache()
         }
+        .task(id: verificationLoadRequest) {
+            await refreshVerificationPresentation(for: verificationLoadRequest)
+        }
         .onChange(of: task.id) {
             isChatAtBottom = true
             hasUnseenChatActivity = false
@@ -482,6 +504,8 @@ struct TaskMainView: View {
             alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
             refreshPlanStateCache()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
         }
         .onAppear {
             alignTaskModelWithRuntime()
@@ -491,6 +515,8 @@ struct TaskMainView: View {
             threadViewModel.reset(for: task)
             loadSSHConnections()
             refreshPlanStateCache()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
         }
@@ -946,13 +972,36 @@ struct TaskMainView: View {
     }
 
     private var currentVerificationPresentation: TaskVerificationPresentation? {
+        guard cachedVerificationRequest == verificationLoadRequest else { return nil }
+        return cachedVerificationPresentation
+    }
+
+    private var verificationLoadRequest: TaskVerificationLoadRequest? {
         guard isFinished else { return nil }
         let folder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !folder.isEmpty,
-              let state = TaskContextStateManager.load(taskFolder: folder) else {
-            return nil
+        guard !folder.isEmpty else { return nil }
+        return TaskVerificationLoadRequest(
+            taskID: task.id,
+            taskStatus: task.status,
+            taskUpdatedAt: task.updatedAt,
+            taskFolder: folder
+        )
+    }
+
+    @MainActor
+    private func refreshVerificationPresentation(for request: TaskVerificationLoadRequest?) async {
+        guard let request else {
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            return
         }
-        return TaskPresentationState.verificationPresentation(for: state.verification)
+        let presentation = await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: request.taskFolder
+        )
+        guard verificationLoadRequest == request else { return }
+        cachedVerificationRequest = request
+        cachedVerificationPresentation = presentation
     }
 
     private func setScheduleStatusMessage(_ message: String, for taskID: UUID? = nil) {
