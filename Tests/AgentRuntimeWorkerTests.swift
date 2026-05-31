@@ -407,7 +407,10 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
-        #expect(prompt.contains("YOUR MEMORIES"))
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("workspace-saved memories. Task-local state is Context Capsule v2/current_state"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
         #expect(prompt.contains("User prefers tabs over spaces"))
         #expect(prompt.contains("Project uses SwiftData"))
     }
@@ -697,6 +700,56 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA context budget: memories"))
         #expect(prompt.contains("workspace saved memories"))
         #expect(!prompt.contains("MEMORY_OMITTED_TAIL_MARKER"))
+    }
+
+    @Test("Workspace memories are namespaced and relevance ranked apart from task state")
+    func workspaceMemoriesAreNamespacedAndRelevanceRanked() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Memory Separation", primaryPath: "/tmp/prompt-memory-separation")
+        ws.memories = [
+            "User prefers regression tests for bugs",
+            "Project uses SwiftData migrations",
+            "Claude provider runs through Vertex",
+            "Repo build verification uses swift test",
+            "Always run git diff --check before handoff",
+            "Runtime budget warnings should stay visible",
+            "Project branch prefix is alvaro/",
+            "RELEVANT_NATIVE_MARKER: Claude provider native continuation still sends rebuilt prompt",
+            "IRRELEVANT_OMITTED_MARKER: generic note with no task overlap",
+            "SECOND_IRRELEVANT_OMITTED_MARKER: another generic note"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Debug workspace memory retrieval for Claude provider native continuation",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let prompt = manifest.prompt
+        let memorySection = try #require(manifest.sections.first { $0.kind == .memories })
+
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("Retrieval: namespace- and relevance-ranked"))
+        #expect(!prompt.contains("complete memory inventory requested"))
+        #expect(prompt.contains("Use Context Capsule v2/current_state for task objective"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
+        #expect(prompt.contains("Provider and runtime facts:"))
+        #expect(prompt.contains("RELEVANT_NATIVE_MARKER"))
+        #expect(prompt.contains("Omitted 2 lower-relevance workspace memories"))
+        #expect(!prompt.contains("IRRELEVANT_OMITTED_MARKER"))
+        #expect(!prompt.contains("SECOND_IRRELEVANT_OMITTED_MARKER"))
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "workspace memory namespace" && $0.target == "Memory Separation#providerRuntime"
+        })
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "omitted workspace memories" && $0.target.contains("omitted 2")
+        })
     }
 
     @Test("Prompt assembly manifest matches prompt and reports section budgets")

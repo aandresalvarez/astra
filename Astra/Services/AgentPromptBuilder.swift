@@ -163,12 +163,12 @@ enum AgentPromptBuilder {
             )
         }
 
-        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace, contextText: task.goal) {
             appendSection(
-                memoriesBlock,
+                memoriesBlock.text,
                 kind: .memories,
                 to: &sections,
-                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+                sourcePointers: memoriesBlock.sourcePointers
             )
         }
 
@@ -883,12 +883,15 @@ enum AgentPromptBuilder {
 
         appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
 
-        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+        if let memoriesBlock = workspaceMemoriesBlock(
+            for: task.workspace,
+            contextText: [task.goal, message].joined(separator: "\n")
+        ) {
             appendSection(
-                memoriesBlock,
+                memoriesBlock.text,
                 kind: .memories,
                 to: &sections,
-                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+                sourcePointers: memoriesBlock.sourcePointers
             )
         }
 
@@ -1354,13 +1357,205 @@ enum AgentPromptBuilder {
         max(1, Int(ceil(Double(count) / Double(estimatedCharactersPerToken))))
     }
 
-    private static func workspaceMemoriesBlock(for workspace: Workspace?) -> String? {
-        guard let memories = workspace?.memories, !memories.isEmpty else { return nil }
-        return """
-        YOUR MEMORIES (saved by the user for this workspace — these ARE your persistent memories, do NOT look for memory files on disk):
-        \(memories.map { "- \($0)" }.joined(separator: "\n"))
-        When the user asks about your memories, report these items. Do not check ~/.claude/ or any file-based memory system.
-        """
+    private enum WorkspaceMemoryNamespace: String, CaseIterable, Hashable {
+        case userPreference
+        case workspaceConvention
+        case providerRuntime
+        case general
+
+        var heading: String {
+            switch self {
+            case .userPreference: "User preferences"
+            case .workspaceConvention: "Workspace conventions"
+            case .providerRuntime: "Provider and runtime facts"
+            case .general: "Other relevant workspace memories"
+            }
+        }
+    }
+
+    private struct RetrievedWorkspaceMemory {
+        var index: Int
+        var text: String
+        var namespace: WorkspaceMemoryNamespace
+        var score: Int
+    }
+
+    private static let maxWorkspaceMemoriesInPrompt = 8
+    private static let memoryStopWords: Set<String> = [
+        "about", "after", "again", "also", "and", "are", "ask", "but", "can",
+        "for", "from", "has", "have", "how", "into", "not", "now", "only",
+        "our", "out", "please", "should", "task", "that", "the", "their",
+        "them", "then", "there", "this", "use", "user", "when", "where",
+        "with", "work", "you", "your"
+    ]
+
+    private static func workspaceMemoriesBlock(for workspace: Workspace?, contextText: String) -> PromptContextText? {
+        guard let workspace,
+              !workspace.memories.isEmpty else {
+            return nil
+        }
+
+        let memories = workspace.memories.enumerated().compactMap { index, rawText -> (Int, String)? in
+            let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : (index, text)
+        }
+        guard !memories.isEmpty else { return nil }
+
+        let includeAll = shouldIncludeAllWorkspaceMemories(contextText)
+        let contextTokens = meaningfulMemoryTokens(in: contextText)
+        let retrieved = memories.map { index, text in
+            let namespace = workspaceMemoryNamespace(for: text)
+            return RetrievedWorkspaceMemory(
+                index: index,
+                text: text,
+                namespace: namespace,
+                score: workspaceMemoryRelevanceScore(
+                    text: text,
+                    namespace: namespace,
+                    contextTokens: contextTokens
+                )
+            )
+        }
+
+        let selected: [RetrievedWorkspaceMemory]
+        if includeAll || retrieved.count <= maxWorkspaceMemoriesInPrompt {
+            selected = retrieved.sorted { $0.index < $1.index }
+        } else {
+            let positive = retrieved
+                .filter { $0.score > 0 }
+                .sorted(by: workspaceMemorySort)
+            let ranked = positive.isEmpty ? retrieved.sorted(by: workspaceMemorySort) : positive
+            selected = Array(ranked.prefix(maxWorkspaceMemoriesInPrompt))
+                .sorted { $0.index < $1.index }
+        }
+
+        var lines = [
+            "Workspace Memory Retrieval:",
+            "- Scope: workspace-saved memories. Task-local state is Context Capsule v2/current_state."
+        ]
+
+        for namespace in WorkspaceMemoryNamespace.allCases {
+            let group = selected.filter { $0.namespace == namespace }
+            guard !group.isEmpty else { continue }
+            lines.append("\(namespace.heading):")
+            lines.append(contentsOf: group.map { "- \($0.text)" })
+        }
+
+        lines.append("- Retrieval: \(includeAll ? "complete memory inventory requested" : "namespace- and relevance-ranked for the current task or follow-up").")
+        lines.append("- Use Context Capsule v2/current_state for task objective, decisions, blockers, changed files, and verification.")
+        lines.append("- Do not check ~/.claude/ or any file-based memory system for these workspace memories.")
+
+        let omittedCount = memories.count - selected.count
+        if omittedCount > 0 {
+            lines.append("- Omitted \(omittedCount) lower-relevance workspace memories from this prompt. Use the workspace memory list when a complete inventory is needed.")
+        }
+
+        var pointers = [sourcePointer(label: "workspace saved memories", target: workspace.name)]
+        let namespaces = Set(selected.map(\.namespace))
+        pointers += WorkspaceMemoryNamespace.allCases
+            .filter { namespaces.contains($0) }
+            .map { sourcePointer(label: "workspace memory namespace", target: "\(workspace.name)#\($0.rawValue)") }
+        if omittedCount > 0 {
+            pointers.append(sourcePointer(label: "omitted workspace memories", target: "\(workspace.name) omitted \(omittedCount)"))
+        }
+
+        return PromptContextText(
+            text: lines.joined(separator: "\n"),
+            sourcePointers: pointers
+        )
+    }
+
+    private static func shouldIncludeAllWorkspaceMemories(_ contextText: String) -> Bool {
+        let lower = contextText.lowercased()
+        return lower.contains("what do you remember") ||
+            lower.contains("what are your memories") ||
+            lower.contains("show memories") ||
+            lower.contains("show all memories") ||
+            lower.contains("list memories") ||
+            lower.contains("list all memories") ||
+            lower.contains("memory inventory") ||
+            lower.contains("saved facts") ||
+            lower.contains("saved memories") ||
+            lower.contains("all workspace memories") ||
+            lower.contains("your memories") ||
+            lower.contains("my memories")
+    }
+
+    private static func workspaceMemoryNamespace(for text: String) -> WorkspaceMemoryNamespace {
+        let lower = text.lowercased()
+        if lower.contains("prefer") ||
+            lower.contains("preference") ||
+            lower.contains("always") ||
+            lower.contains("never") ||
+            lower.contains("i like") ||
+            lower.contains("i want") ||
+            lower.contains("tone") ||
+            lower.contains("respond") {
+            return .userPreference
+        }
+        if lower.contains("claude") ||
+            lower.contains("copilot") ||
+            lower.contains("antigravity") ||
+            lower.contains("provider") ||
+            lower.contains("runtime") ||
+            lower.contains("model") ||
+            lower.contains("token") ||
+            lower.contains("budget") ||
+            lower.contains("cli") {
+            return .providerRuntime
+        }
+        if lower.contains("workspace") ||
+            lower.contains("project") ||
+            lower.contains("repo") ||
+            lower.contains("repository") ||
+            lower.contains("uses") ||
+            lower.contains("swiftdata") ||
+            lower.contains("branch") ||
+            lower.contains("test") ||
+            lower.contains("build") ||
+            lower.contains("style") ||
+            lower.contains("convention") {
+            return .workspaceConvention
+        }
+        return .general
+    }
+
+    private static func workspaceMemoryRelevanceScore(
+        text: String,
+        namespace: WorkspaceMemoryNamespace,
+        contextTokens: Set<String>
+    ) -> Int {
+        let memoryTokens = meaningfulMemoryTokens(in: text)
+        var score = memoryTokens.intersection(contextTokens).count * 4
+        switch namespace {
+        case .userPreference:
+            score += 3
+        case .workspaceConvention:
+            score += 2
+        case .providerRuntime:
+            score += 2
+        case .general:
+            break
+        }
+        return score
+    }
+
+    private static func workspaceMemorySort(
+        lhs: RetrievedWorkspaceMemory,
+        rhs: RetrievedWorkspaceMemory
+    ) -> Bool {
+        if lhs.score != rhs.score {
+            return lhs.score > rhs.score
+        }
+        return lhs.index < rhs.index
+    }
+
+    private static func meaningfulMemoryTokens(in text: String) -> Set<String> {
+        let tokens = text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 3 && !memoryStopWords.contains($0) }
+        return Set(tokens)
     }
 
     private static func sourcePointer(label: String, target: String) -> PromptContextSourcePointer {
