@@ -12,34 +12,38 @@ enum AsyncProcessRunner {
     }
 
     static func run(_ process: Process, stdout: Pipe?, stderr: Pipe?) async -> Output {
-        await withCheckedContinuation { continuation in
-            process.terminationHandler = { proc in
-                let stdoutStr: String
-                if let stdout {
-                    stdoutStr = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                } else {
-                    stdoutStr = ""
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                process.terminationHandler = { proc in
+                    let stdoutStr: String
+                    if let stdout {
+                        stdoutStr = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    } else {
+                        stdoutStr = ""
+                    }
+
+                    let stderrStr: String
+                    if let stderr {
+                        stderrStr = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    } else {
+                        stderrStr = ""
+                    }
+
+                    continuation.resume(returning: Output(
+                        exitCode: Int(proc.terminationStatus),
+                        stdout: stdoutStr.trimmingCharacters(in: .whitespacesAndNewlines),
+                        stderr: stderrStr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ))
                 }
 
-                let stderrStr: String
-                if let stderr {
-                    stderrStr = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                } else {
-                    stderrStr = ""
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: Output(exitCode: -1, stdout: "", stderr: error.localizedDescription))
                 }
-
-                continuation.resume(returning: Output(
-                    exitCode: Int(proc.terminationStatus),
-                    stdout: stdoutStr.trimmingCharacters(in: .whitespacesAndNewlines),
-                    stderr: stderrStr.trimmingCharacters(in: .whitespacesAndNewlines)
-                ))
             }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(returning: Output(exitCode: -1, stdout: "", stderr: error.localizedDescription))
-            }
+        } onCancel: {
+            if process.isRunning { process.terminate() }
         }
     }
 }

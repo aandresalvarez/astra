@@ -29,6 +29,7 @@ struct HeadlessChatScenarioTests {
         let run = try #require(task.runs.first)
         #expect(task.status == .completed)
         #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(run.output == "Headless Copilot response")
         #expect(run.inputTokens == 2)
         #expect(run.outputTokens == 4)
@@ -59,6 +60,7 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .completed)
         #expect(task.sessionId == "session-1")
         #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(run.output == "Headless Claude response")
         #expect(run.inputTokens == 3)
         #expect(run.outputTokens == 5)
@@ -453,6 +455,116 @@ struct HeadlessChatScenarioTests {
         #expect(run.status == .completed)
         #expect(run.tokensUsed > task.tokenBudget)
         #expect(task.events.contains { $0.type == "task.stats" && $0.payload.contains("estimated tokens") })
+        #expect(task.events.contains { $0.type == "budget.warning" })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Antigravity hard stop rejects budgets below estimated prompt before starting")
+    func antigravityHardStopRejectsLowBudgetBeforeLaunch() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("agy-low-budget-launched")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' 'Should not appear'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: String(repeating: "x", count: 400),
+            model: "Gemini 3.5 Flash",
+            tokenBudget: 20
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(!FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.exceeded" && $0.payload.contains("Provider was not started") })
+    }
+
+    @Test("Claude hard stop enforces reported usage mid-run")
+    func claudeHardStopEnforcesReportedUsageMidRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("claude-usage-launched")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-budget","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Budget exceeded response","usage":{"input_tokens":180000,"output_tokens":30000}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Use reported usage to exceed budget",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 150_000
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.budgetEnforcementModeOverride = .hardStop
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .budgetExceeded)
+        #expect(run.status == .budgetExceeded)
+        #expect(run.stopReason == "max_budget_reached")
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Claude warning budget records warning and keeps running")
+    func claudeWarningBudgetKeepsRunning() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("claude-warning-launched")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-warn","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Warning mode response","usage":{"input_tokens":180000,"output_tokens":30000}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Produce output above budget in warning mode",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 150_000
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.budgetEnforcementModeOverride = .warning
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.output == "Warning mode response")
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
         #expect(task.events.contains { $0.type == "budget.warning" })
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
@@ -1831,6 +1943,152 @@ struct HeadlessChatScenarioTests {
         #expect(state.plan?.steps.first?.status != .done)
     }
 
+    @Test("Approved plan execution records step progress with Antigravity")
+    func approvedPlanExecutionRecordsStepProgressWithAntigravity() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Antigravity plan",
+            goal: "Execute one planned step with Antigravity",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Inspect", likelyTools: ["Read"])
+            ]
+        )
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.started","stepID":"step-1"}'
+            printf '%s\\n' 'Antigravity plan executed'
+            printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.completed","stepID":"step-1","summary":"Done"}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: plan.goal,
+            model: "Gemini 3.5 Flash"
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(task.runs.first?.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Antigravity plan executed")
+        #expect(state.lifecycleStatus == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+        #expect(task.events.contains { $0.type == "plan.execution.started" })
+        #expect(task.events.contains { $0.type == "plan.execution.completed" })
+        #expect(task.events.contains { $0.type == "plan.step.started" })
+        #expect(task.events.contains { $0.type == "plan.step.completed" })
+    }
+
+    @Test("Approved Antigravity plan records failure lifecycle on provider crash")
+    func approvedAntigravityPlanRecordsFailureOnCrash() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Failing Antigravity plan",
+            goal: "Fail during Antigravity execution",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Run")
+            ]
+        )
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' 'something went wrong'
+            exit 1
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: plan.goal,
+            model: "Gemini 3.5 Flash"
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .failed)
+        #expect(state.lifecycleStatus == .failed)
+        #expect(task.events.contains { $0.type == "plan.execution.failed" })
+        #expect(!task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Antigravity plan mode autonomous execution passes skip-permissions flag")
+    func antigravityPlanModeAutonomousPassesFlag() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("agy-plan-auto-args.txt")
+        let plan = TaskPlanPayload(
+            title: "Auto Antigravity plan",
+            goal: "Run Antigravity plan in auto mode",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Build")
+            ]
+        )
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' "$@" > '\(argsURL.path)'
+            printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.started","stepID":"step-1"}'
+            printf '%s\\n' 'Autonomous plan done'
+            printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.completed","stepID":"step-1","summary":"Built"}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: plan.goal,
+            model: "Gemini 3.5 Flash"
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(
+            runtime: .antigravityCLI,
+            executablePath: antigravityPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(args.contains("--dangerously-skip-permissions"))
+        #expect(!args.contains("--sandbox"))
+        #expect(task.status == .completed)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(state.lifecycleStatus == .completed)
+        #expect(state.plan?.steps.first?.status == .done)
+    }
+
     @Test("Blocked write permission enriches the next approved retry")
     func blockedWritePermissionEnrichesNextApprovedRetry() async throws {
         let harness = try HeadlessChatHarness()
@@ -2089,6 +2347,760 @@ struct HeadlessChatScenarioTests {
         #expect(runs[1].output == "Claude follow-up answer")
         #expect(task.sessionId == "claude-session-2")
         #expect(task.status == .completed)
+    }
+
+    // MARK: - Multi-turn conversation context preservation
+
+    @Test("Copilot multi-turn follow-up prompt includes prior run output")
+    func copilotMultiTurnPreservesContext() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("copilot-turn2-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("copilot-ctx-count.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+                count=$((count + 1))
+                printf '%s' "$count" > \(Self.shQuote(countFile.path))
+                if [ "$count" = "1" ]; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"The capital of France is Paris."}}'
+                else
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Follow-up answer"}}'
+                fi
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":5,"output_tokens":5},"duration_ms":5,"turns":1}'
+                exit 0
+                """,
+                argsFile: argsFile
+            )
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "What is the capital of France?", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.runs.first?.output == "The capital of France is Paris.")
+
+        // Clear args file so we only capture turn 2
+        try? FileManager.default.removeItem(at: argsFile)
+        _ = await harness.continueTask(task: task, message: "What about Germany?", worker: worker)
+
+        let turn2Args = try String(contentsOf: argsFile, encoding: .utf8)
+        // The follow-up prompt should include the original goal
+        #expect(turn2Args.contains("capital of France"))
+        // And the user's follow-up message
+        #expect(turn2Args.contains("What about Germany?"))
+        // And the prior response (either in "Previous responses" or transcript)
+        #expect(turn2Args.contains("Paris"))
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
+    @Test("Claude multi-turn follow-up prompt includes prior run output")
+    func claudeMultiTurnPreservesContext() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-turn2-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("claude-ctx-count.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+                count=$((count + 1))
+                printf '%s' "$count" > \(Self.shQuote(countFile.path))
+                if [ "$count" = "1" ]; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"ctx-sess","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"The speed of light is 299792458 m/s."}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"The speed of light is 299792458 m/s.","usage":{"input_tokens":5,"output_tokens":10}}'
+                else
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"ctx-sess","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Follow-up Claude answer"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"Follow-up Claude answer","usage":{"input_tokens":10,"output_tokens":15}}'
+                fi
+                exit 0
+                """,
+                argsFile: argsFile
+            )
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "What is the speed of light?", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.runs.first?.output == "The speed of light is 299792458 m/s.")
+
+        try? FileManager.default.removeItem(at: argsFile)
+        _ = await harness.continueTask(task: task, message: "Express that in km/h", worker: worker)
+
+        let turn2Args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(turn2Args.contains("speed of light"))
+        #expect(turn2Args.contains("Express that in km/h"))
+        #expect(turn2Args.contains("299792458"))
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
+    @Test("Antigravity multi-turn follow-up prompt includes prior run output")
+    func antigravityMultiTurnPreservesContext() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("agy-turn2-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("agy-ctx-count.txt")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' "$@" > '\(argsFile.path)'
+            count="$(cat '\(countFile.path)' 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > '\(countFile.path)'
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' 'Water boils at 100 degrees Celsius.'
+            else
+              printf '%s\\n' 'Follow-up Antigravity answer'
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "At what temperature does water boil?",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.runs.first?.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Water boils at 100 degrees Celsius.")
+
+        _ = await harness.continueTask(task: task, message: "What about in Fahrenheit?", worker: worker)
+
+        let turn2Args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(turn2Args.contains("water boil") || turn2Args.contains("temperature"))
+        #expect(turn2Args.contains("Fahrenheit"))
+        #expect(turn2Args.contains("100 degrees") || turn2Args.contains("100"))
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
+    @Test("Cross-provider follow-up carries context from previous provider")
+    func crossProviderFollowUpCarriesContext() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotArgsFile = harness.rootURL.appendingPathComponent("cross-copilot-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"cross-sess","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Pi is approximately 3.14159265."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"Pi is approximately 3.14159265.","usage":{"input_tokens":5,"output_tokens":10}}'
+            exit 0
+            """)
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Cross-provider follow-up done"}}'
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":5,"output_tokens":5},"duration_ms":5,"turns":1}'
+                exit 0
+                """,
+                argsFile: copilotArgsFile
+            )
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "What is the value of pi?", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.runs.first?.output == "Pi is approximately 3.14159265.")
+
+        // Switch to Copilot for the follow-up
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.model = "gpt-5"
+        _ = await harness.continueTask(task: task, message: "Now calculate pi squared", worker: worker)
+
+        let copilotArgs = try String(contentsOf: copilotArgsFile, encoding: .utf8)
+        // The Copilot follow-up should include context from the Claude run
+        #expect(copilotArgs.contains("pi") || copilotArgs.contains("Pi"))
+        #expect(copilotArgs.contains("3.14159"))
+        #expect(copilotArgs.contains("pi squared") || copilotArgs.contains("Now calculate"))
+        #expect(task.runs.count == 2)
+        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }[1].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(task.status == .completed)
+    }
+
+    // MARK: - Permission mode passed to CLI (Claude & Antigravity)
+
+    @Test("Claude restricted mode passes no skip flag but autonomous does")
+    func claudePermissionModePassedToCLI() async throws {
+        // Restricted mode: no --dangerously-skip-permissions flag
+        let restrictedHarness = try HeadlessChatHarness()
+        defer { restrictedHarness.cleanup() }
+        let restrictedArgsURL = restrictedHarness.rootURL.appendingPathComponent("claude-restricted-args.txt")
+        let restrictedClaudePath = try restrictedHarness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-r","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"restricted","usage":{"input_tokens":1,"output_tokens":1}}'
+                exit 0
+                """,
+                argsFile: restrictedArgsURL
+            )
+        )
+        let restrictedTask = restrictedHarness.makeTask(runtime: .claudeCode, goal: "Restricted Claude", model: "claude-sonnet-4-6")
+        let restrictedWorker = restrictedHarness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: restrictedClaudePath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await restrictedHarness.execute(task: restrictedTask, worker: restrictedWorker)
+
+        let restrictedArgs = try String(contentsOf: restrictedArgsURL, encoding: .utf8)
+        #expect(!restrictedArgs.contains("--dangerously-skip-permissions"))
+        #expect(restrictedTask.status == .completed)
+
+        // Autonomous mode: --dangerously-skip-permissions present
+        let autoHarness = try HeadlessChatHarness()
+        defer { autoHarness.cleanup() }
+        let autoArgsURL = autoHarness.rootURL.appendingPathComponent("claude-auto-args.txt")
+        let autoClaudePath = try autoHarness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-a","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"autonomous","usage":{"input_tokens":1,"output_tokens":1}}'
+                exit 0
+                """,
+                argsFile: autoArgsURL
+            )
+        )
+        let autoTask = autoHarness.makeTask(runtime: .claudeCode, goal: "Autonomous Claude", model: "claude-sonnet-4-6")
+        let autoWorker = autoHarness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: autoClaudePath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await autoHarness.execute(task: autoTask, worker: autoWorker)
+
+        let autoArgs = try String(contentsOf: autoArgsURL, encoding: .utf8)
+        #expect(autoArgs.contains("--dangerously-skip-permissions"))
+        #expect(autoTask.status == .completed)
+    }
+
+    @Test("Antigravity restricted mode passes sandbox flag and autonomous skips permissions")
+    func antigravityPermissionModePassedToCLI() async throws {
+        // Restricted mode: --sandbox flag
+        let restrictedHarness = try HeadlessChatHarness()
+        defer { restrictedHarness.cleanup() }
+        let restrictedArgsURL = restrictedHarness.rootURL.appendingPathComponent("agy-restricted-args.txt")
+        let restrictedAgyPath = try restrictedHarness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' "$@" > '\(restrictedArgsURL.path)'
+            printf '%s\\n' 'restricted response'
+            exit 0
+            """
+        )
+        let restrictedTask = restrictedHarness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Restricted Antigravity",
+            model: "Gemini 3.5 Flash"
+        )
+        let restrictedWorker = restrictedHarness.makeWorker(
+            runtime: .antigravityCLI,
+            executablePath: restrictedAgyPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await restrictedHarness.execute(task: restrictedTask, worker: restrictedWorker)
+
+        let restrictedArgs = try String(contentsOf: restrictedArgsURL, encoding: .utf8)
+        #expect(restrictedArgs.contains("--sandbox"))
+        #expect(!restrictedArgs.contains("--dangerously-skip-permissions"))
+        #expect(restrictedTask.status == .completed)
+
+        // Autonomous mode: --dangerously-skip-permissions, no --sandbox
+        let autoHarness = try HeadlessChatHarness()
+        defer { autoHarness.cleanup() }
+        let autoArgsURL = autoHarness.rootURL.appendingPathComponent("agy-auto-args.txt")
+        let autoAgyPath = try autoHarness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' "$@" > '\(autoArgsURL.path)'
+            printf '%s\\n' 'autonomous response'
+            exit 0
+            """
+        )
+        let autoTask = autoHarness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Autonomous Antigravity",
+            model: "Gemini 3.5 Flash"
+        )
+        let autoWorker = autoHarness.makeWorker(
+            runtime: .antigravityCLI,
+            executablePath: autoAgyPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await autoHarness.execute(task: autoTask, worker: autoWorker)
+
+        let autoArgs = try String(contentsOf: autoArgsURL, encoding: .utf8)
+        #expect(autoArgs.contains("--dangerously-skip-permissions"))
+        #expect(!autoArgs.contains("--sandbox"))
+        #expect(autoTask.status == .completed)
+    }
+
+    // MARK: - Continue/resume a task
+
+    @Test("Claude task can be continued and preserves session ID across runs")
+    func claudeTaskCanBeContinued() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-resume-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("claude-call-count.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-resume-sess","model":"claude-sonnet-4-6"}'
+              printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Initial Claude answer"}]}}'
+              printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Initial Claude answer","usage":{"input_tokens":10,"output_tokens":20}}'
+            else
+              printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-resume-sess","model":"claude-sonnet-4-6"}'
+              printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude follow-up answer"}]}}'
+              printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":8,"num_turns":1,"result":"Claude follow-up answer","usage":{"input_tokens":15,"output_tokens":25}}'
+            fi
+            exit 0
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Start a Claude thread", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+        #expect(task.sessionId == "claude-resume-sess")
+        #expect(task.runs.count == 1)
+
+        _ = await harness.continueTask(task: task, message: "Tell me more", worker: worker)
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(runs[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(runs[0].output == "Initial Claude answer")
+        #expect(runs[0].providerSessionId == "claude-resume-sess")
+        #expect(runs[1].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(runs[1].output == "Claude follow-up answer")
+        #expect(runs[1].providerSessionId == "claude-resume-sess")
+        #expect(task.sessionId == "claude-resume-sess")
+        #expect(task.status == .completed)
+        #expect(task.events.contains { $0.type == "user.message" && $0.payload == "Tell me more" })
+    }
+
+    @Test("Antigravity task can be continued with a follow-up message")
+    func antigravityTaskCanBeContinued() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let countFile = harness.rootURL.appendingPathComponent("agy-call-count.txt")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' 'Initial Antigravity answer'
+            else
+              printf '%s\\n' 'Antigravity follow-up answer'
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Start an Antigravity thread",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+        #expect(task.runs.count == 1)
+
+        _ = await harness.continueTask(task: task, message: "Elaborate on that", worker: worker)
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs.count == 2)
+        #expect(runs[0].runtimeID == AgentRuntimeID.antigravityCLI.rawValue)
+        #expect(runs[0].output.trimmingCharacters(in: .whitespacesAndNewlines) == "Initial Antigravity answer")
+        #expect(runs[1].runtimeID == AgentRuntimeID.antigravityCLI.rawValue)
+        #expect(runs[1].output.trimmingCharacters(in: .whitespacesAndNewlines) == "Antigravity follow-up answer")
+        #expect(task.status == .completed)
+        #expect(task.events.contains { $0.type == "user.message" && $0.payload == "Elaborate on that" })
+    }
+
+    // MARK: - Crash and timeout recovery
+
+    @Test("Copilot process crash sets failed status and records error event")
+    func copilotProcessCrashSetsFailedStatus() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Partial output before crash"}}'
+            exit 42
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Task that crashes", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "failed")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("42") })
+    }
+
+    @Test("Claude process crash sets failed status and records error event")
+    func claudeProcessCrashSetsFailedStatus() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-crash","model":"claude-sonnet-4-6"}'
+            exit 1
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Task that crashes", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "failed")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Antigravity process crash sets failed status and records error event")
+    func antigravityProcessCrashSetsFailedStatus() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' 'Partial output'
+            exit 137
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Task that crashes",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "failed")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("137") })
+    }
+
+    @Test("Copilot idle timeout kills process and records timeout status")
+    func copilotIdleTimeoutKillsProcess() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("copilot-timeout-launched")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Started"}}'
+            sleep 60
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Task that hangs", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        worker.timeoutSeconds = 2
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.status == .failed)
+        #expect(run.status == .timeout)
+        #expect(run.stopReason == "timeout")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.lowercased().contains("timeout") })
+    }
+
+    @Test("Claude idle timeout kills process and records failed status")
+    func claudeIdleTimeoutKillsProcess() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("claude-timeout-launched")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-timeout","model":"claude-sonnet-4-6"}'
+            sleep 60
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Task that hangs", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.timeoutSeconds = 2
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        // Claude's idle timeout is classified as "no semantic progress" by the runtime monitor,
+        // which is treated as a terminal runtime stop rather than a raw timeout.
+        #expect(run.stopReason == "provider_no_semantic_progress")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Antigravity idle timeout kills process and records timeout status")
+    func antigravityIdleTimeoutKillsProcess() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("agy-timeout-launched")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' 'Started working'
+            sleep 60
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Task that hangs",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+        worker.timeoutSeconds = 2
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path))
+        #expect(task.status == .failed)
+        #expect(run.status == .timeout)
+        #expect(run.stopReason == "timeout")
+        #expect(!worker.isRunning)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.lowercased().contains("timeout") })
+    }
+
+    // MARK: - Task cancellation mid-run
+
+    @Test("Copilot task cancellation mid-run kills process and sets cancelled status")
+    func copilotCancellationMidRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("copilot-cancel-launched")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Working..."}}'
+            sleep 30
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Should never appear"}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Long running Copilot task", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        let executeTask = Task { @MainActor in
+            await harness.execute(task: task, worker: worker)
+        }
+
+        // Wait for the process to actually start
+        for _ in 0..<50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if FileManager.default.fileExists(atPath: launchMarker.path) { break }
+        }
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path), "Process should have launched")
+
+        worker.cancel()
+        _ = await executeTask.value
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .cancelled)
+        #expect(run.status == .cancelled)
+        #expect(run.stopReason == "cancelled")
+        #expect(!worker.isRunning)
+        #expect(!run.output.contains("Should never appear"))
+    }
+
+    @Test("Claude task cancellation mid-run kills process and sets cancelled status")
+    func claudeCancellationMidRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("claude-cancel-launched")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-cancel","model":"claude-sonnet-4-6"}'
+            sleep 30
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Should never appear","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Long running Claude task", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        let executeTask = Task { @MainActor in
+            await harness.execute(task: task, worker: worker)
+        }
+
+        for _ in 0..<50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if FileManager.default.fileExists(atPath: launchMarker.path) { break }
+        }
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path), "Process should have launched")
+
+        worker.cancel()
+        _ = await executeTask.value
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .cancelled)
+        #expect(run.status == .cancelled)
+        #expect(run.stopReason == "cancelled")
+        #expect(!worker.isRunning)
+        #expect(!run.output.contains("Should never appear"))
+    }
+
+    @Test("Antigravity task cancellation mid-run kills process and sets cancelled status")
+    func antigravityCancellationMidRun() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let launchMarker = harness.rootURL.appendingPathComponent("agy-cancel-launched")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf 'launched\\n' > '\(launchMarker.path)'
+            printf '%s\\n' 'Working on it...'
+            sleep 30
+            printf '%s\\n' 'Should never appear'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Long running Antigravity task",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        let executeTask = Task { @MainActor in
+            await harness.execute(task: task, worker: worker)
+        }
+
+        for _ in 0..<50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if FileManager.default.fileExists(atPath: launchMarker.path) { break }
+        }
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path), "Process should have launched")
+
+        worker.cancel()
+        _ = await executeTask.value
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .cancelled)
+        #expect(run.status == .cancelled)
+        #expect(run.stopReason == "cancelled")
+        #expect(!worker.isRunning)
+        #expect(!run.output.contains("Should never appear"))
     }
 
     private static func copilotScript(body: String, argsFile: URL? = nil) -> String {

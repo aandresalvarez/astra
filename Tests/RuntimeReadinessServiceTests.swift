@@ -442,6 +442,52 @@ struct RuntimeReadinessServiceTests {
         ])
     }
 
+    @Test("states covers all registered runtimes even when all CLIs are missing")
+    func statesCoversAllRegisteredRuntimes() async {
+        // All CLIs absent — states must still carry an entry per runtime (all blocked).
+        // This verifies the invariant that callers rely on: if states.count ==
+        // AgentRuntimeAdapterRegistry.runtimeIDs.count the result is complete, not partial.
+        let service = RuntimeProviderAvailabilityService(
+            readinessService: RuntimeReadinessService(
+                runner: StubBinaryRunner(),
+                detectExecutable: { _ in "" },
+                isExecutable: { _ in false }
+            )
+        )
+
+        let states = await service.states(configuration: RuntimeProviderAvailabilityConfiguration(
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+        #expect(states.values.allSatisfy { $0 == .blocked })
+    }
+
+    @Test("readyRuntimes with partial states excludes providers missing from the dict")
+    func readyRuntimesWithPartialStatesExcludesMissingProviders() {
+        // Simulates what happens when withTaskGroup's for-await exits early after task
+        // cancellation: only the checks that completed before cancellation appear in the dict.
+        let partialStates: [AgentRuntimeID: RuntimeReadinessState] = [
+            .claudeCode: .ready
+            // copilotCLI and antigravityCLI absent — as if the task was cancelled before
+            // their subprocess checks returned.
+        ]
+
+        let ready = RuntimeProviderAvailabilityService.readyRuntimes(from: partialStates)
+        #expect(ready == [.claudeCode])
+
+        // The count-based guard in refreshRuntimeAvailability detects this as a partial result
+        // and rejects it, preventing the incomplete list from reaching runtimeReadinessStates.
+        #expect(partialStates.count != AgentRuntimeAdapterRegistry.runtimeIDs.count)
+    }
+
     @Test("Provider availability exposes only ready runtimes")
     func providerAvailabilityExposesOnlyReadyRuntimes() async {
         let runner = StubBinaryRunner()

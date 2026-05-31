@@ -13,6 +13,29 @@ struct WorkspaceFileRoot: Identifiable, Hashable {
     let title: String
     let path: String
     let isDirectory: Bool
+    let subtitle: String
+    let roleLabel: String
+    let isGitRepository: Bool
+
+    init(
+        id: String,
+        kind: Kind,
+        title: String,
+        path: String,
+        isDirectory: Bool,
+        subtitle: String = "",
+        roleLabel: String = "",
+        isGitRepository: Bool = false
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.path = path
+        self.isDirectory = isDirectory
+        self.subtitle = subtitle
+        self.roleLabel = roleLabel
+        self.isGitRepository = isGitRepository
+    }
 }
 
 struct WorkspaceFileNode: Identifiable, Hashable {
@@ -70,7 +93,14 @@ enum WorkspaceFileIndexService {
         var seen: Set<String> = []
 
         @discardableResult
-        func append(kind: WorkspaceFileRoot.Kind, title: String, rawPath: String) -> Bool {
+        func append(
+            kind: WorkspaceFileRoot.Kind,
+            title: String,
+            rawPath: String,
+            subtitle: String = "",
+            roleLabel: String = "",
+            isGitRepository: Bool = false
+        ) -> Bool {
             let path = normalizedPath(rawPath)
             guard !path.isEmpty else { return false }
             var isDirectory = ObjCBool(false)
@@ -84,15 +114,27 @@ enum WorkspaceFileIndexService {
                 kind: kind,
                 title: title,
                 path: standardized,
-                isDirectory: isDirectory.boolValue
+                isDirectory: isDirectory.boolValue,
+                subtitle: subtitle,
+                roleLabel: roleLabel,
+                isGitRepository: isGitRepository
             ))
             return true
         }
 
         if let workspace {
-            append(kind: .primary, title: "Primary", rawPath: workspace.primaryPath)
-            for (index, path) in workspace.additionalPaths.enumerated() {
-                append(kind: .additional, title: "Additional \(index + 1)", rawPath: path)
+            for descriptor in WorkspacePathPresentation.descriptors(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            ) {
+                append(
+                    kind: descriptor.role == .primary ? .primary : .additional,
+                    title: descriptor.title,
+                    rawPath: descriptor.path,
+                    subtitle: descriptor.subtitle,
+                    roleLabel: descriptor.roleLabel,
+                    isGitRepository: WorkspacePathPresentation.isGitRepository(at: descriptor.path, fileManager: fileManager)
+                )
             }
         }
 
