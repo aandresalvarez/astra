@@ -456,8 +456,8 @@ enum ValidationService {
             )
         }
 
-        let candidates = artifactCandidatePaths(requestedPath, task: task)
-        let existingPath = candidates.first { FileManager.default.fileExists(atPath: $0) }
+        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task)
+        let existingPath = scopedCandidate.path
         if let existingPath {
             return assertionPayload(
                 assertion: assertion,
@@ -468,12 +468,22 @@ enum ValidationService {
                 evidence: existingPath
             )
         }
+        if scopedCandidate.rejectedOutOfScope {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Artifact assertion resolved outside the task folder or workspace.",
+                path: requestedPath,
+                reason: "path_outside_scope"
+            )
+        }
 
         return assertionPayload(
             assertion: assertion,
             planID: planID,
             status: "failed",
-            summary: "Artifact was not found. Checked: \(candidates.joined(separator: ", ")).",
+            summary: "Artifact was not found. Checked: \(scopedCandidate.checked.joined(separator: ", ")).",
             path: requestedPath,
             reason: "artifact_missing"
         )
@@ -609,9 +619,12 @@ enum ValidationService {
             )
         }
 
-        let candidates = artifactCandidatePaths(requestedPath, task: task)
-        guard let existingPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            let summary = "Browser behavior artifact was not found. Checked: \(candidates.joined(separator: ", "))."
+        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task)
+        guard let existingPath = scopedCandidate.path else {
+            let reason = scopedCandidate.rejectedOutOfScope ? "path_outside_scope" : "artifact_missing"
+            let summary = scopedCandidate.rejectedOutOfScope
+                ? "Browser behavior artifact resolved outside the task folder or workspace."
+                : "Browser behavior artifact was not found. Checked: \(scopedCandidate.checked.joined(separator: ", "))."
             recordBehaviorEvent(
                 type: TaskValidationBehaviorEventTypes.failed,
                 auditEvent: .validationBehaviorFailed,
@@ -619,7 +632,7 @@ enum ValidationService {
                 assertionID: assertion.id,
                 path: requestedPath,
                 summary: summary,
-                reason: "artifact_missing",
+                reason: reason,
                 task: task,
                 run: run,
                 modelContext: modelContext
@@ -630,7 +643,7 @@ enum ValidationService {
                 status: assertion.required ? "failed" : "skipped",
                 summary: summary,
                 path: requestedPath,
-                reason: "artifact_missing"
+                reason: reason
             )
         }
 
@@ -1041,6 +1054,45 @@ enum ValidationService {
         return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
     }
 
+    private static func scopedExistingArtifactPath(
+        _ path: String,
+        task: AgentTask
+    ) -> (path: String?, rejectedOutOfScope: Bool, checked: [String]) {
+        let candidates = artifactCandidatePaths(path, task: task)
+        var rejectedOutOfScope = false
+        for candidate in candidates where FileManager.default.fileExists(atPath: candidate) {
+            if resolvedArtifactCandidateIsInScope(candidate, task: task) {
+                return (candidate, false, candidates)
+            }
+            rejectedOutOfScope = true
+        }
+        return (nil, rejectedOutOfScope, candidates)
+    }
+
+    private static func resolvedArtifactCandidateIsInScope(_ candidate: String, task: AgentTask) -> Bool {
+        let resolvedCandidate = URL(fileURLWithPath: candidate)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return validationArtifactScopeRoots(task: task).contains { root in
+            resolvedCandidate == root || resolvedCandidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        }
+    }
+
+    private static func validationArtifactScopeRoots(task: AgentTask) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        let roots = [access.taskFolder, access.effectiveWorkspacePath]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map {
+                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+                    .resolvingSymlinksInPath()
+                    .standardizedFileURL
+                    .path
+            }
+        return Array(NSOrderedSet(array: roots)) as? [String] ?? roots
+    }
+
     private static func isScopedValidationArtifactPath(_ path: String) -> Bool {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -1082,9 +1134,6 @@ enum ValidationService {
         }
         if root == "python" || root == "python3" {
             return trimmed.contains(" -m pytest") || trimmed.hasSuffix(" -m pytest")
-        }
-        if root.hasPrefix("./script/") || root.hasPrefix("script/") {
-            return true
         }
         return false
     }

@@ -139,6 +139,59 @@ struct ValidationServiceTests {
         })
     }
 
+    @Test("validation contract command allowlist blocks repo scripts before execution")
+    func validationContractCommandAllowlistBlocksRepoScriptsBeforeExecution() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Script Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate safely", goal: "Reject repo script validation commands", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let scriptDirectory = (root as NSString).appendingPathComponent("script")
+        try FileManager.default.createDirectory(atPath: scriptDirectory, withIntermediateDirectories: true)
+        let markerPath = (root as NSString).appendingPathComponent("script-ran.txt")
+        let scriptPath = (scriptDirectory as NSString).appendingPathComponent("validation-danger.sh")
+        try """
+        #!/bin/sh
+        touch "\(markerPath)"
+        """.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject repo script command",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "script-command",
+                    description: "Repo scripts are not trusted validation commands",
+                    method: .command,
+                    command: "script/validation-danger.sh"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(!FileManager.default.fileExists(atPath: markerPath))
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("command_not_allowed")
+        })
+    }
+
     @Test("validation contract artifact check resolves task output folder paths")
     func validationContractArtifactCheckUsesTaskFolder() async throws {
         let root = try temporaryRoot()
@@ -240,6 +293,59 @@ struct ValidationServiceTests {
         #expect(scopedFailures.count == 2)
     }
 
+    @Test("validation contract rejects artifact symlinks outside task scope")
+    func validationContractRejectsArtifactSymlinksOutsideTaskScope() async throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Symlink Scope", primaryPath: root)
+        let task = AgentTask(title: "Validate artifact symlink scope", goal: "Reject symlinked outside artifacts", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let outsidePath = (outsideRoot as NSString).appendingPathComponent("existing-report.md")
+        try "outside".write(toFile: outsidePath, atomically: true, encoding: .utf8)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let linkPath = (taskFolder as NSString).appendingPathComponent("linked-report.md")
+        try FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: outsidePath)
+
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject symlinked outside artifacts",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "symlink-artifact",
+                    description: "Symlink targets outside scope are not trusted evidence",
+                    method: .artifact,
+                    path: "linked-report.md"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs == ["symlink-artifact"])
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("path_outside_scope")
+        })
+    }
+
     @Test("validation contract rejects browser behavior paths outside task scope")
     func validationContractRejectsBrowserBehaviorPathsOutsideTaskScope() async throws {
         let root = try temporaryRoot()
@@ -283,6 +389,63 @@ struct ValidationServiceTests {
         #expect(result.didRun)
         #expect(!result.canComplete)
         #expect(result.failedRequiredAssertionIDs == ["absolute-browser"])
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("path_outside_scope")
+        })
+        #expect(task.events.contains {
+            $0.type == TaskValidationBehaviorEventTypes.failed &&
+                $0.payload.contains("path_outside_scope")
+        })
+    }
+
+    @Test("validation contract rejects browser behavior symlinks outside task scope")
+    func validationContractRejectsBrowserBehaviorSymlinksOutsideTaskScope() async throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Browser Symlink Scope", primaryPath: root)
+        let task = AgentTask(title: "Validate browser symlink scope", goal: "Reject symlinked outside HTML", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let outsidePath = (outsideRoot as NSString).appendingPathComponent("existing.html")
+        try "<html><body>ready</body></html>".write(toFile: outsidePath, atomically: true, encoding: .utf8)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let linkPath = (taskFolder as NSString).appendingPathComponent("linked.html")
+        try FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: outsidePath)
+
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject symlinked outside browser artifacts",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "symlink-browser",
+                    description: "ready",
+                    method: .browserBehavior,
+                    path: "linked.html"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs == ["symlink-browser"])
         #expect(task.events.contains {
             $0.type == TaskValidationEventTypes.assertionFailed &&
                 $0.payload.contains("path_outside_scope")
