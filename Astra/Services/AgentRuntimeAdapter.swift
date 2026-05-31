@@ -105,6 +105,7 @@ protocol AgentRuntimeAdapter {
     func shouldPrepareIsolation(phase: String) -> Bool
     func policyCapabilities(executablePath: String) -> AgentRuntimePolicyCapabilities
     func shouldValidateSuccessfulRun(phase: String) -> Bool
+    func requiresVisibleResultForSuccessfulRun(phase: String) -> Bool
     func manualCompletionPayload(phase: String) -> String
     func failurePayloadPrefix(phase: String, exitCode: Int) -> String
     func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
@@ -231,6 +232,10 @@ extension AgentRuntimeAdapter {
 
     func shouldValidateSuccessfulRun(phase: String) -> Bool {
         phase == "run"
+    }
+
+    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+        false
     }
 
     func manualCompletionPayload(phase: String) -> String {
@@ -1805,6 +1810,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
+    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
     func manualCompletionPayload(phase _: String) -> String {
         "Antigravity finished."
     }
@@ -2116,6 +2125,15 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 remediation: "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
             )
         }
+        guard antigravityReadinessOutputContainsReadyLine(result.stdout) else {
+            return RuntimeReadinessCheck(
+                id: "antigravity-account",
+                title: "Antigravity account",
+                detail: antigravityLiveAccountEmptySuccessDetail(result),
+                state: .blocked,
+                remediation: "Run `agy --print 'Reply with ASTRA_READY only.' --print-timeout 30s --sandbox` in Terminal and confirm it prints ASTRA_READY."
+            )
+        }
 
         return RuntimeReadinessCheck(
             id: "antigravity-account",
@@ -2124,6 +2142,26 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             state: .ready,
             remediation: nil
         )
+    }
+
+    private func antigravityReadinessOutputContainsReadyLine(_ stdout: String) -> Bool {
+        stdout
+            .components(separatedBy: .newlines)
+            .contains { line in
+                line.trimmingCharacters(in: .whitespacesAndNewlines) == "ASTRA_READY"
+            }
+    }
+
+    private func antigravityLiveAccountEmptySuccessDetail(_ result: RunResult) -> String {
+        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stdout.isEmpty && stderr.isEmpty {
+            return "Live Antigravity check exited successfully but produced no ASTRA_READY output."
+        }
+        let evidence = RuntimeReadinessRedactor.redacted(stdout.isEmpty ? stderr : stdout)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Live Antigravity check exited successfully but did not print ASTRA_READY: \(String(evidence.prefix(180)))"
     }
 
     private func antigravityAccountDeferredCheck() -> RuntimeReadinessCheck {

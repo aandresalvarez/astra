@@ -4,7 +4,7 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Headless Chat Scenarios")
+@Suite("Headless Chat Scenarios", .serialized)
 @MainActor
 struct HeadlessChatScenarioTests {
     @Test("Fake Copilot chat completes through the worker without UI")
@@ -204,6 +204,163 @@ struct HeadlessChatScenarioTests {
         #expect(task.completedAt == nil)
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
         #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
+    @Test("Antigravity empty non-artifact task stays pending review")
+    func antigravityEmptyNonArtifactTaskStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Answer from Antigravity",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(task.completedAt == nil)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("finished with exit code 0") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
+    @Test("Antigravity empty misspelled artifact task stays pending review")
+    func antigravityEmptyMisspelledArtifactTaskStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "cerate a html slide deck about agents lanscape in the 2030",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
+    @Test("Antigravity task-folder artifact prevents empty result review")
+    func antigravityTaskFolderArtifactPreventsEmptyResultReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "create an html slide deck about agents",
+            model: "Gemini 3.5 Flash"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            printf '%s\\n' '<html>generated</html>' > '\(artifactURL.path)'
+            exit 0
+            """
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(!task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Antigravity empty retry ignores earlier artifacts")
+    func antigravityEmptyRetryIgnoresEarlierArtifacts() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "create an html slide deck about agents",
+            model: "Gemini 3.5 Flash"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let existingArtifact = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        try "<html>already here</html>".write(to: existingArtifact, atomically: true, encoding: .utf8)
+        let priorRun = TaskRun(task: task)
+        priorRun.status = .completed
+        priorRun.stopReason = "completed"
+        let priorArtifact = Artifact(task: task, type: "file", path: existingArtifact.path)
+        harness.context.insert(priorRun)
+        harness.context.insert(priorArtifact)
+        try harness.context.save()
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: priorRun))
+
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.id != priorRun.id)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(run.fileChanges.isEmpty)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload.contains("for this run") })
+        #expect(!task.events.contains { $0.type == "task.completed" && $0.run?.id == run.id })
     }
 
     @Test("Headless chat enforces budget guardrails")

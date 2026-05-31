@@ -161,14 +161,32 @@ struct ContentExternalRouteResolverTests {
         #expect(task.events.first?.payload == "Run the analysis")
     }
 
-    @Test("unresolved routes return nil")
+    @Test("missing task routes return visible notice")
     @MainActor
-    func unresolvedRoutesReturnNil() throws {
+    func unresolvedRoutesReturnMessage() throws {
         let container = try makeExternalRouteContainer()
         let resolver = makeResolver(context: container.mainContext)
-        let route = AstraExternalRoute(destination: .workspace(UUID()))
+        let missingID = UUID(uuidString: "F6E7E20F-D30A-4B1F-AB75-C4558110D332")!
+        let route = AstraExternalRoute(destination: .task(missingID))
 
-        #expect(resolver.resolve(route, workspaces: []) == nil)
+        guard case .unresolved(let message) = resolver.resolve(route, workspaces: []) else {
+            Issue.record("Expected missing task route to resolve to a visible notice")
+            return
+        }
+        #expect(message.contains("Task not found"))
+        #expect(message.contains(missingID.uuidString))
+    }
+
+    @Test("resolved external route clears stale notice")
+    @MainActor
+    func resolvedExternalRouteClearsStaleNotice() throws {
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        let task = AgentTask(title: "Review", goal: "Review notes", workspace: workspace)
+
+        #expect(ContentExternalRouteResolution.unresolved("Task not found").noticeMessage == "Task not found")
+        #expect(ContentExternalRouteResolution.openWorkspace(workspace).noticeMessage.isEmpty)
+        #expect(ContentExternalRouteResolution.openTask(task).noticeMessage.isEmpty)
+        #expect(ContentExternalRouteResolution.createdTask(task, shouldRun: false).noticeMessage.isEmpty)
     }
 
     @MainActor

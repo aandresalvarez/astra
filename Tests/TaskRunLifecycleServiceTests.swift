@@ -101,6 +101,69 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == "task.approved" })
     }
 
+    @Test("Task folder runtime files do not satisfy standalone artifact requirement")
+    func taskFolderRuntimeFilesDoNotSatisfyStandaloneArtifactRequirement() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-runtime-files-artifact-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Artifact", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Web page",
+            goal: "write a web page with html and javascript",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try "state".write(
+            toFile: (taskFolder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}".write(
+            toFile: (taskFolder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "history".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("session_history.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "turn".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("outputs/turn_001.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+
+        try "<html></html>".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
+    @Test("Misspelled HTML slide deck request still requires artifact")
+    func misspelledHTMLSlideDeckRequestStillRequiresArtifact() {
+        let task = AgentTask(
+            title: "cerate a html slide deck",
+            goal: "cerate a html slide deck about agents lanscape in the 2030"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Coordinator approval completes generic failed pending tasks")
     func coordinatorApprovalCompletesGenericFailedPendingTasks() throws {
         let container = try makeTaskRunLifecycleContainer()
@@ -283,6 +346,80 @@ struct TaskRunLifecycleServiceTests {
         _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
 
         #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == .missingRequiredArtifact)
+    }
+
+    @Test("Completed misspelled artifact task remains attention worthy")
+    func completedMisspelledArtifactTaskRemainsAttentionWorthy() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "completed-empty-artifact-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Artifact Review", primaryPath: workspacePath)
+        let task = AgentTask(
+            title: "cerate a html slide deck",
+            goal: "cerate a html slide deck about agents lanscape in the 2030",
+            workspace: workspace
+        )
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        #expect(PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
+        task.isDone = true
+        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
+    }
+
+    @Test("Completed artifact attention ignores older task-folder artifacts")
+    func completedArtifactAttentionIgnoresOlderTaskFolderArtifacts() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "completed-stale-artifact-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Artifact Review", primaryPath: workspacePath)
+        let task = AgentTask(
+            title: "Create page",
+            goal: "create an html web page",
+            workspace: workspace
+        )
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let oldArtifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        try "<html>old</html>".write(to: oldArtifactURL, atomically: true, encoding: .utf8)
+        let now = Date()
+        let oldDate = now.addingTimeInterval(-120)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldArtifactURL.path)
+
+        let priorRun = TaskRun(task: task)
+        priorRun.status = .completed
+        priorRun.startedAt = oldDate.addingTimeInterval(-5)
+        priorRun.completedAt = oldDate.addingTimeInterval(5)
+        priorRun.stopReason = "completed"
+
+        let latestRun = TaskRun(task: task)
+        latestRun.status = .completed
+        latestRun.startedAt = now.addingTimeInterval(30)
+        latestRun.completedAt = now.addingTimeInterval(40)
+        latestRun.stopReason = "completed"
+        context.insert(priorRun)
+        context.insert(latestRun)
+        try context.save()
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun))
+        #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun))
+        #expect(PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: latestRun))
     }
 
     @Test("Startup recovery cancels orphaned running task and run")

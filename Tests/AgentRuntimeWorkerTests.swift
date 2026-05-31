@@ -186,6 +186,26 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector ignores creative wording that only contains creat substring")
+    func artifactDetectorIgnoresCreativeSubstring() {
+        let task = AgentTask(
+            title: "Creative slides review",
+            goal: "Give creative feedback on javascript slides and presentation structure."
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector keeps standalone creat typo")
+    func artifactDetectorKeepsStandaloneCreatTypo() {
+        let task = AgentTask(
+            title: "creat HTML slides",
+            goal: "creat a html slide deck about agents"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
@@ -518,6 +538,198 @@ struct BuildPromptTests {
         #expect(prompt.contains("Recent conversation transcript"))
         #expect(prompt.contains(exactDraft))
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
+    }
+
+    @Test("Follow-up transcript budget preserves latest transcript and points to omitted sources")
+    func followUpTranscriptBudgetPreservesLatestTranscriptAndSources() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Budget", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "Budget", goal: "Keep compact state ahead of long history", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let longOutput = """
+        TRANSCRIPT_PREFIX_MARKER
+        \(String(repeating: "budget filler text. ", count: 350))
+        TRANSCRIPT_OMITTED_TAIL_MARKER
+        """
+        SessionHistoryManager.recordTurn(
+            taskFolder: folder,
+            taskTitle: task.title,
+            turnMessage: "Record a long answer",
+            output: longOutput,
+            tokensUsed: 0,
+            costUSD: 0,
+            fileChanges: []
+        )
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.recentTranscriptTokens = 500
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with deterministic context",
+            task: task,
+            budgetProfile: budget
+        )
+
+        #expect(prompt.contains("Context Capsule v2:"))
+        #expect(prompt.contains("Current objective: Keep compact state ahead of long history"))
+        #expect(prompt.contains("User's follow-up request:\ncontinue with deterministic context"))
+        #expect(prompt.contains("ASTRA context budget: recent transcript"))
+        #expect(prompt.contains("Use these source pointers for omitted detail"))
+        #expect(prompt.contains("outputs/turn_001.md"))
+        #expect(prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(!prompt.contains("TRANSCRIPT_PREFIX_MARKER"))
+    }
+
+    @Test("Memory budget keeps compact preference and source pointer")
+    func memoryBudgetKeepsCompactPreferenceAndSourcePointer() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Memory Budget", primaryPath: "/tmp/prompt-memory-budget")
+        ws.memories = [
+            "MEMORY_PRIORITY_MARKER: prefer regression tests for prompt changes",
+            String(repeating: "verbose memory detail ", count: 300) + "MEMORY_OMITTED_TAIL_MARKER"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Use remembered preferences", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.memoriesTokens = 150
+        let prompt = AgentPromptBuilder.buildPrompt(for: task, budgetProfile: budget)
+
+        #expect(prompt.contains("Goal: Use remembered preferences"))
+        #expect(prompt.contains("MEMORY_PRIORITY_MARKER"))
+        #expect(prompt.contains("ASTRA context budget: memories"))
+        #expect(prompt.contains("workspace saved memories"))
+        #expect(!prompt.contains("MEMORY_OMITTED_TAIL_MARKER"))
+    }
+
+    @Test("Prompt assembly manifest matches prompt and reports section budgets")
+    func promptAssemblyManifestMatchesPromptAndReportsSectionBudgets() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Manifest Budget", primaryPath: "/tmp/prompt-manifest-budget")
+        ws.memories = [
+            "MANIFEST_MEMORY_PRIORITY: keep source pointers with compact state",
+            String(repeating: "verbose manifest memory detail ", count: 280) + "MANIFEST_MEMORY_OMITTED_TAIL"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Expose what will be sent", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.memoriesTokens = 120
+
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task, budgetProfile: budget)
+        let prompt = AgentPromptBuilder.buildPrompt(for: task, budgetProfile: budget)
+        let memorySection = try #require(manifest.sections.first { $0.kind == .memories })
+
+        #expect(manifest.mode == .initialRun)
+        #expect(manifest.prompt == prompt)
+        #expect(manifest.estimatedPromptTokens > 0)
+        #expect(manifest.promptCharacterCount == prompt.count)
+        #expect(memorySection.tokenBudget == 120)
+        #expect(memorySection.isTruncated)
+        #expect(memorySection.estimatedOriginalTokens > memorySection.estimatedIncludedTokens)
+        #expect(memorySection.includedTextPreview.contains("ASTRA context budget: memories"))
+        #expect(memorySection.includedTextPreview.contains("MANIFEST_MEMORY_PRIORITY"))
+        #expect(memorySection.sourcePointers.contains { $0.label == "workspace saved memories" })
+        #expect(manifest.truncatedSectionCount >= 1)
+        #expect(!manifest.prompt.contains("MANIFEST_MEMORY_OMITTED_TAIL"))
+    }
+
+    @Test("Prompt emits duplicate capability behavior once")
+    func promptEmitsDuplicateCapabilityBehaviorOnce() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Duplicate Capability", primaryPath: "/tmp/duplicate-capability")
+        ctx.insert(ws)
+        let behavior = "Use GitHub CLI for GitHub work."
+        let first = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        let second = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        first.workspace = ws
+        second.workspace = ws
+        ctx.insert(first)
+        ctx.insert(second)
+        let task = AgentTask(title: "T", goal: "List pull requests", workspace: ws)
+        task.skills = [first, second]
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 1)
+        #expect(prompt.contains("Use GitHub CLI for GitHub work."))
+    }
+
+    @Test("Copied preview case has no pending prompt and dedupes duplicate capability behavior")
+    func copiedPreviewCaseHasNoPendingPromptAndDedupesDuplicateCapabilityBehavior() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Copied Preview", primaryPath: "/tmp/copied-preview")
+        ctx.insert(ws)
+        let behavior = "Use GitHub CLI for GitHub work."
+        let first = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        let second = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        first.workspace = ws
+        second.workspace = ws
+        ctx.insert(first)
+        ctx.insert(second)
+        let task = AgentTask(
+            title: "cognition eval smoke",
+            goal: "Create a scratch file named cognition-eval-smoke.md with one sentence saying: Local cognition evaluation dashboard test passed.",
+            workspace: ws
+        )
+        task.id = UUID(uuidString: "14DE8D76-E82B-4603-8A96-46771CF02B61")!
+        task.status = .completed
+        task.sessionId = "provider-session"
+        task.skills = [first, second]
+        ctx.insert(task)
+        try ctx.save()
+
+        let request = PromptContextPreviewPresentation.request(
+            taskStatus: task.status,
+            hasProviderSession: task.sessionId?.isEmpty == false,
+            messageText: "  ",
+            attachedFiles: []
+        )
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(request.kind == .unavailable)
+        #expect(request.unavailableReason?.contains("No provider prompt is pending") == true)
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 1)
+        #expect(prompt.contains("cognition-eval-smoke.md"))
+        #expect(prompt.contains("/tmp/copied-preview/.astra/tasks/14DE8D76/current_state.json"))
+    }
+
+    @Test("Follow-up prompt assembly manifest reports follow-up mode and sources")
+    func followUpPromptAssemblyManifestReportsFollowUpModeAndSources() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(title: "Follow", goal: "Keep current state")
+        ctx.insert(task)
+        try ctx.save()
+
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with manifest metadata",
+            task: task
+        )
+        let requestSection = try #require(manifest.sections.last { $0.kind == .currentGoal })
+
+        #expect(manifest.mode == .followUp)
+        #expect(manifest.prompt.contains("User's follow-up request:\ncontinue with manifest metadata"))
+        #expect(requestSection.includedTextPreview.contains("continue with manifest metadata"))
+        #expect(requestSection.sourcePointers.contains { $0.label == "current follow-up request" })
     }
 
     @Test("Follow-up prompt ignores stale copied fork runs")

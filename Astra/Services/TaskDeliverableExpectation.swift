@@ -14,15 +14,19 @@ enum TaskDeliverableExpectation {
             .joined(separator: " ")
             .lowercased()
 
-        guard containsAny(text, [
-            "write", "create", "build", "make", "generate", "save", "put this in files", "write this in files"
-        ]) else {
+        let artifactActionWords = [
+            "write", "create", "creat", "cerate", "build", "make", "generate", "save"
+        ]
+        let artifactActionPhrases = [
+            "put this in files", "write this in files"
+        ]
+        guard containsAnyWholeWord(text, artifactActionWords) || containsAny(text, artifactActionPhrases) else {
             return false
         }
 
         return containsAny(text, [
             "web page", "webpage", "html", "javascript", "css", ".html", ".js", ".css",
-            "demo app", "game", "script", "file"
+            "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck"
         ])
     }
 
@@ -47,6 +51,25 @@ enum TaskDeliverableExpectation {
         )
     }
 
+    static func hasRunScopedArtifact(
+        for task: AgentTask,
+        run: TaskRun,
+        scanEntryLimit: Int = artifactScanEntryLimit,
+        scanDepthLimit: Int = artifactScanDepthLimit
+    ) -> Bool {
+        if !run.fileChanges.isEmpty {
+            return true
+        }
+
+        return taskFolderContainsUserArtifact(
+            for: task,
+            entryLimit: scanEntryLimit,
+            depthLimit: scanDepthLimit,
+            runStartedAt: run.startedAt,
+            runCompletedAt: run.completedAt
+        )
+    }
+
     static func missingArtifactMessage(for task: AgentTask) -> String {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let location = taskFolder.isEmpty ? "the task output folder" : taskFolder
@@ -59,6 +82,11 @@ enum TaskDeliverableExpectation {
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }
+    }
+
+    private static func containsAnyWholeWord(_ text: String, _ words: [String]) -> Bool {
+        let tokens = Set(text.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        return words.contains { tokens.contains($0) }
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {
@@ -170,16 +198,20 @@ enum TaskDeliverableExpectation {
     private static func taskFolderContainsUserArtifact(
         for task: AgentTask,
         entryLimit: Int,
-        depthLimit: Int
+        depthLimit: Int,
+        runStartedAt: Date? = nil,
+        runCompletedAt: Date? = nil
     ) -> Bool {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty else { return false }
         guard entryLimit > 0, depthLimit >= 0 else { return false }
 
-        let root = URL(fileURLWithPath: folder).standardizedFileURL
+        let root = URL(fileURLWithPath: folder)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
         guard let enumerator = FileManager.default.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return false
@@ -192,17 +224,24 @@ enum TaskDeliverableExpectation {
                 return false
             }
 
-            let depth = relativeDepth(of: fileURL, taskFolder: root)
+            guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
+            let depth = relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
                 continue
             }
-            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let values = try? fileURL.resourceValues(
+                forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey]
+            )
             if values?.isDirectory == true, depth >= depthLimit {
                 enumerator.skipDescendants()
             }
             guard values?.isRegularFile == true else { continue }
-            if isRuntimeHistoryFile(fileURL, taskFolder: root) {
+            if !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative) {
+                continue
+            }
+            if let runStartedAt,
+               !fileWasCreatedOrModifiedDuringRun(values, startedAt: runStartedAt, completedAt: runCompletedAt) {
                 continue
             }
             return true
@@ -210,25 +249,30 @@ enum TaskDeliverableExpectation {
         return false
     }
 
-    private static func relativeDepth(of fileURL: URL, taskFolder: URL) -> Int {
-        let relative = relativePath(of: fileURL, taskFolder: taskFolder)
+    private static func fileWasCreatedOrModifiedDuringRun(
+        _ values: URLResourceValues?,
+        startedAt: Date,
+        completedAt: Date?
+    ) -> Bool {
+        let upperBound = completedAt?.addingTimeInterval(1)
+        return [values?.creationDate, values?.contentModificationDate].contains { date in
+            guard let date, date >= startedAt else { return false }
+            if let upperBound {
+                return date <= upperBound
+            }
+            return true
+        }
+    }
+
+    private static func relativeDepth(of relative: String) -> Int {
         guard !relative.isEmpty else { return 0 }
         return relative.split(separator: "/", omittingEmptySubsequences: true).count - 1
     }
 
-    private static func isRuntimeHistoryFile(_ fileURL: URL, taskFolder: URL) -> Bool {
-        let relative = relativePath(of: fileURL, taskFolder: taskFolder)
-        if relative == "session_history.md" {
-            return true
-        }
-        if relative.hasPrefix("outputs/turn_"), relative.hasSuffix(".md") {
-            return true
-        }
-        return false
-    }
-
-    private static func relativePath(of fileURL: URL, taskFolder: URL) -> String {
-        let prefix = taskFolder.standardizedFileURL.path + "/"
-        return fileURL.standardizedFileURL.path.replacingOccurrences(of: prefix, with: "")
+    private static func relativePath(of fileURL: URL, taskFolder: URL) -> String? {
+        let prefix = taskFolder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        let path = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
     }
 }

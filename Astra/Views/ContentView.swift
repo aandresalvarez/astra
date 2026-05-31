@@ -342,6 +342,7 @@ struct ContentView: View {
     @State private var renamingWorkspace: Workspace?
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
+    @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -769,7 +770,9 @@ struct ContentView: View {
             TopNoticeBannersView(
                 recoveryNotice: recoveryNotice,
                 updateBlockNotice: updateBlockNotice,
+                externalRouteNotice: externalRouteNotice,
                 onDismissRecoveryNotice: { recoveryNotice = "" },
+                onDismissExternalRouteNotice: { externalRouteNotice = "" },
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
         }
@@ -1678,17 +1681,13 @@ struct ContentView: View {
     private func handlePendingExternalRoute() {
         guard let route = externalRouteStore.pendingRoute else { return }
 
-        guard let resolution = externalRouteResolver.resolve(route, workspaces: workspaces) else {
-            AppLogger.warning("Could not resolve external ASTRA route", category: "AppIntents")
-            externalRouteStore.clear(route)
-            return
-        }
-
+        let resolution = externalRouteResolver.resolve(route, workspaces: workspaces)
         applyExternalRouteResolution(resolution)
         externalRouteStore.clear(route)
     }
 
     private func applyExternalRouteResolution(_ resolution: ContentExternalRouteResolution) {
+        externalRouteNotice = resolution.noticeMessage
         switch resolution {
         case .openWorkspace(let workspace):
             openWorkspaceFromExternalRoute(workspace)
@@ -1701,6 +1700,9 @@ struct ContentView: View {
             if shouldRun {
                 runSingleTask(task)
             }
+
+        case .unresolved(let message):
+            AppLogger.warning(message, category: "AppIntents")
         }
     }
 
@@ -4670,16 +4672,24 @@ struct WorkspaceSetupForm: View {
 private struct TopNoticeBannersView: View {
     let recoveryNotice: String
     let updateBlockNotice: String?
+    let externalRouteNotice: String
     let onDismissRecoveryNotice: () -> Void
+    let onDismissExternalRouteNotice: () -> Void
     let onCheckForUpdates: () -> Void
 
     var body: some View {
-        if !recoveryNotice.isEmpty || updateBlockNotice != nil {
+        if !recoveryNotice.isEmpty || updateBlockNotice != nil || !externalRouteNotice.isEmpty {
             VStack(spacing: 0) {
                 if !recoveryNotice.isEmpty {
                     RecoveryNoticeBanner(
                         message: recoveryNotice,
                         onDismiss: onDismissRecoveryNotice
+                    )
+                }
+                if !externalRouteNotice.isEmpty {
+                    ExternalRouteNoticeBanner(
+                        message: externalRouteNotice,
+                        onDismiss: onDismissExternalRouteNotice
                     )
                 }
                 if let updateBlockNotice {
@@ -4701,6 +4711,21 @@ private struct RecoveryNoticeBanner: View {
         NoticeBanner(
             systemImage: "externaldrive.badge.checkmark",
             imageColor: Stanford.paloAltoGreen,
+            message: message,
+            buttonTitle: "Dismiss",
+            buttonAction: onDismiss
+        )
+    }
+}
+
+private struct ExternalRouteNoticeBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NoticeBanner(
+            systemImage: "exclamationmark.triangle.fill",
+            imageColor: Stanford.poppy,
             message: message,
             buttonTitle: "Dismiss",
             buttonAction: onDismiss

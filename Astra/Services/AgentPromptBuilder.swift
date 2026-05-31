@@ -1,6 +1,120 @@
 import Foundation
 import ASTRACore
 
+enum PromptContextSectionKind: String, Sendable, CaseIterable {
+    case currentGoal
+    case threadState
+    case recentTranscript
+    case changedFiles
+    case tools
+    case browser
+    case memories
+    case supportingContext
+
+    var displayName: String {
+        switch self {
+        case .currentGoal: "current goal"
+        case .threadState: "thread state"
+        case .recentTranscript: "recent transcript"
+        case .changedFiles: "files changed"
+        case .tools: "tools"
+        case .browser: "browser"
+        case .memories: "memories"
+        case .supportingContext: "supporting context"
+        }
+    }
+}
+
+struct PromptContextBudgetProfile: Sendable, Equatable {
+    var currentGoalTokens: Int = 2_500
+    var threadStateTokens: Int = 2_000
+    var recentTranscriptTokens: Int = 12_000
+    var changedFilesTokens: Int = 2_000
+    var toolsTokens: Int = 18_000
+    var browserTokens: Int = 18_000
+    var memoriesTokens: Int = 2_000
+    var supportingContextTokens: Int = 4_000
+
+    static let standard = PromptContextBudgetProfile()
+
+    func tokenBudget(for kind: PromptContextSectionKind) -> Int {
+        switch kind {
+        case .currentGoal: currentGoalTokens
+        case .threadState: threadStateTokens
+        case .recentTranscript: recentTranscriptTokens
+        case .changedFiles: changedFilesTokens
+        case .tools: toolsTokens
+        case .browser: browserTokens
+        case .memories: memoriesTokens
+        case .supportingContext: supportingContextTokens
+        }
+    }
+}
+
+struct PromptAssemblySourcePointer: Sendable, Hashable, Equatable {
+    var label: String
+    var target: String
+}
+
+enum PromptAssemblyMode: String, Sendable, Equatable {
+    case initialRun
+    case followUp
+
+    var displayName: String {
+        switch self {
+        case .initialRun: "Initial run"
+        case .followUp: "Follow-up"
+        }
+    }
+}
+
+struct PromptAssemblyManifest: Sendable, Equatable {
+    var mode: PromptAssemblyMode
+    var prompt: String
+    var sections: [PromptAssemblySectionManifest]
+    var estimatedPromptTokens: Int
+    var promptCharacterCount: Int
+
+    var truncatedSectionCount: Int {
+        sections.filter(\.isTruncated).count
+    }
+}
+
+struct PromptAssemblySectionManifest: Sendable, Equatable {
+    var kind: PromptContextSectionKind
+    var tokenBudget: Int
+    var estimatedOriginalTokens: Int
+    var estimatedIncludedTokens: Int
+    var originalCharacterCount: Int
+    var includedCharacterCount: Int
+    var isTruncated: Bool
+    var sourcePointers: [PromptAssemblySourcePointer]
+    var includedTextPreview: String
+
+    var displayName: String {
+        kind.displayName
+    }
+}
+
+private typealias PromptContextSourcePointer = PromptAssemblySourcePointer
+
+private struct PromptContextSection: Sendable {
+    var kind: PromptContextSectionKind
+    var text: String
+    var sourcePointers: [PromptContextSourcePointer]
+}
+
+private struct BudgetedPromptSection: Sendable {
+    var text: String
+    var manifest: PromptAssemblySectionManifest
+}
+
+private struct PromptContextText: Sendable {
+    var text: String
+    var sourcePointers: [PromptContextSourcePointer]
+}
+
+@MainActor
 enum AgentPromptBuilder {
     private static let recentSessionOutputFileLimit = 6
     private static let recentSessionFullOutputFileLimit = 4
@@ -10,26 +124,50 @@ enum AgentPromptBuilder {
     private static let fallbackRecentRunResponseLimit = 3
     private static let fallbackRecentRunResponseMaxCharacters = 8_000
     private static let fallbackOlderRunResponseMaxCharacters = 1_500
+    private static let estimatedCharactersPerToken = 4
 
-    static func buildPrompt(for task: AgentTask) -> String {
-        var parts: [String] = []
+    static func buildPrompt(
+        for task: AgentTask,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> String {
+        buildPromptAssembly(for: task, budgetProfile: budgetProfile).prompt
+    }
+
+    static func buildPromptAssembly(
+        for task: AgentTask,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> PromptAssemblyManifest {
+        assemblePrompt(
+            buildPromptSections(for: task),
+            mode: .initialRun,
+            budgetProfile: budgetProfile
+        )
+    }
+
+    private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
+        var sections: [PromptContextSection] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
 
-        parts.append(currentTaskBlock(for: task))
-        appendThreadIntentContext(for: task, to: &parts)
+        appendSection(currentTaskBlock(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
+        appendThreadIntentContext(for: task, to: &sections)
 
         if let instructions = task.workspace?.instructions,
            !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append("Workspace Context:\n\(instructions)")
+            appendSection(
+                "Workspace Context:\n\(instructions)",
+                kind: .supportingContext,
+                to: &sections,
+                sourcePointers: workspaceSourcePointers(task.workspace)
+            )
         }
 
-        if let memories = task.workspace?.memories, !memories.isEmpty {
-            let memoriesBlock = """
-            YOUR MEMORIES (saved by the user for this workspace — these ARE your persistent memories, do NOT look for memory files on disk):
-            \(memories.map { "- \($0)" }.joined(separator: "\n"))
-            When the user asks about your memories, report these items. Do not check ~/.claude/ or any file-based memory system.
-            """
-            parts.append(memoriesBlock)
+        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+            appendSection(
+                memoriesBlock,
+                kind: .memories,
+                to: &sections,
+                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+            )
         }
 
         if let ws = task.workspace {
@@ -46,38 +184,46 @@ enum AgentPromptBuilder {
                     let summary = output.isEmpty ? "(no output)" : String(output.prefix(200))
                     summaryBlock += "\n- [\(status)] \(t.title): \(summary)"
                 }
-                parts.append(summaryBlock)
+                appendSection(
+                    summaryBlock,
+                    kind: .recentTranscript,
+                    to: &sections,
+                    sourcePointers: [sourcePointer(label: "workspace task history", target: ws.name)]
+                )
             }
         }
 
-        appendSSHContext(for: task, to: &parts)
-        appendWorkspacePaths(for: task, to: &parts)
-        appendTaskOutputFolder(for: task, to: &parts)
+        appendSSHContext(for: task, to: &sections)
+        appendWorkspacePaths(for: task, to: &sections)
+        appendTaskOutputFolder(for: task, to: &sections)
 
-        parts.append("Goal: \(task.goal)")
+        appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
 
-        appendInputs(for: task, to: &parts)
-        appendConstraints(for: task, to: &parts)
-        appendSkillInstructions(from: capabilityScope, to: &parts)
-        appendConnectorContext(from: capabilityScope, to: &parts)
-        appendToolContext(from: capabilityScope, to: &parts)
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
-        appendDocumentReaderContext(to: &parts)
+        appendInputs(for: task, to: &sections)
+        appendConstraints(for: task, to: &sections)
+        appendSkillInstructions(from: capabilityScope, to: &sections)
+        appendConnectorContext(from: capabilityScope, to: &sections)
+        appendToolContext(from: capabilityScope, to: &sections)
+        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
+        appendDocumentReaderContext(to: &sections)
         if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
-            appendAstraRunProtocolInstructions(to: &parts)
+            appendAstraRunProtocolInstructions(to: &sections)
         }
 
-        parts.append(currentTaskReminder(for: task))
+        appendSection(currentTaskReminder(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
 
         if task.useAgentTeam {
             var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
             if !task.teamInstructions.isEmpty {
                 teamBlock += "\n\(task.teamInstructions)"
             }
-            parts.insert(teamBlock, at: 0)
+            sections.insert(
+                PromptContextSection(kind: .currentGoal, text: teamBlock, sourcePointers: taskSourcePointers(task)),
+                at: 0
+            )
         }
 
-        return parts.joined(separator: "\n\n")
+        return sections
     }
 
     private static func currentTaskBlock(for task: AgentTask) -> String {
@@ -93,25 +239,39 @@ enum AgentPromptBuilder {
         "Current Task Reminder: complete this task now: \(task.goal)"
     }
 
-    static func buildApprovedPlanExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload) -> String {
-        var prompt = buildPrompt(for: task)
+    static func buildApprovedPlanExecutionPrompt(
+        for task: AgentTask,
+        plan: TaskPlanPayload,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> String {
+        var prompt = buildPrompt(for: task, budgetProfile: budgetProfile)
         prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan)
         return prompt
     }
 
-    static func buildApprovedPlanStepExecutionPrompt(for task: AgentTask, plan: TaskPlanPayload, step: TaskPlanPayloadStep) -> String {
-        var prompt = buildPrompt(for: task)
+    static func buildApprovedPlanStepExecutionPrompt(
+        for task: AgentTask,
+        plan: TaskPlanPayload,
+        step: TaskPlanPayloadStep,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> String {
+        var prompt = buildPrompt(for: task, budgetProfile: budgetProfile)
         prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan, approvedStep: step)
         return prompt
     }
 
-    static func buildApprovedPlanFollowUpPrompt(message: String, task: AgentTask, plan: TaskPlanPayload) -> String {
-        var prompt = buildFreshFollowUpPrompt(message: message, task: task)
+    static func buildApprovedPlanFollowUpPrompt(
+        message: String,
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> String {
+        var prompt = buildFreshFollowUpPrompt(message: message, task: task, budgetProfile: budgetProfile)
         prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan, userRequest: message)
         return prompt
     }
 
-    private static func appendSSHContext(for task: AgentTask, to parts: inout [String]) {
+    private static func appendSSHContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard let ws = task.workspace else { return }
         let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
         if connections.count == 1, let conn = connections.first {
@@ -123,7 +283,12 @@ enum AgentPromptBuilder {
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
             sshBlock += "\nTo run commands: ssh \(alias) '<command>'"
             sshBlock += "\nTo run commands in a specific directory: ssh \(alias) 'cd \(conn.remotePath) && <command>'"
-            parts.append(sshBlock)
+            appendSection(
+                sshBlock,
+                kind: .supportingContext,
+                to: &sections,
+                sourcePointers: sshSourcePointers(workspace: ws)
+            )
         } else if connections.count > 1 {
             var sshBlock = "Available SSH Connections (use these to access remote servers via Bash with ssh):"
             for conn in connections {
@@ -134,15 +299,25 @@ enum AgentPromptBuilder {
                 }
             }
             sshBlock += "\nTo run commands on a remote server, use: ssh <alias> '<command>'"
-            parts.append(sshBlock)
+            appendSection(
+                sshBlock,
+                kind: .supportingContext,
+                to: &sections,
+                sourcePointers: sshSourcePointers(workspace: ws)
+            )
         }
     }
 
-    private static func appendWorkspacePaths(for task: AgentTask, to parts: inout [String]) {
+    private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
-            parts.append("WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.")
+            appendSection(
+                "WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.",
+                kind: .supportingContext,
+                to: &sections,
+                sourcePointers: pathSourcePointers([codeDir])
+            )
         }
         let folders = WorkspacePathPresentation.descriptors(
             primaryPath: ws.primaryPath,
@@ -152,28 +327,33 @@ enum AgentPromptBuilder {
             let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)" : ""
             return "- \(descriptor.roleLabel) \(descriptor.title)\(active): \(descriptor.path)"
         }.joined(separator: "\n")
-        parts.append("Workspace Folders:\n\(folderList)")
+        appendSection(
+            "Workspace Folders:\n\(folderList)",
+            kind: .supportingContext,
+            to: &sections,
+            sourcePointers: pathSourcePointers(folders.map(\.path))
+        )
     }
 
-    private static func appendTaskOutputFolder(for task: AgentTask, to parts: inout [String]) {
+    private static func appendTaskOutputFolder(for task: AgentTask, to sections: inout [PromptContextSection]) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
             if let relativePath {
-                parts.append("""
+                appendSection("""
                 Task Output Folder: \(relativePath)
                 Absolute path: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
-                """)
+                """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             } else {
-                parts.append("""
+                appendSection("""
                 Task Output Folder: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
-                """)
+                """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             }
         }
     }
@@ -193,7 +373,7 @@ enum AgentPromptBuilder {
         return suffix.isEmpty ? "." : String(suffix)
     }
 
-    private static func appendInputs(for task: AgentTask, to parts: inout [String]) {
+    private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard !task.inputs.isEmpty else { return }
         var contextParts: [String] = []
         for input in task.inputs {
@@ -213,27 +393,47 @@ enum AgentPromptBuilder {
                 contextParts.append("Context: \(input)")
             }
         }
-        parts.append("Context/Inputs:\n" + contextParts.joined(separator: "\n\n"))
+        appendSection(
+            "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
+            kind: .supportingContext,
+            to: &sections,
+            sourcePointers: inputSourcePointers(task.inputs)
+        )
     }
 
-    private static func appendConstraints(for task: AgentTask, to parts: inout [String]) {
+    private static func appendConstraints(for task: AgentTask, to sections: inout [PromptContextSection]) {
         if !task.constraints.isEmpty {
-            parts.append("Constraints:\n" + task.constraints.map { "- \($0)" }.joined(separator: "\n"))
+            appendSection(
+                "Constraints:\n" + task.constraints.map { "- \($0)" }.joined(separator: "\n"),
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
         }
 
         if !task.acceptanceCriteria.isEmpty {
-            parts.append("Acceptance Criteria:\n" + task.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n"))
+            appendSection(
+                "Acceptance Criteria:\n" + task.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n"),
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
         }
     }
 
-    private static func appendSkillInstructions(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+    private static func appendSkillInstructions(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
         let behaviorBlock = capabilityScope.resolver.resolvedBehaviorInstructions
         if !behaviorBlock.isEmpty {
-            parts.append("Behavioral Instructions (from Skills):\n\(behaviorBlock)")
+            appendSection(
+                "Behavioral Instructions (from Skills):\n\(behaviorBlock)",
+                kind: .tools,
+                to: &sections,
+                sourcePointers: [sourcePointer(label: "enabled skills", target: "task capability resolver")]
+            )
         }
     }
 
-    private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+    private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
         let projection = ConnectorRuntimeProjection(connectors: capabilityScope.connectors)
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
@@ -291,7 +491,7 @@ enum AgentPromptBuilder {
         }
         guard !connectorDescriptions.isEmpty else { return }
 
-        parts.append("""
+        appendSection("""
         Available Connectors (credentials are pre-loaded into your process environment — use them directly, never ask the user to provide them again):
         \(connectorDescriptions.joined(separator: "\n\n"))
 
@@ -299,7 +499,7 @@ enum AgentPromptBuilder {
 
         IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens — NOT WebFetch. \
         WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] to read the credential.
-        """)
+        """, kind: .tools, to: &sections, sourcePointers: connectorSourcePointers(capabilityScope.connectors))
     }
 
     private static func connectorRuntimeExample(
@@ -478,7 +678,7 @@ enum AgentPromptBuilder {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to parts: inout [String]) {
+    private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
         let allLocalTools = capabilityScope.localTools.filter { !$0.command.isEmpty }
         let cliTools = allLocalTools.filter { $0.toolType != "mcp" }
         let mcpTools = allLocalTools.filter { $0.toolType == "mcp" }
@@ -487,73 +687,130 @@ enum AgentPromptBuilder {
             let descriptions = cliTools.map { tool in
                 "- \(tool.name): `\(tool.displayCommand)` — \(tool.toolDescription)"
             }.joined(separator: "\n")
-            parts.append("Available CLI/Script Tools (run these using the Bash tool):\n\(descriptions)\n\nTo use these, call them via the Bash tool. Example: Bash(`\(cliTools[0].displayCommand)`)")
+            appendSection(
+                "Available CLI/Script Tools (run these using the Bash tool):\n\(descriptions)\n\nTo use these, call them via the Bash tool. Example: Bash(`\(cliTools[0].displayCommand)`)",
+                kind: .tools,
+                to: &sections,
+                sourcePointers: toolSourcePointers(cliTools)
+            )
         }
 
         if !mcpTools.isEmpty {
             let descriptions = mcpTools.map { tool in
                 "- \(tool.name): \(tool.command) — \(tool.toolDescription)"
             }.joined(separator: "\n")
-            parts.append("Available MCP Tools (use directly by tool name):\n" + descriptions)
+            appendSection(
+                "Available MCP Tools (use directly by tool name):\n" + descriptions,
+                kind: .tools,
+                to: &sections,
+                sourcePointers: toolSourcePointers(mcpTools)
+            )
         }
     }
 
-    private static func appendDocumentReaderContext(to parts: inout [String]) {
+    private static func appendDocumentReaderContext(to sections: inout [PromptContextSection]) {
         let readfilePath = NSHomeDirectory() + "/.astra/tools/readfile"
         guard FileManager.default.isExecutableFile(atPath: readfilePath) else { return }
-        parts.append("""
+        appendSection("""
         Document Reader Tool: You have a `readfile` command available for reading documents.
         Usage: `readfile <path>` — reads .docx, .pdf, .rtf, .xlsx, .pptx, .csv, .odt, .html, and more.
         For directories: `readfile <folder>` — lists contents recursively.
         Add `--metadata` for file metadata. Run via Bash tool: `\(readfilePath) <path>`
-        """)
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "document reader executable", target: readfilePath)])
     }
 
     private static func appendShelfBrowserContext(
         for task: AgentTask,
         enabledBrowserAdapters: [String],
-        to parts: inout [String]
+        to sections: inout [PromptContextSection]
     ) {
         let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
         guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
             for: task.id,
             enabledBrowserAdapters: override
         ) else { return }
-        parts.append(browserContext)
+        appendSection(
+            browserContext,
+            kind: .browser,
+            to: &sections,
+            sourcePointers: [sourcePointer(label: "live browser bridge", target: "astra-browser snapshot/read-page for task \(task.id.uuidString)")]
+        )
         if MailTaskIntent.isReadOnlyMailRequest([
             task.title,
             task.goal,
             task.inputs.joined(separator: " "),
             task.acceptanceCriteria.joined(separator: " ")
         ]) {
-            parts.append("""
+            appendSection("""
             Mail Read Safety:
             The current task is a read-only mail request. If a read-only mail helper is available in the listed tools, use it before browser scraping: `stanford-mail`, `stanford-graph-mail`, or `stanford-apple-mail`.
             If only the browser is available, treat Outlook/mail pages as read-only evidence. Use `astra-browser read-page` and `analyze` for inspection, ignore reminders/toasts/calendar panes unless the user asked about them, and verify that any opened message subject/sender matches the requested inbox item before summarizing.
             Do not click Reply, Reply all, Forward, Send, Delete, Archive, Move, Mark read/unread, Junk, Report phishing, or Discard for this task. If the latest email cannot be identified from read-only evidence, ask for clarification instead of mutating the mailbox.
-            """)
+            """, kind: .browser, to: &sections, sourcePointers: [sourcePointer(label: "mail read safety", target: "current task intent")])
         }
     }
 
-    static func buildFreshFollowUpPrompt(message: String, task: AgentTask) -> String {
-        var parts: [String] = []
+    static func buildFreshFollowUpPrompt(
+        message: String,
+        task: AgentTask,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> String {
+        buildFreshFollowUpPromptAssembly(
+            message: message,
+            task: task,
+            budgetProfile: budgetProfile
+        ).prompt
+    }
+
+    static func buildFreshFollowUpPromptAssembly(
+        message: String,
+        task: AgentTask,
+        budgetProfile: PromptContextBudgetProfile = .standard
+    ) -> PromptAssemblyManifest {
+        assemblePrompt(
+            buildFreshFollowUpPromptSections(message: message, task: task),
+            mode: .followUp,
+            budgetProfile: budgetProfile
+        )
+    }
+
+    private static func buildFreshFollowUpPromptSections(
+        message: String,
+        task: AgentTask
+    ) -> [PromptContextSection] {
+        var sections: [PromptContextSection] = []
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
 
-        parts.append("You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.")
-        parts.append("Goal: \(task.goal)")
-        appendThreadIntentContext(for: task, to: &parts)
+        appendSection(
+            "You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.",
+            kind: .currentGoal,
+            to: &sections,
+            sourcePointers: taskSourcePointers(task)
+        )
+        appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
+        appendThreadIntentContext(for: task, to: &sections)
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
         if !folder.isEmpty {
-            if let transcript = buildRecentConversationTranscript(for: task) {
-                parts.append("Recent conversation transcript (exact recent turns from this task):\n\(transcript)")
+            if let transcript = buildRecentConversationTranscriptWithSources(for: task) {
+                appendSection(
+                    "Recent conversation transcript (exact recent turns from this task):\n\(transcript.text)",
+                    kind: .recentTranscript,
+                    to: &sections,
+                    sourcePointers: transcript.sourcePointers
+                )
                 includedExactSessionTranscript = true
             } else {
                 let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
                 if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
                     let trimmed = recentSessionHistorySummary(from: history)
-                    parts.append("Session History (prior turns):\n\(trimmed)")
+                    appendSection(
+                        "Session History (prior turns):\n\(trimmed)",
+                        kind: .recentTranscript,
+                        to: &sections,
+                        sourcePointers: [sourcePointer(label: "session history", target: historyPath)]
+                    )
                 }
             }
         }
@@ -570,7 +827,12 @@ enum AgentPromptBuilder {
                 let snippet = boundedText(run.output, maxCharacters: maxLen, keeping: .suffix)
                 answersBlock += "\n\n--- \(turnLabel) ---\n\(snippet)"
             }
-            parts.append(answersBlock)
+            appendSection(
+                answersBlock,
+                kind: .recentTranscript,
+                to: &sections,
+                sourcePointers: sortedRuns.map { sourcePointer(label: "task run", target: $0.id.uuidString) }
+            )
         }
 
         let allChanges = sortedRuns.flatMap { $0.fileChanges }
@@ -581,52 +843,76 @@ enum AgentPromptBuilder {
                 let icon = lastChange?.changeType == "Write" ? "+" : "~"
                 return "[\(icon)] \(path)"
             }.joined(separator: "\n")
-            parts.append("Files modified in this task:\n\(changeList)")
+            appendSection(
+                "Files modified in this task:\n\(changeList)",
+                kind: .changedFiles,
+                to: &sections,
+                sourcePointers: changedFileSourcePointers(Array(uniquePaths))
+            )
         }
 
         if !folder.isEmpty {
             let taskFiles = listTaskFolderFiles(folder)
             if !taskFiles.isEmpty {
-                parts.append("Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.")
+                appendSection(
+                    "Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.",
+                    kind: .changedFiles,
+                    to: &sections,
+                    sourcePointers: [sourcePointer(label: "task output folder", target: folder)]
+                )
             }
         }
 
-        appendTaskOutputFolder(for: task, to: &parts)
+        appendTaskOutputFolder(for: task, to: &sections)
 
         let contextLine = buildFollowUpMessage(message: "", task: task, capabilityScope: capabilityScope)
         if contextLine != "",
            let bracketEnd = contextLine.range(of: "]\n\n") {
-            parts.append(String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]))
+            appendSection(
+                String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]),
+                kind: .supportingContext,
+                to: &sections,
+                sourcePointers: followUpContextSourcePointers(task)
+            )
         }
 
-        appendConnectorContext(from: capabilityScope, to: &parts)
+        appendConnectorContext(from: capabilityScope, to: &sections)
 
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &parts)
+        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
 
-        if let memories = task.workspace?.memories, !memories.isEmpty {
-            let memoriesBlock = """
-            YOUR MEMORIES (saved by the user for this workspace — these ARE your persistent memories, do NOT look for memory files on disk):
-            \(memories.map { "- \($0)" }.joined(separator: "\n"))
-            When the user asks about your memories, report these items. Do not check ~/.claude/ or any file-based memory system.
-            """
-            parts.append(memoriesBlock)
+        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+            appendSection(
+                memoriesBlock,
+                kind: .memories,
+                to: &sections,
+                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+            )
         }
 
         if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
-            appendAstraRunProtocolInstructions(to: &parts)
+            appendAstraRunProtocolInstructions(to: &sections)
         }
 
-        parts.append("""
+        appendSection("""
         History Lookup Rule:
         If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
-        """)
+        """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(task))
 
-        parts.append("User's follow-up request:\n\(message)")
+        appendSection(
+            "User's follow-up request:\n\(message)",
+            kind: .currentGoal,
+            to: &sections,
+            sourcePointers: [sourcePointer(label: "current follow-up request", target: "user message")]
+        )
 
-        return parts.joined(separator: "\n\n")
+        return sections
     }
 
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
+        buildRecentConversationTranscriptWithSources(for: task)?.text
+    }
+
+    private static func buildRecentConversationTranscriptWithSources(for task: AgentTask) -> PromptContextText? {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty else { return nil }
         return recentSessionOutputTranscript(taskFolder: folder)
@@ -637,7 +923,7 @@ enum AgentPromptBuilder {
         case suffix
     }
 
-    private static func recentSessionOutputTranscript(taskFolder: String) -> String? {
+    private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextText? {
         let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: URL(fileURLWithPath: outputDirectory),
@@ -655,7 +941,7 @@ enum AgentPromptBuilder {
 
         guard !turnFiles.isEmpty else { return nil }
 
-        let sections = turnFiles.enumerated().compactMap { offset, url -> String? in
+        let transcriptSections = turnFiles.enumerated().compactMap { offset, url -> String? in
             guard let text = try? String(contentsOf: url, encoding: .utf8),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
@@ -668,8 +954,14 @@ enum AgentPromptBuilder {
             return "--- \(url.lastPathComponent) ---\n\(excerpt)"
         }
 
-        guard !sections.isEmpty else { return nil }
-        return sections.joined(separator: "\n\n")
+        guard !transcriptSections.isEmpty else { return nil }
+        let sourcePointers = turnFiles.map {
+            sourcePointer(label: "turn output", target: $0.path)
+        } + [sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: taskFolder))]
+        return PromptContextText(
+            text: transcriptSections.joined(separator: "\n\n"),
+            sourcePointers: sourcePointers
+        )
     }
 
     private static func recentSessionHistorySummary(from history: String) -> String {
@@ -782,35 +1074,49 @@ enum AgentPromptBuilder {
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
         let fm = FileManager.default
+        let rootURL = URL(fileURLWithPath: folder)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
         guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: folder),
+            at: rootURL,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
-            let rel = url.path.replacingOccurrences(of: folder + "/", with: "")
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard itemURL.path.hasPrefix(rootPath) else { continue }
+            let rel = String(itemURL.path.dropFirst(rootPath.count))
             if rel.hasPrefix("outputs/") { continue }
             if rel == "session_history.md" { continue }
             if rel == TaskContextStateManager.jsonFileName { continue }
             if rel == TaskContextStateManager.markdownFileName { continue }
-            files.append("- \(rel) (\(url.path))")
+            files.append("- \(rel) (\(itemURL.path))")
             if files.count >= 30 { break }
         }
         return files
     }
 
-    private static func appendThreadIntentContext(for task: AgentTask, to parts: inout [String]) {
-        guard let context = TaskContextStateManager.promptContext(for: task),
+    private static func appendThreadIntentContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
+        guard let context = TaskContextStateManager.refreshedPromptContext(for: task),
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
-        parts.append(context)
+        appendSection(
+            context,
+            kind: .threadState,
+            to: &sections,
+            sourcePointers: taskStateSourcePointers(task)
+        )
     }
 
-    private static func appendAstraRunProtocolInstructions(to parts: inout [String]) {
-        parts.append("""
+    private static func appendAstraRunProtocolInstructions(to sections: inout [PromptContextSection]) {
+        appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.
         Marker prefix must be exactly `ASTRA_EVENT ` followed by one JSON object.
@@ -825,7 +1131,260 @@ enum AgentPromptBuilder {
         For plan.step markers, use the exact planID and stepID from the approved plan. Emit started before work on a step, completed when it is done, blocked when permission or missing context prevents progress, and skipped when intentionally not doing a step.
         For complete, summarize completed work and include verifiedBy when you ran checks. This marker is advisory only: keep writing the final response normally and do not rely on it to end the task.
         Do not wrap ASTRA_EVENT lines in markdown, quotes, bullets, or code fences.
-        """)
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime protocol", target: "ASTRA run protocol v1")])
+    }
+
+    private static func appendSection(
+        _ text: String,
+        kind: PromptContextSectionKind,
+        to sections: inout [PromptContextSection],
+        sourcePointers: [PromptContextSourcePointer] = []
+    ) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        sections.append(PromptContextSection(
+            kind: kind,
+            text: text,
+            sourcePointers: dedupeSourcePointers(sourcePointers)
+        ))
+    }
+
+    private static func assemblePrompt(
+        _ sections: [PromptContextSection],
+        mode: PromptAssemblyMode,
+        budgetProfile: PromptContextBudgetProfile
+    ) -> PromptAssemblyManifest {
+        let budgetedSections = sections.compactMap { budgetedSection($0, budgetProfile: budgetProfile) }
+        let prompt = budgetedSections.map(\.text).joined(separator: "\n\n")
+        return PromptAssemblyManifest(
+            mode: mode,
+            prompt: prompt,
+            sections: budgetedSections.map(\.manifest),
+            estimatedPromptTokens: estimatedTokens(forCharacterCount: prompt.count),
+            promptCharacterCount: prompt.count
+        )
+    }
+
+    private static func budgetedSection(
+        _ section: PromptContextSection,
+        budgetProfile: PromptContextBudgetProfile
+    ) -> BudgetedPromptSection? {
+        let text = section.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        let tokenBudget = max(0, budgetProfile.tokenBudget(for: section.kind))
+        let originalCharacters = text.count
+        let originalTokens = estimatedTokens(forCharacterCount: originalCharacters)
+        let sourcePointers = dedupeSourcePointers(section.sourcePointers)
+        let includedText: String
+        let isTruncated: Bool
+
+        if tokenBudget <= 0 {
+            includedText = budgetOmissionNotice(
+                for: section,
+                tokenBudget: tokenBudget,
+                originalCharacters: originalCharacters
+            )
+            isTruncated = true
+        } else {
+            let characterBudget = max(1, tokenBudget * estimatedCharactersPerToken)
+            if text.count <= characterBudget {
+                includedText = text
+                isTruncated = false
+            } else {
+                let notice = budgetOmissionNotice(
+                    for: section,
+                    tokenBudget: tokenBudget,
+                    originalCharacters: text.count
+                )
+                includedText = truncatedSectionText(
+                    text,
+                    sectionKind: section.kind,
+                    notice: notice,
+                    characterBudget: characterBudget
+                )
+                isTruncated = true
+            }
+        }
+
+        let includedCharacters = includedText.count
+        return BudgetedPromptSection(
+            text: includedText,
+            manifest: PromptAssemblySectionManifest(
+                kind: section.kind,
+                tokenBudget: tokenBudget,
+                estimatedOriginalTokens: originalTokens,
+                estimatedIncludedTokens: estimatedTokens(forCharacterCount: includedCharacters),
+                originalCharacterCount: originalCharacters,
+                includedCharacterCount: includedCharacters,
+                isTruncated: isTruncated,
+                sourcePointers: sourcePointers,
+                includedTextPreview: boundedText(includedText, maxCharacters: 3_000, keeping: .prefix)
+            )
+        )
+    }
+
+    private static func truncatedSectionText(
+        _ text: String,
+        sectionKind: PromptContextSectionKind,
+        notice: String,
+        characterBudget: Int
+    ) -> String {
+        let budget = max(1, characterBudget)
+        let separator = "\n\n"
+        if sectionKind == .recentTranscript {
+            let preferredSuffixLimit = min(text.count, max(1, min(320, budget / 2)))
+            let availableForNotice = budget - separator.count - preferredSuffixLimit
+            if availableForNotice >= 80 {
+                let noticeText = notice.count > availableForNotice
+                    ? String(notice.prefix(availableForNotice))
+                    : notice
+                let suffixLimit = max(1, budget - noticeText.count - separator.count)
+                return noticeText + separator + String(text.suffix(suffixLimit))
+            }
+
+            let noticeLimit = max(1, min(notice.count, max(1, (budget - separator.count) / 2)))
+            let suffixLimit = max(0, budget - noticeLimit - separator.count)
+            guard suffixLimit > 0 else {
+                return String(notice.prefix(budget))
+            }
+            return String(notice.prefix(noticeLimit)) + separator + String(text.suffix(suffixLimit))
+        }
+
+        let contentCharacterLimit = budget - notice.count - separator.count
+        guard contentCharacterLimit >= 160 else {
+            return notice.count > budget ? String(notice.prefix(budget)) : notice
+        }
+
+        return String(text.prefix(contentCharacterLimit)) + separator + notice
+    }
+
+    private static func budgetOmissionNotice(
+        for section: PromptContextSection,
+        tokenBudget: Int,
+        originalCharacters: Int
+    ) -> String {
+        let originalTokens = estimatedTokens(forCharacterCount: originalCharacters)
+        var lines = [
+            "[ASTRA context budget: \(section.kind.displayName) truncated from about \(originalTokens) tokens to \(tokenBudget) tokens.]",
+            "Use these source pointers for omitted detail:"
+        ]
+
+        let pointers = dedupeSourcePointers(section.sourcePointers).prefix(8)
+        if pointers.isEmpty {
+            lines.append("- No durable source pointer is available for this section.")
+        } else {
+            for pointer in pointers {
+                lines.append("- \(boundedInline(pointer.label, maxCharacters: 80)): \(boundedInline(pointer.target, maxCharacters: 220))")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func estimatedTokens(forCharacterCount count: Int) -> Int {
+        max(1, Int(ceil(Double(count) / Double(estimatedCharactersPerToken))))
+    }
+
+    private static func workspaceMemoriesBlock(for workspace: Workspace?) -> String? {
+        guard let memories = workspace?.memories, !memories.isEmpty else { return nil }
+        return """
+        YOUR MEMORIES (saved by the user for this workspace — these ARE your persistent memories, do NOT look for memory files on disk):
+        \(memories.map { "- \($0)" }.joined(separator: "\n"))
+        When the user asks about your memories, report these items. Do not check ~/.claude/ or any file-based memory system.
+        """
+    }
+
+    private static func sourcePointer(label: String, target: String) -> PromptContextSourcePointer {
+        PromptContextSourcePointer(label: label, target: target)
+    }
+
+    private static func taskSourcePointers(_ task: AgentTask) -> [PromptContextSourcePointer] {
+        [sourcePointer(label: "task", target: task.id.uuidString)]
+    }
+
+    private static func workspaceSourcePointers(_ workspace: Workspace?) -> [PromptContextSourcePointer] {
+        guard let workspace else { return [] }
+        var pointers = [sourcePointer(label: "workspace", target: workspace.name)]
+        if !workspace.primaryPath.isEmpty {
+            pointers.append(sourcePointer(label: "workspace path", target: workspace.primaryPath))
+        }
+        return pointers
+    }
+
+    private static func sshSourcePointers(workspace: Workspace) -> [PromptContextSourcePointer] {
+        let path = (workspace.primaryPath as NSString).appendingPathComponent("ssh-connections.json")
+        return [sourcePointer(label: "ssh connection config", target: path)]
+    }
+
+    private static func taskStateSourcePointers(_ task: AgentTask) -> [PromptContextSourcePointer] {
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !folder.isEmpty else { return taskSourcePointers(task) }
+        return [
+            sourcePointer(label: "canonical current state JSON", target: (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)),
+            sourcePointer(label: "current state markdown", target: (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)),
+            sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: folder))
+        ]
+    }
+
+    private static func taskFolderSourcePointers(_ task: AgentTask) -> [PromptContextSourcePointer] {
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        return folder.isEmpty ? taskSourcePointers(task) : [sourcePointer(label: "task output folder", target: folder)]
+    }
+
+    private static func inputSourcePointers(_ inputs: [String]) -> [PromptContextSourcePointer] {
+        inputs.map { input in
+            let target = (input.hasPrefix("~") ? (input as NSString).expandingTildeInPath : input)
+            return sourcePointer(label: "task input", target: target)
+        }
+    }
+
+    private static func pathSourcePointers(_ paths: [String]) -> [PromptContextSourcePointer] {
+        paths.map { sourcePointer(label: "workspace path", target: $0) }
+    }
+
+    private static func connectorSourcePointers(_ connectors: [Connector]) -> [PromptContextSourcePointer] {
+        connectors.map { connector in
+            sourcePointer(label: "connector \(connector.name)", target: "\(connector.serviceType) \(connector.id.uuidString)")
+        } + [sourcePointer(label: "connector runtime manifest", target: "ASTRA_CONNECTORS environment")]
+    }
+
+    private static func toolSourcePointers(_ tools: [LocalTool]) -> [PromptContextSourcePointer] {
+        tools.map { tool in
+            sourcePointer(label: "local tool \(tool.name)", target: tool.displayCommand)
+        }
+    }
+
+    private static func changedFileSourcePointers(_ paths: [String]) -> [PromptContextSourcePointer] {
+        paths.map { sourcePointer(label: "changed file", target: $0) }
+    }
+
+    private static func followUpContextSourcePointers(_ task: AgentTask) -> [PromptContextSourcePointer] {
+        var pointers = taskStateSourcePointers(task)
+        if let workspace = task.workspace {
+            pointers.append(contentsOf: workspaceSourcePointers(workspace))
+        }
+        if let lastRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first {
+            pointers.append(sourcePointer(label: "latest task run", target: lastRun.id.uuidString))
+        }
+        return dedupeSourcePointers(pointers)
+    }
+
+    private static func dedupeSourcePointers(_ pointers: [PromptContextSourcePointer]) -> [PromptContextSourcePointer] {
+        var seen = Set<PromptContextSourcePointer>()
+        var result: [PromptContextSourcePointer] = []
+        for pointer in pointers where !pointer.target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if seen.insert(pointer).inserted {
+                result.append(pointer)
+            }
+        }
+        return result
+    }
+
+    private static func boundedInline(_ text: String, maxCharacters: Int) -> String {
+        let trimmed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxCharacters else { return trimmed }
+        return String(trimmed.prefix(maxCharacters)) + "..."
     }
 
     private static func approvedPlanExecutionInstructions(

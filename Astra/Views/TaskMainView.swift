@@ -162,6 +162,7 @@ struct TaskMainView: View {
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
+    @State private var showContextPreview = false
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
@@ -425,6 +426,17 @@ struct TaskMainView: View {
         .sheet(isPresented: $showDiffsSheet) {
             DiffsTabView(task: task)
                 .frame(minWidth: 700, minHeight: 500)
+        }
+        .sheet(isPresented: $showContextPreview) {
+            let request = contextPreviewRequest
+            if let manifest = contextPreviewManifest(for: request) {
+                PromptContextPreviewSheet(manifest: manifest)
+                    .frame(minWidth: 700, minHeight: 600)
+            } else {
+                PromptContextPreviewUnavailableSheet(
+                    reason: request.unavailableReason ?? "No provider prompt is pending."
+                )
+            }
         }
         .sheet(isPresented: $showScheduleEditor) {
             if let ws = task.workspace {
@@ -802,6 +814,30 @@ struct TaskMainView: View {
         summaryContent
     }
 
+    private var contextPreviewRequest: PromptContextPreviewRequest {
+        PromptContextPreviewPresentation.request(
+            taskStatus: task.status,
+            hasProviderSession: task.sessionId != nil,
+            messageText: messageText,
+            attachedFiles: attachedFiles
+        )
+    }
+
+    private func contextPreviewManifest(for request: PromptContextPreviewRequest) -> PromptAssemblyManifest? {
+        switch request.kind {
+        case .initialRun:
+            return AgentPromptBuilder.buildPromptAssembly(for: task)
+        case .followUp:
+            guard let followUpMessage = request.followUpMessage else { return nil }
+            return AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+                message: followUpMessage,
+                task: task
+            )
+        case .unavailable:
+            return nil
+        }
+    }
+
     /// Snapshot the conversation at routine creation time.
     /// Captures user messages and agent responses chronologically.
     private var scheduleConversationContext: String {
@@ -947,6 +983,12 @@ struct TaskMainView: View {
             }
 
             Section {
+                Button {
+                    showContextPreview = true
+                } label: {
+                    Label("Context Preview", systemImage: "doc.text.magnifyingglass")
+                }
+
                 Button {
                     showScheduleEditor = true
                 } label: {
@@ -1697,6 +1739,7 @@ struct TaskMainView: View {
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
         let runActivityPresentation = currentThreadSnapshot.activityPresentation(for: run)
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
+        let showsGeneratedFiles = run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
 
@@ -1713,8 +1756,12 @@ struct TaskMainView: View {
                 }
             }
 
+            if run.completedWithoutUserFacingResult && !showsGeneratedFiles && !protocolState.hasCompletion {
+                completedEmptyRunNotice()
+            }
+
             // Generated files belong with the finished turn, not the live progress row.
-            if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
+            if showsGeneratedFiles {
                 AgentGeneratedFilesListView(
                     paths: threadViewModel.generatedFilePaths,
                     onOpen: onOpenGeneratedFile
@@ -1797,6 +1844,27 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func completedEmptyRunNotice() -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(Stanford.ui(12))
+                .foregroundStyle(Stanford.poppy)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Provider returned no result")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.poppy)
+                Text("The run finished without text output or a visible generated file. Retry this task or switch providers.")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.readingText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
     }
 
     @ViewBuilder
@@ -3410,6 +3478,13 @@ struct TaskMainView: View {
         )
     }
 
+    private var completedTaskNeedsArtifactAttention: Bool {
+        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
+            task: task,
+            latestRun: latestRunModel
+        )
+    }
+
     private var latestRunModel: TaskRun? {
         task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
@@ -3496,6 +3571,8 @@ struct TaskMainView: View {
             planDecisionDock(plan)
         } else if task.status == .pendingUser, !reviewState.isDismissed || reviewState.dismissalReason != nil {
             pendingReviewDecisionDock
+        } else if completedTaskNeedsArtifactAttention {
+            completedNoUsableResultDecisionDock
         } else if task.status == .failed || task.status == .budgetExceeded {
             failedDecisionDock
         } else if task.status == .queued {
@@ -3705,6 +3782,37 @@ struct TaskMainView: View {
             detail: detail
         ) {
             taskDoneToggleButton(isPrimary: true)
+        }
+    }
+
+    private var completedNoUsableResultDecisionDock: some View {
+        taskDecisionSurface(
+            icon: "doc.badge.exclamationmark",
+            color: Stanford.poppy,
+            title: "No usable result",
+            detail: "This completed run did not create the expected artifact. Retry or mark it done anyway.",
+            detailLineLimit: 2
+        ) {
+            VStack(alignment: .trailing, spacing: 8) {
+                if let onRetry = onRetryTask {
+                    Button("Retry") {
+                        onRetry(task)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.poppy))
+                    .controlSize(.small)
+                    .accessibilityLabel("Retry task")
+                }
+
+                Button {
+                    toggleTaskDoneFromDecisionDock()
+                } label: {
+                    Label("Mark done anyway", systemImage: taskDoneToggleIcon)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: onRetryTask == nil, color: taskDoneToggleColor))
+                .controlSize(.small)
+                .accessibilityLabel("Mark done anyway")
+            }
         }
     }
 
