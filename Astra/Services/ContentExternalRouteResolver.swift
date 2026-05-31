@@ -6,6 +6,7 @@ enum ContentExternalRouteResolution {
     case openWorkspace(Workspace)
     case openTask(AgentTask)
     case createdTask(AgentTask, shouldRun: Bool)
+    case unresolved(String)
 }
 
 @MainActor
@@ -18,14 +19,18 @@ struct ContentExternalRouteResolver {
     func resolve(
         _ route: AstraExternalRoute,
         workspaces: [Workspace]
-    ) -> ContentExternalRouteResolution? {
+    ) -> ContentExternalRouteResolution {
         switch route.destination {
         case .workspace(let workspaceID):
-            guard let workspace = workspace(for: workspaceID, in: workspaces) else { return nil }
+            guard let workspace = workspace(for: workspaceID, in: workspaces) else {
+                return .unresolved("Workspace not found: \(workspaceID.uuidString)")
+            }
             return .openWorkspace(workspace)
 
         case .task(let taskID):
-            guard let task = task(for: taskID, in: workspaces) else { return nil }
+            guard let task = task(for: taskID, in: workspaces) else {
+                return .unresolved("Task not found: \(taskID.uuidString)")
+            }
             return .openTask(task)
 
         case .createTask(let workspaceID, let goal, let shouldRun):
@@ -35,14 +40,16 @@ struct ContentExternalRouteResolver {
                 shouldRun: shouldRun,
                 workspaces: workspaces
             ) else {
-                return nil
+                return .unresolved("Could not create task in workspace: \(workspaceID.uuidString)")
             }
             return .createdTask(task, shouldRun: shouldRun)
 
         case .continueLatestUnfinishedTask(let workspaceID):
-            guard let workspace = workspace(for: workspaceID, in: workspaces),
-                  let task = AstraTaskIntentSupport.latestUnfinishedTask(in: workspace) else {
-                return nil
+            guard let workspace = workspace(for: workspaceID, in: workspaces) else {
+                return .unresolved("Workspace not found: \(workspaceID.uuidString)")
+            }
+            guard let task = AstraTaskIntentSupport.latestUnfinishedTask(in: workspace) else {
+                return .unresolved("No unfinished task found in workspace: \(workspace.name)")
             }
             return .openTask(task)
         }

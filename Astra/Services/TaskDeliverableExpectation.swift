@@ -15,14 +15,15 @@ enum TaskDeliverableExpectation {
             .lowercased()
 
         guard containsAny(text, [
-            "write", "create", "build", "make", "generate", "save", "put this in files", "write this in files"
+            "write", "create", "creat", "cerate", "build", "make", "generate", "save",
+            "put this in files", "write this in files"
         ]) else {
             return false
         }
 
         return containsAny(text, [
             "web page", "webpage", "html", "javascript", "css", ".html", ".js", ".css",
-            "demo app", "game", "script", "file"
+            "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck"
         ])
     }
 

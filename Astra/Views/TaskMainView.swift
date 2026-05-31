@@ -1606,6 +1606,7 @@ struct TaskMainView: View {
             progressMessages: outputPresentation.progressMessages
         )
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
+        let showsGeneratedFiles = run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
 
@@ -1629,8 +1630,12 @@ struct TaskMainView: View {
                 }
             }
 
+            if run.completedWithoutUserFacingResult && !showsGeneratedFiles && !protocolState.hasCompletion {
+                completedEmptyRunNotice()
+            }
+
             // Generated files belong with the finished turn, not the live progress row.
-            if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
+            if showsGeneratedFiles {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
                         Button {
@@ -1731,6 +1736,27 @@ struct TaskMainView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Agent response")
+    }
+
+    private func completedEmptyRunNotice() -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(Stanford.ui(12))
+                .foregroundStyle(Stanford.poppy)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Provider returned no result")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.poppy)
+                Text("The run finished without text output or a visible generated file. Retry this task or switch providers.")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.readingText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
     }
 
     @ViewBuilder
@@ -3344,6 +3370,13 @@ struct TaskMainView: View {
         )
     }
 
+    private var completedTaskNeedsArtifactAttention: Bool {
+        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
+            task: task,
+            latestRun: latestRunModel
+        )
+    }
+
     private var latestRunModel: TaskRun? {
         task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
@@ -3430,6 +3463,8 @@ struct TaskMainView: View {
             planDecisionDock(plan)
         } else if task.status == .pendingUser, !reviewState.isDismissed || reviewState.dismissalReason != nil {
             pendingReviewDecisionDock
+        } else if completedTaskNeedsArtifactAttention {
+            completedNoUsableResultDecisionDock
         } else if task.status == .failed || task.status == .budgetExceeded {
             failedDecisionDock
         } else if task.status == .queued {
@@ -3639,6 +3674,37 @@ struct TaskMainView: View {
             detail: detail
         ) {
             taskDoneToggleButton(isPrimary: true)
+        }
+    }
+
+    private var completedNoUsableResultDecisionDock: some View {
+        taskDecisionSurface(
+            icon: "doc.badge.exclamationmark",
+            color: Stanford.poppy,
+            title: "No usable result",
+            detail: "This completed run did not create the expected artifact. Retry or mark it done anyway.",
+            detailLineLimit: 2
+        ) {
+            VStack(alignment: .trailing, spacing: 8) {
+                if let onRetry = onRetryTask {
+                    Button("Retry") {
+                        onRetry(task)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.poppy))
+                    .controlSize(.small)
+                    .accessibilityLabel("Retry task")
+                }
+
+                Button {
+                    toggleTaskDoneFromDecisionDock()
+                } label: {
+                    Label("Mark done anyway", systemImage: taskDoneToggleIcon)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: onRetryTask == nil, color: taskDoneToggleColor))
+                .controlSize(.small)
+                .accessibilityLabel("Mark done anyway")
+            }
         }
     }
 

@@ -909,6 +909,34 @@ struct TaskThreadSnapshotTests {
         }
     }
 
+    @Test("Completed empty provider run stays visible in the transcript")
+    func completedEmptyProviderRunStaysVisibleInTranscript() {
+        let task = makeTask(goal: "cerate a html slide deck about agents lanscape in the 2030")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.startedAt = Date(timeIntervalSince1970: 110)
+        run.completedAt = Date(timeIntervalSince1970: 111)
+        run.stopReason = "completed"
+        run.output = ""
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .agentResponse(let responseRun) = snapshot.conversationItems[1] else {
+            Issue.record("Expected an empty completed run to remain visible")
+            return
+        }
+        #expect(responseRun.id == run.id)
+        #expect(responseRun.completedWithoutUserFacingResult)
+    }
+
     @Test("Plan conversation events appear inline")
     func planConversationEventsAppearInline() {
         let task = makeTask(goal: "Original goal")

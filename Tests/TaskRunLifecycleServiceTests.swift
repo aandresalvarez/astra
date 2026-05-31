@@ -154,6 +154,16 @@ struct TaskRunLifecycleServiceTests {
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
     }
 
+    @Test("Misspelled HTML slide deck request still requires artifact")
+    func misspelledHTMLSlideDeckRequestStillRequiresArtifact() {
+        let task = AgentTask(
+            title: "cerate a html slide deck",
+            goal: "cerate a html slide deck about agents lanscape in the 2030"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Coordinator approval completes generic failed pending tasks")
     func coordinatorApprovalCompletesGenericFailedPendingTasks() throws {
         let container = try makeTaskRunLifecycleContainer()
@@ -336,6 +346,32 @@ struct TaskRunLifecycleServiceTests {
         _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
 
         #expect(PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: run) == .missingRequiredArtifact)
+    }
+
+    @Test("Completed misspelled artifact task remains attention worthy")
+    func completedMisspelledArtifactTaskRemainsAttentionWorthy() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "completed-empty-artifact-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Artifact Review", primaryPath: workspacePath)
+        let task = AgentTask(
+            title: "cerate a html slide deck",
+            goal: "cerate a html slide deck about agents lanscape in the 2030",
+            workspace: workspace
+        )
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        #expect(PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
     }
 
     @Test("Startup recovery cancels orphaned running task and run")

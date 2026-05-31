@@ -58,6 +58,12 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let fileChanges: [StoredFileChange]
     let stopReason: String
 
+    var completedWithoutUserFacingResult: Bool {
+        status == .completed &&
+            output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            fileChanges.isEmpty
+    }
+
     init(input: TaskRunSnapshotInput) {
         id = input.id
         status = input.status
@@ -871,6 +877,7 @@ struct TaskThreadSnapshot: Sendable {
         !run.output.isEmpty
             || activity.hasVisibleActivity
             || protocolByRunID[run.id]?.hasCompletion == true
+            || run.completedWithoutUserFacingResult
     }
 
     private static func protocolTodoItems(

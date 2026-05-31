@@ -204,6 +204,41 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Antigravity empty misspelled artifact task stays pending review")
+    func antigravityEmptyMisspelledArtifactTaskStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "cerate a html slide deck about agents lanscape in the 2030",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
     @Test("Headless chat enforces budget guardrails")
     func headlessChatEnforcesBudget() async throws {
         let harness = try HeadlessChatHarness()
