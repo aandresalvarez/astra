@@ -894,11 +894,7 @@ final class AgentRuntimeWorker {
     ) -> Bool {
         let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let visibleFileChange = !run.fileChanges.isEmpty
-        let visibleArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
-        if TaskDeliverableExpectation.requiresStandaloneArtifact(task), !visibleArtifact {
-            return false
-        }
-        guard !visibleOutput, !visibleFileChange, !visibleArtifact else {
+        guard !visibleOutput, !visibleFileChange else {
             return false
         }
 
@@ -908,7 +904,10 @@ final class AgentRuntimeWorker {
         task.completedAt = nil
 
         let providerName = runtimeAdapter.descriptor.displayName
-        var payload = "\(providerName) finished with exit code 0 but did not return text output or create a visible file. Retry this task or switch providers."
+        let requiredArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        var payload = requiredArtifact
+            ? "\(providerName) finished with exit code 0 but did not return text output and did not create a usable file for this run. Retry this task or switch providers."
+            : "\(providerName) finished with exit code 0 but did not return text output or create a visible file. Retry this task or switch providers."
         if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             payload += " Provider stderr: \(String(RuntimeReadinessRedactor.redacted(error).prefix(300)))"
         }
@@ -920,7 +919,7 @@ final class AgentRuntimeWorker {
             "exit_code": String(result.exitCode),
             "run_output_chars": String(run.output.count),
             "file_changes": String(run.fileChanges.count),
-            "has_artifact": String(visibleArtifact),
+            "requires_artifact": String(requiredArtifact),
             "stderr_bytes": String(result.error?.utf8.count ?? 0)
         ], level: .warning)
         return true

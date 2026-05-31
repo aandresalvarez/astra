@@ -277,6 +277,55 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Antigravity empty retry ignores earlier artifacts")
+    func antigravityEmptyRetryIgnoresEarlierArtifacts() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "create an html slide deck about agents",
+            model: "Gemini 3.5 Flash"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let existingArtifact = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        try "<html>already here</html>".write(to: existingArtifact, atomically: true, encoding: .utf8)
+        let priorRun = TaskRun(task: task)
+        priorRun.status = .completed
+        priorRun.stopReason = "completed"
+        let priorArtifact = Artifact(task: task, type: "file", path: existingArtifact.path)
+        harness.context.insert(priorRun)
+        harness.context.insert(priorArtifact)
+        try harness.context.save()
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: priorRun))
+
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.id != priorRun.id)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(run.fileChanges.isEmpty)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload.contains("for this run") })
+        #expect(!task.events.contains { $0.type == "task.completed" && $0.run?.id == run.id })
+    }
+
     @Test("Headless chat enforces budget guardrails")
     func headlessChatEnforcesBudget() async throws {
         let harness = try HeadlessChatHarness()

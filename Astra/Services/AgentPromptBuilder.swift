@@ -1196,13 +1196,12 @@ enum AgentPromptBuilder {
                     tokenBudget: tokenBudget,
                     originalCharacters: text.count
                 )
-                let separator = "\n\n"
-                let prefixCharacterLimit = characterBudget - notice.count - separator.count
-                if prefixCharacterLimit >= 160 {
-                    includedText = String(text.prefix(prefixCharacterLimit)) + separator + notice
-                } else {
-                    includedText = notice.count > characterBudget ? String(notice.prefix(characterBudget)) : notice
-                }
+                includedText = truncatedSectionText(
+                    text,
+                    sectionKind: section.kind,
+                    notice: notice,
+                    characterBudget: characterBudget
+                )
                 isTruncated = true
             }
         }
@@ -1222,6 +1221,41 @@ enum AgentPromptBuilder {
                 includedTextPreview: boundedText(includedText, maxCharacters: 3_000, keeping: .prefix)
             )
         )
+    }
+
+    private static func truncatedSectionText(
+        _ text: String,
+        sectionKind: PromptContextSectionKind,
+        notice: String,
+        characterBudget: Int
+    ) -> String {
+        let budget = max(1, characterBudget)
+        let separator = "\n\n"
+        if sectionKind == .recentTranscript {
+            let preferredSuffixLimit = min(text.count, max(1, min(320, budget / 2)))
+            let availableForNotice = budget - separator.count - preferredSuffixLimit
+            if availableForNotice >= 80 {
+                let noticeText = notice.count > availableForNotice
+                    ? String(notice.prefix(availableForNotice))
+                    : notice
+                let suffixLimit = max(1, budget - noticeText.count - separator.count)
+                return noticeText + separator + String(text.suffix(suffixLimit))
+            }
+
+            let noticeLimit = max(1, min(notice.count, max(1, (budget - separator.count) / 2)))
+            let suffixLimit = max(0, budget - noticeLimit - separator.count)
+            guard suffixLimit > 0 else {
+                return String(notice.prefix(budget))
+            }
+            return String(notice.prefix(noticeLimit)) + separator + String(text.suffix(suffixLimit))
+        }
+
+        let contentCharacterLimit = budget - notice.count - separator.count
+        guard contentCharacterLimit >= 160 else {
+            return notice.count > budget ? String(notice.prefix(budget)) : notice
+        }
+
+        return String(text.prefix(contentCharacterLimit)) + separator + notice
     }
 
     private static func budgetOmissionNotice(

@@ -540,8 +540,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
     }
 
-    @Test("Follow-up transcript budget preserves state and points to omitted sources")
-    func followUpTranscriptBudgetPreservesStateAndSources() throws {
+    @Test("Follow-up transcript budget preserves latest transcript and points to omitted sources")
+    func followUpTranscriptBudgetPreservesLatestTranscriptAndSources() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
@@ -571,7 +571,7 @@ struct BuildPromptTests {
         )
 
         var budget = PromptContextBudgetProfile.standard
-        budget.recentTranscriptTokens = 140
+        budget.recentTranscriptTokens = 500
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: "continue with deterministic context",
             task: task,
@@ -584,7 +584,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA context budget: recent transcript"))
         #expect(prompt.contains("Use these source pointers for omitted detail"))
         #expect(prompt.contains("outputs/turn_001.md"))
-        #expect(!prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(!prompt.contains("TRANSCRIPT_PREFIX_MARKER"))
     }
 
     @Test("Memory budget keeps compact preference and source pointer")
