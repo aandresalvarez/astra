@@ -890,6 +890,16 @@ struct ChatPanelView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
+                if Self.shouldShowApprovePlanInlineAction(in: msg.content, hasPendingPlan: pendingPlan != nil) {
+                    ChatInlineActionButton(
+                        title: "Approve Plan",
+                        icon: "checkmark.circle.fill",
+                        help: "Approve the candidate goal and create the draft task.",
+                        action: approvePendingPlan
+                    )
+                    .padding(.top, 2)
+                }
+
                 // Action icons + timestamp
                 HStack(spacing: 14) {
                     Button {
@@ -928,6 +938,33 @@ struct ChatPanelView: View {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
             }
+        }
+    }
+
+    private struct ChatInlineActionButton: View {
+        let title: String
+        let icon: String
+        let help: String
+        let action: () -> Void
+
+        var body: some View {
+            Button(action: action) {
+                Label(title, systemImage: icon)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Stanford.lagunita.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+            )
+            .help(help)
+            .accessibilityLabel(title)
         }
     }
 
@@ -1066,6 +1103,11 @@ struct ChatPanelView: View {
             return "checkmark.circle.fill"
         }
         return "sparkles"
+    }
+
+    static func shouldShowApprovePlanInlineAction(in content: String, hasPendingPlan: Bool) -> Bool {
+        guard hasPendingPlan else { return false }
+        return content.range(of: "approve plan", options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
     // MARK: - Composer

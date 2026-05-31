@@ -2,6 +2,16 @@ import Foundation
 
 /// Shared formatting utilities used across multiple views.
 enum Formatters {
+    struct SidebarTaskTitlePresentation: Equatable {
+        let prefix: String?
+        let primary: String
+        let fullTitle: String
+
+        var displayTitle: String {
+            guard let prefix, !prefix.isEmpty else { return primary }
+            return "\(prefix) · \(primary)"
+        }
+    }
 
     /// Format a token count for display (e.g., 1500 -> "1.5k", 1500000 -> "1.5M").
     static func formatTokens(_ count: Int) -> String {
@@ -69,19 +79,105 @@ enum Formatters {
             .joined(separator: " ")
     }
 
-    /// Compact task titles for narrow sidebar rows without clipping ordinary
-    /// prose mid-word. Keeps the leading action/context and the trailing
-    /// disambiguator so similarly-prefixed tasks remain scannable.
+    /// Compact task-title presentation for navigation rows. Generic task verbs
+    /// become a quiet prefix so the object phrase stays scannable.
+    static func sidebarTaskTitlePresentation(
+        _ text: String,
+        maxDisplayCharacters: Int = 40
+    ) -> SidebarTaskTitlePresentation {
+        let normalized = normalizedSidebarTaskTitle(text)
+        let (prefix, primarySource) = sidebarTaskPrefixAndPrimary(normalized)
+        let primaryBudget = if let prefix {
+            max(12, maxDisplayCharacters - prefix.count - 3)
+        } else {
+            maxDisplayCharacters
+        }
+        let primary = compactSidebarTaskTitle(primarySource, maxCharacters: primaryBudget)
+
+        return SidebarTaskTitlePresentation(
+            prefix: prefix,
+            primary: primary.isEmpty ? normalized : primary,
+            fullTitle: text
+        )
+    }
+
+    /// Compact task titles for callers that need a single string. Prefer
+    /// `sidebarTaskTitlePresentation(_:)` in SwiftUI rows so the action prefix
+    /// can be visually de-emphasized.
     static func sidebarTaskTitle(_ text: String, maxCharacters: Int = 32) -> String {
-        let normalized = shortenIdentifierTokens(text)
+        sidebarTaskTitlePresentation(text, maxDisplayCharacters: maxCharacters).displayTitle
+    }
+
+    private static let sidebarTaskActionPrefixes: Set<String> = [
+        "add",
+        "analyze",
+        "build",
+        "check",
+        "count",
+        "create",
+        "draft",
+        "export",
+        "find",
+        "fix",
+        "generate",
+        "implement",
+        "import",
+        "inspect",
+        "investigate",
+        "list",
+        "prepare",
+        "query",
+        "refactor",
+        "remove",
+        "review",
+        "run",
+        "summarize",
+        "sync",
+        "test",
+        "update",
+        "validate",
+        "verify",
+        "write"
+    ]
+
+    private static let sidebarTaskLeadingArticles: Set<String> = ["a", "an", "the"]
+
+    private static func normalizedSidebarTaskTitle(_ text: String) -> String {
+        shortenIdentifierTokens(text)
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private static func sidebarTaskPrefixAndPrimary(_ normalized: String) -> (String?, String) {
+        var words = normalized.split(separator: " ").map(String.init)
+        guard words.count > 1,
+              let first = words.first,
+              sidebarTaskActionPrefixes.contains(normalizedSidebarWord(first)) else {
+            return (nil, normalized)
+        }
+
+        words.removeFirst()
+        while let firstRemainder = words.first,
+              sidebarTaskLeadingArticles.contains(normalizedSidebarWord(firstRemainder)) {
+            words.removeFirst()
+        }
+
+        guard !words.isEmpty else { return (nil, normalized) }
+        return (first, words.joined(separator: " "))
+    }
+
+    private static func normalizedSidebarWord(_ word: String) -> String {
+        word.trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?()[]{}\"'"))
+            .lowercased()
+    }
+
+    private static func compactSidebarTaskTitle(_ normalized: String, maxCharacters: Int) -> String {
         guard normalized.count > maxCharacters else { return normalized }
 
         let words = normalized.split(separator: " ")
         guard words.count > 1 else {
-            return middleEllipsizeToken(normalized, maxCharacters: maxCharacters)
+            return normalized
         }
 
         let maxHeadWords = min(3, words.count - 1)
@@ -100,10 +196,10 @@ enum Formatters {
                 let totalWords = headCount + tailCount
                 let headScore = min(headCount, 2)
                 if best == nil ||
-                    headScore > best!.headScore ||
-                    (headScore == best!.headScore && totalWords > best!.totalWords) ||
-                    (headScore == best!.headScore && totalWords == best!.totalWords && tailCount > best!.tailWords) ||
-                    (headScore == best!.headScore && totalWords == best!.totalWords && tailCount == best!.tailWords && headCount > best!.headWords) {
+                    tailCount > best!.tailWords ||
+                    (tailCount == best!.tailWords && totalWords > best!.totalWords) ||
+                    (tailCount == best!.tailWords && totalWords == best!.totalWords && headScore > best!.headScore) ||
+                    (tailCount == best!.tailWords && totalWords == best!.totalWords && headScore == best!.headScore && headCount > best!.headWords) {
                     best = (candidate, totalWords, headScore, tailCount, headCount)
                 }
             }
@@ -113,19 +209,9 @@ enum Formatters {
             return best.value
         }
 
-        let headBudget = max(4, (maxCharacters - separator.count) / 2)
-        let tailBudget = max(4, maxCharacters - separator.count - headBudget)
-        let head = middleEllipsizeToken(String(words.first ?? ""), maxCharacters: headBudget)
-        let tail = middleEllipsizeToken(String(words.last ?? ""), maxCharacters: tailBudget)
+        let head = String(words.first ?? "")
+        let tail = String(words.last ?? "")
         return "\(head)\(separator)\(tail)"
-    }
-
-    private static func middleEllipsizeToken(_ token: String, maxCharacters: Int) -> String {
-        guard token.count > maxCharacters, maxCharacters > 1 else { return token }
-        let sideCount = max(1, (maxCharacters - 1) / 2)
-        let head = token.prefix(sideCount)
-        let tail = token.suffix(max(1, maxCharacters - 1 - sideCount))
-        return "\(head)…\(tail)"
     }
 
     /// Return an SF Symbol name for a file path based on its extension.

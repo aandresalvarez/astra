@@ -19,8 +19,8 @@ struct TaskRowView: View {
         return isSelected ? .medium : .regular
     }
 
-    private var displayTitle: String {
-        Formatters.sidebarTaskTitle(task.title)
+    private var titlePresentation: Formatters.SidebarTaskTitlePresentation {
+        Formatters.sidebarTaskTitlePresentation(task.title)
     }
 
     var body: some View {
@@ -28,12 +28,11 @@ struct TaskRowView: View {
             statusDot
                 .frame(width: 8, height: 8)
 
-            Text(displayTitle)
-                .font(Stanford.ui(16, weight: titleWeight))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(task.title)
+            SidebarTaskTitleText(
+                presentation: titlePresentation,
+                font: Stanford.ui(16, weight: titleWeight)
+            )
+            .layoutPriority(1)
 
             if task.originScheduleID != nil {
                 Image(systemName: "clock.arrow.circlepath")

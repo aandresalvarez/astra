@@ -1204,7 +1204,7 @@ struct TaskMainView: View {
                             .font(Stanford.ui(12))
                             .frame(width: 14)
 
-                        Text("Task status")
+                        Text("Task state")
                             .font(Stanford.chatSection())
                         Text(summary)
                             .font(Stanford.chatMeta())
@@ -1240,7 +1240,7 @@ struct TaskMainView: View {
                     .stroke(Color.primary.opacity(0.06), lineWidth: 1)
             )
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Task status. \(summary)")
+            .accessibilityLabel("Task state. \(summary)")
             .transition(chatStatusBlockTransition)
         }
     }
@@ -2049,7 +2049,7 @@ struct TaskMainView: View {
             return "Stopped"
         }
         switch run.status {
-        case .completed: return "Completed"
+        case .completed: return TaskPresentationState.reviewPresentation(status: .completed, isClosed: false).runOutcomeLabel
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
         case .budgetExceeded: return "Over budget"
@@ -3290,31 +3290,60 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
+    private var taskReviewPresentation: TaskReviewPresentation {
+        TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
+    }
+
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
-        guard task.status == .failed,
-              let run = latestRun else { return nil }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
+        if task.status == .failed, let run = latestRun {
+            let activity = currentThreadSnapshot.activity(for: run)
+            let notices = runNoticesToDisplay(activity.notices, for: run)
 
-        if runStoppedByPolicy(run, notices: notices) {
-            return ComposerTaskStatusPresentation(
-                label: "Blocked",
-                icon: "shield.slash",
-                color: Stanford.poppy,
-                help: "ASTRA stopped this run because the requested action is outside the current policy."
-            )
+            if runStoppedByPolicy(run, notices: notices) {
+                return ComposerTaskStatusPresentation(
+                    label: "Blocked",
+                    icon: "shield.slash",
+                    color: Stanford.poppy,
+                    help: "ASTRA stopped this run because the requested action is outside the current policy."
+                )
+            }
+
+            if runStoppedBySystem(run, notices: notices) {
+                return ComposerTaskStatusPresentation(
+                    label: "Stopped",
+                    icon: "octagon",
+                    color: Stanford.poppy,
+                    help: "ASTRA stopped this run before the agent could safely continue. Fix the setup or retry with a narrower request."
+                )
+            }
         }
 
-        if runStoppedBySystem(run, notices: notices) {
-            return ComposerTaskStatusPresentation(
-                label: "Stopped",
-                icon: "octagon",
-                color: Stanford.poppy,
-                help: "ASTRA stopped this run before the agent could safely continue. Fix the setup or retry with a narrower request."
-            )
-        }
+        return composerTaskStatusPresentation(from: taskReviewPresentation)
+    }
 
-        return nil
+    private func composerTaskStatusPresentation(from review: TaskReviewPresentation) -> ComposerTaskStatusPresentation? {
+        guard let label = review.composerLabel,
+              let icon = review.composerIcon,
+              let help = review.composerHelp else { return nil }
+        return ComposerTaskStatusPresentation(
+            label: label,
+            icon: icon,
+            color: reviewColor(for: review.tone),
+            help: help
+        )
+    }
+
+    private func reviewColor(for tone: TaskReviewTone) -> Color {
+        switch tone {
+        case .quiet:
+            return Stanford.coolGrey
+        case .attention:
+            return Stanford.poppy
+        case .failed:
+            return Stanford.failed
+        case .closed:
+            return Stanford.paloAltoGreen
+        }
     }
 
     private var isFinished: Bool {
@@ -3339,7 +3368,7 @@ struct TaskMainView: View {
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.poppy)
                 } else if task.status == .completed {
-                    Label("Task completed successfully.", systemImage: "checkmark.seal")
+                    Label("Run finished.", systemImage: "checkmark.seal")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.paloAltoGreen)
                 } else if task.status == .failed {
@@ -3402,11 +3431,11 @@ struct TaskMainView: View {
 
     private var resultTitle: String {
         switch task.status {
-        case .completed: return "Task Completed"
-        case .pendingUser: return "Awaiting Your Review"
-        case .failed: return "Task Failed"
-        case .budgetExceeded: return "Budget Exceeded"
-        case .cancelled: return "Task Cancelled"
+        case .completed: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .pendingUser: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .failed: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .budgetExceeded: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .cancelled: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
         default: return "Result"
         }
     }
@@ -3744,7 +3773,7 @@ struct TaskMainView: View {
                     .accessibilityLabel(pendingDecisionPrimaryLabel)
                 }
 
-                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? "Mark done anyway" : nil)
+                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? TaskPresentationState.closeAnywayActionTitle : nil)
             }
         }
     }
@@ -3803,7 +3832,7 @@ struct TaskMainView: View {
                 .disabled(taskQueue == nil)
                 .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
 
-                taskDecisionOverflowMenu(doneLabelOverride: "Mark done without running plan")
+                taskDecisionOverflowMenu(doneLabelOverride: TaskPresentationState.closeWithoutRunningPlanActionTitle)
             }
         }
     }
@@ -3882,16 +3911,13 @@ struct TaskMainView: View {
     }
 
     private var doneStateDecisionDock: some View {
-        let title = task.isDone ? "Task marked done" : "Review complete?"
-        let detail = task.isDone
-            ? "Reopen it here if you need to continue with this task."
-            : "Mark this task done when the current result no longer needs action."
+        let review = taskReviewPresentation
 
         return taskDecisionSurface(
             icon: task.isDone ? "arrow.uturn.backward.circle.fill" : "checkmark.circle.fill",
             color: task.isDone ? Stanford.lagunita : Stanford.paloAltoGreen,
-            title: title,
-            detail: detail
+            title: review.decisionTitle,
+            detail: review.decisionDetail
         ) {
             taskDoneToggleButton(isPrimary: true)
         }
@@ -3902,7 +3928,7 @@ struct TaskMainView: View {
             icon: "doc.badge.exclamationmark",
             color: Stanford.poppy,
             title: "No usable result",
-            detail: "This completed run did not create the expected artifact. Retry or mark it done anyway.",
+            detail: "This finished run did not create the expected artifact. Retry or close it anyway.",
             detailLineLimit: 2
         ) {
             VStack(alignment: .trailing, spacing: 8) {
@@ -3918,12 +3944,12 @@ struct TaskMainView: View {
                 Button {
                     toggleTaskDoneFromDecisionDock()
                 } label: {
-                    Label("Mark done anyway", systemImage: taskDoneToggleIcon)
+                    Label(TaskPresentationState.closeAnywayActionTitle, systemImage: taskDoneToggleIcon)
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: onRetryTask == nil, color: taskDoneToggleColor))
                 .controlSize(.small)
-                .accessibilityLabel("Mark done anyway")
+                .accessibilityLabel(TaskPresentationState.closeAnywayActionTitle)
             }
         }
     }
@@ -4110,7 +4136,7 @@ struct TaskMainView: View {
     }
 
     private var taskDoneToggleTitle: String {
-        task.isDone ? "Reopen task" : "Mark task done"
+        task.isDone ? TaskPresentationState.reopenTaskActionTitle : TaskPresentationState.closeTaskActionTitle
     }
 
     private var taskDoneToggleIcon: String {
@@ -4140,7 +4166,7 @@ struct TaskMainView: View {
                 Button {
                     toggleTaskDoneFromDecisionDock()
                 } label: {
-                    Label(task.isDone ? "Reopen task" : (doneLabelOverride ?? "Mark task done"),
+                    Label(task.isDone ? TaskPresentationState.reopenTaskActionTitle : (doneLabelOverride ?? TaskPresentationState.closeTaskActionTitle),
                           systemImage: taskDoneToggleIcon)
                 }
             } label: {
@@ -5241,7 +5267,7 @@ struct MarkdownTextView: View {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                 markdownBlockView(
                     block,
-                    suggestedNextStep: suggestedNextStepText(for: block, at: index)
+                    suggestedNextActions: suggestedNextActions(for: block, at: index)
                 )
                     .frame(maxWidth: maxWidth(for: block), alignment: .leading)
                     .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
@@ -5257,7 +5283,7 @@ struct MarkdownTextView: View {
     }
 
     @ViewBuilder
-    private func markdownBlockView(_ block: MarkdownBlock, suggestedNextStep: String? = nil) -> some View {
+    private func markdownBlockView(_ block: MarkdownBlock, suggestedNextActions: [SuggestedNextAction] = []) -> some View {
         switch block.kind {
         case .codeBlock(let lang):
             codeBlockView(lang: lang, code: block.content)
@@ -5290,11 +5316,11 @@ struct MarkdownTextView: View {
                         .lineSpacing(Stanford.chatCompactLineSpacing)
                 }
 
-                if let suggestedNextStep,
+                if let suggestedNextStep = suggestedNextActions.first,
                    let onSuggestedNextStep,
                    !skippedSuggestionIDs.contains(block.id) {
                     SuggestedNextStepControls(
-                        onPursue: { onSuggestedNextStep(suggestedNextStep) },
+                        onPursue: { onSuggestedNextStep(suggestedNextStep.composerText) },
                         onSkip: { skippedSuggestionIDs.insert(block.id) }
                     )
                     .padding(.leading, 32 + CGFloat(depth) * 18)
@@ -5344,11 +5370,23 @@ struct MarkdownTextView: View {
             Color.clear.frame(height: 2)
 
         case .text:
-            Text(Self.markdownAttributed(block.content))
-                .font(Stanford.chatBody())
-                .foregroundStyle(Stanford.readingText)
-                .textSelection(.enabled)
-                .lineSpacing(Stanford.chatBodyLineSpacing)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(Self.markdownAttributed(block.content))
+                    .font(Stanford.chatBody())
+                    .foregroundStyle(Stanford.readingText)
+                    .textSelection(.enabled)
+                    .lineSpacing(Stanford.chatBodyLineSpacing)
+
+                if !suggestedNextActions.isEmpty,
+                   let onSuggestedNextStep,
+                   !skippedSuggestionIDs.contains(block.id) {
+                    SuggestedNextActionChips(
+                        actions: suggestedNextActions,
+                        onPursue: { action in onSuggestedNextStep(action.composerText) },
+                        onSkip: { skippedSuggestionIDs.insert(block.id) }
+                    )
+                }
+            }
         }
     }
 
@@ -5392,19 +5430,36 @@ struct MarkdownTextView: View {
         }
     }
 
-    private func suggestedNextStepText(for block: MarkdownBlock, at index: Int) -> String? {
-        guard onSuggestedNextStep != nil,
-              case .listItem(let depth, _) = block.kind,
-              depth == 0,
-              isInsideSuggestedNextStepsSection(index: index) else {
-            return nil
-        }
-        let plain = Self.plainMarkdownText(block.content)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return plain.isEmpty ? nil : plain
+    private func suggestedNextActions(for block: MarkdownBlock, at index: Int) -> [SuggestedNextAction] {
+        guard onSuggestedNextStep != nil else { return [] }
+        return Self.suggestedNextActions(for: block, at: index, in: blocks)
     }
 
-    private func isInsideSuggestedNextStepsSection(index: Int) -> Bool {
+    static func suggestedNextActions(in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
+        blocks.enumerated().flatMap { index, block in
+            suggestedNextActions(for: block, at: index, in: blocks)
+        }
+    }
+
+    static func suggestedNextActions(for block: MarkdownBlock, at index: Int, in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
+        switch block.kind {
+        case .listItem(let depth, _):
+            guard depth == 0,
+                  isInsideSuggestedNextStepsSection(index: index, blocks: blocks),
+                  let title = normalizedSuggestedAction(block.content) else {
+                return []
+            }
+            return [SuggestedNextAction(title: title)]
+
+        case .text:
+            return inlineSuggestedNextActions(from: block.content)
+
+        default:
+            return []
+        }
+    }
+
+    private static func isInsideSuggestedNextStepsSection(index: Int, blocks: [MarkdownBlock]) -> Bool {
         guard index > 0 else { return false }
         for priorIndex in stride(from: index - 1, through: 0, by: -1) {
             let prior = blocks[priorIndex]
@@ -5415,6 +5470,77 @@ struct MarkdownTextView: View {
             if case .divider = prior.kind { return false }
         }
         return false
+    }
+
+    private static func inlineSuggestedNextActions(from content: String) -> [SuggestedNextAction] {
+        let plain = plainMarkdownText(content)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let remainder = inlineSuggestionRemainder(from: plain) else { return [] }
+
+        var seen = Set<String>()
+        var actions: [SuggestedNextAction] = []
+        for candidate in splitInlineSuggestionRemainder(remainder) {
+            guard let title = normalizedSuggestedAction(candidate) else { continue }
+            let key = title.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            actions.append(SuggestedNextAction(title: title))
+            if actions.count == 4 { break }
+        }
+        return actions
+    }
+
+    private static func inlineSuggestionRemainder(from text: String) -> String? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercase = normalized.lowercased()
+        for prefix in ["next suggestion:", "next suggestions:"] where lowercase.hasPrefix(prefix) {
+            let start = normalized.index(normalized.startIndex, offsetBy: prefix.count)
+            let remainder = normalized[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return remainder.isEmpty ? nil : remainder
+        }
+        return nil
+    }
+
+    private static func splitInlineSuggestionRemainder(_ text: String) -> [String] {
+        var normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ";", with: ",")
+
+        while let last = normalized.last, [".", "!", "?"].contains(last) {
+            normalized.removeLast()
+            normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let commaParts = normalized
+            .split(separator: ",")
+            .map { String($0) }
+
+        if commaParts.count > 1 {
+            return commaParts
+        }
+
+        return [normalized]
+    }
+
+    private static func normalizedSuggestedAction(_ text: String) -> String? {
+        var value = plainMarkdownText(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+
+        for conjunction in ["and ", "or "] {
+            if value.lowercased().hasPrefix(conjunction) {
+                value = String(value.dropFirst(conjunction.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        value = value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.init(charactersIn: ".;:,")))
+
+        guard value.count >= 3,
+              value.count <= 140,
+              value.rangeOfCharacter(from: .alphanumerics) != nil else {
+            return nil
+        }
+        return value
     }
 
     private final class MarkdownBlockCacheEntry {
@@ -5748,6 +5874,18 @@ struct MarkdownTextView: View {
         let id = UUID()
         let kind: BlockKind
         let content: String
+    }
+
+    struct SuggestedNextAction: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let composerText: String
+
+        init(title: String) {
+            self.title = title
+            self.composerText = title
+            self.id = title.lowercased()
+        }
     }
 
     static func parse(_ text: String) -> [MarkdownBlock] {
@@ -6286,6 +6424,70 @@ private struct SuggestedNextStepControls: View {
             .help("Hide this suggestion")
         }
         .textSelection(.disabled)
+    }
+}
+
+private struct SuggestedNextActionChips: View {
+    let actions: [MarkdownTextView.SuggestedNextAction]
+    let onPursue: (MarkdownTextView.SuggestedNextAction) -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(actions) { action in
+                        actionButton(action)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(actions) { action in
+                        actionButton(action)
+                            .frame(maxWidth: 340, alignment: .leading)
+                    }
+                }
+            }
+
+            Button(action: onSkip) {
+                Image(systemName: "xmark")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.coolGrey.opacity(0.78))
+            .help("Hide these suggestions")
+            .accessibilityLabel("Hide suggested actions")
+        }
+        .textSelection(.disabled)
+    }
+
+    private func actionButton(_ action: MarkdownTextView.SuggestedNextAction) -> some View {
+        Button {
+            onPursue(action)
+        } label: {
+            Label {
+                Text(action.title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } icon: {
+                Image(systemName: "arrow.right.circle")
+            }
+            .font(Stanford.caption(11).weight(.semibold))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Stanford.lagunita)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Stanford.lagunita.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+        )
+        .help("Move \"\(action.title)\" into the composer")
+        .accessibilityLabel("Pursue suggestion: \(action.title)")
     }
 }
 

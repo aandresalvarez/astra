@@ -18,6 +18,15 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    var displayTitle: String {
+        switch self {
+        case .done:
+            return TaskPresentationState.closedColumnTitle
+        case .drafts, .queued, .running, .review:
+            return rawValue
+        }
+    }
+
     var icon: String {
         switch self {
         case .drafts: return "pencil.circle.fill"
@@ -96,7 +105,7 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
         case .queued: return "Queued column. Waiting for an agent."
         case .running: return "Running column. Agent-owned; cards move here automatically."
         case .review: return "Review column. Tasks waiting for your attention — either a pending question or an untriaged outcome."
-        case .done: return "Done column. Archived tasks."
+        case .done: return "Closed column. Archived tasks."
         }
     }
 }
@@ -546,7 +555,7 @@ struct KanbanBoardView: View {
         case .review:
             // Review keeps the card's current status (pendingUser, completed,
             // failed, cancelled, budgetExceeded) and just clears the archive
-            // flag. Practically this means: dropping a Done card into Review
+            // flag. Practically this means: dropping a Closed card into Review
             // un-archives it; dropping an active card in here is rejected by
             // the filter and handled as a no-op.
             nextDone = false
@@ -985,7 +994,7 @@ struct KanbanColumnView: View {
         case .review:
             return "Send to Review"
         case .done:
-            return "Mark Done"
+            return TaskPresentationState.closeTaskActionTitle
         }
     }
 
@@ -1005,7 +1014,7 @@ struct KanbanColumnView: View {
         case .review:
             return "Nothing to review"
         case .done:
-            return "Drop reviewed work here"
+            return "Drop closed work here"
         }
     }
 
@@ -1197,7 +1206,7 @@ struct KanbanColumnView: View {
     private func moveActionTitle(for category: KanbanCategory) -> String {
         switch category {
         case .done:
-            return "Mark Done"
+            return TaskPresentationState.closeTaskActionTitle
         case .drafts:
             return "Move to Drafts"
         case .queued:
@@ -1300,7 +1309,7 @@ struct KanbanColumnView: View {
             onCollapseEmptyState()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.rawValue), \(tasks.count) \(tasks.count == 1 ? "task" : "tasks")")
+        .accessibilityLabel("\(category.displayTitle), \(tasks.count) \(tasks.count == 1 ? "task" : "tasks")")
         .accessibilityHint(category.accessibilityDescription)
     }
 
@@ -1403,7 +1412,7 @@ private struct KanbanColumnHeaderChip: View {
                 .fill(category.color)
                 .frame(width: 6, height: 6)
 
-            Text(category.rawValue)
+            Text(category.displayTitle)
                 .font(Stanford.caption(12).weight(.semibold))
                 .foregroundStyle(.primary)
 
@@ -1414,7 +1423,7 @@ private struct KanbanColumnHeaderChip: View {
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.rawValue), \(count) \(count == 1 ? "task" : "tasks")")
+        .accessibilityLabel("\(category.displayTitle), \(count) \(count == 1 ? "task" : "tasks")")
     }
 }
 
@@ -1530,7 +1539,7 @@ struct CollapsedKanbanLanesView: View {
                         Circle()
                             .fill(category.color)
                             .frame(width: 6, height: 6)
-                        Text(category.rawValue)
+                        Text(category.displayTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(.secondary)
                     }
@@ -1546,8 +1555,8 @@ struct CollapsedKanbanLanesView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help("Expand \(category.rawValue)")
-                .accessibilityLabel("\(category.rawValue), 0 tasks")
+                .help("Expand \(category.displayTitle)")
+                .accessibilityLabel("\(category.displayTitle), 0 tasks")
                 .accessibilityHint("Expand empty column")
             }
         }
@@ -1569,7 +1578,7 @@ struct KanbanTaskCardView: View {
         return count == 1 ? "1 message" : "\(count) messages"
     }
 
-    /// Outcome metadata for the Review / Done lanes. The visual signal is the
+    /// Outcome metadata for the Review / Closed lanes. The visual signal is the
     /// card's leading accent bar; this label remains available for VoiceOver.
     private struct OutcomeState {
         let label: String
@@ -1580,17 +1589,17 @@ struct KanbanTaskCardView: View {
         switch task.status {
         case .pendingUser:
             return OutcomeState(
-                label: "Needs answer",
+                label: "Needs input",
                 color: Stanford.pendingUser
             )
         case .completed:
             return OutcomeState(
-                label: "Agent done",
+                label: "Run finished",
                 color: Stanford.completed
             )
         case .failed:
             return OutcomeState(
-                label: "Failed",
+                label: "Run failed",
                 color: Stanford.failed
             )
         case .cancelled:
@@ -1600,7 +1609,7 @@ struct KanbanTaskCardView: View {
             )
         case .budgetExceeded:
             return OutcomeState(
-                label: "Budget",
+                label: "Budget hit",
                 color: Stanford.failed
             )
         case .draft, .queued, .running:
@@ -1745,7 +1754,7 @@ struct KanbanTaskCardView: View {
                 RunningPulseBar()
             }
         }
-        // Done cards are archived — drop contrast so they recede visually
+        // Closed cards are archived — drop contrast so they recede visually
         // and a glance at the board clearly distinguishes "active work" from
         // "already filed."
         .opacity(category == .done && !isDragPreview ? 0.72 : 1)
@@ -1765,7 +1774,7 @@ struct KanbanTaskCardView: View {
     }
 
     /// Card title size per lane. Review gets a slight bump (the column is
-    /// wider and typically holds output worth reading); Done is smaller to
+    /// wider and typically holds output worth reading); Closed is smaller to
     /// reinforce that those cards are archived.
     private var titleFontSize: CGFloat {
         switch category {
@@ -1779,7 +1788,7 @@ struct KanbanTaskCardView: View {
     /// outcome (when present), badge identifier, and the task title so the
     /// status is not encoded only by colour / column position.
     private var accessibilityLabelText: String {
-        var parts: [String] = ["\(category.rawValue) task"]
+        var parts: [String] = ["\(category.displayTitle) task"]
         if let state = outcomeState, showsOutcomeAccent {
             parts.append(state.label)
         }
