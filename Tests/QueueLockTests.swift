@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import ASTRA
 import ASTRACore
 
@@ -13,6 +14,12 @@ private func makeTask(
     let task = AgentTask(title: title, goal: goal)
     task.isolationStrategy = isolation
     return task
+}
+
+private func makeQueueLockContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
 // MARK: - TaskQueue Parallel Execution
@@ -200,6 +207,114 @@ struct QueueLockTests {
         #expect(queue.activeTasks.isEmpty)
         #expect(!queue.isProcessing)
     }
+
+    @Test("write locks serialize tasks for the same execution root")
+    func writeLocksSerializeSameExecutionRoot() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Locks", primaryPath: root)
+        let first = AgentTask(title: "First", goal: "Edit files", workspace: workspace)
+        let second = AgentTask(title: "Second", goal: "Edit other files", workspace: workspace)
+        let queue = TaskQueue(poolSize: 2)
+
+        let firstClaim = try #require(queue.acquireResourceLockIfAvailable(
+            task: first,
+            accessMode: .write,
+            runMode: "task"
+        ))
+
+        #expect(!queue.canAcquireResourceLock(for: second, accessMode: .write))
+        #expect(queue.acquireResourceLockIfAvailable(task: second, accessMode: .write, runMode: "task") == nil)
+
+        queue.releaseResourceLock(firstClaim, task: first)
+        #expect(queue.canAcquireResourceLock(for: second, accessMode: .write))
+    }
+
+    @Test("read-only locks share roots while writers wait")
+    func readOnlyLocksShareRootsWhileWritersWait() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Read Locks", primaryPath: root)
+        let readerA = AgentTask(title: "Review A", goal: "Read files", workspace: workspace)
+        let readerB = AgentTask(title: "Review B", goal: "Read more files", workspace: workspace)
+        let writer = AgentTask(title: "Patch", goal: "Write files", workspace: workspace)
+        let queue = TaskQueue(poolSize: 3)
+
+        let readerClaim = try #require(queue.acquireResourceLockIfAvailable(
+            task: readerA,
+            accessMode: .readOnly,
+            runMode: "verifier"
+        ))
+
+        #expect(queue.canAcquireResourceLock(for: readerB, accessMode: .readOnly))
+        #expect(queue.acquireResourceLockIfAvailable(task: readerB, accessMode: .readOnly, runMode: "research") != nil)
+        #expect(!queue.canAcquireResourceLock(for: writer, accessMode: .write))
+
+        queue.releaseResourceLock(readerClaim, task: readerA)
+        #expect(!queue.canAcquireResourceLock(for: writer, accessMode: .write))
+    }
+
+    @Test("resource access classifier honors explicit read-only declarations")
+    func resourceAccessClassifierHonorsExplicitReadOnlyDeclarations() {
+        let queue = TaskQueue(poolSize: 2)
+        let readOnly = AgentTask(title: "Verifier", goal: "Check the diff")
+        readOnly.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        let writeDefault = AgentTask(title: "Worker", goal: "Patch the code")
+
+        #expect(queue.resourceAccess(for: readOnly) == .readOnly)
+        #expect(queue.resourceAccess(for: writeDefault) == .write)
+    }
+
+    @Test("write locks allow parallel work on different execution roots")
+    func writeLocksAllowDifferentExecutionRoots() throws {
+        let firstRoot = try temporaryRoot()
+        let secondRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: firstRoot)
+            try? FileManager.default.removeItem(atPath: secondRoot)
+        }
+        let first = AgentTask(title: "First", goal: "Edit files", workspace: Workspace(name: "A", primaryPath: firstRoot))
+        let second = AgentTask(title: "Second", goal: "Edit files", workspace: Workspace(name: "B", primaryPath: secondRoot))
+        let queue = TaskQueue(poolSize: 2)
+
+        _ = try #require(queue.acquireResourceLockIfAvailable(task: first, accessMode: .write, runMode: "task"))
+
+        #expect(queue.canAcquireResourceLock(for: second, accessMode: .write))
+        #expect(queue.acquireResourceLockIfAvailable(task: second, accessMode: .write, runMode: "task") != nil)
+        #expect(queue.activeResourceLocks.count == 2)
+    }
+
+    @Test("resource lock events are persisted for later audit")
+    func resourceLockEventsArePersistedForAudit() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeQueueLockContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Audit Locks", primaryPath: root)
+        let task = AgentTask(title: "Audit", goal: "Edit files", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let queue = TaskQueue(poolSize: 1)
+
+        let claim = try #require(queue.acquireResourceLockIfAvailable(
+            task: task,
+            accessMode: .write,
+            runMode: "task",
+            modelContext: context
+        ))
+        queue.releaseResourceLock(claim, task: task, modelContext: context)
+
+        #expect(task.events.contains { $0.type == TaskResourceLockEventTypes.acquired })
+        #expect(task.events.contains { $0.type == TaskResourceLockEventTypes.released })
+        #expect(task.events.allSatisfy { $0.category == "lifecycle" })
+    }
+}
+
+private func temporaryRoot() throws -> String {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("astra-resource-lock-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url.path
 }
 
 // MARK: - Task Folder

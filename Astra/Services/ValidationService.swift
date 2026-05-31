@@ -7,6 +7,20 @@ enum ValidationResult {
     case error(String)
 }
 
+struct TaskValidationContractEvaluation: Sendable, Equatable {
+    var didRun: Bool
+    var canComplete: Bool
+    var summary: String
+    var failedRequiredAssertionIDs: [String]
+
+    static let notRequired = TaskValidationContractEvaluation(
+        didRun: false,
+        canComplete: true,
+        summary: "No validation contract required.",
+        failedRequiredAssertionIDs: []
+    )
+}
+
 enum ValidationService {
     /// Run tests in the task's workspace using the configured test command.
     static func runTests(task: AgentTask) async -> ValidationResult {
@@ -115,5 +129,952 @@ enum ValidationService {
         } else {
             return .passed(details: "AI response: \(String(trimmed.prefix(300)))")
         }
+    }
+
+    @MainActor
+    static func runContract(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        run: TaskRun?,
+        modelContext: ModelContext,
+        verifierRuntime: AgentUtilityRuntimeConfiguration? = nil
+    ) async -> TaskValidationContractEvaluation {
+        guard let contract = plan.validationContract, !contract.assertions.isEmpty else {
+            return .notRequired
+        }
+
+        AppLogger.audit(.validationStarted, category: "Validation", taskID: task.id, fields: [
+            "mode": "validation_contract",
+            "plan_id": plan.planID.uuidString,
+            "assertion_count": String(contract.assertions.count),
+            "run_id": run?.id.uuidString ?? "none"
+        ])
+
+        var finalPayloads: [TaskValidationAssertionEventPayload] = []
+        finalPayloads.reserveCapacity(contract.assertions.count)
+
+        for assertion in contract.assertions {
+            recordAssertionEvent(
+                type: TaskValidationEventTypes.assertionStarted,
+                planID: plan.planID,
+                assertion: assertion,
+                status: "started",
+                summary: "Started validation assertion: \(assertion.description)",
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+
+            let payload = await evaluate(
+                assertion: assertion,
+                plan: plan,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                verifierRuntime: verifierRuntime
+            )
+            finalPayloads.append(payload)
+            let eventType = switch payload.status {
+            case "passed": TaskValidationEventTypes.assertionPassed
+            case "skipped": TaskValidationEventTypes.assertionSkipped
+            default: TaskValidationEventTypes.assertionFailed
+            }
+            modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+
+            let auditEvent = switch payload.status {
+            case "passed": AuditEvent.validationAssertionPassed
+            case "skipped": AuditEvent.validationAssertionSkipped
+            default: AuditEvent.validationAssertionFailed
+            }
+            AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
+                "plan_id": plan.planID.uuidString,
+                "assertion_id": assertion.id,
+                "assertion_method": assertion.method.rawValue,
+                "assertion_scope": assertion.scope.rawValue,
+                "required": String(assertion.required),
+                "run_id": run?.id.uuidString ?? "none",
+                "exit_code": payload.exitCode.map(String.init) ?? "none",
+                "path": payload.path ?? "none"
+            ], level: payload.status == "failed" && assertion.required ? .warning : .info)
+        }
+
+        let requiredResults = finalPayloads.filter(\.required)
+        let failedRequired = requiredResults.filter { $0.status != "passed" }
+        let requiredPassed = requiredResults.count - failedRequired.count
+        let canComplete = failedRequired.isEmpty
+        let summary = canComplete
+            ? "Validation contract passed: \(requiredPassed)/\(requiredResults.count) required assertions passed."
+            : "Validation contract failed: \(failedRequired.count) required assertion\(failedRequired.count == 1 ? "" : "s") did not pass."
+
+        let contractPayload = TaskValidationContractEventPayload(
+            version: 1,
+            planID: plan.planID,
+            status: canComplete ? "passed" : "failed",
+            requiredPassed: requiredPassed,
+            requiredTotal: requiredResults.count,
+            failedRequiredAssertionIDs: failedRequired.map(\.assertionID),
+            summary: summary
+        )
+        let contractEventType = canComplete
+            ? TaskValidationEventTypes.contractPassed
+            : TaskValidationEventTypes.contractFailed
+        modelContext.insert(TaskEvent(task: task, type: contractEventType, payload: encode(contractPayload), run: run))
+        if !canComplete {
+            recordCorrectiveSteps(
+                failedAssertions: failedRequired,
+                planID: plan.planID,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+        }
+        AppLogger.audit(
+            canComplete ? .validationContractPassed : .validationContractFailed,
+            category: "Validation",
+            taskID: task.id,
+            fields: [
+                "plan_id": plan.planID.uuidString,
+                "run_id": run?.id.uuidString ?? "none",
+                "required_passed": String(requiredPassed),
+                "required_total": String(requiredResults.count),
+                "failed_required": failedRequired.map(\.assertionID).joined(separator: ",")
+            ],
+            level: canComplete ? .info : .warning
+        )
+        TaskContextStateManager.refresh(task: task)
+
+        return TaskValidationContractEvaluation(
+            didRun: true,
+            canComplete: canComplete,
+            summary: summary,
+            failedRequiredAssertionIDs: failedRequired.map(\.assertionID)
+        )
+    }
+
+    @MainActor
+    private static func recordCorrectiveSteps(
+        failedAssertions: [TaskValidationAssertionEventPayload],
+        planID: UUID,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) {
+        for failure in failedAssertions {
+            TaskCorrectiveWorkService.recordProposedStep(
+                planID: planID,
+                sourceRunID: run?.id,
+                failedAssertionID: failure.assertionID,
+                failureSummary: failure.summary,
+                suggestedRepair: suggestedRepair(for: failure),
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+        }
+    }
+
+    private static func suggestedRepair(for failure: TaskValidationAssertionEventPayload) -> String {
+        switch failure.method {
+        case .command:
+            let command = failure.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return command.isEmpty
+                ? "Add or fix the missing validation command, then rerun validation."
+                : "Fix the work until this command exits 0: \(command)"
+        case .artifact:
+            let path = failure.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return path.isEmpty
+                ? "Specify and create the required artifact, then rerun validation."
+                : "Create or update the required artifact at \(path), then rerun validation."
+        case .manual:
+            return "Request the required manual review or change the contract if this proof is no longer required."
+        case .textEvidence:
+            return "Record structured validation evidence for this assertion, then rerun validation."
+        case .verifier:
+            return "Address the verifier finding, then rerun the independent verifier assertion."
+        case .browserBehavior:
+            return "Fix the browser-visible behavior or update the expected evidence, then rerun validation."
+        }
+    }
+
+    @MainActor
+    private static func recordAssertionEvent(
+        type: String,
+        planID: UUID,
+        assertion: TaskValidationAssertion,
+        status: String,
+        summary: String,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) {
+        let payload = TaskValidationAssertionEventPayload(
+            version: 1,
+            planID: planID,
+            assertionID: assertion.id,
+            scope: assertion.scope,
+            stepID: assertion.stepID,
+            method: assertion.method,
+            required: assertion.required,
+            status: status,
+            summary: summary,
+            command: assertion.command,
+            exitCode: nil,
+            path: assertion.path,
+            evidence: nil,
+            reason: nil
+        )
+        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        AppLogger.audit(.validationAssertionStarted, category: "Validation", taskID: task.id, fields: [
+            "plan_id": planID.uuidString,
+            "assertion_id": assertion.id,
+            "assertion_method": assertion.method.rawValue,
+            "required": String(assertion.required)
+        ])
+    }
+
+    @MainActor
+    private static func evaluate(
+        assertion: TaskValidationAssertion,
+        plan: TaskPlanPayload,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext,
+        verifierRuntime: AgentUtilityRuntimeConfiguration?
+    ) async -> TaskValidationAssertionEventPayload {
+        switch assertion.method {
+        case .command:
+            return await evaluateCommand(assertion: assertion, planID: plan.planID, task: task)
+        case .artifact:
+            return evaluateArtifact(assertion: assertion, planID: plan.planID, task: task)
+        case .manual:
+            return evaluateManual(assertion: assertion, planID: plan.planID, task: task)
+        case .textEvidence:
+            return evaluateTextEvidence(assertion: assertion, planID: plan.planID, task: task, run: run)
+        case .verifier:
+            return await evaluateVerifier(
+                assertion: assertion,
+                plan: plan,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                verifierRuntime: verifierRuntime
+            )
+        case .browserBehavior:
+            return evaluateBrowserBehavior(
+                assertion: assertion,
+                planID: plan.planID,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+        }
+    }
+
+    private static func evaluateCommand(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask
+    ) async -> TaskValidationAssertionEventPayload {
+        guard let command = assertion.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Command assertion is missing a command.",
+                command: assertion.command,
+                reason: "missing_command"
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        process.environment = env
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let output = [result.stdout, result.stderr]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = result.exitCode == 0
+            ? "Command passed."
+            : "Command failed with exit code \(result.exitCode)."
+
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: result.exitCode == 0 ? "passed" : "failed",
+            summary: output.isEmpty ? summary : "\(summary) \(String(output.prefix(500)))",
+            command: command,
+            exitCode: result.exitCode,
+            evidence: output.isEmpty ? nil : String(output.prefix(1000)),
+            reason: result.exitCode == 0 ? nil : "command_failed"
+        )
+    }
+
+    private static func evaluateArtifact(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask
+    ) -> TaskValidationAssertionEventPayload {
+        guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Artifact assertion is missing a path.",
+                path: assertion.path,
+                reason: "missing_path"
+            )
+        }
+
+        let candidates = artifactCandidatePaths(requestedPath, task: task)
+        let existingPath = candidates.first { FileManager.default.fileExists(atPath: $0) }
+        if let existingPath {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "passed",
+                summary: "Artifact exists at \(existingPath).",
+                path: existingPath,
+                evidence: existingPath
+            )
+        }
+
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: "failed",
+            summary: "Artifact was not found. Checked: \(candidates.joined(separator: ", ")).",
+            path: requestedPath,
+            reason: "artifact_missing"
+        )
+    }
+
+    private static func evaluateManual(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask
+    ) -> TaskValidationAssertionEventPayload {
+        if let event = latestPassingAssertionEvent(task: task, planID: planID, assertionID: assertion.id) {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "passed",
+                summary: "Manual approval was already recorded.",
+                evidence: event.id.uuidString
+            )
+        }
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: assertion.required ? "failed" : "skipped",
+            summary: assertion.required ? "Manual review is required before completion." : "Manual review was not required.",
+            reason: assertion.required ? "manual_review_required" : "manual_review_optional"
+        )
+    }
+
+    private static func evaluateTextEvidence(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask,
+        run: TaskRun?
+    ) -> TaskValidationAssertionEventPayload {
+        let query = firstNonEmpty(assertion.evidenceQuery, assertion.description)
+        let evidenceEvents = task.events.filter { event in
+            event.type == TaskValidationEventTypes.evidence &&
+                (event.payload.localizedCaseInsensitiveContains(assertion.id) ||
+                 (!query.isEmpty && event.payload.localizedCaseInsensitiveContains(query)))
+        }
+        if let event = evidenceEvents.sorted(by: { $0.timestamp > $1.timestamp }).first {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "passed",
+                summary: "Structured text evidence was recorded.",
+                evidence: event.id.uuidString
+            )
+        }
+
+        if let run, run.output.localizedCaseInsensitiveContains("VALIDATION_EVIDENCE \(assertion.id)") {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "passed",
+                summary: "Run output included a validation evidence marker.",
+                evidence: run.id.uuidString
+            )
+        }
+
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: assertion.required ? "failed" : "skipped",
+            summary: assertion.required ? "No structured text evidence was recorded." : "Optional text evidence was not recorded.",
+            reason: assertion.required ? "text_evidence_missing" : "text_evidence_optional"
+        )
+    }
+
+    @MainActor
+    private static func evaluateBrowserBehavior(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) -> TaskValidationAssertionEventPayload {
+        recordBehaviorEvent(
+            type: TaskValidationBehaviorEventTypes.started,
+            auditEvent: .validationBehaviorStarted,
+            planID: planID,
+            assertionID: assertion.id,
+            path: assertion.path,
+            summary: "Started browser behavior validation.",
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+
+        guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
+            let summary = "Browser behavior assertion is missing an artifact path."
+            recordBehaviorEvent(
+                type: TaskValidationBehaviorEventTypes.failed,
+                auditEvent: .validationBehaviorFailed,
+                planID: planID,
+                assertionID: assertion.id,
+                path: assertion.path,
+                summary: summary,
+                reason: "missing_path",
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: assertion.required ? "failed" : "skipped",
+                summary: summary,
+                reason: "missing_path"
+            )
+        }
+
+        let candidates = artifactCandidatePaths(requestedPath, task: task)
+        guard let existingPath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            let summary = "Browser behavior artifact was not found. Checked: \(candidates.joined(separator: ", "))."
+            recordBehaviorEvent(
+                type: TaskValidationBehaviorEventTypes.failed,
+                auditEvent: .validationBehaviorFailed,
+                planID: planID,
+                assertionID: assertion.id,
+                path: requestedPath,
+                summary: summary,
+                reason: "artifact_missing",
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: assertion.required ? "failed" : "skipped",
+                summary: summary,
+                path: requestedPath,
+                reason: "artifact_missing"
+            )
+        }
+
+        let content = (try? String(contentsOfFile: existingPath, encoding: .utf8)) ?? ""
+        let renderedSummary = renderedTextSummary(from: content)
+        let expected = firstNonEmpty(assertion.evidenceQuery, assertion.description)
+        let matched = expected.isEmpty || renderedSummary.localizedCaseInsensitiveContains(expected)
+        let evidencePath = writeBehaviorEvidence(
+            assertionID: assertion.id,
+            planID: planID,
+            sourcePath: existingPath,
+            expected: expected,
+            matched: matched,
+            renderedSummary: renderedSummary,
+            task: task
+        )
+        if let evidencePath {
+            recordBehaviorEvent(
+                type: TaskValidationBehaviorEventTypes.evidenceAttached,
+                auditEvent: .validationBehaviorEvidenceAttached,
+                planID: planID,
+                assertionID: assertion.id,
+                path: existingPath,
+                evidencePath: evidencePath,
+                summary: "Attached browser behavior evidence.",
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+        }
+
+        let summary = matched
+            ? "Browser behavior evidence matched expected text in \(existingPath)."
+            : "Browser behavior evidence did not contain expected text: \(expected)."
+        recordBehaviorEvent(
+            type: matched ? TaskValidationBehaviorEventTypes.passed : TaskValidationBehaviorEventTypes.failed,
+            auditEvent: matched ? .validationBehaviorPassed : .validationBehaviorFailed,
+            planID: planID,
+            assertionID: assertion.id,
+            path: existingPath,
+            evidencePath: evidencePath,
+            summary: summary,
+            reason: matched ? nil : "expected_text_missing",
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: matched ? "passed" : (assertion.required ? "failed" : "skipped"),
+            summary: summary,
+            path: existingPath,
+            evidence: evidencePath ?? renderedSummary,
+            reason: matched ? nil : "expected_text_missing"
+        )
+    }
+
+    @MainActor
+    private static func evaluateVerifier(
+        assertion: TaskValidationAssertion,
+        plan: TaskPlanPayload,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext,
+        verifierRuntime: AgentUtilityRuntimeConfiguration?
+    ) async -> TaskValidationAssertionEventPayload {
+        let configuration = verifierRuntime ?? AgentUtilityRuntimeConfiguration(
+            runtime: task.resolvedRuntimeID,
+            model: task.model
+        )
+        let startedPayload = TaskVerifierEventPayload(
+            version: 1,
+            planID: plan.planID,
+            assertionID: assertion.id,
+            runtime: configuration.runtime.rawValue,
+            model: configuration.model,
+            result: "started",
+            summary: "Verifier review started.",
+            evidence: nil
+        )
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: TaskVerifierEventTypes.started,
+            payload: encode(startedPayload),
+            run: run
+        ))
+        AppLogger.audit(.verifierStarted, category: "Validation", taskID: task.id, fields: [
+            "plan_id": plan.planID.uuidString,
+            "assertion_id": assertion.id,
+            "verifier_runtime": configuration.runtime.rawValue,
+            "verifier_model": configuration.model,
+            "worker_runtime": task.resolvedRuntimeID.rawValue
+        ])
+
+        let prompt = verifierPrompt(assertion: assertion, plan: plan, task: task, run: run)
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            prompt,
+            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            configuration: configuration,
+            toolMode: .readOnly
+        )
+        guard result.exitCode == 0 else {
+            let summary = "Verifier failed to run: \(String(result.error.prefix(500)))"
+            recordVerifierResult(
+                eventType: TaskVerifierEventTypes.failed,
+                auditEvent: .verifierFailed,
+                planID: plan.planID,
+                assertionID: assertion.id,
+                configuration: configuration,
+                result: "failed",
+                summary: summary,
+                evidence: result.error,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return assertionPayload(
+                assertion: assertion,
+                planID: plan.planID,
+                status: assertion.required ? "failed" : "skipped",
+                summary: summary,
+                evidence: result.error,
+                reason: "verifier_runtime_failed"
+            )
+        }
+
+        let parsed = parseVerifierOutput(result.output)
+        recordVerifierResult(
+            eventType: TaskVerifierEventTypes.completed,
+            auditEvent: .verifierCompleted,
+            planID: plan.planID,
+            assertionID: assertion.id,
+            configuration: configuration,
+            result: parsed.result,
+            summary: parsed.summary,
+            evidence: result.output,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+        let assertionStatus: String
+        let reason: String?
+        switch parsed.result {
+        case "pass":
+            assertionStatus = "passed"
+            reason = nil
+        case "needs_manual_review":
+            assertionStatus = assertion.required ? "failed" : "skipped"
+            reason = "verifier_needs_manual_review"
+        default:
+            assertionStatus = assertion.required ? "failed" : "skipped"
+            reason = "verifier_failed_assertion"
+        }
+        let assertionPayload = assertionPayload(
+            assertion: assertion,
+            planID: plan.planID,
+            status: assertionStatus,
+            summary: parsed.summary,
+            evidence: String(result.output.prefix(1000)),
+            reason: reason
+        )
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: TaskValidationEventTypes.assertionReviewed,
+            payload: encode(assertionPayload),
+            run: run
+        ))
+        AppLogger.audit(.validationAssertionReviewed, category: "Validation", taskID: task.id, fields: [
+            "plan_id": plan.planID.uuidString,
+            "assertion_id": assertion.id,
+            "verifier_result": parsed.result,
+            "status": assertionStatus,
+            "verifier_runtime": configuration.runtime.rawValue,
+            "verifier_model": configuration.model
+        ], level: assertionStatus == "passed" ? .info : .warning)
+        return assertionPayload
+    }
+
+    @MainActor
+    private static func recordVerifierResult(
+        eventType: String,
+        auditEvent: AuditEvent,
+        planID: UUID,
+        assertionID: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        result: String,
+        summary: String,
+        evidence: String?,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) {
+        let payload = TaskVerifierEventPayload(
+            version: 1,
+            planID: planID,
+            assertionID: assertionID,
+            runtime: configuration.runtime.rawValue,
+            model: configuration.model,
+            result: result,
+            summary: summary,
+            evidence: evidence.map { String($0.prefix(1000)) }
+        )
+        modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+        AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
+            "plan_id": planID.uuidString,
+            "assertion_id": assertionID,
+            "verifier_runtime": configuration.runtime.rawValue,
+            "verifier_model": configuration.model,
+            "verifier_result": result
+        ], level: result == "pass" ? .info : .warning)
+    }
+
+    @MainActor
+    private static func verifierPrompt(
+        assertion: TaskValidationAssertion,
+        plan: TaskPlanPayload,
+        task: AgentTask,
+        run: TaskRun?
+    ) -> String {
+        let latestHandoff = TaskWorkerHandoffService.decode(
+            task.events
+                .filter { $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated }
+                .sorted { $0.timestamp > $1.timestamp }
+                .first?.payload ?? ""
+        )
+        let fileChanges = (run?.fileChanges ?? task.runs.sorted { $0.startedAt < $1.startedAt }.flatMap(\.fileChanges))
+            .suffix(20)
+            .map { "- \($0.changeType): \($0.path)" }
+            .joined(separator: "\n")
+        let handoffSummary = latestHandoff.map { handoff in
+            """
+            Completed work: \(handoff.completedWork.joined(separator: "; "))
+            Unfinished work: \(handoff.unfinishedWork.joined(separator: "; "))
+            Blockers: \(handoff.blockers.joined(separator: "; "))
+            Suggested next action: \(handoff.suggestedNextAction ?? "")
+            """
+        } ?? "No structured worker handoff recorded."
+        return """
+        You are ASTRA's independent verifier. Review the work as a read-only reviewer.
+
+        Task goal:
+        \(task.goal)
+
+        Approved plan:
+        \(plan.title)
+        \(plan.goal)
+
+        Assertion to review:
+        ID: \(assertion.id)
+        Required: \(assertion.required)
+        Method: verifier
+        Description: \(assertion.description)
+
+        Worker handoff:
+        \(handoffSummary)
+
+        Changed files:
+        \(fileChanges.isEmpty ? "No file changes recorded." : fileChanges)
+
+        Latest run output:
+        \(String((run?.output ?? "").prefix(3000)))
+
+        Reply with one of these exact first-line results:
+        PASS
+        FAIL
+        NEEDS_MANUAL_REVIEW
+
+        After the first line, include a concise evidence summary and mention any assertion IDs you reviewed.
+        """
+    }
+
+    private static func parseVerifierOutput(_ output: String) -> (result: String, summary: String) {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = trimmed
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_") ?? ""
+        let result: String
+        if firstLine.hasPrefix("pass") {
+            result = "pass"
+        } else if firstLine.hasPrefix("needs_manual_review") || firstLine.hasPrefix("manual") {
+            result = "needs_manual_review"
+        } else {
+            result = "fail"
+        }
+        let summary = trimmed.isEmpty ? "Verifier returned no output." : String(trimmed.prefix(1000))
+        return (result, summary)
+    }
+
+    @MainActor
+    private static func recordBehaviorEvent(
+        type: String,
+        auditEvent: AuditEvent,
+        planID: UUID,
+        assertionID: String,
+        path: String?,
+        evidencePath: String? = nil,
+        summary: String,
+        reason: String? = nil,
+        task: AgentTask,
+        run: TaskRun?,
+        modelContext: ModelContext
+    ) {
+        let payload = TaskValidationBehaviorEventPayload(
+            version: 1,
+            planID: planID,
+            assertionID: assertionID,
+            path: path,
+            url: path.map { URL(fileURLWithPath: $0).absoluteString },
+            actionCount: 0,
+            screenshotPath: nil,
+            evidencePath: evidencePath,
+            summary: summary,
+            reason: reason
+        )
+        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
+            "plan_id": planID.uuidString,
+            "assertion_id": assertionID,
+            "path": path ?? "none",
+            "url": payload.url ?? "none",
+            "action_count": String(payload.actionCount),
+            "screenshot_path": payload.screenshotPath ?? "none",
+            "evidence_path": evidencePath ?? "none",
+            "failure_reason": reason ?? "none"
+        ], level: type == TaskValidationBehaviorEventTypes.failed ? .warning : .info)
+    }
+
+    private static func renderedTextSummary(from content: String) -> String {
+        let withoutScripts = content.replacingOccurrences(
+            of: #"(?is)<(script|style)[^>]*>.*?</\1>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let withoutTags = withoutScripts.replacingOccurrences(
+            of: #"(?s)<[^>]+>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let decoded = withoutTags
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+        return decoded
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .prefix(4000)
+            .description
+    }
+
+    private static func writeBehaviorEvidence(
+        assertionID: String,
+        planID: UUID,
+        sourcePath: String,
+        expected: String,
+        matched: Bool,
+        renderedSummary: String,
+        task: AgentTask
+    ) -> String? {
+        let base = TaskWorkspaceAccess(task: task).taskFolder.isEmpty
+            ? TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+            : TaskWorkspaceAccess(task: task).taskFolder
+        guard !base.isEmpty else { return nil }
+        let directory = (base as NSString).appendingPathComponent("validation-evidence")
+        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let safeID = assertionID
+            .map { character in character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "-" }
+            .reduce(into: "") { $0.append($1) }
+        let path = (directory as NSString).appendingPathComponent("\(safeID)-behavior.json")
+        let payload: [String: Any] = [
+            "version": 1,
+            "planID": planID.uuidString,
+            "assertionID": assertionID,
+            "sourcePath": sourcePath,
+            "expected": expected,
+            "matched": matched,
+            "renderedSummary": renderedSummary
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else {
+            return nil
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+            return path
+        } catch {
+            return nil
+        }
+    }
+
+    private static func artifactCandidatePaths(_ path: String, task: AgentTask) -> [String] {
+        if path.hasPrefix("/") || path.hasPrefix("~") {
+            return [(path as NSString).expandingTildeInPath]
+        }
+
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        var candidates: [String] = []
+        if !taskFolder.isEmpty {
+            candidates.append((taskFolder as NSString).appendingPathComponent(path))
+        }
+        if !workspacePath.isEmpty {
+            candidates.append((workspacePath as NSString).appendingPathComponent(path))
+        }
+        return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
+    }
+
+    private static func latestPassingAssertionEvent(
+        task: AgentTask,
+        planID: UUID,
+        assertionID: String
+    ) -> TaskEvent? {
+        task.events
+            .filter { $0.type == TaskValidationEventTypes.assertionPassed }
+            .compactMap { event -> (TaskEvent, TaskValidationAssertionEventPayload)? in
+                guard let payload = decodeAssertionPayload(event.payload),
+                      payload.planID == planID,
+                      payload.assertionID == assertionID else {
+                    return nil
+                }
+                return (event, payload)
+            }
+            .sorted { $0.0.timestamp > $1.0.timestamp }
+            .first?
+            .0
+    }
+
+    private static func assertionPayload(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        status: String,
+        summary: String,
+        command: String? = nil,
+        exitCode: Int? = nil,
+        path: String? = nil,
+        evidence: String? = nil,
+        reason: String? = nil
+    ) -> TaskValidationAssertionEventPayload {
+        TaskValidationAssertionEventPayload(
+            version: 1,
+            planID: planID,
+            assertionID: assertion.id,
+            scope: assertion.scope,
+            stepID: assertion.stepID,
+            method: assertion.method,
+            required: assertion.required,
+            status: status,
+            summary: summary,
+            command: command ?? assertion.command,
+            exitCode: exitCode,
+            path: path ?? assertion.path,
+            evidence: evidence,
+            reason: reason
+        )
+    }
+
+    private static func decodeAssertionPayload(_ payload: String) -> TaskValidationAssertionEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: data)
+    }
+
+    private static func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return ""
+    }
+
+    private static func encode<T: Encodable>(_ payload: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return string
+    }
+
+    private static func isoTimestamp(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
     }
 }

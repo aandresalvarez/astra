@@ -216,6 +216,7 @@ struct TaskMainView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
+    @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
@@ -307,17 +308,18 @@ struct TaskMainView: View {
         }
     }
 
-    private var taskUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        let runtime = task.resolvedRuntimeID
-        let model = RuntimeModelAvailability.normalizedModel(
-            task.model,
-            for: runtime,
+    private func utilityRuntime(for role: TaskRoleID) -> (configuration: AgentUtilityRuntimeConfiguration, selection: TaskRoleProfileSelection) {
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.utilityRuntime(
+            for: role,
+            task: task,
+            defaultRuntimeID: task.resolvedRuntimeID.rawValue,
+            defaultModel: task.model,
+            validationModel: task.model,
+            defaultBudget: task.tokenBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsForUtilityRuntime,
             cache: runtimeModelCache
-        )
-        return AgentUtilityRuntimeConfiguration(
-            runtime: runtime,
-            model: model,
-            providerSettings: providerSettingsForUtilityRuntime
         )
     }
 
@@ -976,6 +978,16 @@ struct TaskMainView: View {
         return cachedVerificationPresentation
     }
 
+    private var missionControlPresentation: MissionControlPresentation? {
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let state = folder.isEmpty ? nil : TaskContextStateManager.load(taskFolder: folder)
+        return MissionControlPresentation.build(
+            task: task,
+            planState: cachedPlanState,
+            state: state
+        )
+    }
+
     private var verificationLoadRequest: TaskVerificationLoadRequest? {
         guard isFinished else { return nil }
         let folder = TaskWorkspaceAccess(task: task).taskFolder
@@ -1013,6 +1025,55 @@ struct TaskMainView: View {
         if scheduleStatusMessage?.taskID == scopedTaskID {
             scheduleStatusMessage = nil
         }
+    }
+
+    private func approveMissionCorrection(_ correctiveStepID: String) {
+        TaskCorrectiveWorkService.approveStep(
+            task: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.approved,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func dismissMissionCorrection(_ correctiveStepID: String) {
+        let reason = "Dismissed from Mission Control."
+        TaskCorrectiveWorkService.dismissStep(
+            task: task,
+            correctiveStepID: correctiveStepID,
+            reason: reason,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.dismissed,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            reason: reason,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func createMissionCorrectionTask(_ correctiveStepID: String) {
+        let child = TaskCorrectiveWorkService.createCorrectiveTask(
+            from: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.correctionCreated,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            correctiveTaskID: child?.id,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     private var moreMenu: some View {
@@ -1149,6 +1210,16 @@ struct TaskMainView: View {
             .padding(.vertical, 6)
             .background(Stanford.plum.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 14)
+        }
+
+        if let missionControlPresentation {
+            MissionControlPanelView(
+                presentation: missionControlPresentation,
+                onApproveCorrection: { approveMissionCorrection($0) },
+                onDismissCorrection: { dismissMissionCorrection($0) },
+                onCreateCorrectionTask: { createMissionCorrectionTask($0) }
+            )
             .padding(.horizontal, 14)
         }
 
@@ -4589,13 +4660,15 @@ struct TaskMainView: View {
             \(String(conversationSnapshot.prefix(12000)))
             """)
         ]
+        let roleRuntime = utilityRuntime(for: .summarizer)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -4688,13 +4761,15 @@ struct TaskMainView: View {
             Create a routine: \(instruction)
             """)
         ]
+        let roleRuntime = utilityRuntime(for: .summarizer)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -4953,13 +5028,15 @@ struct TaskMainView: View {
         let skillContext = planModeSkillContext()
         isPlanning = true
         logTaskCapabilityContext(source: "task_plan_chat", traceID: traceID)
+        let roleRuntime = utilityRuntime(for: .planner)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: history,
                 workspacePath: workspacePath,
                 skillContext: skillContext,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -5075,9 +5152,9 @@ struct TaskMainView: View {
         The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Goal Mode.
 
         Return concise planning prose, then include exactly one structured plan line using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}],"validationContract":{"version":1,"assertions":[{"id":"required-proof-id","scope":"plan","description":"What must be proven before ASTRA marks the plan complete","method":"command","required":true,"command":"test command or script"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. The user must confirm from the Plan panel before execution starts.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, manual, text_evidence, browser_behavior, or verifier. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Use scope plan for final proof and scope step with stepID for step-specific proof. The user must confirm from the Plan panel before execution starts.
         """
 
         let capabilityContext = taskCapabilitySkillContext()

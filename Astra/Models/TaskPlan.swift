@@ -68,6 +68,7 @@ struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
     var title: String
     var goal: String
     var steps: [TaskPlanPayloadStep]
+    var validationContract: TaskValidationContract?
 
     var id: UUID { planID }
 
@@ -76,13 +77,15 @@ struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
         planID: UUID = UUID(),
         title: String,
         goal: String,
-        steps: [TaskPlanPayloadStep]
+        steps: [TaskPlanPayloadStep],
+        validationContract: TaskValidationContract? = nil
     ) {
         self.version = version
         self.planID = planID
         self.title = title
         self.goal = goal
         self.steps = steps
+        self.validationContract = validationContract
     }
 }
 

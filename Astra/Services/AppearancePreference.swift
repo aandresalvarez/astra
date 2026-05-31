@@ -37,6 +37,7 @@ enum AppStorageKeys {
     static let copilotModelsCheckedAt = "astra.copilot.modelsCheckedAt.v1"
     static let runtimeModelCacheRevision = "astra.runtime.modelCacheRevision.v1"
     static let runtimeProviderSettingsRevision = "astra.runtime.providerSettingsRevision.v1"
+    static let roleProfileRevision = "astra.roleProfile.revision.v1"
 
     static func runtimeAvailableModelsKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {
@@ -69,6 +70,22 @@ enum AppStorageKeys {
                     : "_"
             }
             .reduce(into: "") { $0.append($1) }
+    }
+
+    static func roleProfileRuntimeKey(for role: TaskRoleID) -> String {
+        "astra.roleProfile.\(role.rawValue).runtime.v1"
+    }
+
+    static func roleProfileModelKey(for role: TaskRoleID) -> String {
+        "astra.roleProfile.\(role.rawValue).model.v1"
+    }
+
+    static func roleProfileBudgetKey(for role: TaskRoleID) -> String {
+        "astra.roleProfile.\(role.rawValue).budget.v1"
+    }
+
+    static func roleProfilePolicyKey(for role: TaskRoleID) -> String {
+        "astra.roleProfile.\(role.rawValue).policy.v1"
     }
 }
 

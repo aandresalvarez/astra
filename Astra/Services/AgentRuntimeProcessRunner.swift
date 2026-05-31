@@ -37,6 +37,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         phase: String = "run",
         nativeContinuationSessionID: String? = nil,
+        runID: UUID? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let launchContext = AgentRuntimeProcessLaunchContext(
@@ -50,7 +51,8 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             timeoutSeconds: timeoutSeconds,
             phase: phase,
-            nativeContinuationSessionID: nativeContinuationSessionID
+            nativeContinuationSessionID: nativeContinuationSessionID,
+            runID: runID
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {

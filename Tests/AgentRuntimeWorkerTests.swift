@@ -457,6 +457,37 @@ struct BuildPromptTests {
         #expect(prompt.contains("All tests pass"))
     }
 
+    @Test("Approved plan prompt includes validation contract")
+    func approvedPlanPromptIncludesValidationContract() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-plan-contract")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        ctx.insert(task)
+        let plan = TaskPlanPayload(
+            title: "Proof plan",
+            goal: "G",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify", likelyTools: ["Bash"])],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "proof-command",
+                    description: "Focused test passes",
+                    method: .command,
+                    command: "swift test --filter ProofTests"
+                )
+            ])
+        )
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: plan)
+
+        #expect(prompt.contains("validationContract"))
+        #expect(prompt.contains("proof-command"))
+        #expect(prompt.contains("Focused test passes"))
+        #expect(prompt.contains("treat it as the required proof rubric"))
+    }
+
     @Test("Prompt includes agent team block when enabled")
     func agentTeam() throws {
         let container = try makeContainer()

@@ -535,6 +535,7 @@ struct AgentRuntimeProcessLaunchContext {
     let timeoutSeconds: TimeInterval
     let phase: String
     let nativeContinuationSessionID: String?
+    let runID: UUID?
 
     init(
         prompt: String,
@@ -547,7 +548,8 @@ struct AgentRuntimeProcessLaunchContext {
         permissionManifest: RunPermissionManifest?,
         timeoutSeconds: TimeInterval,
         phase: String = "run",
-        nativeContinuationSessionID: String? = nil
+        nativeContinuationSessionID: String? = nil,
+        runID: UUID? = nil
     ) {
         self.prompt = prompt
         self.task = task
@@ -560,6 +562,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.timeoutSeconds = timeoutSeconds
         self.phase = phase
         self.nativeContinuationSessionID = nativeContinuationSessionID
+        self.runID = runID
     }
 }
 
@@ -1967,6 +1970,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
             ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
             : false
+        let diagnosticLogPath = context.runID.flatMap {
+            AntigravityCLIRuntime.diagnosticLogPath(task: context.task, runID: $0)
+        }
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
@@ -1979,7 +1985,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
-                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            diagnosticLogPath: diagnosticLogPath
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1991,7 +1998,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [],
+            directoriesToCreate: [AntigravityCLIRuntime.diagnosticLogDirectory(for: diagnosticLogPath)].compactMap { $0 },
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2013,6 +2020,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "task_env_count": String(taskEnv.count),
                 "uses_print": String(plan.arguments.contains("--print")),
                 "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
+                "uses_log_file": String(plan.arguments.contains("--log-file")),
+                "diagnostic_log_configured": String(diagnosticLogPath != nil),
+                "diagnostic_log_path": diagnosticLogPath ?? "",
                 "uses_sandbox": String(plan.arguments.contains("--sandbox")),
                 "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
             ]

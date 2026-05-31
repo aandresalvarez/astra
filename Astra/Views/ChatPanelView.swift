@@ -387,6 +387,7 @@ struct ChatPanelView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
+    @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
@@ -458,10 +459,28 @@ struct ChatPanelView: View {
     }
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        return AgentUtilityRuntimeConfiguration(
-            runtime: defaultRuntime,
-            model: normalizedDefaultModel,
-            providerSettings: providerSettingsForUtilityRuntime
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.utilityRuntime(
+            for: .planner,
+            defaultRuntimeID: defaultRuntime.rawValue,
+            defaultModel: normalizedDefaultModel,
+            defaultBudget: defaultBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsForUtilityRuntime,
+            cache: runtimeModelCache
+        ).configuration
+    }
+
+    private var workerRoleSelection: TaskRoleProfileSelection {
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.selection(
+            for: .worker,
+            defaultRuntimeID: defaultRuntime.rawValue,
+            defaultModel: normalizedDefaultModel,
+            defaultBudget: defaultBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsForUtilityRuntime,
+            cache: runtimeModelCache
         )
     }
 
@@ -1408,6 +1427,19 @@ struct ChatPanelView: View {
         if shouldUseGoalMode {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
+        if shouldUseGoalMode, let planningDraft {
+            let selection = TaskRoleProfileStore.selection(
+                for: .planner,
+                task: planningDraft,
+                defaultRuntimeID: defaultRuntime.rawValue,
+                defaultModel: normalizedDefaultModel,
+                defaultBudget: defaultBudget,
+                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                providerSettings: providerSettingsForUtilityRuntime,
+                cache: runtimeModelCache
+            )
+            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+        }
 
         AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
             "source": shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat",
@@ -1452,8 +1484,9 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let traceID = AuditTrace.make("quick-run")
-        let runtime = defaultRuntime
-        let model = normalizedDefaultModel
+        let workerSelection = workerRoleSelection
+        let runtime = workerSelection.profile.runtime
+        let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
             "source": "quick_run",
             "runtime": runtime.rawValue,
@@ -1467,7 +1500,7 @@ struct ChatPanelView: View {
             title: String(input.prefix(60)),
             goal: input,
             workspace: workspace,
-            tokenBudget: defaultBudget,
+            tokenBudget: workerSelection.profile.tokenBudget,
             model: model,
             runtime: runtime
         )
@@ -1479,7 +1512,8 @@ struct ChatPanelView: View {
         task.teamSize = teamSize
 
         modelContext.insert(task)
-        recordPolicySelection(on: task, source: "quick_run")
+        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
         messageText = ""
@@ -1522,6 +1556,19 @@ struct ChatPanelView: View {
         var skillContext = baseNewTaskSkillContext()
         skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
+        if let planningDraft = draftTask ?? saveDraft() {
+            let selection = TaskRoleProfileStore.selection(
+                for: .planner,
+                task: planningDraft,
+                defaultRuntimeID: defaultRuntime.rawValue,
+                defaultModel: normalizedDefaultModel,
+                defaultBudget: defaultBudget,
+                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                providerSettings: providerSettingsForUtilityRuntime,
+                cache: runtimeModelCache
+            )
+            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+        }
 
         Task {
             let result = await SpecEngine.chat(
@@ -1617,8 +1664,9 @@ struct ChatPanelView: View {
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
         let traceID = AuditTrace.make("conversation-spec")
-        let runtime = defaultRuntime
-        let model = normalizedDefaultModel
+        let workerSelection = workerRoleSelection
+        let runtime = workerSelection.profile.runtime
+        let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
             "source": "conversation_spec",
             "runtime": runtime.rawValue,
@@ -1633,7 +1681,7 @@ struct ChatPanelView: View {
             title: spec.title,
             goal: spec.goal,
             workspace: workspace,
-            tokenBudget: defaultBudget,
+            tokenBudget: workerSelection.profile.tokenBudget,
             model: model,
             runtime: runtime
         )
@@ -1648,7 +1696,8 @@ struct ChatPanelView: View {
         task.teamSize = teamSize
 
         modelContext.insert(task)
-        recordPolicySelection(on: task, source: "conversation_spec")
+        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "conversation_spec")
 
         // Persist conversation history as events so it survives draft→queued→draft transitions
         saveConversationAsEvents(on: task)
@@ -2389,13 +2438,14 @@ struct ChatPanelView: View {
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
-            let runtime = defaultRuntime
-            let model = normalizedDefaultModel
+            let workerSelection = workerRoleSelection
+            let runtime = workerSelection.profile.runtime
+            let model = workerSelection.profile.model
             // Update existing draft
             draft.draftMessages = json
             draft.title = String(messages.first?.content.prefix(60) ?? "Draft")
             draft.goal = messages.first?.content ?? draft.goal
-            draft.tokenBudget = defaultBudget
+            draft.tokenBudget = workerSelection.profile.tokenBudget
             draft.model = model
             draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
@@ -2403,19 +2453,23 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            recordPolicySelectionIfChanged(on: draft, source: "draft_updated")
+            if TaskPolicyStore.latestSelectedLevel(for: draft) != workerSelection.profile.policyLevel {
+                recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_updated")
+            }
+            TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             draft.updatedAt = Date()
             return draft
         } else {
-            let runtime = defaultRuntime
-            let model = normalizedDefaultModel
+            let workerSelection = workerRoleSelection
+            let runtime = workerSelection.profile.runtime
+            let model = workerSelection.profile.model
             // Create new draft
             let title = String(messages.first?.content.prefix(60) ?? "Draft")
             let draft = AgentTask(
                 title: title,
                 goal: messages.first?.content ?? "",
                 workspace: workspace,
-                tokenBudget: defaultBudget,
+                tokenBudget: workerSelection.profile.tokenBudget,
                 model: model,
                 runtime: runtime
             )
@@ -2427,7 +2481,8 @@ struct ChatPanelView: View {
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             modelContext.insert(draft)
-            recordPolicySelection(on: draft, source: "draft_created")
+            TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
+            recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_created")
             draftTask = draft
             return draft
         }
@@ -2498,9 +2553,9 @@ struct ChatPanelView: View {
         The visible primary action is "Define Goal" while exploring. The user's confirmation button is named "Approve Plan" once a candidate goal exists. Do not tell the user to click "Create Task" in Goal Mode; when the draft is acceptable, tell them to click "Approve Plan".
 
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}],"validationContract":{"version":1,"assertions":[{"id":"required-proof-id","scope":"plan","description":"What must be proven before ASTRA marks the plan complete","method":"command","required":true,"command":"test command or script"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, manual, text_evidence, browser_behavior, or verifier. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Use scope plan for final proof and scope step with stepID for step-specific proof. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
         """
     }
 
