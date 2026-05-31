@@ -2400,12 +2400,20 @@ struct WorkspaceRightRailView: View {
     }
 
     private func checkGitRepositories() {
+        let inputs = WorkspaceGitRepositoryScanInputs(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
         Task {
             let repos = await GitService.shared.scanForGitRepositories(
-                primaryPath: workspace.primaryPath,
-                additionalPaths: workspace.additionalPaths
+                primaryPath: inputs.primaryPath,
+                additionalPaths: inputs.additionalPaths
             )
             await MainActor.run {
+                guard inputs.matches(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ) else { return }
                 self.hasGitRepositories = !repos.isEmpty
             }
         }
@@ -3364,6 +3372,15 @@ private struct EmptyRailState: View {
 
     private var emptyStateStroke: Color {
         Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
+    }
+}
+
+struct WorkspaceGitRepositoryScanInputs: Equatable {
+    let primaryPath: String
+    let additionalPaths: [String]
+
+    func matches(primaryPath: String, additionalPaths: [String]) -> Bool {
+        self.primaryPath == primaryPath && self.additionalPaths == additionalPaths
     }
 }
 

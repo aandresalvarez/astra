@@ -618,6 +618,16 @@ struct GitStatusParsingTests {
         #expect(first.id == second.id)
     }
 
+    @Test("Git repository identity is stable across scans")
+    func repositoryIdentityIsStable() {
+        let path = "/tmp/astra-repo-\(UUID().uuidString)"
+        let first = GitRepositoryInfo(name: "Astra", path: path, subtitle: "Root", roleLabel: "Primary")
+        let second = GitRepositoryInfo(name: "Astra", path: path, subtitle: "Root", roleLabel: "Primary")
+
+        #expect(first.id == second.id)
+        #expect(first.id == WorkspacePathPresentation.standardizedPath(path))
+    }
+
     @Test("Untracked file diff synthesizes an add-style preview")
     func untrackedFileDiffSynthesizesPreview() async throws {
         let repo = try makeTempGitRepo()

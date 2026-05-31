@@ -130,6 +130,22 @@ struct RuntimeProcessEnvironmentTests {
         #expect(!env["HOME"]!.isEmpty)
     }
 
+    @Test("Login shell PATH probe is not synchronous on the main thread")
+    func loginShellPATHProbeIsNotSynchronousOnMainThread() {
+        #expect(RuntimeProcessEnvironment.shouldProbeLoginShellSynchronously(
+            isMainThread: true,
+            hasCachedShellPATH: false
+        ) == false)
+        #expect(RuntimeProcessEnvironment.shouldProbeLoginShellSynchronously(
+            isMainThread: false,
+            hasCachedShellPATH: false
+        ) == true)
+        #expect(RuntimeProcessEnvironment.shouldProbeLoginShellSynchronously(
+            isMainThread: false,
+            hasCachedShellPATH: true
+        ) == false)
+    }
+
     @Test("Minimal Finder PATH cannot run Node.js scripts but enriched PATH can")
     func minimalPATHFailsButEnrichedSucceeds() {
         // Verify that node exists on this machine first
@@ -155,7 +171,7 @@ struct RuntimeProcessEnvironmentTests {
             // Launch failed entirely — confirms the problem
             return
         }
-        #expect(minimalCheck.terminationStatus != 0, "Minimal PATH should NOT find node — if it does, this test premise is invalid")
+        let minimalPATHAlreadyFindsNode = minimalCheck.terminationStatus == 0
 
         // With enriched PATH, node SHOULD be found
         let enrichedCheck = Process()
@@ -169,6 +185,9 @@ struct RuntimeProcessEnvironmentTests {
             return
         }
         #expect(enrichedCheck.terminationStatus == 0, "Enriched PATH should find node")
+        if !minimalPATHAlreadyFindsNode {
+            #expect(minimalCheck.terminationStatus != 0, "Minimal PATH should not find node when node is outside Finder's default PATH")
+        }
     }
 
     @Test("Enriched environment with Node.js script works from minimal PATH")

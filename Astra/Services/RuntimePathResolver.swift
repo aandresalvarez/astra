@@ -118,11 +118,9 @@ enum RuntimeProcessEnvironment {
         RuntimePathResolver.astraToolsPath,
     ]
 
-    /// Cached result of probing the user's login shell PATH.
-    /// Populated lazily on first call to `enriched()`.
-    private static let cachedShellPATH: [String] = {
-        probeLoginShellPATH() ?? []
-    }()
+    private static let shellPATHLock = NSLock()
+    nonisolated(unsafe) private static var cachedShellPATH: [String]?
+    nonisolated(unsafe) private static var isProbingShellPATH = false
 
     /// Builds a process environment with a rich PATH suitable for running CLI tools.
     ///
@@ -138,7 +136,7 @@ enum RuntimeProcessEnvironment {
 
         var pathParts: [String] = []
         pathParts.append(contentsOf: additionalPaths)
-        pathParts.append(contentsOf: cachedShellPATH)
+        pathParts.append(contentsOf: shellPATHForCurrentThread())
         pathParts.append(contentsOf: wellKnownDirectories)
         pathParts.append(env["PATH"] ?? "")
 
@@ -149,6 +147,54 @@ enum RuntimeProcessEnvironment {
         }
 
         return env
+    }
+
+    static func shouldProbeLoginShellSynchronously(
+        isMainThread: Bool = Thread.isMainThread,
+        hasCachedShellPATH: Bool
+    ) -> Bool {
+        !isMainThread && !hasCachedShellPATH
+    }
+
+    private static func shellPATHForCurrentThread() -> [String] {
+        shellPATHLock.lock()
+        if let cachedShellPATH {
+            shellPATHLock.unlock()
+            return cachedShellPATH
+        }
+        let shouldProbeSynchronously = shouldProbeLoginShellSynchronously(
+            hasCachedShellPATH: cachedShellPATH != nil
+        )
+        shellPATHLock.unlock()
+
+        if shouldProbeSynchronously {
+            let probed = probeLoginShellPATH() ?? []
+            shellPATHLock.lock()
+            cachedShellPATH = probed
+            shellPATHLock.unlock()
+            return probed
+        }
+
+        startShellPATHProbeIfNeeded()
+        return []
+    }
+
+    private static func startShellPATHProbeIfNeeded() {
+        shellPATHLock.lock()
+        if cachedShellPATH != nil || isProbingShellPATH {
+            shellPATHLock.unlock()
+            return
+        }
+        isProbingShellPATH = true
+        shellPATHLock.unlock()
+
+        DispatchQueue.global(qos: .utility).async {
+            let probed = probeLoginShellPATH() ?? []
+            shellPATHLock.lock()
+            cachedShellPATH = probed
+            isProbingShellPATH = false
+            shellPATHLock.unlock()
+        }
     }
 
     /// Deduplicates PATH components while preserving order.

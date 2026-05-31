@@ -52,6 +52,27 @@ struct GitRepositoryPanelIntegrationTests {
         #expect(descriptors.filter { $0.role == .additional }.allSatisfy { $0.roleLabel == "Additional" })
     }
 
+    @Test("Repository scan inputs reject stale workspace paths")
+    func repositoryScanInputsRejectStaleWorkspacePaths() {
+        let inputs = WorkspaceGitRepositoryScanInputs(
+            primaryPath: "/workspaces/one",
+            additionalPaths: ["/repos/a", "/repos/b"]
+        )
+
+        #expect(inputs.matches(
+            primaryPath: "/workspaces/one",
+            additionalPaths: ["/repos/a", "/repos/b"]
+        ))
+        #expect(!inputs.matches(
+            primaryPath: "/workspaces/two",
+            additionalPaths: ["/repos/a", "/repos/b"]
+        ))
+        #expect(!inputs.matches(
+            primaryPath: "/workspaces/one",
+            additionalPaths: ["/repos/b", "/repos/a"]
+        ))
+    }
+
     @Test("Workspace path presentation disambiguates duplicate folder names with parent folders")
     func workspacePathPresentationDisambiguatesDuplicateFolders() throws {
         let root = try makeTempDir("dupes")
