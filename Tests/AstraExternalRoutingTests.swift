@@ -177,6 +177,18 @@ struct ContentExternalRouteResolverTests {
         #expect(message.contains(missingID.uuidString))
     }
 
+    @Test("resolved external route clears stale notice")
+    @MainActor
+    func resolvedExternalRouteClearsStaleNotice() throws {
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        let task = AgentTask(title: "Review", goal: "Review notes", workspace: workspace)
+
+        #expect(ContentExternalRouteResolution.unresolved("Task not found").noticeMessage == "Task not found")
+        #expect(ContentExternalRouteResolution.openWorkspace(workspace).noticeMessage.isEmpty)
+        #expect(ContentExternalRouteResolution.openTask(task).noticeMessage.isEmpty)
+        #expect(ContentExternalRouteResolution.createdTask(task, shouldRun: false).noticeMessage.isEmpty)
+    }
+
     @MainActor
     private func makeExternalRouteContainer() throws -> ModelContainer {
         let schema = ASTRASchema.current

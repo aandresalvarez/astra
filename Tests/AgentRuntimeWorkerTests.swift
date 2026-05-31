@@ -186,6 +186,26 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector ignores creative wording that only contains creat substring")
+    func artifactDetectorIgnoresCreativeSubstring() {
+        let task = AgentTask(
+            title: "Creative slides review",
+            goal: "Give creative feedback on javascript slides and presentation structure."
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector keeps standalone creat typo")
+    func artifactDetectorKeepsStandaloneCreatTypo() {
+        let task = AgentTask(
+            title: "creat HTML slides",
+            goal: "creat a html slide deck about agents"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
@@ -584,8 +604,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("Artifacts:"))
     }
 
-    @Test("Follow-up transcript budget preserves state and points to omitted sources")
-    func followUpTranscriptBudgetPreservesStateAndSources() throws {
+    @Test("Follow-up transcript budget preserves latest transcript and points to omitted sources")
+    func followUpTranscriptBudgetPreservesLatestTranscriptAndSources() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
@@ -615,7 +635,7 @@ struct BuildPromptTests {
         )
 
         var budget = PromptContextBudgetProfile.standard
-        budget.recentTranscriptTokens = 140
+        budget.recentTranscriptTokens = 500
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: "continue with deterministic context",
             task: task,
@@ -628,7 +648,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA context budget: recent transcript"))
         #expect(prompt.contains("Use these source pointers for omitted detail"))
         #expect(prompt.contains("outputs/turn_001.md"))
-        #expect(!prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(!prompt.contains("TRANSCRIPT_PREFIX_MARKER"))
     }
 
     @Test("Follow-up prompt marks native continuation as optional and keeps ASTRA state authoritative")

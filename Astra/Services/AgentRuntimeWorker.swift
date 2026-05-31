@@ -727,6 +727,16 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, type: "budget.exceeded",
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
+        } else if result.exitCode == 0,
+                  runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
+                  Self.applyEmptySuccessfulRunIfNeeded(
+                    runtimeAdapter: runtimeAdapter,
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    result: result,
+                    phase: auditPhase
+                  ) {
         } else if result.exitCode == 0 {
             run.status = .completed
             run.stopReason = "completed"
@@ -883,6 +893,49 @@ final class AgentRuntimeWorker {
     }
 
     // MARK: - Private
+
+    @MainActor
+    private static func applyEmptySuccessfulRunIfNeeded(
+        runtimeAdapter: any AgentRuntimeAdapter,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        result: AgentProcessResult,
+        phase: String
+    ) -> Bool {
+        let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let visibleFileResult = TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run)
+        guard !visibleOutput, !visibleFileResult else {
+            return false
+        }
+
+        run.status = .failed
+        run.stopReason = "no_usable_result"
+        task.status = .pendingUser
+        task.completedAt = nil
+
+        let providerName = runtimeAdapter.descriptor.displayName
+        let requiredArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        var payload = requiredArtifact
+            ? "\(providerName) finished with exit code 0 but did not return text output and did not create a usable file for this run. Retry this task or switch providers."
+            : "\(providerName) finished with exit code 0 but did not return text output or create a visible file. Retry this task or switch providers."
+        if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+            payload += " Provider stderr: \(String(RuntimeReadinessRedactor.redacted(error).prefix(300)))"
+        }
+        let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+        modelContext.insert(event)
+        AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: [
+            "runtime": runtimeAdapter.id.rawValue,
+            "phase": phase,
+            "exit_code": String(result.exitCode),
+            "run_output_chars": String(run.output.count),
+            "file_changes": String(run.fileChanges.count),
+            "run_scoped_file_result": String(visibleFileResult),
+            "requires_artifact": String(requiredArtifact),
+            "stderr_bytes": String(result.error?.utf8.count ?? 0)
+        ], level: .warning)
+        return true
+    }
 
     @MainActor
     private static func applyManualCompletion(
