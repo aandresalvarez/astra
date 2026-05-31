@@ -60,7 +60,7 @@ enum TaskCheckpointPresentation {
                     completedText: completedText(for: run),
                     durationText: durationText(for: run),
                     tokenText: tokenText(for: run.tokensUsed),
-                    fileCount: run.fileChanges.count,
+                    fileCount: uniqueFilePaths(in: run).count,
                     outputPreview: preview(run.output, maxCharacters: 220)
                 )
             }
@@ -148,10 +148,22 @@ enum TaskCheckpointPresentation {
         var paths: [String] = []
 
         for summary in summaries {
-            for change in summary.run.fileChanges {
-                guard seen.insert(change.path).inserted else { continue }
-                paths.append(change.path)
+            for path in uniqueFilePaths(in: summary.run) {
+                guard seen.insert(path).inserted else { continue }
+                paths.append(path)
             }
+        }
+
+        return paths
+    }
+
+    private static func uniqueFilePaths(in run: TaskRunSnapshot) -> [String] {
+        var seen = Set<String>()
+        var paths: [String] = []
+
+        for change in run.fileChanges {
+            guard seen.insert(change.path).inserted else { continue }
+            paths.append(change.path)
         }
 
         return paths
@@ -446,7 +458,7 @@ struct TaskCheckpointBrowserSheet: View {
 
                 if fileCount > 0 {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(fileCount) file change\(fileCount == 1 ? "" : "s")")
+                        Text("\(fileCount) file\(fileCount == 1 ? "" : "s")")
                             .font(Stanford.caption(11).weight(.semibold))
                             .foregroundStyle(Stanford.black)
 

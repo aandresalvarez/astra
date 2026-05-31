@@ -4140,6 +4140,7 @@ struct TaskCheckpointPresentationTests {
         let summaries = TaskCheckpointPresentation.summaries(from: [first, second, third].map(runSnapshot))
         let comparison = try #require(TaskCheckpointPresentation.comparison(for: second.id, in: summaries))
 
+        #expect(summaries.map(\.fileCount) == [1, 2, 1])
         #expect(comparison.includedFiles == ["/tmp/shared.swift", "/tmp/unique.swift"])
         #expect(comparison.excludedFiles == ["/tmp/later.swift"])
         #expect(comparison.includedFileCount == comparison.includedFiles.count)
