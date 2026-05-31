@@ -400,6 +400,11 @@ enum RuntimeModelAvailability {
         let source = cachedSnapshot == nil ? "built_in_defaults" : "cached_provider_models"
         let checkedAt = cachedSnapshot?.checkedAt
         let cachedListIsAuthoritative = cachedSnapshot?.authority == .authoritative
+        let unavailableModelFallback = fallbackSuggestion(
+            for: runtime,
+            suggestions: suggestions,
+            authority: cachedSnapshot?.authority
+        )
         guard !suggestions.isEmpty else {
             return RuntimeModelResolution(
                 runtime: runtime,
@@ -459,7 +464,7 @@ enum RuntimeModelAvailability {
             return RuntimeModelResolution(
                 runtime: runtime,
                 requestedModel: trimmed,
-                resolvedModel: defaultSuggestion(for: runtime, suggestions: suggestions),
+                resolvedModel: unavailableModelFallback,
                 source: source,
                 reason: "known_other_runtime_model",
                 availableModelCount: suggestions.count,
@@ -483,6 +488,17 @@ enum RuntimeModelAvailability {
             return runtimeDefaultModel
         }
         return suggestions.first ?? runtimeDefaultModel
+    }
+
+    private static func fallbackSuggestion(
+        for runtime: AgentRuntimeID,
+        suggestions: [String],
+        authority: RuntimeModelAvailabilityAuthority?
+    ) -> String {
+        if authority == .suggestions {
+            return suggestions.first ?? AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
+        }
+        return defaultSuggestion(for: runtime, suggestions: suggestions)
     }
 
     private static func isKnownModel(_ model: String, outside runtime: AgentRuntimeID) -> Bool {

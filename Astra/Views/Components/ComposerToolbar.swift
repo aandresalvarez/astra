@@ -965,44 +965,28 @@ struct ComposerToolbar: View {
     }
 
     private func taskStatusPresentation(for status: TaskStatus) -> ComposerTaskStatusPresentation? {
-        switch status {
-        case .pendingUser:
-            return ComposerTaskStatusPresentation(
-                label: "Needs input",
-                icon: "person.crop.circle.badge.questionmark",
-                color: Stanford.poppy,
-                help: "The task is waiting for your review or approval."
-            )
+        let review = TaskPresentationState.reviewPresentation(status: status, isClosed: false)
+        guard let label = review.composerLabel,
+              let icon = review.composerIcon,
+              let help = review.composerHelp else { return nil }
+        return ComposerTaskStatusPresentation(
+            label: label,
+            icon: icon,
+            color: composerTaskStatusColor(for: review.tone),
+            help: help
+        )
+    }
+
+    private func composerTaskStatusColor(for tone: TaskReviewTone) -> Color {
+        switch tone {
+        case .quiet:
+            return Stanford.coolGrey
+        case .attention:
+            return Stanford.poppy
         case .failed:
-            return ComposerTaskStatusPresentation(
-                label: "Failed",
-                icon: "exclamationmark.triangle.fill",
-                color: Stanford.failed,
-                help: "The task stopped with an error. Resume or retry when ready."
-            )
-        case .budgetExceeded:
-            return ComposerTaskStatusPresentation(
-                label: "Budget exceeded",
-                icon: "exclamationmark.triangle.fill",
-                color: Stanford.failed,
-                help: "The task ran out of token budget. Raise the budget, resume, or retry."
-            )
-        case .cancelled:
-            return ComposerTaskStatusPresentation(
-                label: "Cancelled",
-                icon: "xmark.circle.fill",
-                color: Stanford.coolGrey,
-                help: "The task was stopped before completion."
-            )
-        case .completed:
-            return ComposerTaskStatusPresentation(
-                label: "Completed",
-                icon: "checkmark.circle.fill",
-                color: Stanford.paloAltoGreen,
-                help: "The task completed."
-            )
-        case .draft, .queued, .running:
-            return nil
+            return Stanford.failed
+        case .closed:
+            return Stanford.paloAltoGreen
         }
     }
 

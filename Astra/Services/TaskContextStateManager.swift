@@ -738,7 +738,7 @@ enum TaskContextStateManager {
                 status: "manual_completion",
                 strategy: task.validationStrategy.rawValue,
                 command: command,
-                summary: "Manual completion recorded; no automated verification evidence.",
+                summary: "No automated verification evidence recorded.",
                 evidence: latestRun.map { [sourcePointer(kind: "run", id: $0.id.uuidString, summary: "Completed run")] } ?? [],
                 updatedAt: latestRun?.completedAt.map(timestamp),
                 completionVerified: false,

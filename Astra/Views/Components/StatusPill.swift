@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Small coloured pill used across the app to describe a task's outcome
-/// state compactly — "Agent done", "Needs answer", "Failed", etc. It
+/// state compactly — "Run finished", "Needs input", "Run failed", etc. It
 /// consolidates what used to be three different ad-hoc chip renderings
 /// (the Kanban card's outcomeChip, any inline `Text` status labels, and
 /// so on) into one shape so status language reads consistently.
@@ -74,7 +74,7 @@ extension StatusPill {
         case .pendingUser:
             return StatusPill(
                 icon: "hand.raised.circle.fill",
-                label: "Needs answer",
+                label: "Needs input",
                 color: Stanford.pendingUser,
                 help: "The agent paused waiting for your input. Open the card to reply so it can resume.",
                 size: size
@@ -82,17 +82,17 @@ extension StatusPill {
         case .completed:
             return StatusPill(
                 icon: "checkmark.circle.fill",
-                label: "Agent done",
+                label: "Run finished",
                 color: Stanford.completed,
-                help: "The agent finished its run without errors. Review the output to confirm, then move to Done to archive.",
+                help: "The agent finished its run without errors. Review the output to confirm, then close the task.",
                 size: size
             )
         case .failed:
             return StatusPill(
                 icon: "exclamationmark.triangle.fill",
-                label: "Failed",
+                label: "Run failed",
                 color: Stanford.failed,
-                help: "The agent hit an error and stopped. Open the card to see the failure — retry, or move to Done to dismiss.",
+                help: "The agent hit an error and stopped. Open the card to see the failure, then retry or close the task.",
                 size: size
             )
         case .cancelled:
@@ -100,15 +100,15 @@ extension StatusPill {
                 icon: "xmark.circle.fill",
                 label: "Cancelled",
                 color: Stanford.cancelled,
-                help: "You stopped this task before it finished. Requeue to retry, or move to Done to archive.",
+                help: "You stopped this task before it finished. Requeue to retry, or close the task.",
                 size: size
             )
         case .budgetExceeded:
             return StatusPill(
                 icon: "dollarsign.circle.fill",
-                label: "Budget",
+                label: "Budget hit",
                 color: Stanford.failed,
-                help: "The agent ran out of token budget before finishing. Raise the budget and retry, or archive to Done.",
+                help: "The agent ran out of token budget before finishing. Raise the budget and retry, or close the task.",
                 size: size
             )
         case .draft, .queued, .running:

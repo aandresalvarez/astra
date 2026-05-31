@@ -491,6 +491,47 @@ struct MarkdownTextViewTests {
         #expect(listItems.map(\.1) == ["First step", "Second step"])
     }
 
+    @Test("Suggested next actions include top-level bullets under the next steps heading")
+    func suggestedNextActionsIncludeTopLevelBulletsUnderHeading() {
+        let blocks = MarkdownTextView.parse("""
+        ## Next steps
+
+        - **Export** a PDF
+          - Keep this nested note informational
+        - Add speaker notes
+        """)
+
+        let actions = MarkdownTextView.suggestedNextActions(in: blocks)
+
+        #expect(actions.map(\.title) == ["Export a PDF", "Add speaker notes"])
+        #expect(actions.map(\.composerText) == ["Export a PDF", "Add speaker notes"])
+    }
+
+    @Test("Suggested next actions parse explicit prose suggestions")
+    func suggestedNextActionsParseExplicitProseSuggestions() {
+        let blocks = MarkdownTextView.parse(
+            "Next suggestions: toggle theme via JS, refine contrast for specific components, or change CTA colors."
+        )
+
+        let actions = MarkdownTextView.suggestedNextActions(in: blocks)
+
+        #expect(actions.map(\.title) == [
+            "toggle theme via JS",
+            "refine contrast for specific components",
+            "change CTA colors"
+        ])
+    }
+
+    @Test("Suggested next actions ignore ordinary paragraphs and empty threads")
+    func suggestedNextActionsIgnoreOrdinaryParagraphsAndEmptyThreads() {
+        let blocks = MarkdownTextView.parse(
+            "I can also export a PDF or add speaker notes if that would help."
+        )
+
+        #expect(MarkdownTextView.suggestedNextActions(in: blocks).isEmpty)
+        #expect(MarkdownTextView.suggestedNextActions(in: []).isEmpty)
+    }
+
     @Test("Parser preserves blockquote paragraph breaks")
     func parserPreservesBlockquoteParagraphBreaks() {
         let blocks = MarkdownTextView.parse("""
@@ -4223,6 +4264,22 @@ struct ChatPanelViewTests {
             "Start with a question, goal, or problem.",
         ])
     }
+
+    @Test("Approve Plan inline action is gated by pending plan state")
+    func approvePlanInlineActionIsGatedByPendingPlanState() {
+        #expect(ChatPanelView.shouldShowApprovePlanInlineAction(
+            in: "When the draft looks right, click Approve Plan.",
+            hasPendingPlan: true
+        ))
+        #expect(!ChatPanelView.shouldShowApprovePlanInlineAction(
+            in: "When the draft looks right, click Approve Plan.",
+            hasPendingPlan: false
+        ))
+        #expect(!ChatPanelView.shouldShowApprovePlanInlineAction(
+            in: "When the draft looks right, create the task.",
+            hasPendingPlan: true
+        ))
+    }
 }
 
 // MARK: - StatusBadge
@@ -4253,8 +4310,8 @@ struct StatusBadgeTests {
 @Suite("KanbanCategory")
 struct KanbanCategoryTests {
 
-    @Test("Completed tasks land in Done when explicitly marked done")
-    func completedTasksBelongToDone() {
+    @Test("Completed tasks land in Closed when explicitly closed")
+    func completedTasksBelongToClosed() {
         #expect(KanbanCategory.done.includes(status: .completed, isDone: true))
         #expect(KanbanCategory.review.includes(status: .completed, isDone: true) == false)
     }
@@ -4265,7 +4322,7 @@ struct KanbanCategoryTests {
         #expect(KanbanCategory.review.includes(status: .completed, isDone: false))
     }
 
-    @Test("Failed tasks stay in Review until explicitly marked done")
+    @Test("Failed tasks stay in Review until explicitly closed")
     func failedTasksStayInReview() {
         #expect(KanbanCategory.review.includes(status: .failed, isDone: false))
         #expect(KanbanCategory.done.includes(status: .failed, isDone: false) == false)
@@ -4311,7 +4368,7 @@ struct KanbanCategoryTests {
             #expect(KanbanCategory.review.includes(status: status, isDone: false),
                     "Review should include status \(status)")
         }
-        // Any of those statuses with isDone == true must leave Review for Done.
+        // Any of those statuses with isDone == true must leave Review for Closed.
         #expect(KanbanCategory.review.includes(status: .completed, isDone: true) == false)
     }
 }
@@ -4541,7 +4598,7 @@ struct AgentTaskPropertyTests {
         let manualPresentation = TaskPresentationState.verificationPresentation(for: manual)
         let failedPresentation = TaskPresentationState.verificationPresentation(for: failed)
 
-        #expect(manualPresentation.summary == "Manual completion")
+        #expect(manualPresentation.summary == "No automated verification")
         #expect(manualPresentation.tone == .attention)
         #expect(failedPresentation.summary == "Verification failed")
         #expect(failedPresentation.tone == .failed)
@@ -4580,8 +4637,8 @@ struct AgentTaskPropertyTests {
             taskFolder: folder
         )
 
-        #expect(presentation.title == "Completed without automated verification")
-        #expect(presentation.summary == "Manual completion")
+        #expect(presentation.title == "No automated verification")
+        #expect(presentation.summary == "No automated verification")
         #expect(hiddenPresentation == nil)
     }
 }
@@ -4994,6 +5051,7 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.usesQuietNewTaskCommand)
         #expect(SidebarLeanPresentation.sectionHeadersShowCounts)
         #expect(SidebarLeanPresentation.workspacesUseSingleFlatList)
+        #expect(SidebarLeanPresentation.sidebarTaskTitlesUsePrefixPrimaryPresentation)
         #expect(SidebarLeanPresentation.workspaceStarsMoveToTrailingEdge)
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
         #expect(SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)

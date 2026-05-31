@@ -55,7 +55,7 @@ struct FormattersTests {
         let input = "Count patients in two destination cohorts with BigQuery"
         let output = Formatters.sidebarTaskTitle(input)
 
-        #expect(output == "Count patients … with BigQuery")
+        #expect(output == "Count · patients … with BigQuery")
     }
 
     @Test("sidebarTaskTitle keeps suffix for similarly-prefixed tasks")
@@ -63,6 +63,48 @@ struct FormattersTests {
         let input = "Query BigQuery MRN destination table row access for cohort export"
         let output = Formatters.sidebarTaskTitle(input)
 
-        #expect(output == "Query BigQuery … cohort export")
+        #expect(output == "Query · BigQuery … cohort export")
+    }
+
+    @Test("sidebarTaskTitlePresentation separates generic action from task object")
+    func sidebarTaskTitlePresentationSeparatesGenericAction() {
+        let output = Formatters.sidebarTaskTitlePresentation("Create a component smoke file")
+
+        #expect(output.prefix == "Create")
+        #expect(output.primary == "component smoke file")
+        #expect(output.displayTitle == "Create · component smoke file")
+        #expect(output.fullTitle == "Create a component smoke file")
+    }
+
+    @Test("sidebarTaskTitlePresentation keeps repeated-prefix tasks distinguishable")
+    func sidebarTaskTitlePresentationKeepsRepeatedPrefixTasksDistinguishable() {
+        let titles = [
+            "Create component smoke file",
+            "Create local smoke file",
+            "Create HEDIS 2030 agents",
+            "Build basic login HTML"
+        ]
+        let presentations = titles.map { Formatters.sidebarTaskTitlePresentation($0) }
+
+        #expect(presentations.map(\.prefix) == ["Create", "Create", "Create", "Build"])
+        #expect(presentations.map(\.primary) == [
+            "component smoke file",
+            "local smoke file",
+            "HEDIS 2030 agents",
+            "basic login HTML"
+        ])
+        #expect(presentations.allSatisfy { !$0.displayTitle.contains("…") })
+    }
+
+    @Test("sidebarTaskTitlePresentation never mid-ellipsizes ordinary prose")
+    func sidebarTaskTitlePresentationDoesNotMidEllipsizeProse() {
+        let output = Formatters.sidebarTaskTitlePresentation(
+            "Create component smoke file",
+            maxDisplayCharacters: 18
+        )
+
+        #expect(output.primary == "component … file")
+        #expect(!output.primary.contains("co…"))
+        #expect(!output.primary.contains("sm…"))
     }
 }

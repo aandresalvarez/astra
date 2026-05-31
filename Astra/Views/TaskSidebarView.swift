@@ -89,6 +89,7 @@ enum SidebarLeanPresentation {
     static let usesQuietNewTaskCommand = true
     static let sectionHeadersShowCounts = true
     static let workspacesUseSingleFlatList = true
+    static let sidebarTaskTitlesUsePrefixPrimaryPresentation = true
     static let workspaceStarsMoveToTrailingEdge = true
     static let workspaceMetadataAndActionsShareTrailingSlot = true
     static let selectedWorkspaceChildrenUseGuide = true
@@ -1424,7 +1425,10 @@ struct TaskSidebarView: View {
                     }
                 }
             } label: {
-                Label(task.isDone ? "Reopen" : "Mark as Done", systemImage: task.isDone ? "arrow.uturn.backward" : "checkmark.circle")
+                Label(
+                    task.isDone ? "Reopen task" : TaskPresentationState.closeTaskActionTitle,
+                    systemImage: task.isDone ? "arrow.uturn.backward" : "checkmark.circle"
+                )
             }
         }
 
@@ -1884,8 +1888,8 @@ private struct SidebarThreadRow: View {
         }
     }
 
-    private var displayTitle: String {
-        Formatters.sidebarTaskTitle(task.title)
+    private var titlePresentation: Formatters.SidebarTaskTitlePresentation {
+        Formatters.sidebarTaskTitlePresentation(task.title)
     }
 
     var body: some View {
@@ -1897,12 +1901,11 @@ private struct SidebarThreadRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(displayTitle)
-                        .font(Stanford.ui(13, weight: titleWeight))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(task.title)
+                    SidebarTaskTitleText(
+                        presentation: titlePresentation,
+                        font: Stanford.ui(13, weight: titleWeight)
+                    )
+                    .layoutPriority(1)
 
                     if attemptCount > 1 {
                         Text("\(attemptCount) attempts")
@@ -2250,12 +2253,11 @@ struct SearchPanelOverlay: View {
                                             .font(Stanford.ui(13))
                                             .foregroundStyle(.secondary)
                                             .frame(width: 18)
-                                        Text(Formatters.shortenIdentifierTokens(task.title))
-                                            .font(Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                            .help(task.title)
+                                        SidebarTaskTitleText(
+                                            presentation: Formatters.sidebarTaskTitlePresentation(task.title),
+                                            font: Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular)
+                                        )
+                                        .layoutPriority(1)
                                         Spacer()
                                         if let ws = task.workspace {
                                             Text(Formatters.shortenIdentifierTokens(ws.name, maxTokenLength: 24, keepEachSide: 8))

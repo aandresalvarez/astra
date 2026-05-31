@@ -37,7 +37,7 @@ struct TaskDetailView: View {
                                 try? modelContext.save()
                             }
                         } label: {
-                            Text(task.isDone ? "Reopen" : "Done")
+                            Text(task.isDone ? "Reopen" : "Close")
                                 .font(Stanford.body(15).weight(.medium))
                                 .padding(.horizontal, 18)
                                 .padding(.vertical, 10)

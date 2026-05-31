@@ -660,7 +660,7 @@ struct GitStatusParsingTests {
             atomically: true,
             encoding: .utf8
         )
-        #expect(runShell("git add edited.txt other.txt && git -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
+        #expect(runShell("git add edited.txt other.txt && git -c commit.gpgsign=false -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
 
         try "new\n".write(
             to: URL(fileURLWithPath: repo).appendingPathComponent("edited.txt"),
@@ -691,7 +691,7 @@ struct GitStatusParsingTests {
 
         let fileURL = URL(fileURLWithPath: repo).appendingPathComponent("edited.txt")
         try "old\n".write(to: fileURL, atomically: true, encoding: .utf8)
-        #expect(runShell("git add edited.txt && git -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
+        #expect(runShell("git add edited.txt && git -c commit.gpgsign=false -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
         try "new\n".write(to: fileURL, atomically: true, encoding: .utf8)
 
         let patch = """

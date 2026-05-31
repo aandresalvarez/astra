@@ -4835,7 +4835,7 @@ private struct LinkedScheduleWarning: Identifiable {
         var alertTitle: String {
             switch self {
             case .markDone:
-                return "Pause linked routines before marking done?"
+                return "Pause linked routines before closing task?"
             case .delete:
                 return "Pause linked routines before deleting?"
             }
@@ -4844,7 +4844,7 @@ private struct LinkedScheduleWarning: Identifiable {
         var confirmLabel: String {
             switch self {
             case .markDone:
-                return "Pause Routines and Mark Done"
+                return "Pause Routines and Close Task"
             case .delete:
                 return "Pause Routines and Delete"
             }
