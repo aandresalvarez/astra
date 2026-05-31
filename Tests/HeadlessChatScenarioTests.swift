@@ -204,6 +204,42 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Antigravity empty non-artifact task stays pending review")
+    func antigravityEmptyNonArtifactTaskStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Answer from Antigravity",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(task.completedAt == nil)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("finished with exit code 0") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
     @Test("Antigravity empty misspelled artifact task stays pending review")
     func antigravityEmptyMisspelledArtifactTaskStaysPendingReview() async throws {
         let harness = try HeadlessChatHarness()
