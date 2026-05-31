@@ -79,6 +79,8 @@ enum TaskCheckpointPresentation {
         let included = Array(summaries.prefix(through: selectedIndex))
         let excluded = Array(summaries.dropFirst(selectedIndex + 1))
         let restoreDisabledReason = restoreDisabledReason(for: selected.run)
+        let includedFiles = filePaths(in: included)
+        let excludedFiles = filePaths(in: excluded)
 
         return TaskCheckpointComparison(
             selected: selected,
@@ -86,10 +88,10 @@ enum TaskCheckpointPresentation {
             excludedRunCount: excluded.count,
             includedTokenCount: included.reduce(0) { $0 + $1.run.tokensUsed },
             excludedTokenCount: excluded.reduce(0) { $0 + $1.run.tokensUsed },
-            includedFileCount: included.reduce(0) { $0 + $1.fileCount },
-            excludedFileCount: excluded.reduce(0) { $0 + $1.fileCount },
-            includedFiles: filePaths(in: included),
-            excludedFiles: filePaths(in: excluded),
+            includedFileCount: includedFiles.count,
+            excludedFileCount: excludedFiles.count,
+            includedFiles: includedFiles,
+            excludedFiles: excludedFiles,
             laterOutputPreview: preview(
                 excluded.reversed().first { !$0.run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?.run.output ?? "",
                 maxCharacters: 220

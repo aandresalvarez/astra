@@ -826,7 +826,7 @@ struct TaskMainView: View {
     private var contextPreviewRequest: PromptContextPreviewRequest {
         PromptContextPreviewPresentation.request(
             taskStatus: task.status,
-            hasProviderSession: task.sessionId != nil,
+            hasProviderSession: task.hasProviderSession,
             messageText: messageText,
             attachedFiles: attachedFiles
         )
@@ -3297,7 +3297,7 @@ struct TaskMainView: View {
                     Label(failureReason, systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.failed)
-                    if task.sessionId != nil {
+                    if task.hasProviderSession {
                         Text("**Resume** to continue or **Retry** to start over.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(Stanford.coolGrey)
@@ -3306,7 +3306,7 @@ struct TaskMainView: View {
                     Label("Budget exhausted (\(Formatters.formatTokens(task.tokensUsed))/\(Formatters.formatTokens(task.tokenBudget))).", systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.failed)
-                    if task.sessionId != nil {
+                    if task.hasProviderSession {
                         Text("**Resume** with a higher budget or **Retry** fresh.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(Stanford.coolGrey)
@@ -3786,7 +3786,7 @@ struct TaskMainView: View {
     }
 
     private var failedDecisionDock: some View {
-        let canResume = task.sessionId != nil && onResumeTask != nil
+        let canResume = task.hasProviderSession && onResumeTask != nil
         let isBudgetExceeded = task.status == .budgetExceeded
         let title = isBudgetExceeded ? "Budget exceeded" : "Run stopped"
         let detail = isBudgetExceeded
@@ -3814,7 +3814,7 @@ struct TaskMainView: View {
                     .accessibilityLabel("Retry task")
                 }
 
-                if task.sessionId != nil, let onResume = onResumeTask {
+                if task.hasProviderSession, let onResume = onResumeTask {
                     Button {
                         onResume(task)
                     } label: {

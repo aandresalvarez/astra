@@ -4112,6 +4112,40 @@ struct TaskCheckpointPresentationTests {
         #expect(TaskCheckpointPresentation.restoreActionTitle == "Restore as New Branch")
     }
 
+    @Test("Checkpoint file counts match deduplicated file lists")
+    func checkpointFileCountsMatchDeduplicatedFileLists() throws {
+        let task = makeTask(goal: "Compare repeated file changes")
+        let first = makeCheckpointRun(
+            task: task,
+            index: 0,
+            output: "First edit.",
+            tokens: 100,
+            filePaths: ["/tmp/shared.swift"]
+        )
+        let second = makeCheckpointRun(
+            task: task,
+            index: 1,
+            output: "Second edit repeats shared files.",
+            tokens: 200,
+            filePaths: ["/tmp/shared.swift", "/tmp/unique.swift", "/tmp/unique.swift"]
+        )
+        let third = makeCheckpointRun(
+            task: task,
+            index: 2,
+            output: "Later edit repeats another file.",
+            tokens: 300,
+            filePaths: ["/tmp/later.swift", "/tmp/later.swift"]
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [first, second, third].map(runSnapshot))
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: second.id, in: summaries))
+
+        #expect(comparison.includedFiles == ["/tmp/shared.swift", "/tmp/unique.swift"])
+        #expect(comparison.excludedFiles == ["/tmp/later.swift"])
+        #expect(comparison.includedFileCount == comparison.includedFiles.count)
+        #expect(comparison.excludedFileCount == comparison.excludedFiles.count)
+    }
+
     @Test("Running checkpoint cannot be restored from browser")
     func runningCheckpointCannotBeRestoredFromBrowser() throws {
         let task = makeTask()
@@ -4425,6 +4459,22 @@ struct AgentTaskPropertyTests {
         task.events.append(tool)
 
         #expect(task.threadMessageCount == 2)
+    }
+
+    @Test("hasProviderSession requires a trimmed non-empty session id")
+    func hasProviderSessionRequiresTrimmedNonEmptySessionID() {
+        let task = makeTask()
+
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = ""
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = " \n\t "
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = " session-123 "
+        #expect(task.hasProviderSession == true)
     }
 
     @Test("statusColor returns expected values",

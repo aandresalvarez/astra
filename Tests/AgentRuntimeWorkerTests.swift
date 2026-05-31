@@ -902,7 +902,7 @@ struct BuildPromptTests {
 
         let request = PromptContextPreviewPresentation.request(
             taskStatus: task.status,
-            hasProviderSession: task.sessionId?.isEmpty == false,
+            hasProviderSession: task.hasProviderSession,
             messageText: "  ",
             attachedFiles: []
         )

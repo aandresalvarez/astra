@@ -151,6 +151,10 @@ final class AgentTask {
 
     var isForked: Bool { forkedFromID != nil }
 
+    var hasProviderSession: Bool {
+        sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
     }

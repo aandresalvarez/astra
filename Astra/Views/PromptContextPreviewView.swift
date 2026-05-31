@@ -94,9 +94,12 @@ enum PromptContextPreviewPresentation {
     }
 
     private static func messageWithAttachedFiles(_ messageText: String, attachedFiles: [String]) -> String {
-        guard !attachedFiles.isEmpty else { return messageText }
+        let trimmedMessage = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !attachedFiles.isEmpty else { return trimmedMessage }
         let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
-        return messageText + "\n\nAttached files:\n\(fileList)"
+        let attachmentText = "Attached files:\n\(fileList)"
+        guard !trimmedMessage.isEmpty else { return attachmentText }
+        return trimmedMessage + "\n\n" + attachmentText
     }
 }
 

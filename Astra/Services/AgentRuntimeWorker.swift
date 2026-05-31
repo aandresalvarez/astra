@@ -321,7 +321,7 @@ final class AgentRuntimeWorker {
                 "prompt_chars": String(promptOverride?.count ?? 0),
                 "history_run_count": String(task.runs.count),
                 "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
-                "has_session_id": String(task.sessionId != nil),
+                "has_session_id": String(task.hasProviderSession),
                 "supports_native_continuation": String(runtimeAdapter.descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(nativeContinuationSessionID != nil),
                 "continuation_mode": nativeContinuationSessionID == nil ? "rebuilt_prompt" : "native_plus_rebuilt_prompt",

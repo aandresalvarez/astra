@@ -22,13 +22,26 @@ struct PromptContextPreviewPresentationTests {
         let request = PromptContextPreviewPresentation.request(
             taskStatus: .completed,
             hasProviderSession: true,
-            messageText: "Continue with the report",
+            messageText: " \n Continue with the report \n ",
             attachedFiles: ["/tmp/context.md"]
         )
 
         #expect(request.kind == .followUp)
-        #expect(request.followUpMessage?.contains("Continue with the report") == true)
-        #expect(request.followUpMessage?.contains("- /tmp/context.md") == true)
+        #expect(request.followUpMessage == "Continue with the report\n\nAttached files:\n- /tmp/context.md")
+    }
+
+    @Test("Attachment-only follow-up avoids leading blank lines")
+    func attachmentOnlyFollowUpAvoidsLeadingBlankLines() {
+        let request = PromptContextPreviewPresentation.request(
+            taskStatus: .completed,
+            hasProviderSession: true,
+            messageText: " \n\t ",
+            attachedFiles: ["/tmp/context.md"]
+        )
+
+        #expect(request.kind == .followUp)
+        #expect(request.followUpMessage == "Attached files:\n- /tmp/context.md")
+        #expect(request.followUpMessage?.hasPrefix("\n") == false)
     }
 
     @Test("Queued tasks preview the initial run prompt")
@@ -55,6 +68,19 @@ struct PromptContextPreviewPresentationTests {
 
         #expect(request.kind == .followUp)
         #expect(request.followUpMessage == PromptContextPreviewPresentation.defaultResumeMessage)
+    }
+
+    @Test("Blank provider session does not preview resume follow-up")
+    func blankProviderSessionDoesNotPreviewResumeFollowUp() {
+        let request = PromptContextPreviewPresentation.request(
+            taskStatus: .failed,
+            hasProviderSession: false,
+            messageText: "",
+            attachedFiles: []
+        )
+
+        #expect(request.kind == .unavailable)
+        #expect(request.followUpMessage == nil)
     }
 
     @Test("Summary reports mode, sections, tokens, and truncation")
