@@ -456,7 +456,11 @@ enum ValidationService {
             )
         }
 
-        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task)
+        let scopedCandidate = scopedExistingArtifactPath(
+            requestedPath,
+            task: task,
+            allowDirectory: artifactAssertionAllowsDirectory(assertion)
+        )
         let existingPath = scopedCandidate.path
         if let existingPath {
             return assertionPayload(
@@ -476,6 +480,16 @@ enum ValidationService {
                 summary: "Artifact assertion resolved outside the task folder or workspace.",
                 path: requestedPath,
                 reason: "path_outside_scope"
+            )
+        }
+        if scopedCandidate.rejectedDirectory {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Artifact assertion matched a directory, but this contract requires a file artifact.",
+                path: requestedPath,
+                reason: "artifact_directory_not_allowed"
             )
         }
 
@@ -619,12 +633,20 @@ enum ValidationService {
             )
         }
 
-        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task)
+        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task, allowDirectory: false)
         guard let existingPath = scopedCandidate.path else {
-            let reason = scopedCandidate.rejectedOutOfScope ? "path_outside_scope" : "artifact_missing"
-            let summary = scopedCandidate.rejectedOutOfScope
-                ? "Browser behavior artifact resolved outside the task folder or workspace."
-                : "Browser behavior artifact was not found. Checked: \(scopedCandidate.checked.joined(separator: ", "))."
+            let reason: String
+            let summary: String
+            if scopedCandidate.rejectedOutOfScope {
+                reason = "path_outside_scope"
+                summary = "Browser behavior artifact resolved outside the task folder or workspace."
+            } else if scopedCandidate.rejectedDirectory {
+                reason = "artifact_directory_not_allowed"
+                summary = "Browser behavior artifact matched a directory, but browser behavior validation requires a file artifact."
+            } else {
+                reason = "artifact_missing"
+                summary = "Browser behavior artifact was not found. Checked: \(scopedCandidate.checked.joined(separator: ", "))."
+            }
             recordBehaviorEvent(
                 type: TaskValidationBehaviorEventTypes.failed,
                 auditEvent: .validationBehaviorFailed,
@@ -1056,17 +1078,26 @@ enum ValidationService {
 
     private static func scopedExistingArtifactPath(
         _ path: String,
-        task: AgentTask
-    ) -> (path: String?, rejectedOutOfScope: Bool, checked: [String]) {
+        task: AgentTask,
+        allowDirectory: Bool
+    ) -> (path: String?, rejectedOutOfScope: Bool, rejectedDirectory: Bool, checked: [String]) {
         let candidates = artifactCandidatePaths(path, task: task)
         var rejectedOutOfScope = false
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate) {
-            if resolvedArtifactCandidateIsInScope(candidate, task: task) {
-                return (candidate, false, candidates)
+        var rejectedDirectory = false
+        for candidate in candidates {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory) else { continue }
+            guard resolvedArtifactCandidateIsInScope(candidate, task: task) else {
+                rejectedOutOfScope = true
+                continue
             }
-            rejectedOutOfScope = true
+            if isDirectory.boolValue && !allowDirectory {
+                rejectedDirectory = true
+                continue
+            }
+            return (candidate, false, false, candidates)
         }
-        return (nil, rejectedOutOfScope, candidates)
+        return (nil, rejectedOutOfScope, rejectedDirectory, candidates)
     }
 
     private static func resolvedArtifactCandidateIsInScope(_ candidate: String, task: AgentTask) -> Bool {
@@ -1108,6 +1139,15 @@ enum ValidationService {
         return !components.contains("..")
     }
 
+    private static func artifactAssertionAllowsDirectory(_ assertion: TaskValidationAssertion) -> Bool {
+        let expected = assertion.expectedArtifactType?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_") ?? ""
+        return ["directory", "folder", "dir"].contains(expected)
+    }
+
     private static func isAllowedValidationCommand(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -1133,7 +1173,7 @@ enum ValidationService {
             return commandArgumentsAreValidationOrBuildOnly(root: root, command: trimmed)
         }
         if root == "python" || root == "python3" {
-            return trimmed.contains(" -m pytest") || trimmed.hasSuffix(" -m pytest")
+            return pythonCommandRunsPytest(root: root, command: trimmed)
         }
         return false
     }
@@ -1145,6 +1185,18 @@ enum ValidationService {
 
     private static func shellRoot(_ command: String) -> String? {
         command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private static func shellTokens(_ command: String) -> [String] {
+        command.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    private static func pythonCommandRunsPytest(root: String, command: String) -> Bool {
+        let tokens = shellTokens(command)
+        guard tokens.count >= 3 else { return false }
+        return tokens[0].lowercased() == root &&
+            tokens[1] == "-m" &&
+            tokens[2] == "pytest"
     }
 
     private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {

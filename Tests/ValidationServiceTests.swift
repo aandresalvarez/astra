@@ -192,6 +192,50 @@ struct ValidationServiceTests {
         })
     }
 
+    @Test("validation contract command allowlist blocks python before pytest module")
+    func validationContractCommandAllowlistBlocksPythonBeforePytestModule() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Python Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate safely", goal: "Reject arbitrary Python before pytest", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let markerPath = (root as NSString).appendingPathComponent("python-ran.txt")
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject unsafe Python command",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "python-command",
+                    description: "Python must start with -m pytest",
+                    method: .command,
+                    command: #"python -c 'open("\#(markerPath)","w").write("x")' -m pytest"#
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(!FileManager.default.fileExists(atPath: markerPath))
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("command_not_allowed")
+        })
+    }
+
     @Test("validation contract artifact check resolves task output folder paths")
     func validationContractArtifactCheckUsesTaskFolder() async throws {
         let root = try temporaryRoot()
@@ -234,6 +278,98 @@ struct ValidationServiceTests {
 
         #expect(result.canComplete)
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed && $0.payload.contains("report.md") })
+    }
+
+    @Test("validation contract artifact rejects directories unless expected")
+    func validationContractArtifactRejectsDirectoriesUnlessExpected() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Directory", primaryPath: root)
+        let task = AgentTask(title: "Validate artifact directory", goal: "Reject directory as file artifact", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let directoryPath = (taskFolder as NSString).appendingPathComponent("report")
+        try FileManager.default.createDirectory(atPath: directoryPath, withIntermediateDirectories: true)
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject directory artifact",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "report-file",
+                    description: "Report file exists",
+                    method: .artifact,
+                    path: "report"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs == ["report-file"])
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("artifact_directory_not_allowed")
+        })
+    }
+
+    @Test("validation contract artifact allows explicit directory type")
+    func validationContractArtifactAllowsExplicitDirectoryType() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Directory Allowed", primaryPath: root)
+        let task = AgentTask(title: "Validate artifact directory", goal: "Allow directory artifact", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let directoryPath = (taskFolder as NSString).appendingPathComponent("report")
+        try FileManager.default.createDirectory(atPath: directoryPath, withIntermediateDirectories: true)
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Allow directory artifact",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "report-directory",
+                    description: "Report directory exists",
+                    method: .artifact,
+                    path: "report",
+                    expectedArtifactType: "directory"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(result.canComplete)
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionPassed &&
+                $0.payload.contains("report-directory")
+        })
     }
 
     @Test("validation contract rejects artifact paths outside task scope")
