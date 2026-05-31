@@ -4019,6 +4019,61 @@ struct AgentTaskPropertyTests {
         let task = makeTask(status: status)
         #expect(task.statusColor == expected)
     }
+
+    @Test("verificationPresentation surfaces passed verification command and artifact state")
+    func verificationPresentationPassed() {
+        let verification = TaskContextState.Verification(
+            status: "passed",
+            strategy: ValidationStrategy.runTests.rawValue,
+            command: "swift test --filter TaskContextStateTests",
+            summary: "Tests passed.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: true,
+            artifactStatus: "1 current, 1 stale"
+        )
+
+        let presentation = TaskPresentationState.verificationPresentation(for: verification)
+
+        #expect(presentation.title == "Verification passed")
+        #expect(presentation.summary == "Verified")
+        #expect(presentation.tone == .verified)
+        #expect(presentation.detail?.contains("swift test --filter TaskContextStateTests") == true)
+        #expect(presentation.detail?.contains("Artifacts: 1 current, 1 stale") == true)
+    }
+
+    @Test("verificationPresentation distinguishes manual completion from failed verification")
+    func verificationPresentationManualAndFailed() {
+        let manual = TaskContextState.Verification(
+            status: "manual_completion",
+            strategy: ValidationStrategy.manual.rawValue,
+            command: nil,
+            summary: "Manual completion recorded.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "none recorded"
+        )
+        let failed = TaskContextState.Verification(
+            status: "failed",
+            strategy: ValidationStrategy.runTests.rawValue,
+            command: "swift test",
+            summary: "Tests failed.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "none recorded"
+        )
+
+        let manualPresentation = TaskPresentationState.verificationPresentation(for: manual)
+        let failedPresentation = TaskPresentationState.verificationPresentation(for: failed)
+
+        #expect(manualPresentation.summary == "Manual completion")
+        #expect(manualPresentation.tone == .attention)
+        #expect(failedPresentation.summary == "Verification failed")
+        #expect(failedPresentation.tone == .failed)
+        #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
+    }
 }
 
 // MARK: - TaskRun & StoredFileChange

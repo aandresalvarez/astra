@@ -342,8 +342,8 @@ struct BuildPromptTests {
         }
     }
 
-    @Test("Prompt makes current task explicit before context and at end")
-    func currentTaskIsExplicitBeforeContextAndAtEnd() throws {
+    @Test("Prompt keeps current task explicit before context and at current-goal section end")
+    func currentTaskIsExplicitBeforeContextAndAtCurrentGoalSectionEnd() throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-current-task")
@@ -369,13 +369,15 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let currentGoalSection = try #require(manifest.sections.first { $0.kind == .currentGoal })
 
         #expect(prompt.hasPrefix("Current Task:\nopen the doccument called  'Alvaro1 t' and translate all text to Spanish"))
         #expect(prompt.contains("Recent tasks in this workspace (for context):"))
         let currentTaskIndex = try #require(prompt.range(of: "Current Task:")?.lowerBound)
         let recentTasksIndex = try #require(prompt.range(of: "Recent tasks in this workspace")?.lowerBound)
         #expect(currentTaskIndex < recentTasksIndex)
-        #expect(prompt.hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
+        #expect(currentGoalSection.includedTextPreview.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
     }
 
     @Test("Prompt includes workspace instructions")
@@ -785,6 +787,47 @@ struct BuildPromptTests {
         #expect(memorySection.sourcePointers.contains { $0.label == "workspace saved memories" })
         #expect(manifest.truncatedSectionCount >= 1)
         #expect(!manifest.prompt.contains("MANIFEST_MEMORY_OMITTED_TAIL"))
+    }
+
+    @Test("Prompt assembly merges repeated blocks into unique budget sections")
+    func promptAssemblyMergesRepeatedBlocksIntoUniqueBudgetSections() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(
+            title: "Merged sections",
+            goal: String(repeating: "Keep one canonical current goal section. ", count: 80)
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.currentGoalTokens = 160
+
+        let initialManifest = AgentPromptBuilder.buildPromptAssembly(for: task, budgetProfile: budget)
+        let initialKinds = initialManifest.sections.map(\.kind)
+        let initialUniqueKinds = Set(initialKinds)
+        let initialGoalSection = try #require(initialManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(initialKinds.count == initialUniqueKinds.count)
+        #expect(initialKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(initialGoalSection.tokenBudget == 160)
+        #expect(initialGoalSection.isTruncated)
+        #expect(initialGoalSection.includedTextPreview.contains("Current Task:"))
+        #expect(initialGoalSection.includedTextPreview.contains("ASTRA context budget: current goal"))
+        #expect(initialGoalSection.sourcePointers.count == 1)
+
+        let followUpManifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the merged section budget",
+            task: task,
+            budgetProfile: budget
+        )
+        let followUpKinds = followUpManifest.sections.map(\.kind)
+        let followUpGoalSection = try #require(followUpManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(followUpKinds.count == Set(followUpKinds).count)
+        #expect(followUpKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(followUpGoalSection.includedTextPreview.contains("User's follow-up request:"))
+        #expect(followUpGoalSection.includedTextPreview.contains("continue with the merged section budget"))
     }
 
     @Test("Prompt emits duplicate capability behavior once")

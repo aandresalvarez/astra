@@ -846,6 +846,16 @@ struct TaskMainView: View {
         return scheduleStatusMessage?.text
     }
 
+    private var currentVerificationPresentation: TaskVerificationPresentation? {
+        guard isFinished else { return nil }
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !folder.isEmpty,
+              let state = TaskContextStateManager.load(taskFolder: folder) else {
+            return nil
+        }
+        return TaskPresentationState.verificationPresentation(for: state.verification)
+    }
+
     private func setScheduleStatusMessage(_ message: String, for taskID: UUID? = nil) {
         scheduleStatusMessage = TaskScopedStatusMessage(taskID: taskID ?? task.id, text: message)
     }
@@ -1115,6 +1125,15 @@ struct TaskMainView: View {
                     dismissAction: { clearScheduleStatusMessage() }
                 )
             }
+
+            if let verification = currentVerificationPresentation {
+                threadStatusDetailRow(
+                    title: verification.title,
+                    detail: verification.detail,
+                    icon: verification.systemImage,
+                    color: verificationColor(for: verification.tone)
+                )
+            }
         }
         .padding(.top, 2)
     }
@@ -1151,6 +1170,7 @@ struct TaskMainView: View {
         if isGeneratingRecap { count += 1 }
         if recapStatusMessage != nil { count += 1 }
         if currentScheduleStatusMessage != nil { count += 1 }
+        if currentVerificationPresentation != nil { count += 1 }
         return count
     }
 
@@ -1195,6 +1215,9 @@ struct TaskMainView: View {
         if currentScheduleStatusMessage != nil {
             parts.append(isScheduleStatusError ? "Routine needs attention" : "Routine created")
         }
+        if let verification = currentVerificationPresentation {
+            parts.append(verification.summary)
+        }
         return parts
     }
 
@@ -1202,23 +1225,47 @@ struct TaskMainView: View {
         if runtimeHealth.isAttentionState ||
             shouldShowPendingApprovalStatus ||
             recapStatusMessage != nil ||
-            isScheduleStatusError {
+            isScheduleStatusError ||
+            currentVerificationPresentation?.tone == .failed ||
+            currentVerificationPresentation?.tone == .attention {
             return Stanford.poppy
+        }
+        if currentVerificationPresentation?.tone == .verified {
+            return Stanford.paloAltoGreen
         }
         return Stanford.lagunita
     }
 
     private var threadStatusIcon: String {
-        if runtimeHealth.isAttentionState || recapStatusMessage != nil || isScheduleStatusError {
+        if runtimeHealth.isAttentionState ||
+            recapStatusMessage != nil ||
+            isScheduleStatusError ||
+            currentVerificationPresentation?.tone == .failed {
             return "exclamationmark.triangle"
         }
         if shouldShowPendingApprovalStatus {
             return "person.crop.circle.badge.questionmark"
         }
+        if let verification = currentVerificationPresentation {
+            return verification.systemImage
+        }
         if task.status == .running {
             return "dot.radiowaves.left.and.right"
         }
         return "list.bullet.rectangle"
+    }
+
+    private func verificationColor(for tone: TaskVerificationTone) -> Color {
+        switch tone {
+        case .verified:
+            return Stanford.paloAltoGreen
+        case .attention:
+            return Stanford.poppy
+        case .failed:
+            return Stanford.failed
+        case .neutral:
+            return Stanford.coolGrey
+        }
     }
 
     private func threadStatusDetailRow(

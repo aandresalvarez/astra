@@ -81,6 +81,9 @@ enum AgentEventCompactor {
         var commands: [String] = []
         var paths: [String] = []
         var outcomes: [String] = []
+        var decisions: [String] = []
+        var unresolved: [String] = []
+        var preferences: [String] = []
 
         for event in events {
             if let command = compactToolCommand(from: event) {
@@ -90,9 +93,27 @@ enum AgentEventCompactor {
             if let outcome = compactOutcome(from: event) {
                 outcomes.append(outcome)
             }
+            if let decision = compactDecision(from: event) {
+                decisions.append(decision)
+            }
+            if let blocker = compactUnresolvedIssue(from: event) {
+                unresolved.append(blocker)
+            }
+            if let preference = compactUserPreference(from: event) {
+                preferences.append(preference)
+            }
         }
 
         var lines: [String] = []
+        if !decisions.isEmpty {
+            lines.append("- Decisions: \(dedupeKeepingOrder(decisions, limit: 5).joined(separator: " | "))")
+        }
+        if !unresolved.isEmpty {
+            lines.append("- Unresolved bugs/blockers: \(dedupeKeepingOrder(unresolved, limit: 5).joined(separator: " | "))")
+        }
+        if !preferences.isEmpty {
+            lines.append("- User preferences: \(dedupeKeepingOrder(preferences, limit: 5).joined(separator: " | "))")
+        }
         if !commands.isEmpty {
             lines.append("- Commands/tools: \(dedupeKeepingOrder(commands, limit: 5).joined(separator: "; "))")
         }
@@ -123,6 +144,49 @@ enum AgentEventCompactor {
             return payload
         }
         return nil
+    }
+
+    private static func compactDecision(from event: TaskEvent) -> String? {
+        let payload = boundedInline(event.payload, maxCharacters: 500)
+        guard !payload.isEmpty else { return nil }
+        let lower = payload.lowercased()
+        let hasDecisionSignal = lower.contains("decision:") ||
+            lower.contains("decided") ||
+            lower.contains("approved plan") ||
+            lower.contains("accepted plan") ||
+            lower.contains("we will") ||
+            lower.contains("we should") ||
+            lower.contains("use ") && lower.contains(" as ")
+        guard hasDecisionSignal else { return nil }
+        return "\(event.type): \(payload)"
+    }
+
+    private static func compactUnresolvedIssue(from event: TaskEvent) -> String? {
+        let payload = boundedInline(event.payload, maxCharacters: 500)
+        guard !payload.isEmpty else { return nil }
+        let lower = payload.lowercased()
+        let hasUnresolvedSignal = lower.contains("unresolved") ||
+            lower.contains("blocker") ||
+            lower.contains("blocked") ||
+            lower.contains("still failing") ||
+            lower.contains("not fixed") ||
+            lower.contains("regression") ||
+            lower.contains("bug:")
+        guard hasUnresolvedSignal else { return nil }
+        return "\(event.type): \(payload)"
+    }
+
+    private static func compactUserPreference(from event: TaskEvent) -> String? {
+        let payload = boundedInline(event.payload, maxCharacters: 500)
+        guard !payload.isEmpty else { return nil }
+        let lower = payload.lowercased()
+        let hasPreferenceSignal = lower.contains("user prefers") ||
+            lower.contains("user preference") ||
+            lower.contains("preference:") ||
+            lower.contains("always ") ||
+            lower.contains("never ")
+        guard hasPreferenceSignal else { return nil }
+        return "\(event.type): \(payload)"
     }
 
     private static func compactOutcome(from event: TaskEvent) -> String? {

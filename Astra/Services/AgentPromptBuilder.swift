@@ -1260,7 +1260,8 @@ enum AgentPromptBuilder {
         mode: PromptAssemblyMode,
         budgetProfile: PromptContextBudgetProfile
     ) -> PromptAssemblyManifest {
-        let budgetedSections = sections.compactMap { budgetedSection($0, budgetProfile: budgetProfile) }
+        let mergedSections = mergedPromptSections(sections)
+        let budgetedSections = mergedSections.compactMap { budgetedSection($0, budgetProfile: budgetProfile) }
         let prompt = budgetedSections.map(\.text).joined(separator: "\n\n")
         return PromptAssemblyManifest(
             mode: mode,
@@ -1269,6 +1270,27 @@ enum AgentPromptBuilder {
             estimatedPromptTokens: estimatedTokens(forCharacterCount: prompt.count),
             promptCharacterCount: prompt.count
         )
+    }
+
+    private static func mergedPromptSections(_ sections: [PromptContextSection]) -> [PromptContextSection] {
+        var textByKind: [PromptContextSectionKind: [String]] = [:]
+        var sourcesByKind: [PromptContextSectionKind: [PromptContextSourcePointer]] = [:]
+
+        for section in sections {
+            let text = section.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            textByKind[section.kind, default: []].append(text)
+            sourcesByKind[section.kind, default: []].append(contentsOf: section.sourcePointers)
+        }
+
+        return PromptContextSectionKind.allCases.compactMap { kind in
+            guard let texts = textByKind[kind], !texts.isEmpty else { return nil }
+            return PromptContextSection(
+                kind: kind,
+                text: texts.joined(separator: "\n\n"),
+                sourcePointers: dedupeSourcePointers(sourcesByKind[kind] ?? [])
+            )
+        }
     }
 
     private static func budgetedSection(
@@ -1303,12 +1325,20 @@ enum AgentPromptBuilder {
                     tokenBudget: tokenBudget,
                     originalCharacters: text.count
                 )
-                let separator = "\n\n"
-                let prefixCharacterLimit = characterBudget - notice.count - separator.count
-                if prefixCharacterLimit >= 160 {
-                    includedText = String(text.prefix(prefixCharacterLimit)) + separator + notice
+                if section.kind == .currentGoal {
+                    includedText = budgetedCurrentGoalText(
+                        text,
+                        notice: notice,
+                        characterBudget: characterBudget
+                    )
                 } else {
-                    includedText = notice.count > characterBudget ? String(notice.prefix(characterBudget)) : notice
+                    let separator = "\n\n"
+                    let prefixCharacterLimit = characterBudget - notice.count - separator.count
+                    if prefixCharacterLimit >= 160 {
+                        includedText = String(text.prefix(prefixCharacterLimit)) + separator + notice
+                    } else {
+                        includedText = notice.count > characterBudget ? String(notice.prefix(characterBudget)) : notice
+                    }
                 }
                 isTruncated = true
             }
@@ -1329,6 +1359,26 @@ enum AgentPromptBuilder {
                 includedTextPreview: boundedText(includedText, maxCharacters: 3_000, keeping: .prefix)
             )
         )
+    }
+
+    private static func budgetedCurrentGoalText(
+        _ text: String,
+        notice: String,
+        characterBudget: Int
+    ) -> String {
+        let marker = "\n\n" + notice + "\n\n"
+        let available = characterBudget - marker.count
+        guard available >= 240 else {
+            let suffixBudget = max(0, characterBudget - notice.count - 2)
+            if suffixBudget >= 120 {
+                return notice + "\n\n" + String(text.suffix(suffixBudget))
+            }
+            return notice.count > characterBudget ? String(notice.prefix(characterBudget)) : notice
+        }
+
+        let prefixCount = max(120, available / 2)
+        let suffixCount = max(120, available - prefixCount)
+        return String(text.prefix(prefixCount)) + marker + String(text.suffix(suffixCount))
     }
 
     private static func budgetOmissionNotice(

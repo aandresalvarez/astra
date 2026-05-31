@@ -219,4 +219,52 @@ struct CompactionTests {
         #expect(summary.payload.contains("/tmp/Astra/Services/AgentPromptBuilder.swift"))
         #expect(summary.payload.contains("Tests failed"))
     }
+
+    @Test("Compaction summary preserves decisions blockers and preferences")
+    func compactionSummaryPreservesDecisionsBlockersAndPreferences() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        for index in 0..<230 {
+            let event: TaskEvent
+            switch index {
+            case 5:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "Decision: use current_state as the canonical Context Capsule."
+                )
+            case 6:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "Unresolved bug: Antigravity provider returned no visible result."
+                )
+            case 7:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "User prefers regression tests for every bug fix."
+                )
+            default:
+                event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            }
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+        let summary = try #require(remainingEvents.first { $0.type == "activity.compacted" })
+        #expect(summary.payload.contains("Decisions:"))
+        #expect(summary.payload.contains("canonical Context Capsule"))
+        #expect(summary.payload.contains("Unresolved bugs/blockers:"))
+        #expect(summary.payload.contains("provider returned no visible result"))
+        #expect(summary.payload.contains("User preferences:"))
+        #expect(summary.payload.contains("regression tests for every bug fix"))
+    }
 }
