@@ -147,6 +147,15 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailSectionPresentation.attentionGroupUsesWarningTint == false)
     }
 
+    @Test("workspace right rail orders primary work before setup and inventory")
+    func workspaceRightRailOrdersPrimaryWorkBeforeSetupAndInventory() {
+        #expect(WorkspaceRightRailPresentation.primarySectionOrder == [
+            "Repository",
+            WorkspaceSetupChecklistPresentation.sectionTitle,
+            CapabilityRailSectionPresentation.sectionTitle
+        ])
+    }
+
     @Test("workspace setup checklist summary stays compact")
     func workspaceSetupChecklistSummaryStaysCompact() {
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
@@ -165,10 +174,36 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.supportsMemoryRemoval == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsFolderRemoval == true)
         #expect(WorkspaceSetupChecklistPresentation.usesCapabilitySummaryRowPattern == true)
+        #expect(WorkspaceSetupChecklistPresentation.collapsesConfiguredRowsByDefault == true)
+        #expect(WorkspaceSetupChecklistPresentation.configuredSummaryTitle == "Configured items")
+        #expect(WorkspaceSetupChecklistPresentation.configuredSummaryActionTitle == "Show all")
+        #expect(WorkspaceSetupChecklistPresentation.configuredSummaryIcon == "checkmark.circle")
         #expect(WorkspaceSetupChecklistPresentation.showsPerRowStatusInCollapsedState == false)
         #expect(WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon == "chevron.right")
         #expect(WorkspaceSetupChecklistPresentation.expandedDisclosureIcon == "chevron.down")
         #expect(WorkspaceSetupChecklistPresentation.detailPreviewLimit == 4)
+        #expect(
+            WorkspaceSetupChecklistPresentation.configuredPreview([
+                "Memory",
+                "Folders",
+                "Routines"
+            ]) == "Memory, Folders, Routines"
+        )
+        #expect(
+            WorkspaceSetupChecklistPresentation.configuredPreview([
+                "Instructions",
+                "Memory",
+                "Folders",
+                "Remote access"
+            ]) == "Instructions, Memory, Folders +1"
+        )
+        #expect(
+            WorkspaceSetupChecklistPresentation.configuredPreview([
+                " ",
+                "Folders"
+            ]) == "Folders"
+        )
+        #expect(WorkspaceSetupChecklistPresentation.configuredPreview([]) == "No configured items")
         #expect(
             WorkspaceSetupChecklistPresentation.overflowSummary(
                 total: 6,

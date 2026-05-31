@@ -37,6 +37,14 @@ private enum WorkspaceSetupItem: Hashable {
     case routines
 }
 
+enum WorkspaceRightRailPresentation {
+    static let primarySectionOrder = [
+        "Repository",
+        WorkspaceSetupChecklistPresentation.sectionTitle,
+        CapabilityRailSectionPresentation.sectionTitle
+    ]
+}
+
 enum CapabilityRailLayout {
     static let compactRowMinHeight: CGFloat = 64
     static let regularRowMinHeight: CGFloat = 68
@@ -106,11 +114,15 @@ enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
     static let configuredGroupTitle = "Configured"
+    static let configuredSummaryTitle = "Configured items"
+    static let configuredSummaryActionTitle = "Show all"
+    static let configuredSummaryIcon = "checkmark.circle"
     static let supportsInlineExpansion = true
     static let supportsInlineEditing = true
     static let supportsMemoryRemoval = true
     static let supportsFolderRemoval = true
     static let usesCapabilitySummaryRowPattern = true
+    static let collapsesConfiguredRowsByDefault = true
     static let showsPerRowStatusInCollapsedState = false
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
@@ -130,6 +142,18 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func summary(configured: Int, total: Int) -> String {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+
+    static func configuredPreview(_ names: [String], limit: Int = 3) -> String {
+        let cleanNames = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleanNames.isEmpty else { return "No configured items" }
+
+        let visible = cleanNames.prefix(limit)
+        let remaining = cleanNames.count - visible.count
+        let prefix = visible.joined(separator: ", ")
+        return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
     }
 
     static func overflowSummary(
@@ -203,6 +227,7 @@ struct WorkspaceRightRailView: View {
     @State private var isConnectorsExpanded = false
     @State private var isToolsExpanded = false
     @State private var isTemplatesExpanded = false
+    @State private var isConfiguredWorkspaceSetupExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
@@ -402,8 +427,6 @@ struct WorkspaceRightRailView: View {
         let snapshot = capabilityRailSnapshot
 
         return VStack(alignment: .leading, spacing: panelSpacing) {
-            capabilityHealthPanel(snapshot)
-
             if hasGitRepositories {
                 floatingContextSection {
                     WorkspaceGitSectionView(
@@ -419,6 +442,8 @@ struct WorkspaceRightRailView: View {
             floatingContextSection {
                 workspaceSetupChecklistPanel
             }
+
+            capabilityHealthPanel(snapshot)
 
         }
         .tint(Stanford.lagunita)
@@ -1530,10 +1555,41 @@ struct WorkspaceRightRailView: View {
                 }
 
                 if workspaceSetupConfiguredCount > 0 {
-                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
-                        workspaceSetupRows(for: .configured)
-                    }
+                    workspaceSetupConfiguredGroup
                 }
+            }
+        }
+    }
+
+    private var workspaceSetupConfiguredGroup: some View {
+        workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
+            if isConfiguredWorkspaceSetupExpanded {
+                workspaceSetupRows(for: .configured)
+                Button {
+                    withAnimation(disclosureAnimation) {
+                        isConfiguredWorkspaceSetupExpanded = false
+                    }
+                } label: {
+                    Text("Hide")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                        .padding(.vertical, 2)
+                }
+                .buttonStyle(.plain)
+            } else {
+                CapabilitySummaryRow(
+                    icon: WorkspaceSetupChecklistPresentation.configuredSummaryIcon,
+                    iconColor: Stanford.lagunita,
+                    title: WorkspaceSetupChecklistPresentation.configuredSummaryTitle,
+                    subtitle: workspaceSetupConfiguredPreview,
+                    actionTitle: WorkspaceSetupChecklistPresentation.configuredSummaryActionTitle,
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            isConfiguredWorkspaceSetupExpanded = true
+                        }
+                    }
+                )
             }
         }
     }
@@ -1572,6 +1628,27 @@ struct WorkspaceRightRailView: View {
         if workspaceSetupState(for: .remoteAccess) == state { items.append(.remoteAccess) }
         if !workspace.schedules.isEmpty, state == .configured { items.append(.routines) }
         return items
+    }
+
+    private var workspaceSetupConfiguredPreview: String {
+        WorkspaceSetupChecklistPresentation.configuredPreview(
+            workspaceSetupRowItems(for: .configured).map(workspaceSetupTitle(for:))
+        )
+    }
+
+    private func workspaceSetupTitle(for item: WorkspaceSetupItem) -> String {
+        switch item {
+        case .instructions:
+            return "Instructions"
+        case .memory:
+            return "Memory"
+        case .folders:
+            return "Folders"
+        case .remoteAccess:
+            return "Remote access"
+        case .routines:
+            return "Routines"
+        }
     }
 
     private func workspaceSetupState(for item: WorkspaceSetupItem) -> WorkspaceSetupChecklistPresentation.State {
@@ -2425,6 +2502,7 @@ struct WorkspaceRightRailView: View {
         isContextCollapsed = false
         isToolsExpanded = false
         isTemplatesExpanded = false
+        isConfiguredWorkspaceSetupExpanded = false
         isMemoryComposerVisible = false
         expandedWorkspaceSetupItems = []
     }
