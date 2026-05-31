@@ -120,6 +120,8 @@ enum AgentPromptBuilder {
     private static let recentSessionFullOutputFileLimit = 4
     private static let recentSessionFullOutputMaxCharacters = 8_000
     private static let olderSessionOutputMaxCharacters = 2_000
+    private static let contextSourceIndexOutputFileLimit = 12
+    private static let contextSourceIndexArtifactLimit = 12
     private static let fallbackRunResponseLimit = 8
     private static let fallbackRecentRunResponseLimit = 3
     private static let fallbackRecentRunResponseMaxCharacters = 8_000
@@ -161,12 +163,12 @@ enum AgentPromptBuilder {
             )
         }
 
-        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace, contextText: task.goal) {
             appendSection(
-                memoriesBlock,
+                memoriesBlock.text,
                 kind: .memories,
                 to: &sections,
-                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+                sourcePointers: memoriesBlock.sourcePointers
             )
         }
 
@@ -789,6 +791,8 @@ enum AgentPromptBuilder {
         )
         appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
         appendThreadIntentContext(for: task, to: &sections)
+        appendContextSourceIndex(for: task, to: &sections)
+        appendNativeContinuationPolicy(for: task, to: &sections)
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
@@ -815,6 +819,7 @@ enum AgentPromptBuilder {
             }
         }
 
+        let activeRuns = activeFollowUpRuns(for: task)
         let sortedRuns = followUpContextRuns(for: task)
         if !includedExactSessionTranscript, !sortedRuns.isEmpty {
             var answersBlock = "Previous responses (your final answers from each turn):"
@@ -835,7 +840,7 @@ enum AgentPromptBuilder {
             )
         }
 
-        let allChanges = sortedRuns.flatMap { $0.fileChanges }
+        let allChanges = activeRuns.flatMap { $0.fileChanges }
         if !allChanges.isEmpty {
             let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
             let changeList = uniquePaths.map { path -> String in
@@ -880,12 +885,15 @@ enum AgentPromptBuilder {
 
         appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
 
-        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace) {
+        if let memoriesBlock = workspaceMemoriesBlock(
+            for: task.workspace,
+            contextText: [task.goal, message].joined(separator: "\n")
+        ) {
             appendSection(
-                memoriesBlock,
+                memoriesBlock.text,
                 kind: .memories,
                 to: &sections,
-                sourcePointers: [sourcePointer(label: "workspace saved memories", target: task.workspace?.name ?? "current workspace")]
+                sourcePointers: memoriesBlock.sourcePointers
             )
         }
 
@@ -908,6 +916,25 @@ enum AgentPromptBuilder {
         return sections
     }
 
+    private static func appendNativeContinuationPolicy(for task: AgentTask, to sections: inout [PromptContextSection]) {
+        let runtime = task.resolvedRuntimeID
+        guard AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime),
+              let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return
+        }
+
+        appendSection("""
+        Native Continuation Policy:
+        ASTRA may attach the provider-native session for continuity, but the Context Capsule v2 and Context Source Index above remain authoritative. Treat provider-native memory as an optimization only. If it conflicts with ASTRA state, follow ASTRA state and the current user request.
+        """, kind: .threadState, to: &sections, sourcePointers: [
+            sourcePointer(
+                label: "provider native session",
+                target: "\(runtime.rawValue) session prefix \(String(sessionID.prefix(8)))"
+            )
+        ])
+    }
+
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
         buildRecentConversationTranscriptWithSources(for: task)?.text
     }
@@ -924,25 +951,13 @@ enum AgentPromptBuilder {
     }
 
     private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextText? {
-        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: outputDirectory),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-
-        let turnFiles = urls
-            .filter { url in
-                let name = url.lastPathComponent
-                return name.hasPrefix("turn_") && name.hasSuffix(".md")
-            }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
             .suffix(recentSessionOutputFileLimit)
 
         guard !turnFiles.isEmpty else { return nil }
 
-        let transcriptSections = turnFiles.enumerated().compactMap { offset, url -> String? in
-            guard let text = try? String(contentsOf: url, encoding: .utf8),
+        let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
+            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
@@ -951,17 +966,34 @@ enum AgentPromptBuilder {
                 ? recentSessionFullOutputMaxCharacters
                 : olderSessionOutputMaxCharacters
             let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
-            return "--- \(url.lastPathComponent) ---\n\(excerpt)"
+            return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
         }
 
         guard !transcriptSections.isEmpty else { return nil }
         let sourcePointers = turnFiles.map {
-            sourcePointer(label: "turn output", target: $0.path)
+            sourcePointer(label: "turn output", target: $0)
         } + [sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: taskFolder))]
         return PromptContextText(
             text: transcriptSections.joined(separator: "\n\n"),
             sourcePointers: sourcePointers
         )
+    }
+
+    private static func outputTurnFilePaths(taskFolder: String) -> [String] {
+        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: outputDirectory),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return urls
+            .filter { url in
+                let name = url.lastPathComponent
+                return name.hasPrefix("turn_") && name.hasSuffix(".md")
+            }
+            .map(\.path)
+            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
     }
 
     private static func recentSessionHistorySummary(from history: String) -> String {
@@ -978,20 +1010,20 @@ enum AgentPromptBuilder {
     }
 
     private static func followUpContextRuns(for task: AgentTask) -> [TaskRun] {
+        let runsWithOutput = activeFollowUpRuns(for: task).filter { !$0.output.isEmpty }
+        return Array(runsWithOutput.suffix(fallbackRunResponseLimit))
+    }
+
+    private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         guard !sortedRuns.isEmpty else { return [] }
 
-        let activeRuns: [TaskRun]
         if task.forkedFromID != nil,
            task.forkedAtRunIndex > 0,
            task.forkedAtRunIndex < sortedRuns.count {
-            activeRuns = Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
-        } else {
-            activeRuns = sortedRuns
+            return Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
         }
-
-        let runsWithOutput = activeRuns.filter { !$0.output.isEmpty }
-        return Array(runsWithOutput.suffix(fallbackRunResponseLimit))
+        return sortedRuns
     }
 
     private static func boundedText(_ text: String, maxCharacters: Int, keeping bound: TextBound) -> String {
@@ -1070,6 +1102,88 @@ enum AgentPromptBuilder {
         }
 
         return "[Context: \(contextParts.joined(separator: " | "))]\n\n\(message)"
+    }
+
+    private static func appendContextSourceIndex(for task: AgentTask, to sections: inout [PromptContextSection]) {
+        guard let context = contextSourceIndex(for: task) else { return }
+        appendSection(
+            context.text,
+            kind: .threadState,
+            to: &sections,
+            sourcePointers: context.sourcePointers
+        )
+    }
+
+    private static func contextSourceIndex(for task: AgentTask) -> PromptContextText? {
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        var lines = [
+            "Context Source Index:",
+            "Use this index for just-in-time retrieval. Read exact files/history/artifacts before relying on omitted details, old decisions, failed commands, verification evidence, generated outputs, or exact prior wording."
+        ]
+        var pointers: [PromptContextSourcePointer] = []
+
+        if !folder.isEmpty {
+            let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+            let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+            let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+
+            lines.append("- Canonical state JSON: \(stateJSONPath)")
+            lines.append("- Canonical state Markdown: \(stateMarkdownPath)")
+            pointers.append(sourcePointer(label: "canonical current state JSON", target: stateJSONPath))
+            pointers.append(sourcePointer(label: "current state markdown", target: stateMarkdownPath))
+
+            if FileManager.default.fileExists(atPath: historyPath) {
+                lines.append("- Session history: \(historyPath)")
+                pointers.append(sourcePointer(label: "session history", target: historyPath))
+            }
+
+            let turnOutputs = outputTurnFilePaths(taskFolder: folder)
+                .suffix(contextSourceIndexOutputFileLimit)
+            if !turnOutputs.isEmpty {
+                lines.append("- Turn outputs:")
+                for path in turnOutputs {
+                    lines.append("  - \((path as NSString).lastPathComponent): \(path)")
+                    pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+
+            let generatedFiles = listTaskFolderFiles(folder)
+            if !generatedFiles.isEmpty {
+                lines.append("- Generated files:")
+                lines.append(contentsOf: generatedFiles.map { "  \($0)" })
+                pointers.append(sourcePointer(label: "task output folder", target: folder))
+            }
+        }
+
+        let changedPaths = dedupeKeepingOrder(
+            activeFollowUpRuns(for: task).flatMap { $0.fileChanges.map(\.path) },
+            limit: 20
+        )
+        if !changedPaths.isEmpty {
+            lines.append("- Changed files from active runs:")
+            for path in changedPaths {
+                lines.append("  - \(path)")
+            }
+            pointers.append(contentsOf: changedFileSourcePointers(changedPaths))
+        }
+
+        let artifacts = task.artifacts
+            .sorted { $0.createdAt < $1.createdAt }
+            .suffix(contextSourceIndexArtifactLimit)
+        if !artifacts.isEmpty {
+            lines.append("- Artifacts:")
+            for artifact in artifacts {
+                let stale = artifact.isStale ? " stale" : ""
+                lines.append("  - \(artifact.type) v\(artifact.version)\(stale): \(artifact.path)")
+                pointers.append(sourcePointer(label: "artifact \(artifact.type)", target: artifact.path))
+            }
+        }
+
+        guard lines.count > 2 else { return nil }
+        return PromptContextText(
+            text: lines.joined(separator: "\n"),
+            sourcePointers: dedupeSourcePointers(pointers)
+        )
     }
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
@@ -1153,7 +1267,8 @@ enum AgentPromptBuilder {
         mode: PromptAssemblyMode,
         budgetProfile: PromptContextBudgetProfile
     ) -> PromptAssemblyManifest {
-        let budgetedSections = sections.compactMap { budgetedSection($0, budgetProfile: budgetProfile) }
+        let mergedSections = mergedPromptSections(sections)
+        let budgetedSections = mergedSections.compactMap { budgetedSection($0, budgetProfile: budgetProfile) }
         let prompt = budgetedSections.map(\.text).joined(separator: "\n\n")
         return PromptAssemblyManifest(
             mode: mode,
@@ -1162,6 +1277,27 @@ enum AgentPromptBuilder {
             estimatedPromptTokens: estimatedTokens(forCharacterCount: prompt.count),
             promptCharacterCount: prompt.count
         )
+    }
+
+    private static func mergedPromptSections(_ sections: [PromptContextSection]) -> [PromptContextSection] {
+        var textByKind: [PromptContextSectionKind: [String]] = [:]
+        var sourcesByKind: [PromptContextSectionKind: [PromptContextSourcePointer]] = [:]
+
+        for section in sections {
+            let text = section.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            textByKind[section.kind, default: []].append(text)
+            sourcesByKind[section.kind, default: []].append(contentsOf: section.sourcePointers)
+        }
+
+        return PromptContextSectionKind.allCases.compactMap { kind in
+            guard let texts = textByKind[kind], !texts.isEmpty else { return nil }
+            return PromptContextSection(
+                kind: kind,
+                text: texts.joined(separator: "\n\n"),
+                sourcePointers: dedupeSourcePointers(sourcesByKind[kind] ?? [])
+            )
+        }
     }
 
     private static func budgetedSection(
@@ -1250,6 +1386,22 @@ enum AgentPromptBuilder {
             return String(notice.prefix(noticeLimit)) + separator + String(text.suffix(suffixLimit))
         }
 
+        if sectionKind == .currentGoal {
+            let marker = separator + notice + separator
+            let available = budget - marker.count
+            guard available >= 240 else {
+                let suffixBudget = max(0, budget - notice.count - separator.count)
+                if suffixBudget >= 120 {
+                    return notice + separator + String(text.suffix(suffixBudget))
+                }
+                return notice.count > budget ? String(notice.prefix(budget)) : notice
+            }
+
+            let prefixCount = max(120, available / 2)
+            let suffixCount = max(120, available - prefixCount)
+            return String(text.prefix(prefixCount)) + marker + String(text.suffix(suffixCount))
+        }
+
         let contentCharacterLimit = budget - notice.count - separator.count
         guard contentCharacterLimit >= 160 else {
             return notice.count > budget ? String(notice.prefix(budget)) : notice
@@ -1284,13 +1436,205 @@ enum AgentPromptBuilder {
         max(1, Int(ceil(Double(count) / Double(estimatedCharactersPerToken))))
     }
 
-    private static func workspaceMemoriesBlock(for workspace: Workspace?) -> String? {
-        guard let memories = workspace?.memories, !memories.isEmpty else { return nil }
-        return """
-        YOUR MEMORIES (saved by the user for this workspace — these ARE your persistent memories, do NOT look for memory files on disk):
-        \(memories.map { "- \($0)" }.joined(separator: "\n"))
-        When the user asks about your memories, report these items. Do not check ~/.claude/ or any file-based memory system.
-        """
+    private enum WorkspaceMemoryNamespace: String, CaseIterable, Hashable {
+        case userPreference
+        case workspaceConvention
+        case providerRuntime
+        case general
+
+        var heading: String {
+            switch self {
+            case .userPreference: "User preferences"
+            case .workspaceConvention: "Workspace conventions"
+            case .providerRuntime: "Provider and runtime facts"
+            case .general: "Other relevant workspace memories"
+            }
+        }
+    }
+
+    private struct RetrievedWorkspaceMemory {
+        var index: Int
+        var text: String
+        var namespace: WorkspaceMemoryNamespace
+        var score: Int
+    }
+
+    private static let maxWorkspaceMemoriesInPrompt = 8
+    private static let memoryStopWords: Set<String> = [
+        "about", "after", "again", "also", "and", "are", "ask", "but", "can",
+        "for", "from", "has", "have", "how", "into", "not", "now", "only",
+        "our", "out", "please", "should", "task", "that", "the", "their",
+        "them", "then", "there", "this", "use", "user", "when", "where",
+        "with", "work", "you", "your"
+    ]
+
+    private static func workspaceMemoriesBlock(for workspace: Workspace?, contextText: String) -> PromptContextText? {
+        guard let workspace,
+              !workspace.memories.isEmpty else {
+            return nil
+        }
+
+        let memories = workspace.memories.enumerated().compactMap { index, rawText -> (Int, String)? in
+            let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : (index, text)
+        }
+        guard !memories.isEmpty else { return nil }
+
+        let includeAll = shouldIncludeAllWorkspaceMemories(contextText)
+        let contextTokens = meaningfulMemoryTokens(in: contextText)
+        let retrieved = memories.map { index, text in
+            let namespace = workspaceMemoryNamespace(for: text)
+            return RetrievedWorkspaceMemory(
+                index: index,
+                text: text,
+                namespace: namespace,
+                score: workspaceMemoryRelevanceScore(
+                    text: text,
+                    namespace: namespace,
+                    contextTokens: contextTokens
+                )
+            )
+        }
+
+        let selected: [RetrievedWorkspaceMemory]
+        if includeAll || retrieved.count <= maxWorkspaceMemoriesInPrompt {
+            selected = retrieved.sorted { $0.index < $1.index }
+        } else {
+            let positive = retrieved
+                .filter { $0.score > 0 }
+                .sorted(by: workspaceMemorySort)
+            let ranked = positive.isEmpty ? retrieved.sorted(by: workspaceMemorySort) : positive
+            selected = Array(ranked.prefix(maxWorkspaceMemoriesInPrompt))
+                .sorted { $0.index < $1.index }
+        }
+
+        var lines = [
+            "Workspace Memory Retrieval:",
+            "- Scope: workspace-saved memories. Task-local state is Context Capsule v2/current_state."
+        ]
+
+        for namespace in WorkspaceMemoryNamespace.allCases {
+            let group = selected.filter { $0.namespace == namespace }
+            guard !group.isEmpty else { continue }
+            lines.append("\(namespace.heading):")
+            lines.append(contentsOf: group.map { "- \($0.text)" })
+        }
+
+        lines.append("- Retrieval: \(includeAll ? "complete memory inventory requested" : "namespace- and relevance-ranked for the current task or follow-up").")
+        lines.append("- Use Context Capsule v2/current_state for task objective, decisions, blockers, changed files, and verification.")
+        lines.append("- Do not check ~/.claude/ or any file-based memory system for these workspace memories.")
+
+        let omittedCount = memories.count - selected.count
+        if omittedCount > 0 {
+            lines.append("- Omitted \(omittedCount) lower-relevance workspace memories from this prompt. Use the workspace memory list when a complete inventory is needed.")
+        }
+
+        var pointers = [sourcePointer(label: "workspace saved memories", target: workspace.name)]
+        let namespaces = Set(selected.map(\.namespace))
+        pointers += WorkspaceMemoryNamespace.allCases
+            .filter { namespaces.contains($0) }
+            .map { sourcePointer(label: "workspace memory namespace", target: "\(workspace.name)#\($0.rawValue)") }
+        if omittedCount > 0 {
+            pointers.append(sourcePointer(label: "omitted workspace memories", target: "\(workspace.name) omitted \(omittedCount)"))
+        }
+
+        return PromptContextText(
+            text: lines.joined(separator: "\n"),
+            sourcePointers: pointers
+        )
+    }
+
+    private static func shouldIncludeAllWorkspaceMemories(_ contextText: String) -> Bool {
+        let lower = contextText.lowercased()
+        return lower.contains("what do you remember") ||
+            lower.contains("what are your memories") ||
+            lower.contains("show memories") ||
+            lower.contains("show all memories") ||
+            lower.contains("list memories") ||
+            lower.contains("list all memories") ||
+            lower.contains("memory inventory") ||
+            lower.contains("saved facts") ||
+            lower.contains("saved memories") ||
+            lower.contains("all workspace memories") ||
+            lower.contains("your memories") ||
+            lower.contains("my memories")
+    }
+
+    private static func workspaceMemoryNamespace(for text: String) -> WorkspaceMemoryNamespace {
+        let lower = text.lowercased()
+        if lower.contains("prefer") ||
+            lower.contains("preference") ||
+            lower.contains("always") ||
+            lower.contains("never") ||
+            lower.contains("i like") ||
+            lower.contains("i want") ||
+            lower.contains("tone") ||
+            lower.contains("respond") {
+            return .userPreference
+        }
+        if lower.contains("claude") ||
+            lower.contains("copilot") ||
+            lower.contains("antigravity") ||
+            lower.contains("provider") ||
+            lower.contains("runtime") ||
+            lower.contains("model") ||
+            lower.contains("token") ||
+            lower.contains("budget") ||
+            lower.contains("cli") {
+            return .providerRuntime
+        }
+        if lower.contains("workspace") ||
+            lower.contains("project") ||
+            lower.contains("repo") ||
+            lower.contains("repository") ||
+            lower.contains("uses") ||
+            lower.contains("swiftdata") ||
+            lower.contains("branch") ||
+            lower.contains("test") ||
+            lower.contains("build") ||
+            lower.contains("style") ||
+            lower.contains("convention") {
+            return .workspaceConvention
+        }
+        return .general
+    }
+
+    private static func workspaceMemoryRelevanceScore(
+        text: String,
+        namespace: WorkspaceMemoryNamespace,
+        contextTokens: Set<String>
+    ) -> Int {
+        let memoryTokens = meaningfulMemoryTokens(in: text)
+        var score = memoryTokens.intersection(contextTokens).count * 4
+        switch namespace {
+        case .userPreference:
+            score += 3
+        case .workspaceConvention:
+            score += 2
+        case .providerRuntime:
+            score += 2
+        case .general:
+            break
+        }
+        return score
+    }
+
+    private static func workspaceMemorySort(
+        lhs: RetrievedWorkspaceMemory,
+        rhs: RetrievedWorkspaceMemory
+    ) -> Bool {
+        if lhs.score != rhs.score {
+            return lhs.score > rhs.score
+        }
+        return lhs.index < rhs.index
+    }
+
+    private static func meaningfulMemoryTokens(in text: String) -> Set<String> {
+        let tokens = text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 3 && !memoryStopWords.contains($0) }
+        return Set(tokens)
     }
 
     private static func sourcePointer(label: String, target: String) -> PromptContextSourcePointer {
@@ -1375,6 +1719,20 @@ enum AgentPromptBuilder {
             if seen.insert(pointer).inserted {
                 result.append(pointer)
             }
+        }
+        return result
+    }
+
+    private static func dedupeKeepingOrder(_ values: [String], limit: Int) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            result.append(trimmed)
+            if result.count >= limit { break }
         }
         return result
     }

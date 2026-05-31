@@ -401,6 +401,10 @@ struct AgentRuntimeAdapterCatalog {
         descriptor(for: runtime).supportsAstraRunProtocol
     }
 
+    func supportsNativeContinuation(for runtime: AgentRuntimeID) -> Bool {
+        descriptor(for: runtime).supportsNativeContinuation
+    }
+
     func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
         guard let adapter = adapterIfRegistered(for: runtime) else {
             preconditionFailure("No AgentRuntimeAdapter registered for runtime '\(runtime.rawValue)'")
@@ -503,6 +507,10 @@ enum AgentRuntimeAdapterRegistry {
         liveCatalog.supportsAstraRunProtocol(for: runtime)
     }
 
+    static func supportsNativeContinuation(for runtime: AgentRuntimeID) -> Bool {
+        liveCatalog.supportsNativeContinuation(for: runtime)
+    }
+
     static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
         liveCatalog.adapter(for: runtime)
     }
@@ -525,6 +533,34 @@ struct AgentRuntimeProcessLaunchContext {
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
+    let phase: String
+    let nativeContinuationSessionID: String?
+
+    init(
+        prompt: String,
+        task: AgentTask,
+        workspacePath: String,
+        executablePath: String,
+        providerHomeDirectory: String,
+        permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        permissionManifest: RunPermissionManifest?,
+        timeoutSeconds: TimeInterval,
+        phase: String = "run",
+        nativeContinuationSessionID: String? = nil
+    ) {
+        self.prompt = prompt
+        self.task = task
+        self.workspacePath = workspacePath
+        self.executablePath = executablePath
+        self.providerHomeDirectory = providerHomeDirectory
+        self.permissionPolicy = permissionPolicy
+        self.executionPolicy = executionPolicy
+        self.permissionManifest = permissionManifest
+        self.timeoutSeconds = timeoutSeconds
+        self.phase = phase
+        self.nativeContinuationSessionID = nativeContinuationSessionID
+    }
 }
 
 struct AgentRuntimeLaunchSettings {
@@ -790,7 +826,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             "claude-sonnet-4-6",
             "claude-haiku-4-5-20251001"
         ],
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsNativeContinuation: true
     )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
@@ -937,7 +974,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = [
             "-p",
-            context.prompt,
+            context.prompt
+        ]
+        if let sessionID = context.nativeContinuationSessionID,
+           !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args += ["--resume", sessionID]
+        }
+        args += [
             "--model",
             AgentRuntimeProcessRunner.translatedModelForProvider(model),
             "--output-format",
@@ -963,7 +1006,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             arguments: args,
             currentDirectory: context.workspacePath,
             environment: AgentRuntimeProcessRunner.environment(
-                phase: "run",
+                phase: context.phase,
                 task: context.task,
                 taskEnv: taskEnv,
                 includeClaudeTeamFlag: true
@@ -981,14 +1024,17 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": "run",
+                "phase": context.phase,
                 "model": model,
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
-                "max_turns": String(context.task.maxTurns)
+                "max_turns": String(context.task.maxTurns),
+                "supports_native_continuation": String(descriptor.supportsNativeContinuation),
+                "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
+                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
             ]
         )
     }
@@ -1510,7 +1556,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": "run",
+                "phase": context.phase,
                 "model": model,
                 "parses_json_lines": String(plan.parsesJSONLines),
                 "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
@@ -1957,7 +2003,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": "run",
+                "phase": context.phase,
                 "model": model,
                 "provider_model": providerModel,
                 "model_applied": String(modelApplied),

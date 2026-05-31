@@ -47,6 +47,52 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var summary: String
         var evidence: [SourcePointer]
         var updatedAt: String?
+        var completionVerified: Bool
+        var artifactStatus: String
+
+        init(
+            status: String,
+            strategy: String,
+            command: String?,
+            summary: String,
+            evidence: [SourcePointer],
+            updatedAt: String?,
+            completionVerified: Bool? = nil,
+            artifactStatus: String = "unknown"
+        ) {
+            self.status = status
+            self.strategy = strategy
+            self.command = command
+            self.summary = summary
+            self.evidence = evidence
+            self.updatedAt = updatedAt
+            self.completionVerified = completionVerified ?? (status == "passed")
+            self.artifactStatus = artifactStatus
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case status
+            case strategy
+            case command
+            case summary
+            case evidence
+            case updatedAt
+            case completionVerified
+            case artifactStatus
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try container.decode(String.self, forKey: .status)
+            strategy = try container.decode(String.self, forKey: .strategy)
+            command = try container.decodeIfPresent(String.self, forKey: .command)
+            summary = try container.decode(String.self, forKey: .summary)
+            evidence = try container.decode([SourcePointer].self, forKey: .evidence)
+            updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+            let decodedCompletionVerified = try container.decodeIfPresent(Bool.self, forKey: .completionVerified)
+            completionVerified = decodedCompletionVerified ?? (status == "passed")
+            artifactStatus = try container.decodeIfPresent(String.self, forKey: .artifactStatus) ?? "unknown"
+        }
     }
 
     struct ChangedFile: Codable, Sendable, Equatable, Hashable {
@@ -174,6 +220,10 @@ enum TaskContextStateManager {
         lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
         lines.append("Thread Intent:")
         lines.append("- Mode: \(state.mode.rawValue)")
+        if let checkpoint = checkpointSummary(for: task) {
+            lines.append("Checkpoint:")
+            lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
+        }
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
         }
@@ -193,9 +243,12 @@ enum TaskContextStateManager {
         appendFactList("Blockers", state.blockerFacts, to: &lines, limit: 5)
         appendChangedFiles(state.changedFiles, to: &lines, limit: 8)
         lines.append("- Verification: \(state.verification.status) via \(state.verification.strategy) - \(boundedInline(state.verification.summary, maxCharacters: 320))")
+        lines.append("  - Completion verified: \(state.verification.completionVerified ? "yes" : "no")")
+        lines.append("  - Artifact status: \(boundedInline(state.verification.artifactStatus, maxCharacters: 240))")
         if let command = state.verification.command, !command.isEmpty {
             lines.append("  - Verification command: \(boundedInline(command, maxCharacters: 320))")
         }
+        appendSourcePointerList("Verification evidence", state.verification.evidence, to: &lines, limit: 4)
         appendArtifactReferences(state.artifacts, to: &lines, limit: 6)
         if let next = state.nextLikelyAction, !next.isEmpty {
             lines.append("- Next likely action: \(boundedInline(next, maxCharacters: 320))")
@@ -367,6 +420,9 @@ enum TaskContextStateManager {
             case .none, .failed, .cancelled:
                 break
             }
+        }
+        if let checkpoint = checkpointSummary(for: task) {
+            state.decisions = dedupeKeepingOrder([checkpoint] + state.decisions, limit: maxListItems)
         }
 
         let planBlockers = planState.plan?.steps.compactMap { step -> String? in
@@ -576,9 +632,12 @@ enum TaskContextStateManager {
             sourcePointer(kind: "plan", id: $0.planID.uuidString, summary: "Plan lifecycle")
         }
         return state.decisions.map { decision in
-            contextFact(
+            let checkpointSource = checkpointSummary(for: task) == decision
+                ? checkpointSourcePointer(for: task)
+                : nil
+            return contextFact(
                 decision,
-                sourcePointers: [planSource ?? sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task decision")]
+                sourcePointers: [checkpointSource ?? planSource ?? sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task decision")]
             )
         }
     }
@@ -654,6 +713,7 @@ enum TaskContextStateManager {
     @MainActor
     private static func verificationState(task: AgentTask, latestRun: TaskRun?) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
+        let artifactStatus = artifactVerificationStatus(for: task)
         let latestValidation = task.events
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
@@ -667,7 +727,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: boundedInline(event.payload, maxCharacters: 500),
                 evidence: [eventSource(event, summary: "Validation event")],
-                updatedAt: timestamp(event.timestamp)
+                updatedAt: timestamp(event.timestamp),
+                completionVerified: status == "passed",
+                artifactStatus: artifactStatus
             )
         }
 
@@ -678,7 +740,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: "Manual completion recorded; no automated verification evidence.",
                 evidence: latestRun.map { [sourcePointer(kind: "run", id: $0.id.uuidString, summary: "Completed run")] } ?? [],
-                updatedAt: latestRun?.completedAt.map(timestamp)
+                updatedAt: latestRun?.completedAt.map(timestamp),
+                completionVerified: false,
+                artifactStatus: artifactStatus
             )
         }
 
@@ -689,7 +753,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: firstNonEmpty(latestRun.stopReason, "Latest run did not complete successfully."),
                 evidence: [sourcePointer(kind: "run", id: latestRun.id.uuidString, summary: "Latest unsuccessful run")],
-                updatedAt: latestRun.completedAt.map(timestamp)
+                updatedAt: latestRun.completedAt.map(timestamp),
+                completionVerified: false,
+                artifactStatus: artifactStatus
             )
         }
 
@@ -699,8 +765,26 @@ enum TaskContextStateManager {
             command: command,
             summary: "No structured verification result has been recorded yet.",
             evidence: [],
-            updatedAt: nil
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: artifactStatus
         )
+    }
+
+    @MainActor
+    private static func artifactVerificationStatus(for task: AgentTask) -> String {
+        let artifacts = task.artifacts
+        guard !artifacts.isEmpty else { return "none recorded" }
+        let staleCount = artifacts.filter(\.isStale).count
+        let currentCount = artifacts.count - staleCount
+        switch (currentCount, staleCount) {
+        case (let current, 0):
+            return "\(current) current"
+        case (0, let stale):
+            return "\(stale) stale"
+        case (let current, let stale):
+            return "\(current) current, \(stale) stale"
+        }
     }
 
     @MainActor
@@ -722,6 +806,9 @@ enum TaskContextStateManager {
             ))
         }
         pointers += state.objective.sourcePointers
+        if let checkpointPointer = checkpointSourcePointer(for: task) {
+            pointers.append(checkpointPointer)
+        }
         pointers += state.verification.evidence
         pointers += state.decisionFacts.flatMap(\.sourcePointers)
         pointers += state.blockerFacts.flatMap(\.sourcePointers)
@@ -733,6 +820,21 @@ enum TaskContextStateManager {
     @MainActor
     private static func latestRun(for task: AgentTask) -> TaskRun? {
         task.runs.max { $0.startedAt < $1.startedAt }
+    }
+
+    private static func checkpointSummary(for task: AgentTask) -> String? {
+        guard let sourceID = task.forkedFromID else { return nil }
+        let sourceRunNumber = max(0, task.forkedAtRunIndex) + 1
+        return "Forked checkpoint from task \(sourceID.uuidString) after source run \(sourceRunNumber). Treat copied runs and events up to this checkpoint as this branch history; source runs after the checkpoint are not authoritative for this task."
+    }
+
+    private static func checkpointSourcePointer(for task: AgentTask) -> TaskContextState.SourcePointer? {
+        guard let sourceID = task.forkedFromID else { return nil }
+        return sourcePointer(
+            kind: "checkpoint",
+            id: sourceID.uuidString,
+            summary: "Fork checkpoint after source run \(max(0, task.forkedAtRunIndex) + 1)"
+        )
     }
 
     @MainActor
@@ -1004,6 +1106,20 @@ enum TaskContextStateManager {
         }
     }
 
+    private static func appendSourcePointerList(
+        _ label: String,
+        _ values: [TaskContextState.SourcePointer],
+        to lines: inout [String],
+        limit: Int
+    ) {
+        let items = values.prefix(limit)
+        guard !items.isEmpty else { return }
+        lines.append("  - \(label):")
+        for source in items {
+            lines.append("    - \(sourceSummary(source))")
+        }
+    }
+
     private static func appendMarkdownSection(_ title: String, _ values: [String], to parts: inout [String]) {
         guard !values.isEmpty else { return }
         parts.append("")
@@ -1051,6 +1167,8 @@ enum TaskContextStateManager {
         if let command = verification.command, !command.isEmpty {
             parts.append("- Command: `\(command)`")
         }
+        parts.append("- Completion verified: \(verification.completionVerified ? "yes" : "no")")
+        parts.append("- Artifact status: \(verification.artifactStatus)")
         parts.append("- Summary: \(verification.summary)")
         if let updatedAt = verification.updatedAt {
             parts.append("- Updated: \(updatedAt)")

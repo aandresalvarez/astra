@@ -664,10 +664,10 @@ struct TaskThreadSnapshot: Sendable {
         for run in sortedRuns {
             let act = activity[run.id] ?? .empty
             let outputPres = outputPresByRunID[run.id] ?? .empty
-            
+
             let displayNotices = run.hasVPNWarning ? act.notices.filter { $0.type != "error" } : act.notices
             let actionableNotices = displayNotices.filter { TaskRunNoticePresentationRules.shouldShowInline($0, for: run) }
-            
+
             activityPresentations[run.id] = RunActivityPresentation(
                 run: run,
                 activity: act,

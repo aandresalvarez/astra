@@ -301,6 +301,11 @@ final class AgentRuntimeWorker {
     ) async {
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         let launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        let nativeContinuationSessionID = Self.nativeContinuationSessionID(
+            for: task,
+            runtimeAdapter: runtimeAdapter,
+            phase: auditPhase
+        )
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
             "model": task.model,
@@ -316,7 +321,11 @@ final class AgentRuntimeWorker {
                 "prompt_chars": String(promptOverride?.count ?? 0),
                 "history_run_count": String(task.runs.count),
                 "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
-                "has_session_id": String(task.sessionId != nil),
+                "has_session_id": String(task.hasProviderSession),
+                "supports_native_continuation": String(runtimeAdapter.descriptor.supportsNativeContinuation),
+                "uses_native_continuation": String(nativeContinuationSessionID != nil),
+                "continuation_mode": nativeContinuationSessionID == nil ? "rebuilt_prompt" : "native_plus_rebuilt_prompt",
+                "native_session_prefix": nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
                 "workspace_id": task.workspace?.id.uuidString ?? "none"
             ])
         }
@@ -517,6 +526,8 @@ final class AgentRuntimeWorker {
             permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
+            phase: auditPhase,
+            nativeContinuationSessionID: nativeContinuationSessionID,
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
                     streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -1226,6 +1237,21 @@ final class AgentRuntimeWorker {
             "phase": phase,
             "history_run_count": String(task.runs.count)
         ], level: .info)
+    }
+
+    @MainActor
+    private static func nativeContinuationSessionID(
+        for task: AgentTask,
+        runtimeAdapter: any AgentRuntimeAdapter,
+        phase: String
+    ) -> String? {
+        guard phase == "resume",
+              runtimeAdapter.descriptor.supportsNativeContinuation,
+              let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return nil
+        }
+        return sessionID
     }
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {

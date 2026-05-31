@@ -223,13 +223,19 @@ struct TaskContextStateTests {
         #expect(state.verification.status == "failed")
         #expect(state.verification.strategy == ValidationStrategy.runTests.rawValue)
         #expect(state.verification.command == "swift test --filter VerificationRegressionTests")
+        #expect(state.verification.completionVerified == false)
+        #expect(state.verification.artifactStatus == "none recorded")
         #expect(state.verification.summary.contains("Tests failed"))
         #expect(state.verification.evidence.contains { $0.kind == "event" && $0.id == validationEvent.id.uuidString })
         #expect(state.blockerFacts.contains { $0.sourcePointers.contains { $0.id == validationEvent.id.uuidString } })
 
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Fix the validation failure", task: task)
         #expect(prompt.contains("Verification: failed via run_tests"))
+        #expect(prompt.contains("Completion verified: no"))
+        #expect(prompt.contains("Artifact status: none recorded"))
         #expect(prompt.contains("Verification command: swift test --filter VerificationRegressionTests"))
+        #expect(prompt.contains("Verification evidence:"))
+        #expect(prompt.contains(String(validationEvent.id.uuidString.prefix(8))))
         #expect(prompt.contains("Tests failed"))
     }
 
@@ -269,8 +275,66 @@ struct TaskContextStateTests {
 
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.verification.status == "passed")
+        #expect(state.verification.completionVerified)
         #expect(state.verification.evidence.contains { $0.kind == "event" && $0.id == validationEvent.id.uuidString })
         #expect(state.nextLikelyAction == "Review the result, approve it, or ask a follow-up.")
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: task)
+        #expect(prompt.contains("Verification: passed via run_tests"))
+        #expect(prompt.contains("Completion verified: yes"))
+    }
+
+    @Test("context capsule promotes artifact freshness into verification state")
+    func contextCapsulePromotesArtifactFreshnessIntoVerificationState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Status", primaryPath: root)
+        let task = AgentTask(
+            title: "Artifact Status",
+            goal: "Report artifact freshness in compact state",
+            workspace: workspace,
+            validationStrategy: .runTests
+        )
+        task.testCommand = "swift test --filter ArtifactStatusTests"
+        context.insert(workspace)
+        context.insert(task)
+
+        let currentArtifactPath = (root as NSString).appendingPathComponent("current.html")
+        try "<html>current</html>".write(toFile: currentArtifactPath, atomically: true, encoding: .utf8)
+        let staleArtifactPath = (root as NSString).appendingPathComponent("missing.html")
+        context.insert(Artifact(task: task, type: "html", path: currentArtifactPath))
+        context.insert(Artifact(task: task, type: "html", path: staleArtifactPath))
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Generated and tested artifacts."
+        run.completedAt = Date()
+        task.status = .completed
+        context.insert(run)
+        let validationEvent = TaskEvent(
+            task: task,
+            type: "task.completed",
+            payload: "Tests passed. Artifact status checked.",
+            run: run
+        )
+        context.insert(validationEvent)
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Verify artifact freshness")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.verification.status == "passed")
+        #expect(state.verification.completionVerified)
+        #expect(state.verification.artifactStatus == "1 current, 1 stale")
+        #expect(state.artifacts.contains { $0.path == currentArtifactPath && !$0.isStale })
+        #expect(state.artifacts.contains { $0.path == staleArtifactPath && $0.isStale })
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue from verification", task: task)
+        #expect(prompt.contains("Completion verified: yes"))
+        #expect(prompt.contains("Artifact status: 1 current, 1 stale"))
+        #expect(prompt.contains("html v1 stale"))
     }
 
     @Test("context capsule is primary prompt context before raw transcript")

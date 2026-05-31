@@ -141,4 +141,130 @@ struct CompactionTests {
         #expect(!remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
         #expect(remainingEvents.contains { $0.type == "activity.compacted" })
     }
+
+    @Test("Compaction preserves critical blocker and validation events")
+    func preservesCriticalBlockerAndValidationEvents() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        let preserved: [(Int, String, String)] = [
+            (5, "error", "Tests failed: ContextContinuityTests"),
+            (8, "budget.exceeded", "Token budget exceeded before validation"),
+            (13, "permission.denied", "Permission denied for tool: Bash"),
+            (21, "permission.approval.requested", "Permission requested for tool: Bash"),
+            (34, "task.completed", "Tests passed. 3 tests passed."),
+            (55, "task.interrupted", "Interrupted during provider shutdown")
+        ]
+
+        for index in 0..<230 {
+            let match = preserved.first { $0.0 == index }
+            let event = TaskEvent(
+                task: task,
+                type: match?.1 ?? "agent.response",
+                payload: match?.2 ?? "event \(index)"
+            )
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+        for item in preserved {
+            #expect(remainingEvents.contains { $0.type == item.1 && $0.payload == item.2 })
+        }
+        #expect(!remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
+        #expect(remainingEvents.contains { $0.type == "activity.compacted" })
+    }
+
+    @Test("Compaction summary preserves commands paths and test evidence")
+    func compactionSummaryPreservesSemanticEvidence() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        for index in 0..<230 {
+            let event: TaskEvent
+            switch index {
+            case 7:
+                event = TaskEvent(
+                    task: task,
+                    type: "tool.use",
+                    payload: "Using tool: Bash: swift test --filter PromptContextContinuityTests"
+                )
+            case 8:
+                event = TaskEvent(
+                    task: task,
+                    type: "tool.result",
+                    payload: "Tests failed in /tmp/Astra/Services/AgentPromptBuilder.swift"
+                )
+            default:
+                event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            }
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+        let summary = try #require(remainingEvents.first { $0.type == "activity.compacted" })
+        #expect(summary.payload.contains("Compacted detail index:"))
+        #expect(summary.payload.contains("swift test --filter PromptContextContinuityTests"))
+        #expect(summary.payload.contains("/tmp/Astra/Services/AgentPromptBuilder.swift"))
+        #expect(summary.payload.contains("Tests failed"))
+    }
+
+    @Test("Compaction summary preserves decisions blockers and preferences")
+    func compactionSummaryPreservesDecisionsBlockersAndPreferences() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        for index in 0..<230 {
+            let event: TaskEvent
+            switch index {
+            case 5:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "Decision: use current_state as the canonical Context Capsule."
+                )
+            case 6:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "Unresolved bug: Antigravity provider returned no visible result."
+                )
+            case 7:
+                event = TaskEvent(
+                    task: task,
+                    type: "agent.response",
+                    payload: "User prefers regression tests for every bug fix."
+                )
+            default:
+                event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            }
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remainingEvents = try context.fetch(FetchDescriptor<TaskEvent>())
+        let summary = try #require(remainingEvents.first { $0.type == "activity.compacted" })
+        #expect(summary.payload.contains("Decisions:"))
+        #expect(summary.payload.contains("canonical Context Capsule"))
+        #expect(summary.payload.contains("Unresolved bugs/blockers:"))
+        #expect(summary.payload.contains("provider returned no visible result"))
+        #expect(summary.payload.contains("User preferences:"))
+        #expect(summary.payload.contains("regression tests for every bug fix"))
+    }
 }

@@ -4062,6 +4062,148 @@ struct TaskThreadViewModelTests {
     }
 }
 
+// MARK: - TaskCheckpointPresentation
+
+@Suite("TaskCheckpointPresentation")
+struct TaskCheckpointPresentationTests {
+
+    @Test("Checkpoint comparison separates restored branch from later task history")
+    func checkpointComparisonSeparatesRestoredBranchFromLaterHistory() throws {
+        let task = makeTask(goal: "Try alternative implementation branches")
+        let first = makeCheckpointRun(
+            task: task,
+            index: 0,
+            output: "First branch created the model.",
+            tokens: 100,
+            filePaths: ["/tmp/model.swift"]
+        )
+        let second = makeCheckpointRun(
+            task: task,
+            index: 1,
+            output: "Second branch wired the checkpoint browser.",
+            tokens: 200,
+            filePaths: ["/tmp/browser.swift"]
+        )
+        let third = makeCheckpointRun(
+            task: task,
+            index: 2,
+            output: "Later branch changed the restore path.",
+            tokens: 300,
+            filePaths: ["/tmp/restore.swift"]
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [third, first, second].map(runSnapshot))
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: second.id, in: summaries))
+
+        #expect(summaries.map(\.run.id) == [first.id, second.id, third.id])
+        #expect(comparison.selected.stepNumber == 2)
+        #expect(comparison.includedRunCount == 2)
+        #expect(comparison.excludedRunCount == 1)
+        #expect(comparison.includedTokenCount == 300)
+        #expect(comparison.excludedTokenCount == 300)
+        #expect(comparison.includedFileCount == 2)
+        #expect(comparison.excludedFileCount == 1)
+        #expect(comparison.includedFiles == ["/tmp/model.swift", "/tmp/browser.swift"])
+        #expect(comparison.excludedFiles == ["/tmp/restore.swift"])
+        #expect(comparison.selected.outputPreview.contains("checkpoint browser"))
+        #expect(comparison.laterOutputPreview.contains("restore path"))
+        #expect(comparison.branchSummary == "1 later step will stay on the current task.")
+        #expect(comparison.canRestore)
+        #expect(TaskCheckpointPresentation.restoreActionTitle == "Restore as New Branch")
+    }
+
+    @Test("Checkpoint file counts match deduplicated file lists")
+    func checkpointFileCountsMatchDeduplicatedFileLists() throws {
+        let task = makeTask(goal: "Compare repeated file changes")
+        let first = makeCheckpointRun(
+            task: task,
+            index: 0,
+            output: "First edit.",
+            tokens: 100,
+            filePaths: ["/tmp/shared.swift"]
+        )
+        let second = makeCheckpointRun(
+            task: task,
+            index: 1,
+            output: "Second edit repeats shared files.",
+            tokens: 200,
+            filePaths: ["/tmp/shared.swift", "/tmp/unique.swift", "/tmp/unique.swift"]
+        )
+        let third = makeCheckpointRun(
+            task: task,
+            index: 2,
+            output: "Later edit repeats another file.",
+            tokens: 300,
+            filePaths: ["/tmp/later.swift", "/tmp/later.swift"]
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [first, second, third].map(runSnapshot))
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: second.id, in: summaries))
+
+        #expect(summaries.map(\.fileCount) == [1, 2, 1])
+        #expect(comparison.includedFiles == ["/tmp/shared.swift", "/tmp/unique.swift"])
+        #expect(comparison.excludedFiles == ["/tmp/later.swift"])
+        #expect(comparison.includedFileCount == comparison.includedFiles.count)
+        #expect(comparison.excludedFileCount == comparison.excludedFiles.count)
+    }
+
+    @Test("Running checkpoint cannot be restored from browser")
+    func runningCheckpointCannotBeRestoredFromBrowser() throws {
+        let task = makeTask()
+        let run = makeCheckpointRun(
+            task: task,
+            index: 0,
+            status: .running,
+            completed: nil,
+            output: "Still streaming.",
+            tokens: 10,
+            filePaths: []
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [runSnapshot(run)])
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: run.id, in: summaries))
+
+        #expect(!comparison.canRestore)
+        #expect(comparison.restoreDisabledReason == "Wait for this step to finish before restoring from it.")
+    }
+
+    private func makeCheckpointRun(
+        task: AgentTask,
+        index: Int,
+        status: RunStatus = .completed,
+        completed: Date? = nil,
+        output: String,
+        tokens: Int,
+        filePaths: [String]
+    ) -> TaskRun {
+        let run = TaskRun(task: task)
+        run.status = status
+        run.startedAt = Date(timeIntervalSince1970: Double(index * 100))
+        run.completedAt = completed ?? (status == .running ? nil : Date(timeIntervalSince1970: Double(index * 100 + 20)))
+        run.output = output
+        run.tokensUsed = tokens
+
+        for path in filePaths {
+            run.appendFileChange(StoredFileChange(
+                from: FileChange(
+                    path: path,
+                    changeType: .write,
+                    content: "content",
+                    oldString: nil,
+                    newString: nil,
+                    timestamp: run.startedAt
+                )
+            ))
+        }
+
+        return run
+    }
+
+    private func runSnapshot(_ run: TaskRun) -> TaskRunSnapshot {
+        TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+    }
+}
+
 // MARK: - ChatPanelView
 
 @Suite("ChatPanelView")
@@ -4320,6 +4462,22 @@ struct AgentTaskPropertyTests {
         #expect(task.threadMessageCount == 2)
     }
 
+    @Test("hasProviderSession requires a trimmed non-empty session id")
+    func hasProviderSessionRequiresTrimmedNonEmptySessionID() {
+        let task = makeTask()
+
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = ""
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = " \n\t "
+        #expect(task.hasProviderSession == false)
+
+        task.sessionId = " session-123 "
+        #expect(task.hasProviderSession == true)
+    }
+
     @Test("statusColor returns expected values",
           arguments: [
             (TaskStatus.queued, "gray"),
@@ -4333,6 +4491,98 @@ struct AgentTaskPropertyTests {
     func statusColor(status: TaskStatus, expected: String) {
         let task = makeTask(status: status)
         #expect(task.statusColor == expected)
+    }
+
+    @Test("verificationPresentation surfaces passed verification command and artifact state")
+    func verificationPresentationPassed() {
+        let verification = TaskContextState.Verification(
+            status: "passed",
+            strategy: ValidationStrategy.runTests.rawValue,
+            command: "swift test --filter TaskContextStateTests",
+            summary: "Tests passed.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: true,
+            artifactStatus: "1 current, 1 stale"
+        )
+
+        let presentation = TaskPresentationState.verificationPresentation(for: verification)
+
+        #expect(presentation.title == "Verification passed")
+        #expect(presentation.summary == "Verified")
+        #expect(presentation.tone == .verified)
+        #expect(presentation.detail?.contains("swift test --filter TaskContextStateTests") == true)
+        #expect(presentation.detail?.contains("Artifacts: 1 current, 1 stale") == true)
+    }
+
+    @Test("verificationPresentation distinguishes manual completion from failed verification")
+    func verificationPresentationManualAndFailed() {
+        let manual = TaskContextState.Verification(
+            status: "manual_completion",
+            strategy: ValidationStrategy.manual.rawValue,
+            command: nil,
+            summary: "Manual completion recorded.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "none recorded"
+        )
+        let failed = TaskContextState.Verification(
+            status: "failed",
+            strategy: ValidationStrategy.runTests.rawValue,
+            command: "swift test",
+            summary: "Tests failed.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "none recorded"
+        )
+
+        let manualPresentation = TaskPresentationState.verificationPresentation(for: manual)
+        let failedPresentation = TaskPresentationState.verificationPresentation(for: failed)
+
+        #expect(manualPresentation.summary == "Manual completion")
+        #expect(manualPresentation.tone == .attention)
+        #expect(failedPresentation.summary == "Verification failed")
+        #expect(failedPresentation.tone == .failed)
+        #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
+    }
+
+    @Test("verification loader reads finished task state asynchronously")
+    @MainActor
+    func verificationLoaderReadsFinishedTaskState() async throws {
+        let root = NSTemporaryDirectory() + "verification-loader-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let workspace = makeWorkspace(name: "Verification Loader")
+        workspace.primaryPath = root
+        let task = makeTask(
+            goal: "Verify the cached presentation path",
+            status: .completed,
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Completed without automated verification."
+        run.completedAt = Date()
+        task.runs = [run]
+
+        TaskContextStateManager.refresh(task: task)
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+
+        let presentation = try #require(await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: folder
+        ))
+        let hiddenPresentation = await TaskVerificationPresentationLoader.presentation(
+            isFinished: false,
+            taskFolder: folder
+        )
+
+        #expect(presentation.title == "Completed without automated verification")
+        #expect(presentation.summary == "Manual completion")
+        #expect(hiddenPresentation == nil)
     }
 }
 

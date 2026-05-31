@@ -34,6 +34,7 @@ enum AgentTaskForkService {
         forked.status = .completed
 
         let runsToFork = sortedRuns.prefix(through: cutoffIndex)
+        var forkedRunsBySourceID: [UUID: TaskRun] = [:]
         var totalTokens = 0
         var totalCost = 0.0
 
@@ -51,6 +52,7 @@ enum AgentTaskForkService {
             newRun.stopReason = sourceRun.stopReason
             newRun.exitCode = sourceRun.exitCode
             context.insert(newRun)
+            forkedRunsBySourceID[sourceRun.id] = newRun
             totalTokens += sourceRun.tokensUsed
             totalCost += sourceRun.costUSD
         }
@@ -64,10 +66,12 @@ enum AgentTaskForkService {
             .sorted { $0.timestamp < $1.timestamp }
 
         for sourceEvent in eventsToFork {
+            let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
             let newEvent = TaskEvent(
                 task: forked,
                 type: sourceEvent.type,
-                payload: sourceEvent.payload
+                payload: sourceEvent.payload,
+                run: copiedRun
             )
             newEvent.timestamp = sourceEvent.timestamp
             newEvent.agentName = sourceEvent.agentName
@@ -75,6 +79,14 @@ enum AgentTaskForkService {
             newEvent.teamName = sourceEvent.teamName
             context.insert(newEvent)
         }
+
+        let checkpointEvent = TaskEvent(
+            task: forked,
+            type: "task.checkpoint",
+            payload: "Forked checkpoint from task \(source.id.uuidString) after source run \(cutoffIndex + 1). Later source runs are not authoritative for this branch.",
+            run: forkedRunsBySourceID[targetRun.id]
+        )
+        context.insert(checkpointEvent)
 
         context.insert(forked)
         return forked

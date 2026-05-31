@@ -553,7 +553,7 @@ class GitService {
             return false
         }
     }
-    
+
     /// Default wall-clock budget for local index/read git operations.
     private static let defaultGitTimeout: TimeInterval = 30
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
@@ -756,7 +756,7 @@ class GitService {
             return "unknown"
         }
     }
-    
+
     func getLocalBranches(at repoPath: String) async -> [String] {
         do {
             let output = try await runGit(at: repoPath, arguments: ["branch", "--format=%(refname:short)"])
@@ -767,11 +767,11 @@ class GitService {
             return []
         }
     }
-    
+
     func checkoutBranch(_ branch: String, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["checkout", branch])
     }
-    
+
     func createBranch(_ branch: String, from base: String?, at repoPath: String) async throws {
         var args = ["checkout", "-b", branch]
         if let base = base {
@@ -779,7 +779,7 @@ class GitService {
         }
         _ = try await runGit(at: repoPath, arguments: args)
     }
-    
+
     func getStatusFiles(at repoPath: String) async -> [GitStatusFile] {
         do {
             let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain=v1", "-z"])
@@ -912,7 +912,7 @@ class GitService {
         return combined.contains("U")
             || ["AA", "DD"].contains(combined)
     }
-    
+
     func stageFile(_ file: GitStatusFile, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["add", "--"] + file.pathspecs)
     }
@@ -920,11 +920,11 @@ class GitService {
     func stageFile(_ relativePath: String, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["add", "--", relativePath])
     }
-    
+
     func stageAll(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["add", "."])
     }
-    
+
     func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD", "--"] + file.pathspecs)
     }
@@ -932,7 +932,7 @@ class GitService {
     func unstageFile(_ relativePath: String, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD", "--", relativePath])
     }
-    
+
     func unstageAll(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD"])
     }
@@ -956,15 +956,15 @@ class GitService {
         args.append(patchURL.path)
         _ = try await runGit(at: repoPath, arguments: args)
     }
-    
+
     func commit(message: String, at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["commit", "-m", message])
     }
-    
+
     func pull(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["pull"], timeout: Self.networkGitTimeout)
     }
-    
+
     func push(at repoPath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["push"], timeout: Self.networkGitTimeout)
     }
@@ -1778,21 +1778,21 @@ class GitService {
         }
         return output + "\n...[truncated]"
     }
-    
+
     func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
         var additions = 0
         var deletions = 0
-        
+
         do {
             let unstagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--numstat"])
             let stagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--cached", "--numstat"])
-            
+
             let allLines = unstagedOutput.split(separator: "\n") + stagedOutput.split(separator: "\n")
             for line in allLines {
                 // Split by spaces or tabs
                 let parts = line.split(separator: " ", omittingEmptySubsequences: true)
                     .flatMap { $0.split(separator: "\t", omittingEmptySubsequences: true) }
-                
+
                 guard parts.count >= 2 else { continue }
                 if let add = Int(parts[0]) {
                     additions += add
@@ -1806,7 +1806,7 @@ class GitService {
         }
         return (additions, deletions)
     }
-    
+
     // MARK: - Worktrees
 
     /// Lists every worktree attached to the repository. The first entry is the

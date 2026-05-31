@@ -362,8 +362,8 @@ struct BuildPromptTests {
         }
     }
 
-    @Test("Prompt makes current task explicit before context and at end")
-    func currentTaskIsExplicitBeforeContextAndAtEnd() throws {
+    @Test("Prompt keeps current task explicit before context and at current-goal section end")
+    func currentTaskIsExplicitBeforeContextAndAtCurrentGoalSectionEnd() throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-current-task")
@@ -389,13 +389,15 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let currentGoalSection = try #require(manifest.sections.first { $0.kind == .currentGoal })
 
         #expect(prompt.hasPrefix("Current Task:\nopen the doccument called  'Alvaro1 t' and translate all text to Spanish"))
         #expect(prompt.contains("Recent tasks in this workspace (for context):"))
         let currentTaskIndex = try #require(prompt.range(of: "Current Task:")?.lowerBound)
         let recentTasksIndex = try #require(prompt.range(of: "Recent tasks in this workspace")?.lowerBound)
         #expect(currentTaskIndex < recentTasksIndex)
-        #expect(prompt.hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
+        #expect(currentGoalSection.includedTextPreview.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
     }
 
     @Test("Prompt includes workspace instructions")
@@ -427,7 +429,10 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
-        #expect(prompt.contains("YOUR MEMORIES"))
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("workspace-saved memories. Task-local state is Context Capsule v2/current_state"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
         #expect(prompt.contains("User prefers tabs over spaces"))
         #expect(prompt.contains("Project uses SwiftData"))
     }
@@ -540,6 +545,65 @@ struct BuildPromptTests {
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
     }
 
+    @Test("Follow-up prompt includes context source index for just-in-time retrieval")
+    func followUpPromptIncludesContextSourceIndexForRetrieval() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-source-index-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Source Index", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "Index", goal: "Keep exact retrieval pointers", workspace: ws)
+        ctx.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Created a source index test artifact."
+        run.completedAt = Date()
+        let changedPath = (root as NSString).appendingPathComponent("Sources/Changed.swift")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: changedPath,
+            changeType: .edit,
+            content: nil,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        ctx.insert(run)
+        try ctx.save()
+
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: "Create retrieval evidence"
+        )
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let generatedPath = (folder as NSString).appendingPathComponent("review-notes.md")
+        try "Review notes".write(toFile: generatedPath, atomically: true, encoding: .utf8)
+        let artifact = Artifact(task: task, type: "markdown", path: generatedPath)
+        ctx.insert(artifact)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "What changed before?",
+            task: task
+        )
+
+        #expect(prompt.contains("Context Source Index:"))
+        #expect(prompt.contains("Use this index for just-in-time retrieval"))
+        #expect(prompt.contains("Read exact files/history/artifacts before relying on omitted details"))
+        #expect(prompt.contains(TaskContextStateManager.jsonFileName))
+        #expect(prompt.contains(TaskContextStateManager.markdownFileName))
+        #expect(prompt.contains("session_history.md"))
+        #expect(prompt.contains("outputs/turn_001.md"))
+        #expect(prompt.contains(generatedPath))
+        #expect(prompt.contains(changedPath))
+        #expect(prompt.contains("Artifacts:"))
+    }
+
     @Test("Follow-up transcript budget preserves latest transcript and points to omitted sources")
     func followUpTranscriptBudgetPreservesLatestTranscriptAndSources() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"
@@ -588,6 +652,54 @@ struct BuildPromptTests {
         #expect(!prompt.contains("TRANSCRIPT_PREFIX_MARKER"))
     }
 
+    @Test("Follow-up prompt marks native continuation as optional and keeps ASTRA state authoritative")
+    func followUpPromptMarksNativeContinuationAsOptional() throws {
+        let root = NSTemporaryDirectory() + "prompt-native-continuation-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Native", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Continue with compact state",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        task.sessionId = "claude-session-1"
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+
+        #expect(prompt.contains("Native Continuation Policy:"))
+        #expect(prompt.contains("provider-native session for continuity"))
+        #expect(prompt.contains("Context Capsule v2 and Context Source Index above remain authoritative"))
+        #expect(prompt.contains("User's follow-up request:\ncontinue with the authoritative capsule"))
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+        let nativeSection = try #require(manifest.sections.first {
+            $0.includedTextPreview.contains("Native Continuation Policy:")
+        })
+        #expect(nativeSection.sourcePointers.contains {
+            $0.label == "provider native session" && $0.target.contains("session prefix claude-s")
+        })
+
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        let copilotPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with rebuilt context only",
+            task: task
+        )
+        #expect(copilotPrompt.contains("Native Continuation Policy:") == false)
+    }
+
     @Test("Memory budget keeps compact preference and source pointer")
     func memoryBudgetKeepsCompactPreferenceAndSourcePointer() throws {
         let container = try makeContainer()
@@ -611,6 +723,56 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA context budget: memories"))
         #expect(prompt.contains("workspace saved memories"))
         #expect(!prompt.contains("MEMORY_OMITTED_TAIL_MARKER"))
+    }
+
+    @Test("Workspace memories are namespaced and relevance ranked apart from task state")
+    func workspaceMemoriesAreNamespacedAndRelevanceRanked() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Memory Separation", primaryPath: "/tmp/prompt-memory-separation")
+        ws.memories = [
+            "User prefers regression tests for bugs",
+            "Project uses SwiftData migrations",
+            "Claude provider runs through Vertex",
+            "Repo build verification uses swift test",
+            "Always run git diff --check before handoff",
+            "Runtime budget warnings should stay visible",
+            "Project branch prefix is alvaro/",
+            "RELEVANT_NATIVE_MARKER: Claude provider native continuation still sends rebuilt prompt",
+            "IRRELEVANT_OMITTED_MARKER: generic note with no task overlap",
+            "SECOND_IRRELEVANT_OMITTED_MARKER: another generic note"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Debug workspace memory retrieval for Claude provider native continuation",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let prompt = manifest.prompt
+        let memorySection = try #require(manifest.sections.first { $0.kind == .memories })
+
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("Retrieval: namespace- and relevance-ranked"))
+        #expect(!prompt.contains("complete memory inventory requested"))
+        #expect(prompt.contains("Use Context Capsule v2/current_state for task objective"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
+        #expect(prompt.contains("Provider and runtime facts:"))
+        #expect(prompt.contains("RELEVANT_NATIVE_MARKER"))
+        #expect(prompt.contains("Omitted 2 lower-relevance workspace memories"))
+        #expect(!prompt.contains("IRRELEVANT_OMITTED_MARKER"))
+        #expect(!prompt.contains("SECOND_IRRELEVANT_OMITTED_MARKER"))
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "workspace memory namespace" && $0.target == "Memory Separation#providerRuntime"
+        })
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "omitted workspace memories" && $0.target.contains("omitted 2")
+        })
     }
 
     @Test("Prompt assembly manifest matches prompt and reports section budgets")
@@ -646,6 +808,47 @@ struct BuildPromptTests {
         #expect(memorySection.sourcePointers.contains { $0.label == "workspace saved memories" })
         #expect(manifest.truncatedSectionCount >= 1)
         #expect(!manifest.prompt.contains("MANIFEST_MEMORY_OMITTED_TAIL"))
+    }
+
+    @Test("Prompt assembly merges repeated blocks into unique budget sections")
+    func promptAssemblyMergesRepeatedBlocksIntoUniqueBudgetSections() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(
+            title: "Merged sections",
+            goal: String(repeating: "Keep one canonical current goal section. ", count: 80)
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.currentGoalTokens = 160
+
+        let initialManifest = AgentPromptBuilder.buildPromptAssembly(for: task, budgetProfile: budget)
+        let initialKinds = initialManifest.sections.map(\.kind)
+        let initialUniqueKinds = Set(initialKinds)
+        let initialGoalSection = try #require(initialManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(initialKinds.count == initialUniqueKinds.count)
+        #expect(initialKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(initialGoalSection.tokenBudget == 160)
+        #expect(initialGoalSection.isTruncated)
+        #expect(initialGoalSection.includedTextPreview.contains("Current Task:"))
+        #expect(initialGoalSection.includedTextPreview.contains("ASTRA context budget: current goal"))
+        #expect(initialGoalSection.sourcePointers.count == 1)
+
+        let followUpManifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the merged section budget",
+            task: task,
+            budgetProfile: budget
+        )
+        let followUpKinds = followUpManifest.sections.map(\.kind)
+        let followUpGoalSection = try #require(followUpManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(followUpKinds.count == Set(followUpKinds).count)
+        #expect(followUpKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(followUpGoalSection.includedTextPreview.contains("User's follow-up request:"))
+        #expect(followUpGoalSection.includedTextPreview.contains("continue with the merged section budget"))
     }
 
     @Test("Prompt emits duplicate capability behavior once")
@@ -699,7 +902,7 @@ struct BuildPromptTests {
 
         let request = PromptContextPreviewPresentation.request(
             taskStatus: task.status,
-            hasProviderSession: task.sessionId?.isEmpty == false,
+            hasProviderSession: task.hasProviderSession,
             messageText: "  ",
             attachedFiles: []
         )

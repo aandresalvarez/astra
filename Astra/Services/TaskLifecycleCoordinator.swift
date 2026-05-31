@@ -89,7 +89,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func resumeTask(_ task: AgentTask) {
-        guard task.sessionId != nil else {
+        guard task.hasProviderSession else {
             AppLogger.audit(.workerSessionCleared, category: "UI", taskID: task.id, fields: [
                 "reason": "missing_session_id"
             ], level: .warning)
@@ -626,7 +626,7 @@ final class TaskLifecycleCoordinator {
         let goalPrefix = String(goal.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard title == fallbackTitle || title == goalPrefix else { return false }
 
-        if task.sessionId != nil { return true }
+        if task.hasProviderSession { return true }
         if title.hasSuffix("...") { return true }
         if title.count > 45 { return true }
 
