@@ -445,6 +445,16 @@ enum ValidationService {
                 reason: "missing_path"
             )
         }
+        guard isScopedValidationArtifactPath(requestedPath) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Artifact assertion path must be relative to the task folder or workspace.",
+                path: requestedPath,
+                reason: "path_outside_scope"
+            )
+        }
 
         let candidates = artifactCandidatePaths(requestedPath, task: task)
         let existingPath = candidates.first { FileManager.default.fileExists(atPath: $0) }
@@ -573,6 +583,29 @@ enum ValidationService {
                 status: assertion.required ? "failed" : "skipped",
                 summary: summary,
                 reason: "missing_path"
+            )
+        }
+        guard isScopedValidationArtifactPath(requestedPath) else {
+            let summary = "Browser behavior artifact path must be relative to the task folder or workspace."
+            recordBehaviorEvent(
+                type: TaskValidationBehaviorEventTypes.failed,
+                auditEvent: .validationBehaviorFailed,
+                planID: planID,
+                assertionID: assertion.id,
+                path: requestedPath,
+                summary: summary,
+                reason: "path_outside_scope",
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: assertion.required ? "failed" : "skipped",
+                summary: summary,
+                path: requestedPath,
+                reason: "path_outside_scope"
             )
         }
 
@@ -996,10 +1029,6 @@ enum ValidationService {
     }
 
     private static func artifactCandidatePaths(_ path: String, task: AgentTask) -> [String] {
-        if path.hasPrefix("/") || path.hasPrefix("~") {
-            return [(path as NSString).expandingTildeInPath]
-        }
-
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         var candidates: [String] = []
@@ -1010,6 +1039,21 @@ enum ValidationService {
             candidates.append((workspacePath as NSString).appendingPathComponent(path))
         }
         return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
+    }
+
+    private static func isScopedValidationArtifactPath(_ path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("/"),
+              !trimmed.hasPrefix("~"),
+              !trimmed.contains("\0") else {
+            return false
+        }
+
+        let components = trimmed
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains("..")
     }
 
     private static func isAllowedValidationCommand(_ command: String) -> Bool {

@@ -230,6 +230,27 @@ struct QueueLockTests {
         #expect(queue.canAcquireResourceLock(for: second, accessMode: .write))
     }
 
+    @Test("write locks serialize duplicate runs for the same task")
+    func writeLocksSerializeDuplicateRunsForSameTask() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Duplicate Locks", primaryPath: root)
+        let task = AgentTask(title: "Single task", goal: "Edit files", workspace: workspace)
+        let queue = TaskQueue(poolSize: 2)
+
+        let firstClaim = try #require(queue.acquireResourceLockIfAvailable(
+            task: task,
+            accessMode: .write,
+            runMode: "task"
+        ))
+
+        #expect(!queue.canAcquireResourceLock(for: task, accessMode: .write))
+        #expect(queue.acquireResourceLockIfAvailable(task: task, accessMode: .write, runMode: "continue") == nil)
+
+        queue.releaseResourceLock(firstClaim, task: task)
+        #expect(queue.canAcquireResourceLock(for: task, accessMode: .write))
+    }
+
     @Test("read-only locks share roots while writers wait")
     func readOnlyLocksShareRootsWhileWritersWait() throws {
         let root = try temporaryRoot()

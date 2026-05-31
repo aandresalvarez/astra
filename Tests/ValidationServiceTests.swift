@@ -183,6 +183,116 @@ struct ValidationServiceTests {
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed && $0.payload.contains("report.md") })
     }
 
+    @Test("validation contract rejects artifact paths outside task scope")
+    func validationContractRejectsArtifactPathsOutsideTaskScope() async throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Scope", primaryPath: root)
+        let task = AgentTask(title: "Validate artifact scope", goal: "Reject outside artifacts", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let outsidePath = (outsideRoot as NSString).appendingPathComponent("existing-report.md")
+        try "outside".write(toFile: outsidePath, atomically: true, encoding: .utf8)
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject outside artifacts",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "absolute-artifact",
+                    description: "Absolute paths are not trusted evidence",
+                    method: .artifact,
+                    path: outsidePath
+                ),
+                TaskValidationAssertion(
+                    id: "parent-artifact",
+                    description: "Parent traversal is not trusted evidence",
+                    method: .artifact,
+                    path: "../existing-report.md"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs.contains("absolute-artifact"))
+        #expect(result.failedRequiredAssertionIDs.contains("parent-artifact"))
+        let scopedFailures = task.events.filter {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("path_outside_scope")
+        }
+        #expect(scopedFailures.count == 2)
+    }
+
+    @Test("validation contract rejects browser behavior paths outside task scope")
+    func validationContractRejectsBrowserBehaviorPathsOutsideTaskScope() async throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Browser Scope", primaryPath: root)
+        let task = AgentTask(title: "Validate browser scope", goal: "Reject outside HTML", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let outsidePath = (outsideRoot as NSString).appendingPathComponent("existing.html")
+        try "<html><body>ready</body></html>".write(toFile: outsidePath, atomically: true, encoding: .utf8)
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject outside browser artifacts",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "absolute-browser",
+                    description: "ready",
+                    method: .browserBehavior,
+                    path: outsidePath
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs == ["absolute-browser"])
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("path_outside_scope")
+        })
+        #expect(task.events.contains {
+            $0.type == TaskValidationBehaviorEventTypes.failed &&
+                $0.payload.contains("path_outside_scope")
+        })
+    }
+
     @Test("failed validation creates one corrective item with auditable lifecycle")
     func failedValidationCreatesOneCorrectiveItemWithAuditableLifecycle() async throws {
         let root = try temporaryRoot()

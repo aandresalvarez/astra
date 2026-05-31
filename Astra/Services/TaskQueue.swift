@@ -820,7 +820,7 @@ final class TaskQueue {
 
     private func canAcquireResourceLock(_ claim: TaskResourceLockClaim) -> Bool {
         let sameResourceLocks = activeResourceLocks.filter {
-            resourceKeysConflict($0.resourceKey, claim.resourceKey) && $0.taskID != claim.taskID
+            resourceKeysConflict($0.resourceKey, claim.resourceKey)
         }
         guard !sameResourceLocks.isEmpty else { return true }
         switch claim.accessMode {
@@ -833,7 +833,7 @@ final class TaskQueue {
 
     private func resourceLockBlockerSummary(for claim: TaskResourceLockClaim) -> String {
         let blockers = activeResourceLocks
-            .filter { resourceKeysConflict($0.resourceKey, claim.resourceKey) && $0.taskID != claim.taskID }
+            .filter { resourceKeysConflict($0.resourceKey, claim.resourceKey) }
         guard !blockers.isEmpty else { return "resource lock unavailable" }
         let modes = blockers.map(\.accessMode.rawValue).joined(separator: ",")
         return "waiting for \(blockers.count) active \(modes) lock\(blockers.count == 1 ? "" : "s")"
