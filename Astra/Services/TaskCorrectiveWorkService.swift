@@ -145,6 +145,10 @@ enum TaskCorrectiveWorkService {
             .payload else {
             return nil
         }
+        if payload.status == "task_created",
+           let correctiveTaskID = payload.correctiveTaskID {
+            return sourceTask.workspace?.tasks.first { $0.id == correctiveTaskID }
+        }
         let child = AgentTask(
             title: "Correct validation: \(payload.failedAssertionID)",
             goal: """

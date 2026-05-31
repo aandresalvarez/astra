@@ -1901,6 +1901,74 @@ struct HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "plan.execution.completed" })
     }
 
+    @Test("Review mode validates contract only after the final approved step")
+    func reviewModeValidatesContractOnlyAfterFinalApprovedStep() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let countFile = harness.rootURL.appendingPathComponent("review-contract-count.txt")
+        let proofURL = harness.rootURL.appendingPathComponent("final-proof.txt")
+        let plan = TaskPlanPayload(
+            title: "Two step proof plan",
+            goal: "Build proof across multiple approvals",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Prepare proof", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Finish proof", likelyTools: ["Write"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "final-proof",
+                    description: "Final proof exists",
+                    method: .command,
+                    command: "test -f \(Self.shQuote(proofURL.path))"
+                )
+            ])
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
+            else
+              touch \(Self.shQuote(proofURL.path))
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
+            fi
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let stateAfterFirstStep = TaskPlanService.reconstruct(for: task)
+        let currentPlan = try #require(stateAfterFirstStep.plan)
+        #expect(task.status == .pendingUser)
+        #expect(stateAfterFirstStep.lifecycleStatus == .executing)
+        #expect(stateAfterFirstStep.plan?.steps.first(where: { $0.id == "step-1" })?.status == .done)
+        #expect(stateAfterFirstStep.plan?.steps.first(where: { $0.id == "step-2" })?.status == .pending)
+        #expect(!task.events.contains { $0.type == TaskValidationEventTypes.assertionStarted })
+        #expect(!task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
+        #expect(!task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+
+        _ = await harness.executeApprovedPlan(task: task, plan: currentPlan, worker: worker, mode: .nextStep)
+
+        let finalState = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(finalState.lifecycleStatus == .completed)
+        #expect(finalState.plan?.steps.allSatisfy { $0.status == .done } == true)
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+        #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+    }
+
     @Test("Review mode preserves blocked plan steps for user approval")
     func reviewModePreservesBlockedPlanStepForUserApproval() async throws {
         let harness = try HeadlessChatHarness()

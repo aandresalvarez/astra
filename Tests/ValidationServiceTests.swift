@@ -200,6 +200,15 @@ struct ValidationServiceTests {
         #expect(child.goal.contains("must-pass"))
         #expect(task.events.contains { $0.type == TaskCorrectiveEventTypes.taskCreated && $0.payload.contains(child.id.uuidString) })
 
+        let duplicateChild = try #require(TaskCorrectiveWorkService.createCorrectiveTask(
+            from: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: context
+        ))
+        #expect(duplicateChild.id == child.id)
+        #expect(workspace.tasks.filter { $0.constraints.contains("Failed assertion ID: must-pass") }.count == 1)
+        #expect(task.events.filter { $0.type == TaskCorrectiveEventTypes.taskCreated }.count == 1)
+
         let dismissed = try #require(TaskCorrectiveWorkService.dismissStep(
             task: task,
             correctiveStepID: correctiveStepID,

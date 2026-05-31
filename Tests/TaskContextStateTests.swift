@@ -206,6 +206,52 @@ struct TaskContextStateTests {
         #expect(markdown.contains("focused-tests"))
     }
 
+    @Test("context capsule marks optional-only validation contract passed after verification")
+    func contextCapsuleMarksOptionalOnlyValidationContractPassed() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Optional Contract Plan", primaryPath: root)
+        let task = AgentTask(title: "Optional contract", goal: "Capture advisory evidence", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let plan = TaskPlanPayload(
+            title: "Optional evidence plan",
+            goal: "Capture advisory proof before completion",
+            steps: [
+                TaskPlanPayloadStep(id: "verify", title: "Verify optional evidence", likelyTools: ["Bash"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "advisory-proof",
+                    scope: .plan,
+                    description: "Advisory proof command passes",
+                    method: .command,
+                    required: false,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+
+        let result = await ValidationService.runContract(task: task, plan: plan, run: run, modelContext: context)
+        #expect(result.canComplete)
+
+        TaskContextStateManager.refresh(task: task)
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let contract = try #require(state.validationContract)
+        #expect(contract.status == "passed")
+        #expect(contract.requiredTotal == 0)
+        #expect(contract.requiredPassed == 0)
+        #expect(contract.assertions.first?.status == "passed")
+        #expect(contract.sourcePointers.contains { $0.kind == "event" && $0.summary.contains("validation.contract.passed") })
+    }
+
     @Test("context capsule records task contract fields")
     func contextCapsuleRecordsTaskContractFields() throws {
         let root = try temporaryRoot()

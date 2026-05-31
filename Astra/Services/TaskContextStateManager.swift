@@ -818,23 +818,37 @@ enum TaskContextStateManager {
             )
         }
 
-        let requiredTotal = contract.assertions.filter(\.required).count
-        let status: String
-        if requiredTotal > 0 && requiredPassed == requiredTotal {
-            status = "passed"
-        } else if assertions.contains(where: { $0.required && $0.status == "failed" }) {
-            status = "failed"
-        } else if assertions.contains(where: { $0.status == "started" }) {
-            status = "running"
-        } else {
-            status = "not_verified"
-        }
-
         let contractEvents = task.events.filter {
             [TaskValidationEventTypes.contractCreated,
              TaskValidationEventTypes.contractUpdated,
              TaskValidationEventTypes.contractPassed,
              TaskValidationEventTypes.contractFailed].contains($0.type)
+        }
+        let latestContractOutcome = contractEvents
+            .filter { [TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed].contains($0.type) }
+            .sorted { $0.timestamp > $1.timestamp }
+            .first
+        let requiredTotal = contract.assertions.filter(\.required).count
+        let hasStartedAssertions = assertions.contains { $0.status == "started" }
+        let hasRequiredFailure = assertions.contains { $0.required && $0.status == "failed" }
+        let allAssertionsTerminal = assertions.allSatisfy { summary in
+            ["passed", "failed", "skipped", "reviewed"].contains(summary.status)
+        }
+        let status: String
+        if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
+            status = "failed"
+        } else if latestContractOutcome?.type == TaskValidationEventTypes.contractPassed {
+            status = "passed"
+        } else if requiredTotal > 0 && requiredPassed == requiredTotal {
+            status = "passed"
+        } else if requiredTotal == 0 && allAssertionsTerminal && !hasStartedAssertions {
+            status = "passed"
+        } else if hasRequiredFailure {
+            status = "failed"
+        } else if hasStartedAssertions {
+            status = "running"
+        } else {
+            status = "not_verified"
         }
         let eventPointers = contractEvents
             .sorted { $0.timestamp > $1.timestamp }

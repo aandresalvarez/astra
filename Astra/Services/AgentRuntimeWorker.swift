@@ -103,26 +103,11 @@ final class AgentRuntimeWorker {
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
-            let contractEvaluation = await ValidationService.runContract(
+            guard await validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
-                modelContext: modelContext,
-                verifierRuntime: utilityRuntimeConfiguration(
-                    for: .verifier,
-                    task: task,
-                    fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
-                    preferredModel: validationModel,
-                    modelContext: modelContext
-                )
-            )
-            guard contractEvaluation.canComplete else {
-                pauseApprovedPlanForUser(
-                    task: task,
-                    modelContext: modelContext,
-                    message: contractEvaluation.summary,
-                    run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
-                )
+                modelContext: modelContext
+            ) else {
                 return
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
@@ -156,37 +141,15 @@ final class AgentRuntimeWorker {
             onEvent: onEvent
         )
         if task.status == .completed {
-            let contractEvaluation = await ValidationService.runContract(
-                task: task,
-                plan: currentPlan,
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
-                modelContext: modelContext,
-                verifierRuntime: utilityRuntimeConfiguration(
-                    for: .verifier,
-                    task: task,
-                    fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
-                    preferredModel: validationModel,
-                    modelContext: modelContext
-                )
-            )
-            guard contractEvaluation.canComplete else {
-                pauseApprovedPlanForUser(
-                    task: task,
-                    modelContext: modelContext,
-                    message: contractEvaluation.summary,
-                    run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
-                )
-                return
-            }
             if let approvedStep {
-                finalizeApprovedPlanStep(
+                await finalizeApprovedPlanStep(
                     approvedStep,
                     plan: currentPlan,
                     task: task,
                     modelContext: modelContext
                 )
             } else {
-                finalizeApprovedFullPlan(
+                await finalizeApprovedFullPlan(
                     currentPlan,
                     task: task,
                     modelContext: modelContext
@@ -208,7 +171,7 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) {
+    ) async {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
         let shouldFallbackComplete: Bool = {
@@ -254,6 +217,13 @@ final class AgentRuntimeWorker {
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
         } else {
+            guard await validateApprovedPlanContractForFinalCompletion(
+                task: task,
+                plan: refreshedPlan,
+                modelContext: modelContext
+            ) else {
+                return
+            }
             TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
         }
     }
@@ -263,7 +233,7 @@ final class AgentRuntimeWorker {
         _ plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) {
+    ) async {
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
             pauseApprovedPlanForUser(
@@ -277,7 +247,45 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard await validateApprovedPlanContractForFinalCompletion(
+            task: task,
+            plan: refreshedPlan,
+            modelContext: modelContext
+        ) else {
+            return
+        }
         TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
+    }
+
+    @MainActor
+    private func validateApprovedPlanContractForFinalCompletion(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        modelContext: ModelContext
+    ) async -> Bool {
+        let contractEvaluation = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
+            modelContext: modelContext,
+            verifierRuntime: utilityRuntimeConfiguration(
+                for: .verifier,
+                task: task,
+                fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
+                preferredModel: validationModel,
+                modelContext: modelContext
+            )
+        )
+        guard contractEvaluation.canComplete else {
+            pauseApprovedPlanForUser(
+                task: task,
+                modelContext: modelContext,
+                message: contractEvaluation.summary,
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
+            return false
+        }
+        return true
     }
 
     @MainActor
