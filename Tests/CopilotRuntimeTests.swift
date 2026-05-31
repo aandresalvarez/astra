@@ -611,8 +611,8 @@ struct CopilotCLICommandPlanningTests {
         )
 
         let pathParts = plan.environment["PATH", default: ""].split(separator: ":").map(String.init)
-        let shimIndex = try #require(pathParts.firstIndex(of: "/tmp/task-browser-bin"))
-        let astraToolsIndex = try #require(pathParts.firstIndex(of: RuntimePathResolver.astraToolsPath))
+        let shimIndex = try #require(pathParts.lastIndex(of: "/tmp/task-browser-bin"))
+        let astraToolsIndex = try #require(pathParts.lastIndex(of: RuntimePathResolver.astraToolsPath))
 
         #expect(shimIndex < astraToolsIndex)
     }
@@ -686,6 +686,72 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.arguments.contains("--allow-all-paths"))
         #expect(plan.arguments.contains("--allow-all-urls"))
         #expect(!plan.arguments.contains("--allow-all"))
+    }
+
+    @Test("Utility helper disables custom instructions when supported")
+    func utilityDisablesCustomInstructions() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Summarize diff",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            disableCustomInstructions: true
+        )
+
+        #expect(plan.arguments.contains("--no-custom-instructions"))
+    }
+
+    @Test("Utility helper omits custom-instructions flag when disabled")
+    func utilityOmitsCustomInstructionsWhenDisabled() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Summarize diff",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            disableCustomInstructions: false
+        )
+
+        #expect(!plan.arguments.contains("--no-custom-instructions"))
+    }
+
+    @Test("Utility helper omits custom-instructions when CLI lacks support")
+    func utilityOmitsCustomInstructionsWhenUnsupported() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Summarize diff",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            disableCustomInstructions: true
+        )
+
+        #expect(!plan.arguments.contains("--no-custom-instructions"))
     }
 
     @Test("Restricted permissions map common Claude tools")

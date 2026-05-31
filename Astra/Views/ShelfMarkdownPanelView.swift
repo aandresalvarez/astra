@@ -115,6 +115,7 @@ struct ShelfMarkdownPanelView: View {
         .onChange(of: session.selectedDocumentID) {
             isEditing = false
             normalizeViewMode()
+            alignFileNavigatorWithSelectedDocument()
         }
         .onChange(of: fileScopeSignature) {
             normalizeFileNavigatorScope()
@@ -551,10 +552,30 @@ struct ShelfMarkdownPanelView: View {
                             .foregroundStyle(Stanford.lagunita)
                             .frame(width: 16)
 
-                        Text(root.title)
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 5) {
+                                Text(root.title)
+                                    .font(Stanford.caption(12).weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+
+                                if root.isGitRepository {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .font(Stanford.ui(9, weight: .semibold))
+                                        .foregroundStyle(Stanford.lagunita)
+                                        .help("Git repository")
+                                }
+                            }
+
+                            if !root.subtitle.isEmpty {
+                                Text(root.subtitle)
+                                    .font(Stanford.caption(9))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
 
                         Spacer(minLength: 0)
 
@@ -943,6 +964,7 @@ struct ShelfMarkdownPanelView: View {
                 fileIndexTruncated = snapshot.isTruncated
                 isScanningFiles = false
                 resetFileNavigatorExpansion()
+                alignFileNavigatorWithSelectedDocument()
                 autoOpenFirstFileIfNeeded(nodes: scopedFileNodes)
             }
         }
@@ -960,6 +982,27 @@ struct ShelfMarkdownPanelView: View {
             guard count > 0, count <= Self.autoExpandedRootNodeThreshold else { return nil }
             return root.id
         })
+    }
+
+    private func alignFileNavigatorWithSelectedDocument() {
+        guard let fileURL = session.fileURL else { return }
+        let path = fileURL.standardizedFileURL.path
+        guard let root = fileRoots.first(where: { WorkspaceFileIndexService.isPath(path, inside: $0) }) else {
+            return
+        }
+
+        isFileNavigatorCollapsed = false
+        switch root.kind {
+        case .primary, .additional:
+            if fileNavigatorScope == .task {
+                fileNavigatorScope = .workspace
+            }
+        case .taskFolder, .input:
+            if fileNavigatorScope == .workspace, task != nil {
+                fileNavigatorScope = .task
+            }
+        }
+        expandFileNavigator(to: path, isFile: true)
     }
 
     private func isRoot(_ root: WorkspaceFileRoot, in scope: FileNavigatorScope) -> Bool {
@@ -1305,7 +1348,7 @@ struct ShelfMarkdownPanelView: View {
             }
 
             let relative = relativePath(for: filePath, rootPath: root.path)
-            let rootName = URL(fileURLWithPath: root.path).lastPathComponent
+            let rootName = root.title
             let components = relative
                 .split(separator: "/", omittingEmptySubsequences: true)
                 .map(String.init)

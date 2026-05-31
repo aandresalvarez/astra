@@ -12,6 +12,7 @@ struct CopilotCLICapabilities: Equatable {
     var supportsAllowAllPaths: Bool
     var supportsAllowAllURLs: Bool
     var requiresAllowAllToolsForPrompt: Bool
+    var supportsNoCustomInstructions: Bool
 
     static let conservative = CopilotCLICapabilities(
         supportsOutputFormatJSON: false,
@@ -23,7 +24,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsAllowAllTools: false,
         supportsAllowAllPaths: false,
         supportsAllowAllURLs: false,
-        requiresAllowAllToolsForPrompt: true
+        requiresAllowAllToolsForPrompt: true,
+        supportsNoCustomInstructions: false
     )
 
     init(helpText: String) {
@@ -38,6 +40,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsAllowAllURLs = Self.hasOption("--allow-all-urls", in: helpText)
         requiresAllowAllToolsForPrompt = helpText.contains("required for\n                                      non-interactive mode")
             || helpText.contains("required for non-interactive mode")
+        supportsNoCustomInstructions = Self.hasOption("--no-custom-instructions", in: helpText)
     }
 
     private init(
@@ -50,7 +53,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsAllowAllTools: Bool,
         supportsAllowAllPaths: Bool,
         supportsAllowAllURLs: Bool,
-        requiresAllowAllToolsForPrompt: Bool
+        requiresAllowAllToolsForPrompt: Bool,
+        supportsNoCustomInstructions: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
         self.supportsStreamingFlag = supportsStreamingFlag
@@ -62,6 +66,7 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsAllowAllPaths = supportsAllowAllPaths
         self.supportsAllowAllURLs = supportsAllowAllURLs
         self.requiresAllowAllToolsForPrompt = requiresAllowAllToolsForPrompt
+        self.supportsNoCustomInstructions = supportsNoCustomInstructions
     }
 
     private static func hasOption(_ option: String, in helpText: String) -> Bool {
@@ -97,6 +102,7 @@ enum CopilotCLIRuntime {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = ["help"]
+        process.environment = RuntimeProcessEnvironment.enriched()
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -147,9 +153,17 @@ enum CopilotCLIRuntime {
         providerEnvironment: [String: String] = [:],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        localToolCommands: [String] = []
+        localToolCommands: [String] = [],
+        disableCustomInstructions: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
+
+        // Self-contained helper prompts (commit messages, PR drafts, etc.) must not
+        // inherit the repository's AGENTS.md operating guide, which otherwise turns a
+        // single-shot summarization into a full agentic workflow that never converges.
+        if disableCustomInstructions, capabilities.supportsNoCustomInstructions {
+            args += ["--no-custom-instructions"]
+        }
 
         if capabilities.supportsOutputFormatJSON {
             args += ["--output-format=json"]
@@ -192,22 +206,22 @@ enum CopilotCLIRuntime {
             }
         }
 
-        var env = ProcessInfo.processInfo.environment
-        let pathSuffix = includeAstraToolsPath
-            ? RuntimePathResolver.agentPathSuffix
-            : RuntimePathResolver.shellPathSuffix
-        env["PATH"] = ([env["PATH"] ?? ""] + uniqueNonEmptyPaths(pathPrefix) + [pathSuffix])
-            .filter { !$0.isEmpty }
-            .joined(separator: ":")
-        env["COPILOT_HOME"] = copilotHome
-        env["NO_COLOR"] = "1"
-        env["TERM"] = env["TERM"] ?? "xterm-256color"
+        var extraVars: [String: String] = [
+            "COPILOT_HOME": copilotHome,
+            "NO_COLOR": "1",
+        ]
+        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
+        extraVars["TERM"] = parentTerm ?? "xterm-256color"
         for (key, value) in taskEnvironment {
-            env[key] = value
+            extraVars[key] = value
         }
         for (key, value) in providerEnvironment {
-            env[key] = value
+            extraVars[key] = value
         }
+        let env = RuntimeProcessEnvironment.enriched(
+            additionalPaths: pathPrefix,
+            extraVariables: extraVars
+        )
 
         return CopilotCLICommandPlan(
             executablePath: executablePath,
@@ -356,6 +370,7 @@ enum CopilotCLIRuntime {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = args
+        process.environment = RuntimeProcessEnvironment.enriched()
 
         let stdout = Pipe()
         let stderr = Pipe()

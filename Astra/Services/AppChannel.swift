@@ -37,30 +37,44 @@ enum AppChannel: String {
         appSupportDirectoryName
     }
 
+    /// The per-channel folder under `~/Documents` that holds this channel's
+    /// user-facing data (Workspaces, Worktrees, …). Keeping a single source of
+    /// truth keeps every channel-scoped directory consistent.
+    var documentsFolderName: String {
+        switch self {
+        case .production: "Astra"
+        case .development: "Astra Dev"
+        case .beta: "Astra Beta"
+        }
+    }
+
     var defaultWorkspacesRoot: String {
         defaultWorkspacesRoot(fileManager: .default)
     }
 
     func defaultWorkspacesRoot(fileManager: FileManager) -> String {
-        let documents = fileManager.homeDirectoryForCurrentUser
+        channelDocumentsDirectory(fileManager: fileManager)
+            .appendingPathComponent("Workspaces", isDirectory: true)
+            .path
+    }
+
+    /// Root directory that holds app-managed git worktrees, kept beside the
+    /// channel's Workspaces folder so worktrees are predictable, never nested
+    /// inside a repository, and easy for ASTRA to enumerate and clean up.
+    var defaultWorktreesRoot: String {
+        defaultWorktreesRoot(fileManager: .default)
+    }
+
+    func defaultWorktreesRoot(fileManager: FileManager) -> String {
+        channelDocumentsDirectory(fileManager: fileManager)
+            .appendingPathComponent("Worktrees", isDirectory: true)
+            .path
+    }
+
+    private func channelDocumentsDirectory(fileManager: FileManager) -> URL {
+        fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents", isDirectory: true)
-        switch self {
-        case .production:
-            return documents
-                .appendingPathComponent("Astra", isDirectory: true)
-                .appendingPathComponent("Workspaces", isDirectory: true)
-                .path
-        case .development:
-            return documents
-                .appendingPathComponent("Astra Dev", isDirectory: true)
-                .appendingPathComponent("Workspaces", isDirectory: true)
-                .path
-        case .beta:
-            return documents
-                .appendingPathComponent("Astra Beta", isDirectory: true)
-                .appendingPathComponent("Workspaces", isDirectory: true)
-                .path
-        }
+            .appendingPathComponent(documentsFolderName, isDirectory: true)
     }
 
     var keychainConnectorPrefix: String {

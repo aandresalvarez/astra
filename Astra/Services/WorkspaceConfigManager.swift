@@ -24,6 +24,10 @@ enum WorkspaceConfigManager {
         var icon: String
         var instructions: String
         var isStarred: Bool? = nil
+        /// Absolute path of the worktree new chats default to, or nil for the
+        /// repository root. Travels with the workspace; it is re-validated on
+        /// import and reset to root when the worktree is absent on this machine.
+        var activeWorkingPath: String? = nil
         var lastUsedSkillNames: [String]?
         var enabledGlobalSkillIDs: [String]?
         var enabledGlobalConnectorIDs: [String]?
@@ -307,6 +311,7 @@ enum WorkspaceConfigManager {
             icon: workspace.icon,
             instructions: workspace.instructions,
             isStarred: workspace.isStarred ? true : nil,
+            activeWorkingPath: workspace.activeWorkingPath,
             lastUsedSkillNames: workspace.lastUsedSkillNames,
             enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
@@ -444,6 +449,17 @@ enum WorkspaceConfigManager {
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
+        // Only restore the worktree focus when the worktree actually exists on
+        // this machine; otherwise reset to root so new chats don't pin to a
+        // path that isn't here.
+        if let active = config.activeWorkingPath,
+           !active.isEmpty,
+           active != config.primaryPath,
+           FileManager.default.fileExists(atPath: active) {
+            workspace.activeWorkingPath = active
+        } else {
+            workspace.activeWorkingPath = nil
+        }
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)
