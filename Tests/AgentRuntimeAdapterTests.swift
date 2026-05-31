@@ -40,6 +40,7 @@ struct AgentRuntimeAdapterTests {
         #expect(catalog.descriptor(for: futureRuntime).defaultModel == "default")
         #expect(catalog.descriptor(for: futureRuntime).defaultModels == ["default"])
         #expect(catalog.supportsAstraRunProtocol(for: futureRuntime) == false)
+        #expect(catalog.supportsNativeContinuation(for: futureRuntime) == false)
     }
 
     @Test("Adapter catalogs report duplicate provider registrations")
@@ -207,6 +208,12 @@ struct AgentRuntimeAdapterTests {
         #expect(claude.recordsInferredFileChanges == false)
         #expect(copilot.recordsInferredFileChanges)
         #expect(antigravity.recordsInferredFileChanges)
+        #expect(claude.descriptor.supportsNativeContinuation)
+        #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .claudeCode))
+        #expect(copilot.descriptor.supportsNativeContinuation == false)
+        #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .copilotCLI) == false)
+        #expect(antigravity.descriptor.supportsNativeContinuation == false)
+        #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .antigravityCLI) == false)
 
         #expect(claude.shouldCheckWorkspaceDirectory(phase: "resume") == false)
         #expect(copilot.shouldCheckWorkspaceDirectory(phase: "resume"))
@@ -342,6 +349,21 @@ struct AgentRuntimeAdapterTests {
                 permissionManifest: nil,
                 timeoutSeconds: 30
             ))
+        let claudeResumePlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: claudeTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "resume",
+                nativeContinuationSessionID: "claude-session-1"
+            ))
         let copilotPlan = AgentRuntimeAdapterRegistry
             .adapter(for: .copilotCLI)
             .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
@@ -373,8 +395,16 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.executablePath == "/bin/claude")
         #expect(claudePlan.arguments.contains("--output-format"))
         #expect(claudePlan.arguments.contains("stream-json"))
+        #expect(claudePlan.arguments.contains("--resume") == false)
+        #expect(claudePlan.commandPlannedFields["phase"] == "run")
+        #expect(claudePlan.commandPlannedFields["supports_native_continuation"] == "true")
+        #expect(claudePlan.commandPlannedFields["uses_native_continuation"] == "false")
         #expect(claudePlan.parsesJSONLines)
         #expect(claudePlan.providerVersion == nil)
+        #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
+        #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
+        #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
+        #expect(claudeResumePlan.commandPlannedFields["native_session_prefix"] == "claude-s")
 
         #expect(copilotPlan.runtime == .copilotCLI)
         #expect(copilotPlan.executablePath == "/bin/copilot-not-present")

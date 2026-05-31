@@ -790,6 +790,7 @@ enum AgentPromptBuilder {
         appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
         appendThreadIntentContext(for: task, to: &sections)
         appendContextSourceIndex(for: task, to: &sections)
+        appendNativeContinuationPolicy(for: task, to: &sections)
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
@@ -908,6 +909,25 @@ enum AgentPromptBuilder {
         )
 
         return sections
+    }
+
+    private static func appendNativeContinuationPolicy(for task: AgentTask, to sections: inout [PromptContextSection]) {
+        let runtime = task.resolvedRuntimeID
+        guard AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime),
+              let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return
+        }
+
+        appendSection("""
+        Native Continuation Policy:
+        ASTRA may attach the provider-native session for continuity, but the Context Capsule v2 and Context Source Index above remain authoritative. Treat provider-native memory as an optimization only. If it conflicts with ASTRA state, follow ASTRA state and the current user request.
+        """, kind: .threadState, to: &sections, sourcePointers: [
+            sourcePointer(
+                label: "provider native session",
+                target: "\(runtime.rawValue) session prefix \(String(sessionID.prefix(8)))"
+            )
+        ])
     }
 
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {

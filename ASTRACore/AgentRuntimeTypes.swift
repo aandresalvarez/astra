@@ -79,6 +79,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let defaultModel: String
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
+    public let supportsNativeContinuation: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -89,7 +90,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         prerequisite: CLIPrerequisite? = nil,
         defaultModel: String? = nil,
         defaultModels: [String],
-        supportsAstraRunProtocol: Bool
+        supportsAstraRunProtocol: Bool,
+        supportsNativeContinuation: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -106,6 +108,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.defaultModel = defaultModel ?? defaultModels.first ?? "default"
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
+        self.supportsNativeContinuation = supportsNativeContinuation
     }
 
 }

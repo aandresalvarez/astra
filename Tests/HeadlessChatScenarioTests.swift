@@ -2008,6 +2008,52 @@ struct HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Claude follow-up attaches native session while sending rebuilt ASTRA prompt")
+    func claudeFollowUpAttachesNativeSessionWithRebuiltPrompt() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Keep ASTRA state authoritative", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "claude-session-1")
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "Use the prior context and continue deterministically",
+            worker: worker
+        )
+
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs
+            .split(separator: "\n")
+            .map(String.init)
+        let resumeIndex = try #require(args.firstIndex(of: "--resume"))
+        #expect(args.count > resumeIndex + 1)
+        #expect(rawArgs.contains("Context Capsule v2:"))
+        #expect(rawArgs.contains("Context Source Index:"))
+        #expect(rawArgs.contains("Native Continuation Policy:"))
+        #expect(rawArgs.contains("Context Capsule v2 and Context Source Index above remain authoritative"))
+        #expect(rawArgs.contains("User's follow-up request:\nUse the prior context and continue deterministically"))
+        if args.count > resumeIndex + 1 {
+            #expect(args[resumeIndex + 1] == "claude-session-1")
+        }
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
     @Test("Changing runtime from Copilot to Claude starts a clean provider run")
     func changingRuntimeFromCopilotToClaudeStartsCleanProviderRun() async throws {
         let harness = try HeadlessChatHarness()
@@ -2022,6 +2068,7 @@ struct HeadlessChatScenarioTests {
             exit 0
             """)
         )
+        let claudeArgsFile = harness.rootURL.appendingPathComponent("claude-switch-args.txt")
         let claudePath = try harness.writeExecutable(
             named: "claude",
             script: Self.claudeScript(body: """
@@ -2029,7 +2076,7 @@ struct HeadlessChatScenarioTests {
             printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude follow-up answer"}]}}'
             printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":13,"num_turns":1,"result":"Claude follow-up answer","usage":{"input_tokens":5,"output_tokens":7}}'
             exit 0
-            """)
+            """, argsFile: claudeArgsFile)
         )
 
         let task = harness.makeTask(runtime: .copilotCLI, goal: "Start with Copilot", model: "gpt-5")
@@ -2053,6 +2100,14 @@ struct HeadlessChatScenarioTests {
         #expect(runs[1].output == "Claude follow-up answer")
         #expect(task.sessionId == "claude-session-2")
         #expect(task.status == .completed)
+
+        let rawClaudeArgs = try String(contentsOf: claudeArgsFile, encoding: .utf8)
+        let claudeArgs = rawClaudeArgs
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(claudeArgs.contains("--resume") == false)
+        #expect(claudeArgs.contains("copilot-session-1") == false)
+        #expect(rawClaudeArgs.contains("User's follow-up request:\nContinue with Claude"))
     }
 
     private static func copilotScript(body: String, argsFile: URL? = nil) -> String {

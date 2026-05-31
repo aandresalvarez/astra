@@ -626,6 +626,54 @@ struct BuildPromptTests {
         #expect(!prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
     }
 
+    @Test("Follow-up prompt marks native continuation as optional and keeps ASTRA state authoritative")
+    func followUpPromptMarksNativeContinuationAsOptional() throws {
+        let root = NSTemporaryDirectory() + "prompt-native-continuation-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Native", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Continue with compact state",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        task.sessionId = "claude-session-1"
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+
+        #expect(prompt.contains("Native Continuation Policy:"))
+        #expect(prompt.contains("provider-native session for continuity"))
+        #expect(prompt.contains("Context Capsule v2 and Context Source Index above remain authoritative"))
+        #expect(prompt.contains("User's follow-up request:\ncontinue with the authoritative capsule"))
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+        let nativeSection = try #require(manifest.sections.first {
+            $0.includedTextPreview.contains("Native Continuation Policy:")
+        })
+        #expect(nativeSection.sourcePointers.contains {
+            $0.label == "provider native session" && $0.target.contains("session prefix claude-s")
+        })
+
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        let copilotPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with rebuilt context only",
+            task: task
+        )
+        #expect(copilotPrompt.contains("Native Continuation Policy:") == false)
+    }
+
     @Test("Memory budget keeps compact preference and source pointer")
     func memoryBudgetKeepsCompactPreferenceAndSourcePointer() throws {
         let container = try makeContainer()
