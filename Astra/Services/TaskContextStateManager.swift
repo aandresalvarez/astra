@@ -196,6 +196,7 @@ enum TaskContextStateManager {
         if let command = state.verification.command, !command.isEmpty {
             lines.append("  - Verification command: \(boundedInline(command, maxCharacters: 320))")
         }
+        appendSourcePointerList("Verification evidence", state.verification.evidence, to: &lines, limit: 4)
         appendArtifactReferences(state.artifacts, to: &lines, limit: 6)
         if let next = state.nextLikelyAction, !next.isEmpty {
             lines.append("- Next likely action: \(boundedInline(next, maxCharacters: 320))")
@@ -1001,6 +1002,20 @@ enum TaskContextStateManager {
         for value in items {
             let stale = value.isStale ? " stale" : ""
             lines.append("  - \(value.type) v\(value.version)\(stale): \(boundedInline(value.path, maxCharacters: 280))")
+        }
+    }
+
+    private static func appendSourcePointerList(
+        _ label: String,
+        _ values: [TaskContextState.SourcePointer],
+        to lines: inout [String],
+        limit: Int
+    ) {
+        let items = values.prefix(limit)
+        guard !items.isEmpty else { return }
+        lines.append("  - \(label):")
+        for source in items {
+            lines.append("    - \(sourceSummary(source))")
         }
     }
 

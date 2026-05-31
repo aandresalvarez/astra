@@ -230,6 +230,8 @@ struct TaskContextStateTests {
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Fix the validation failure", task: task)
         #expect(prompt.contains("Verification: failed via run_tests"))
         #expect(prompt.contains("Verification command: swift test --filter VerificationRegressionTests"))
+        #expect(prompt.contains("Verification evidence:"))
+        #expect(prompt.contains(String(validationEvent.id.uuidString.prefix(8))))
         #expect(prompt.contains("Tests failed"))
     }
 

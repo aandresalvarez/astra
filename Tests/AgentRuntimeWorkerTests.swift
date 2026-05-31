@@ -520,6 +520,65 @@ struct BuildPromptTests {
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
     }
 
+    @Test("Follow-up prompt includes context source index for just-in-time retrieval")
+    func followUpPromptIncludesContextSourceIndexForRetrieval() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-source-index-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Source Index", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "Index", goal: "Keep exact retrieval pointers", workspace: ws)
+        ctx.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Created a source index test artifact."
+        run.completedAt = Date()
+        let changedPath = (root as NSString).appendingPathComponent("Sources/Changed.swift")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: changedPath,
+            changeType: .edit,
+            content: nil,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        ctx.insert(run)
+        try ctx.save()
+
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: "Create retrieval evidence"
+        )
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let generatedPath = (folder as NSString).appendingPathComponent("review-notes.md")
+        try "Review notes".write(toFile: generatedPath, atomically: true, encoding: .utf8)
+        let artifact = Artifact(task: task, type: "markdown", path: generatedPath)
+        ctx.insert(artifact)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "What changed before?",
+            task: task
+        )
+
+        #expect(prompt.contains("Context Source Index:"))
+        #expect(prompt.contains("Use this index for just-in-time retrieval"))
+        #expect(prompt.contains("Read exact files/history/artifacts before relying on omitted details"))
+        #expect(prompt.contains(TaskContextStateManager.jsonFileName))
+        #expect(prompt.contains(TaskContextStateManager.markdownFileName))
+        #expect(prompt.contains("session_history.md"))
+        #expect(prompt.contains("outputs/turn_001.md"))
+        #expect(prompt.contains(generatedPath))
+        #expect(prompt.contains(changedPath))
+        #expect(prompt.contains("Artifacts:"))
+    }
+
     @Test("Follow-up transcript budget preserves state and points to omitted sources")
     func followUpTranscriptBudgetPreservesStateAndSources() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"

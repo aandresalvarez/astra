@@ -120,6 +120,8 @@ enum AgentPromptBuilder {
     private static let recentSessionFullOutputFileLimit = 4
     private static let recentSessionFullOutputMaxCharacters = 8_000
     private static let olderSessionOutputMaxCharacters = 2_000
+    private static let contextSourceIndexOutputFileLimit = 12
+    private static let contextSourceIndexArtifactLimit = 12
     private static let fallbackRunResponseLimit = 8
     private static let fallbackRecentRunResponseLimit = 3
     private static let fallbackRecentRunResponseMaxCharacters = 8_000
@@ -787,6 +789,7 @@ enum AgentPromptBuilder {
         )
         appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
         appendThreadIntentContext(for: task, to: &sections)
+        appendContextSourceIndex(for: task, to: &sections)
 
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         var includedExactSessionTranscript = false
@@ -813,6 +816,7 @@ enum AgentPromptBuilder {
             }
         }
 
+        let activeRuns = activeFollowUpRuns(for: task)
         let sortedRuns = followUpContextRuns(for: task)
         if !includedExactSessionTranscript, !sortedRuns.isEmpty {
             var answersBlock = "Previous responses (your final answers from each turn):"
@@ -833,7 +837,7 @@ enum AgentPromptBuilder {
             )
         }
 
-        let allChanges = sortedRuns.flatMap { $0.fileChanges }
+        let allChanges = activeRuns.flatMap { $0.fileChanges }
         if !allChanges.isEmpty {
             let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
             let changeList = uniquePaths.map { path -> String in
@@ -922,25 +926,13 @@ enum AgentPromptBuilder {
     }
 
     private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextText? {
-        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: outputDirectory),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-
-        let turnFiles = urls
-            .filter { url in
-                let name = url.lastPathComponent
-                return name.hasPrefix("turn_") && name.hasSuffix(".md")
-            }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
             .suffix(recentSessionOutputFileLimit)
 
         guard !turnFiles.isEmpty else { return nil }
 
-        let transcriptSections = turnFiles.enumerated().compactMap { offset, url -> String? in
-            guard let text = try? String(contentsOf: url, encoding: .utf8),
+        let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
+            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
@@ -949,17 +941,34 @@ enum AgentPromptBuilder {
                 ? recentSessionFullOutputMaxCharacters
                 : olderSessionOutputMaxCharacters
             let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
-            return "--- \(url.lastPathComponent) ---\n\(excerpt)"
+            return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
         }
 
         guard !transcriptSections.isEmpty else { return nil }
         let sourcePointers = turnFiles.map {
-            sourcePointer(label: "turn output", target: $0.path)
+            sourcePointer(label: "turn output", target: $0)
         } + [sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: taskFolder))]
         return PromptContextText(
             text: transcriptSections.joined(separator: "\n\n"),
             sourcePointers: sourcePointers
         )
+    }
+
+    private static func outputTurnFilePaths(taskFolder: String) -> [String] {
+        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: outputDirectory),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return urls
+            .filter { url in
+                let name = url.lastPathComponent
+                return name.hasPrefix("turn_") && name.hasSuffix(".md")
+            }
+            .map(\.path)
+            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
     }
 
     private static func recentSessionHistorySummary(from history: String) -> String {
@@ -976,20 +985,20 @@ enum AgentPromptBuilder {
     }
 
     private static func followUpContextRuns(for task: AgentTask) -> [TaskRun] {
+        let runsWithOutput = activeFollowUpRuns(for: task).filter { !$0.output.isEmpty }
+        return Array(runsWithOutput.suffix(fallbackRunResponseLimit))
+    }
+
+    private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         guard !sortedRuns.isEmpty else { return [] }
 
-        let activeRuns: [TaskRun]
         if task.forkedFromID != nil,
            task.forkedAtRunIndex > 0,
            task.forkedAtRunIndex < sortedRuns.count {
-            activeRuns = Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
-        } else {
-            activeRuns = sortedRuns
+            return Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
         }
-
-        let runsWithOutput = activeRuns.filter { !$0.output.isEmpty }
-        return Array(runsWithOutput.suffix(fallbackRunResponseLimit))
+        return sortedRuns
     }
 
     private static func boundedText(_ text: String, maxCharacters: Int, keeping bound: TextBound) -> String {
@@ -1063,6 +1072,88 @@ enum AgentPromptBuilder {
         }
 
         return "[Context: \(contextParts.joined(separator: " | "))]\n\n\(message)"
+    }
+
+    private static func appendContextSourceIndex(for task: AgentTask, to sections: inout [PromptContextSection]) {
+        guard let context = contextSourceIndex(for: task) else { return }
+        appendSection(
+            context.text,
+            kind: .threadState,
+            to: &sections,
+            sourcePointers: context.sourcePointers
+        )
+    }
+
+    private static func contextSourceIndex(for task: AgentTask) -> PromptContextText? {
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        var lines = [
+            "Context Source Index:",
+            "Use this index for just-in-time retrieval. Read exact files/history/artifacts before relying on omitted details, old decisions, failed commands, verification evidence, generated outputs, or exact prior wording."
+        ]
+        var pointers: [PromptContextSourcePointer] = []
+
+        if !folder.isEmpty {
+            let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+            let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+            let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+
+            lines.append("- Canonical state JSON: \(stateJSONPath)")
+            lines.append("- Canonical state Markdown: \(stateMarkdownPath)")
+            pointers.append(sourcePointer(label: "canonical current state JSON", target: stateJSONPath))
+            pointers.append(sourcePointer(label: "current state markdown", target: stateMarkdownPath))
+
+            if FileManager.default.fileExists(atPath: historyPath) {
+                lines.append("- Session history: \(historyPath)")
+                pointers.append(sourcePointer(label: "session history", target: historyPath))
+            }
+
+            let turnOutputs = outputTurnFilePaths(taskFolder: folder)
+                .suffix(contextSourceIndexOutputFileLimit)
+            if !turnOutputs.isEmpty {
+                lines.append("- Turn outputs:")
+                for path in turnOutputs {
+                    lines.append("  - \((path as NSString).lastPathComponent): \(path)")
+                    pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+
+            let generatedFiles = listTaskFolderFiles(folder)
+            if !generatedFiles.isEmpty {
+                lines.append("- Generated files:")
+                lines.append(contentsOf: generatedFiles.map { "  \($0)" })
+                pointers.append(sourcePointer(label: "task output folder", target: folder))
+            }
+        }
+
+        let changedPaths = dedupeKeepingOrder(
+            activeFollowUpRuns(for: task).flatMap { $0.fileChanges.map(\.path) },
+            limit: 20
+        )
+        if !changedPaths.isEmpty {
+            lines.append("- Changed files from active runs:")
+            for path in changedPaths {
+                lines.append("  - \(path)")
+            }
+            pointers.append(contentsOf: changedFileSourcePointers(changedPaths))
+        }
+
+        let artifacts = task.artifacts
+            .sorted { $0.createdAt < $1.createdAt }
+            .suffix(contextSourceIndexArtifactLimit)
+        if !artifacts.isEmpty {
+            lines.append("- Artifacts:")
+            for artifact in artifacts {
+                let stale = artifact.isStale ? " stale" : ""
+                lines.append("  - \(artifact.type) v\(artifact.version)\(stale): \(artifact.path)")
+                pointers.append(sourcePointer(label: "artifact \(artifact.type)", target: artifact.path))
+            }
+        }
+
+        guard lines.count > 2 else { return nil }
+        return PromptContextText(
+            text: lines.joined(separator: "\n"),
+            sourcePointers: dedupeSourcePointers(pointers)
+        )
     }
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
@@ -1334,6 +1425,20 @@ enum AgentPromptBuilder {
             if seen.insert(pointer).inserted {
                 result.append(pointer)
             }
+        }
+        return result
+    }
+
+    private static func dedupeKeepingOrder(_ values: [String], limit: Int) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            result.append(trimmed)
+            if result.count >= limit { break }
         }
         return result
     }
