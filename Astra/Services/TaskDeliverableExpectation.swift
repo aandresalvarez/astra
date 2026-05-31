@@ -14,10 +14,13 @@ enum TaskDeliverableExpectation {
             .joined(separator: " ")
             .lowercased()
 
-        guard containsAny(text, [
-            "write", "create", "creat", "cerate", "build", "make", "generate", "save",
+        let artifactActionWords = [
+            "write", "create", "creat", "cerate", "build", "make", "generate", "save"
+        ]
+        let artifactActionPhrases = [
             "put this in files", "write this in files"
-        ]) else {
+        ]
+        guard containsAnyWholeWord(text, artifactActionWords) || containsAny(text, artifactActionPhrases) else {
             return false
         }
 
@@ -60,6 +63,11 @@ enum TaskDeliverableExpectation {
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }
+    }
+
+    private static func containsAnyWholeWord(_ text: String, _ words: [String]) -> Bool {
+        let tokens = Set(text.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        return words.contains { tokens.contains($0) }
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {

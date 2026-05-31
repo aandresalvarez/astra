@@ -2125,9 +2125,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 remediation: "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
             )
         }
-        guard result.stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .contains("ASTRA_READY") else {
+        guard antigravityReadinessOutputContainsReadyLine(result.stdout) else {
             return RuntimeReadinessCheck(
                 id: "antigravity-account",
                 title: "Antigravity account",
@@ -2144,6 +2142,14 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             state: .ready,
             remediation: nil
         )
+    }
+
+    private func antigravityReadinessOutputContainsReadyLine(_ stdout: String) -> Bool {
+        stdout
+            .components(separatedBy: .newlines)
+            .contains { line in
+                line.trimmingCharacters(in: .whitespacesAndNewlines) == "ASTRA_READY"
+            }
     }
 
     private func antigravityLiveAccountEmptySuccessDetail(_ result: RunResult) -> String {

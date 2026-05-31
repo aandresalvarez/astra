@@ -372,6 +372,8 @@ struct TaskRunLifecycleServiceTests {
         _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
 
         #expect(PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
+        task.isDone = true
+        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
     }
 
     @Test("Startup recovery cancels orphaned running task and run")

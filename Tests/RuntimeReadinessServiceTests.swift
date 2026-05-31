@@ -350,6 +350,46 @@ struct RuntimeReadinessServiceTests {
         #expect(account?.remediation?.contains("agy --print") == true)
     }
 
+    @Test("Antigravity diagnostic readiness requires an exact ready line")
+    func antigravityDiagnosticReadinessRequiresExactReadyLine() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: "diagnostic: did not print ASTRA_READY\n",
+                stderr: ""
+            )
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("did not print ASTRA_READY") == true)
+    }
+
     @Test("Antigravity diagnostic readiness blocks on live auth failure without leaking credentials")
     func antigravityDiagnosticReadinessBlocksOnLiveAuthFailure() async {
         let runner = StubBinaryRunner()

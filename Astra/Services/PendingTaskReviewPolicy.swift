@@ -24,6 +24,7 @@ enum PendingTaskReviewPolicy {
 
     static func completedTaskNeedsArtifactAttention(task: AgentTask, latestRun: TaskRun?) -> Bool {
         guard task.status == .completed,
+              !task.isDone,
               let latestRun,
               latestRun.status == .completed else {
             return false

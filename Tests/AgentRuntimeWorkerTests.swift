@@ -186,6 +186,26 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector ignores creative wording that only contains creat substring")
+    func artifactDetectorIgnoresCreativeSubstring() {
+        let task = AgentTask(
+            title: "Creative slides review",
+            goal: "Give creative feedback on javascript slides and presentation structure."
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector keeps standalone creat typo")
+    func artifactDetectorKeepsStandaloneCreatTypo() {
+        let task = AgentTask(
+            title: "creat HTML slides",
+            goal: "creat a html slide deck about agents"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
