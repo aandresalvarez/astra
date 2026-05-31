@@ -176,7 +176,9 @@ enum TaskDeliverableExpectation {
         guard !folder.isEmpty else { return false }
         guard entryLimit > 0, depthLimit >= 0 else { return false }
 
-        let root = URL(fileURLWithPath: folder).standardizedFileURL
+        let root = URL(fileURLWithPath: folder)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
@@ -192,7 +194,8 @@ enum TaskDeliverableExpectation {
                 return false
             }
 
-            let depth = relativeDepth(of: fileURL, taskFolder: root)
+            guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
+            let depth = relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
                 continue
@@ -202,7 +205,7 @@ enum TaskDeliverableExpectation {
                 enumerator.skipDescendants()
             }
             guard values?.isRegularFile == true else { continue }
-            if isRuntimeHistoryFile(fileURL, taskFolder: root) {
+            if !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative) {
                 continue
             }
             return true
@@ -210,25 +213,15 @@ enum TaskDeliverableExpectation {
         return false
     }
 
-    private static func relativeDepth(of fileURL: URL, taskFolder: URL) -> Int {
-        let relative = relativePath(of: fileURL, taskFolder: taskFolder)
+    private static func relativeDepth(of relative: String) -> Int {
         guard !relative.isEmpty else { return 0 }
         return relative.split(separator: "/", omittingEmptySubsequences: true).count - 1
     }
 
-    private static func isRuntimeHistoryFile(_ fileURL: URL, taskFolder: URL) -> Bool {
-        let relative = relativePath(of: fileURL, taskFolder: taskFolder)
-        if relative == "session_history.md" {
-            return true
-        }
-        if relative.hasPrefix("outputs/turn_"), relative.hasSuffix(".md") {
-            return true
-        }
-        return false
-    }
-
-    private static func relativePath(of fileURL: URL, taskFolder: URL) -> String {
-        let prefix = taskFolder.standardizedFileURL.path + "/"
-        return fileURL.standardizedFileURL.path.replacingOccurrences(of: prefix, with: "")
+    private static func relativePath(of fileURL: URL, taskFolder: URL) -> String? {
+        let prefix = taskFolder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        let path = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
     }
 }

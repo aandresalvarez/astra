@@ -95,8 +95,13 @@ struct SkillResolver {
     }
 
     var resolvedBehaviorInstructions: String {
-        effectiveSnapshots.compactMap { snapshot in
-            snapshot.behaviorInstructions.isEmpty ? nil : "[\(snapshot.name)]:\n\(snapshot.behaviorInstructions)"
+        var seen = Set<String>()
+        return effectiveSnapshots.compactMap { snapshot in
+            let behavior = snapshot.behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !behavior.isEmpty else { return nil }
+            let key = Self.behaviorDedupeKey(name: snapshot.name, behaviorInstructions: behavior)
+            guard seen.insert(key).inserted else { return nil }
+            return "[\(snapshot.name)]:\n\(behavior)"
         }.joined(separator: "\n\n")
     }
 
@@ -129,6 +134,20 @@ struct SkillResolver {
     private func snapshotConnectorEnvironmentVariables(for snapshot: ConnectorSnapshotConfig) -> [String: String] {
         let values = normalizedParallelArray(keys: snapshot.configKeys, values: snapshot.configValues)
         return Dictionary(zip(snapshot.configKeys, values), uniquingKeysWith: { _, last in last })
+    }
+
+    private static func behaviorDedupeKey(name: String, behaviorInstructions: String) -> String {
+        [
+            normalizedDedupeText(name),
+            normalizedDedupeText(behaviorInstructions)
+        ].joined(separator: "\u{1F}")
+    }
+
+    private static func normalizedDedupeText(_ text: String) -> String {
+        text
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
     }
 
     private func normalizedParallelArray(keys: [String], values: [String]) -> [String] {

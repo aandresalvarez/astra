@@ -1410,6 +1410,7 @@ final class AgentRuntimeWorker {
         }
     }
 
+    @MainActor
     func buildPrompt(for task: AgentTask) -> String {
         AgentPromptBuilder.buildPrompt(for: task)
     }

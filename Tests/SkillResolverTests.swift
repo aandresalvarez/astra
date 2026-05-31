@@ -143,6 +143,22 @@ struct SkillResolverTests {
         #expect(result.contains("[Writer]:\nWrite carefully"))
     }
 
+    @Test("Duplicate behavior snapshots are emitted once")
+    func duplicateBehaviorSnapshotsAreEmittedOnce() {
+        let behavior = """
+        Use GitHub CLI.
+
+        Prefer structured JSON.
+        """
+        let s1 = makeSnapshot(name: "GitHub Agent", behaviorInstructions: behavior)
+        let s2 = makeSnapshot(name: "github agent", behaviorInstructions: "Use GitHub CLI.\nPrefer structured JSON.")
+        let resolver = makeResolver(snapshots: [s1, s2])
+        let result = resolver.resolvedBehaviorInstructions
+
+        #expect(result.components(separatedBy: "Use GitHub CLI.").count - 1 == 1)
+        #expect(result.contains("[GitHub Agent]:"))
+    }
+
     @Test("Empty behavior instructions are skipped")
     func emptyBehaviorSkipped() {
         let s1 = makeSnapshot(name: "A", behaviorInstructions: "Do stuff")

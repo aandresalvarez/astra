@@ -4,7 +4,7 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Headless Chat Scenarios")
+@Suite("Headless Chat Scenarios", .serialized)
 @MainActor
 struct HeadlessChatScenarioTests {
     @Test("Fake Copilot chat completes through the worker without UI")

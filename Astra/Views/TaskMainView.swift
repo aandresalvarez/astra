@@ -81,6 +81,7 @@ struct TaskMainView: View {
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
+    @State private var showContextPreview = false
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
@@ -342,6 +343,17 @@ struct TaskMainView: View {
         .sheet(isPresented: $showDiffsSheet) {
             DiffsTabView(task: task)
                 .frame(minWidth: 700, minHeight: 500)
+        }
+        .sheet(isPresented: $showContextPreview) {
+            let request = contextPreviewRequest
+            if let manifest = contextPreviewManifest(for: request) {
+                PromptContextPreviewSheet(manifest: manifest)
+                    .frame(minWidth: 700, minHeight: 600)
+            } else {
+                PromptContextPreviewUnavailableSheet(
+                    reason: request.unavailableReason ?? "No provider prompt is pending."
+                )
+            }
         }
         .sheet(isPresented: $showScheduleEditor) {
             if let ws = task.workspace {
@@ -712,6 +724,30 @@ struct TaskMainView: View {
         summaryContent
     }
 
+    private var contextPreviewRequest: PromptContextPreviewRequest {
+        PromptContextPreviewPresentation.request(
+            taskStatus: task.status,
+            hasProviderSession: task.sessionId != nil,
+            messageText: messageText,
+            attachedFiles: attachedFiles
+        )
+    }
+
+    private func contextPreviewManifest(for request: PromptContextPreviewRequest) -> PromptAssemblyManifest? {
+        switch request.kind {
+        case .initialRun:
+            return AgentPromptBuilder.buildPromptAssembly(for: task)
+        case .followUp:
+            guard let followUpMessage = request.followUpMessage else { return nil }
+            return AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+                message: followUpMessage,
+                task: task
+            )
+        case .unavailable:
+            return nil
+        }
+    }
+
     /// Snapshot the conversation at routine creation time.
     /// Captures user messages and agent responses chronologically.
     private var scheduleConversationContext: String {
@@ -857,6 +893,12 @@ struct TaskMainView: View {
             }
 
             Section {
+                Button {
+                    showContextPreview = true
+                } label: {
+                    Label("Context Preview", systemImage: "doc.text.magnifyingglass")
+                }
+
                 Button {
                     showScheduleEditor = true
                 } label: {

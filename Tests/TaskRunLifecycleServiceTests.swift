@@ -101,6 +101,59 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == "task.approved" })
     }
 
+    @Test("Task folder runtime files do not satisfy standalone artifact requirement")
+    func taskFolderRuntimeFilesDoNotSatisfyStandaloneArtifactRequirement() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-runtime-files-artifact-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Artifact", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Web page",
+            goal: "write a web page with html and javascript",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try "state".write(
+            toFile: (taskFolder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}".write(
+            toFile: (taskFolder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "history".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("session_history.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "turn".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("outputs/turn_001.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+
+        try "<html></html>".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
     @Test("Coordinator approval completes generic failed pending tasks")
     func coordinatorApprovalCompletesGenericFailedPendingTasks() throws {
         let container = try makeTaskRunLifecycleContainer()

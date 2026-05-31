@@ -128,6 +128,12 @@ enum AgentFileChangeDetector {
         limitedTo candidates: Set<String>? = nil
     ) -> Set<String> {
         let root = URL(fileURLWithPath: workspacePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let normalizedCandidates = candidates.map { paths in
+            Set(paths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path })
+        }
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
@@ -139,20 +145,24 @@ enum AgentFileChangeDetector {
         while let url = enumerator.nextObject() as? URL {
             visited += 1
             if visited > 5000 { break }
-            let rel = url.path.replacingOccurrences(of: workspacePath + "/", with: "")
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard itemURL.path.hasPrefix(rootPath) else { continue }
+            let rel = String(itemURL.path.dropFirst(rootPath.count))
             if rel.hasPrefix(".git/") || rel.hasPrefix(".astra/") || rel.hasPrefix("node_modules/") || rel.hasPrefix(".build/") {
                 continue
             }
-            if let candidates, !candidates.contains(url.path) {
+            if let normalizedCandidates, !normalizedCandidates.contains(itemURL.path) {
                 continue
             }
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+            guard let values = try? itemURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
                   values.isRegularFile == true,
                   let modified = values.contentModificationDate,
                   modified >= since else {
                 continue
             }
-            result.insert(url.path)
+            result.insert(itemURL.path)
             if result.count >= 50 { break }
         }
         return result
