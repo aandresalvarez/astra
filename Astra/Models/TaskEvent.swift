@@ -32,7 +32,7 @@ final class TaskEvent {
     static func categoryFor(type: String) -> String {
         switch type {
         case "task.started", "task.completed", "task.cancelled", "task.interrupted", "task.retried",
-             "task.resumed", "task.approved", "task.dismissed", "activity.compacted",
+             "task.resumed", "task.approved", "task.dismissed", "task.checkpoint", "activity.compacted",
              "plan.created", "plan.updated", "plan.approved", "plan.cancelled",
              "plan.execution.started", "plan.execution.completed", "plan.execution.failed":
             return "lifecycle"

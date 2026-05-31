@@ -220,6 +220,10 @@ enum TaskContextStateManager {
         lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
         lines.append("Thread Intent:")
         lines.append("- Mode: \(state.mode.rawValue)")
+        if let checkpoint = checkpointSummary(for: task) {
+            lines.append("Checkpoint:")
+            lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
+        }
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
         }
@@ -416,6 +420,9 @@ enum TaskContextStateManager {
             case .none, .failed, .cancelled:
                 break
             }
+        }
+        if let checkpoint = checkpointSummary(for: task) {
+            state.decisions = dedupeKeepingOrder([checkpoint] + state.decisions, limit: maxListItems)
         }
 
         let planBlockers = planState.plan?.steps.compactMap { step -> String? in
@@ -625,9 +632,12 @@ enum TaskContextStateManager {
             sourcePointer(kind: "plan", id: $0.planID.uuidString, summary: "Plan lifecycle")
         }
         return state.decisions.map { decision in
-            contextFact(
+            let checkpointSource = checkpointSummary(for: task) == decision
+                ? checkpointSourcePointer(for: task)
+                : nil
+            return contextFact(
                 decision,
-                sourcePointers: [planSource ?? sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task decision")]
+                sourcePointers: [checkpointSource ?? planSource ?? sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task decision")]
             )
         }
     }
@@ -796,6 +806,9 @@ enum TaskContextStateManager {
             ))
         }
         pointers += state.objective.sourcePointers
+        if let checkpointPointer = checkpointSourcePointer(for: task) {
+            pointers.append(checkpointPointer)
+        }
         pointers += state.verification.evidence
         pointers += state.decisionFacts.flatMap(\.sourcePointers)
         pointers += state.blockerFacts.flatMap(\.sourcePointers)
@@ -807,6 +820,21 @@ enum TaskContextStateManager {
     @MainActor
     private static func latestRun(for task: AgentTask) -> TaskRun? {
         task.runs.max { $0.startedAt < $1.startedAt }
+    }
+
+    private static func checkpointSummary(for task: AgentTask) -> String? {
+        guard let sourceID = task.forkedFromID else { return nil }
+        let sourceRunNumber = max(0, task.forkedAtRunIndex) + 1
+        return "Forked checkpoint from task \(sourceID.uuidString) after source run \(sourceRunNumber). Treat copied runs and events up to this checkpoint as this branch history; source runs after the checkpoint are not authoritative for this task."
+    }
+
+    private static func checkpointSourcePointer(for task: AgentTask) -> TaskContextState.SourcePointer? {
+        guard let sourceID = task.forkedFromID else { return nil }
+        return sourcePointer(
+            kind: "checkpoint",
+            id: sourceID.uuidString,
+            summary: "Fork checkpoint after source run \(max(0, task.forkedAtRunIndex) + 1)"
+        )
     }
 
     @MainActor
