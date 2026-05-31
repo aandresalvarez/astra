@@ -47,6 +47,52 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var summary: String
         var evidence: [SourcePointer]
         var updatedAt: String?
+        var completionVerified: Bool
+        var artifactStatus: String
+
+        init(
+            status: String,
+            strategy: String,
+            command: String?,
+            summary: String,
+            evidence: [SourcePointer],
+            updatedAt: String?,
+            completionVerified: Bool? = nil,
+            artifactStatus: String = "unknown"
+        ) {
+            self.status = status
+            self.strategy = strategy
+            self.command = command
+            self.summary = summary
+            self.evidence = evidence
+            self.updatedAt = updatedAt
+            self.completionVerified = completionVerified ?? (status == "passed")
+            self.artifactStatus = artifactStatus
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case status
+            case strategy
+            case command
+            case summary
+            case evidence
+            case updatedAt
+            case completionVerified
+            case artifactStatus
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try container.decode(String.self, forKey: .status)
+            strategy = try container.decode(String.self, forKey: .strategy)
+            command = try container.decodeIfPresent(String.self, forKey: .command)
+            summary = try container.decode(String.self, forKey: .summary)
+            evidence = try container.decode([SourcePointer].self, forKey: .evidence)
+            updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+            let decodedCompletionVerified = try container.decodeIfPresent(Bool.self, forKey: .completionVerified)
+            completionVerified = decodedCompletionVerified ?? (status == "passed")
+            artifactStatus = try container.decodeIfPresent(String.self, forKey: .artifactStatus) ?? "unknown"
+        }
     }
 
     struct ChangedFile: Codable, Sendable, Equatable, Hashable {
@@ -193,6 +239,8 @@ enum TaskContextStateManager {
         appendFactList("Blockers", state.blockerFacts, to: &lines, limit: 5)
         appendChangedFiles(state.changedFiles, to: &lines, limit: 8)
         lines.append("- Verification: \(state.verification.status) via \(state.verification.strategy) - \(boundedInline(state.verification.summary, maxCharacters: 320))")
+        lines.append("  - Completion verified: \(state.verification.completionVerified ? "yes" : "no")")
+        lines.append("  - Artifact status: \(boundedInline(state.verification.artifactStatus, maxCharacters: 240))")
         if let command = state.verification.command, !command.isEmpty {
             lines.append("  - Verification command: \(boundedInline(command, maxCharacters: 320))")
         }
@@ -655,6 +703,7 @@ enum TaskContextStateManager {
     @MainActor
     private static func verificationState(task: AgentTask, latestRun: TaskRun?) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
+        let artifactStatus = artifactVerificationStatus(for: task)
         let latestValidation = task.events
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
@@ -668,7 +717,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: boundedInline(event.payload, maxCharacters: 500),
                 evidence: [eventSource(event, summary: "Validation event")],
-                updatedAt: timestamp(event.timestamp)
+                updatedAt: timestamp(event.timestamp),
+                completionVerified: status == "passed",
+                artifactStatus: artifactStatus
             )
         }
 
@@ -679,7 +730,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: "Manual completion recorded; no automated verification evidence.",
                 evidence: latestRun.map { [sourcePointer(kind: "run", id: $0.id.uuidString, summary: "Completed run")] } ?? [],
-                updatedAt: latestRun?.completedAt.map(timestamp)
+                updatedAt: latestRun?.completedAt.map(timestamp),
+                completionVerified: false,
+                artifactStatus: artifactStatus
             )
         }
 
@@ -690,7 +743,9 @@ enum TaskContextStateManager {
                 command: command,
                 summary: firstNonEmpty(latestRun.stopReason, "Latest run did not complete successfully."),
                 evidence: [sourcePointer(kind: "run", id: latestRun.id.uuidString, summary: "Latest unsuccessful run")],
-                updatedAt: latestRun.completedAt.map(timestamp)
+                updatedAt: latestRun.completedAt.map(timestamp),
+                completionVerified: false,
+                artifactStatus: artifactStatus
             )
         }
 
@@ -700,8 +755,26 @@ enum TaskContextStateManager {
             command: command,
             summary: "No structured verification result has been recorded yet.",
             evidence: [],
-            updatedAt: nil
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: artifactStatus
         )
+    }
+
+    @MainActor
+    private static func artifactVerificationStatus(for task: AgentTask) -> String {
+        let artifacts = task.artifacts
+        guard !artifacts.isEmpty else { return "none recorded" }
+        let staleCount = artifacts.filter(\.isStale).count
+        let currentCount = artifacts.count - staleCount
+        switch (currentCount, staleCount) {
+        case (let current, 0):
+            return "\(current) current"
+        case (0, let stale):
+            return "\(stale) stale"
+        case (let current, let stale):
+            return "\(current) current, \(stale) stale"
+        }
     }
 
     @MainActor
@@ -1066,6 +1139,8 @@ enum TaskContextStateManager {
         if let command = verification.command, !command.isEmpty {
             parts.append("- Command: `\(command)`")
         }
+        parts.append("- Completion verified: \(verification.completionVerified ? "yes" : "no")")
+        parts.append("- Artifact status: \(verification.artifactStatus)")
         parts.append("- Summary: \(verification.summary)")
         if let updatedAt = verification.updatedAt {
             parts.append("- Updated: \(updatedAt)")
