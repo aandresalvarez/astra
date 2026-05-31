@@ -637,7 +637,7 @@ struct SkillEditorView: View {
                             .frame(minHeight: 80, maxHeight: 140)
                             .scrollContentBackground(.hidden)
                             .padding(6)
-                            .background(Stanford.cardBackground)
+                            .background(Color(nsColor: .textBackgroundColor))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)

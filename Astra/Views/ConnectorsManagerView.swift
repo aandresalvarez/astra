@@ -601,7 +601,7 @@ struct ConnectorEditorView: View {
                         .frame(minHeight: 40, maxHeight: 80)
                         .scrollContentBackground(.hidden)
                         .padding(4)
-                        .background(Stanford.cardBackground)
+                        .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)

@@ -107,36 +107,6 @@ enum Stanford {
     static let link = lagunita
     static let selectionFill = Color.primary.opacity(0.075)
 
-    // MARK: - Neutral Text Tokens
-    //
-    // Warm-neutral text ramp that pairs with the warm paper surfaces below.
-    // Prefer these over raw `Color.secondary` / `.tertiary` (which resolve to
-    // cool system greys) when text sits on an ASTRA surface token.
-    static let textSecondaryLightHex: UInt = 0x544948  // warm muted charcoal for subtitles / metadata
-    static let textTertiaryLightHex: UInt = 0x857F76   // warm tertiary for helper copy / quiet icons
-    static let borderSoftLightHex: UInt = 0xE5E3DF
-
-    static let textSecondary = Color(
-        light: textSecondaryLightHex,
-        dark:  0x9C938A
-    )
-    static let textTertiary = Color(
-        light: textTertiaryLightHex,
-        dark:  0x73695F
-    )
-
-    /// Warm hairline for dividers and resting strokes. Replaces the cool
-    /// `Color.primary.opacity(strokeRest)` look on neutral surfaces.
-    static let borderSoft = Color(
-        light: borderSoftLightHex,
-        dark:  0x3A3733
-    )
-
-    /// Subtle warm tint applied to macOS 26 liquid-glass surfaces so the
-    /// translucent material picks up the app's paper warmth instead of reading
-    /// as cool system grey. Kept low-opacity to preserve glass depth.
-    static let warmGlassTint = Color(light: 0xD9CBB0, dark: 0x6A5E45).opacity(0.16)
-
     // MARK: - Global UI Scale
 
     nonisolated(unsafe) private static var _cachedUIScale: Double?
@@ -324,27 +294,10 @@ enum Stanford {
     static var inspectorLabelWidth: CGFloat { density(72) }
 
     // MARK: - Backgrounds
-    //
-    // Light mode uses an intentional warm-paper ramp, layered by elevation so
-    // surfaces read as distinct without relying on pure white:
-    //
-    //   sidebar (recessed)  <  canvas  <  control well  <  card / message
-    //
-    // Pure system white is the largest source of light-mode eye strain, so the
-    // brightest surface (cards) is nudged ~2% off white while still sitting
-    // above the warm canvas. Dark mode is left untouched: each token resolves to
-    // its original macOS system color, whose dark variants are already tuned to
-    // the app's dark window chrome.
-    // Elevation ramp, lightest to most recessed:
-    //   card (0xFDFCFA) > canvas (warmCanvas) > control well (0xF4F3EF) > sidebar (0xF1F0EC)
-    static let cardBackgroundLightHex: UInt = 0xFDFCFA
-    static let controlWellLightHex: UInt = 0xF4F3EF
-    static let sidebarBackgroundLightHex: UInt = 0xF1F0EC
-
-    static let fog = Color(lightHex: controlWellLightHex, darkNSColor: .controlBackgroundColor)
-    static let panelBackground = Color(lightHex: warmCanvasLightHex, darkNSColor: .windowBackgroundColor)
-    static let cardBackground = Color(lightHex: cardBackgroundLightHex, darkNSColor: .textBackgroundColor)
-    static let sidebarBackground = Color(lightHex: sidebarBackgroundLightHex, darkNSColor: .underPageBackgroundColor)
+    static let fog = Color(nsColor: .controlBackgroundColor)
+    static let panelBackground = Color(nsColor: .windowBackgroundColor)
+    static let cardBackground = Color(nsColor: .textBackgroundColor)
+    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
 }
 
 // MARK: - Color Extension for Hex
@@ -375,26 +328,6 @@ extension Color {
                 srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
                 green:   CGFloat((hex >>  8) & 0xFF) / 255,
                 blue:    CGFloat((hex >>  0) & 0xFF) / 255,
-                alpha:   CGFloat(opacity)
-            )
-        }
-        self.init(nsColor: dynamic)
-    }
-
-    /// Build a `Color` that renders an explicit warm `lightHex` in .light mode
-    /// while deferring to a macOS system `darkNSColor` in .dark mode. Used by
-    /// surface tokens so the light palette can be warmed without disturbing the
-    /// already-tuned dark appearance.
-    init(lightHex: UInt, darkNSColor: NSColor, opacity: Double = 1.0) {
-        let dynamic = NSColor(name: nil) { appearance in
-            let wantsDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            if wantsDark {
-                return darkNSColor
-            }
-            return NSColor(
-                srgbRed: CGFloat((lightHex >> 16) & 0xFF) / 255,
-                green:   CGFloat((lightHex >>  8) & 0xFF) / 255,
-                blue:    CGFloat((lightHex >>  0) & 0xFF) / 255,
                 alpha:   CGFloat(opacity)
             )
         }
@@ -472,16 +405,17 @@ extension View {
     func liquidSurface(
         cornerRadius: CGFloat = 10,
         interactive: Bool = false,
-        tint: Color? = nil,
-        fallbackFill: Color = Stanford.panelBackground,
+        fallbackFill: Color = Color(nsColor: .windowBackgroundColor),
         fallbackStrokeOpacity: Double = 0.06
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(macOS 26.0, *) {
-            let base: Glass = interactive ? .regular.interactive() : .regular
-            let glass: Glass = tint.map { base.tint($0) } ?? base
-            glassEffect(glass, in: shape)
+            if interactive {
+                glassEffect(.regular.interactive(), in: shape)
+            } else {
+                glassEffect(.regular, in: shape)
+            }
         } else {
             background(shape.fill(fallbackFill))
                 .overlay {

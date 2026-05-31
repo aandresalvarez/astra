@@ -1085,7 +1085,7 @@ struct KanbanColumnView: View {
                                             .font(Stanford.ui(12, weight: .semibold))
                                             .foregroundStyle(.secondary)
                                             .frame(width: 24, height: 24)
-                                            .background(Stanford.panelBackground.opacity(0.94))
+                                            .background(Color(nsColor: .windowBackgroundColor).opacity(0.94))
                                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -1241,7 +1241,7 @@ struct KanbanColumnView: View {
             LinearGradient(
                 colors: [
                     Color.clear,
-                    Stanford.panelBackground.opacity(0.9)
+                    Color(nsColor: .windowBackgroundColor).opacity(0.9)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -1258,7 +1258,7 @@ struct KanbanColumnView: View {
             .padding(.horizontal, 10)
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity)
-            .background(Stanford.panelBackground.opacity(0.94))
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.94))
         }
         .allowsHitTesting(false)
     }
@@ -1324,7 +1324,7 @@ struct KanbanColumnView: View {
         .frame(maxWidth: min(density.columnWidth(for: category) - 28, 260))
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .fill(Stanford.panelBackground.opacity(0.94))
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)

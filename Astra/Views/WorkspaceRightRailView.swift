@@ -3351,12 +3351,11 @@ private struct EmptyRailState: View {
 private extension View {
     func railCard(
         cornerRadius: CGFloat = Stanford.railCardCornerRadius,
-        fill: Color = Stanford.panelBackground,
+        fill: Color = Color(nsColor: .windowBackgroundColor),
         strokeOpacity: Double = 0.06
     ) -> some View {
         liquidSurface(
             cornerRadius: cornerRadius,
-            tint: Stanford.warmGlassTint,
             fallbackFill: fill,
             fallbackStrokeOpacity: strokeOpacity
         )

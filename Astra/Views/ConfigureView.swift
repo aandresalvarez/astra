@@ -615,7 +615,7 @@ struct CapabilityCreationWizardView: View {
                                     .foregroundStyle(selected ? ConfigureTab.tools.color : Color.secondary.opacity(0.45))
                             }
                             .padding(10)
-                            .background(Stanford.fog)
+                            .background(Color(nsColor: .controlBackgroundColor))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -662,7 +662,7 @@ struct CapabilityCreationWizardView: View {
                         .font(Stanford.ui(13, design: .monospaced))
                         .frame(minHeight: 70)
                         .padding(6)
-                        .background(Stanford.cardBackground)
+                        .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
                 }
@@ -702,7 +702,7 @@ struct CapabilityCreationWizardView: View {
                     .font(Stanford.ui(13, design: .monospaced))
                     .frame(minHeight: 160)
                     .padding(6)
-                    .background(Stanford.cardBackground)
+                    .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
@@ -819,7 +819,7 @@ struct CapabilityCreationWizardView: View {
                                     .foregroundStyle(isSelected(item) ? ConfigureTab.capabilities.color : Color.secondary.opacity(0.45))
                             }
                             .padding(10)
-                            .background(Stanford.fog)
+                            .background(Color(nsColor: .controlBackgroundColor))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -839,7 +839,7 @@ struct CapabilityCreationWizardView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(Stanford.fog)
+        .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

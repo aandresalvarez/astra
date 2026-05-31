@@ -2829,7 +2829,7 @@ struct SpecCardView: View {
                 }
             }
             .padding()
-            .background(Stanford.fog)
+            .background(Color(.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(
                 RoundedRectangle(cornerRadius: 12)

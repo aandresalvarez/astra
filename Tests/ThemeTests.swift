@@ -131,69 +131,6 @@ struct ThemeTests {
         #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
     }
 
-    @Test("Warm light surfaces keep primary and secondary text readable")
-    func warmLightSurfacesMeetContrastTargets() {
-        // Primary text must clear WCAG AA (4.5:1) on every warm light surface
-        // in the elevation ramp.
-        let surfaces: [(String, UInt)] = [
-            ("card",        Stanford.cardBackgroundLightHex),
-            ("canvas",      Stanford.warmCanvasLightHex),
-            ("control well", Stanford.controlWellLightHex),
-            ("sidebar",     Stanford.sidebarBackgroundLightHex)
-        ]
-        for (name, surface) in surfaces {
-            #expect(
-                contrastRatio(Stanford.readingTextLightHex, surface) >= 4.5,
-                "primary text fails AA on \(name) surface"
-            )
-            // Secondary text is used for subtitles/metadata; hold it to AA as
-            // well so muted copy stays legible on the lightest card surface.
-            #expect(
-                contrastRatio(Stanford.textSecondaryLightHex, surface) >= 4.5,
-                "secondary text fails AA on \(name) surface"
-            )
-        }
-    }
-
-    @Test("Warm light elevation ramp stays ordered and distinct")
-    func warmLightSurfacesAreLayered() {
-        // Cards sit above the canvas, which sits above the recessed chrome.
-        // Each step must be perceptibly lighter than the one beneath it.
-        let card = relativeLuminance(hex: Stanford.cardBackgroundLightHex)
-        let canvas = relativeLuminance(hex: Stanford.warmCanvasLightHex)
-        let well = relativeLuminance(hex: Stanford.controlWellLightHex)
-        let sidebar = relativeLuminance(hex: Stanford.sidebarBackgroundLightHex)
-
-        #expect(card > canvas, "card should be lighter than canvas")
-        #expect(canvas > well, "canvas should be lighter than the control well")
-        #expect(well > sidebar, "control well should be lighter than the sidebar")
-        // The brightest surface stays off pure white to reduce eye strain.
-        #expect(card < relativeLuminance(hex: 0xFFFFFF), "card should not be pure white")
-    }
-
-    @Test("Warm surface tokens defer to system colors in dark mode")
-    func warmSurfaceTokensPreserveDarkMode() {
-        let tokens: [(String, Color, NSColor)] = [
-            ("fog",               Stanford.fog,              .controlBackgroundColor),
-            ("panelBackground",   Stanford.panelBackground,  .windowBackgroundColor),
-            ("cardBackground",    Stanford.cardBackground,   .textBackgroundColor),
-            ("sidebarBackground", Stanford.sidebarBackground, .underPageBackgroundColor)
-        ]
-        for (name, token, system) in tokens {
-            guard
-                let resolved = resolve(token, appearance: .darkAqua),
-                let reference = resolve(Color(nsColor: system), appearance: .darkAqua)
-            else {
-                Issue.record("Could not resolve \(name)")
-                continue
-            }
-            #expect(
-                approximatelyEqual(resolved, reference),
-                "\(name) diverged from its system color in dark mode"
-            )
-        }
-    }
-
     @Test("Bundled Stanford typography fonts are packaged")
     func bundledTypographyFontsArePackaged() {
         let filenames = Set(StanfordFontRegistrar.bundledFontURLs().map(\.lastPathComponent))
