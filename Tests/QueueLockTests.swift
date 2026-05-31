@@ -284,6 +284,31 @@ struct QueueLockTests {
         #expect(queue.activeResourceLocks.count == 2)
     }
 
+    @Test("write locks serialize ancestor and descendant execution roots")
+    func writeLocksSerializeAncestorAndDescendantExecutionRoots() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let childRoot = (root as NSString).appendingPathComponent("packages/app")
+        try FileManager.default.createDirectory(atPath: childRoot, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Nested Locks", primaryPath: root)
+        let parentTask = AgentTask(title: "Parent", goal: "Patch root", workspace: workspace)
+        let childTask = AgentTask(title: "Child", goal: "Patch package", workspace: workspace)
+        childTask.executionRootPath = childRoot
+        let queue = TaskQueue(poolSize: 2)
+
+        let parentClaim = try #require(queue.acquireResourceLockIfAvailable(
+            task: parentTask,
+            accessMode: .write,
+            runMode: "task"
+        ))
+
+        #expect(!queue.canAcquireResourceLock(for: childTask, accessMode: .write))
+        #expect(queue.acquireResourceLockIfAvailable(task: childTask, accessMode: .write, runMode: "task") == nil)
+
+        queue.releaseResourceLock(parentClaim, task: parentTask)
+        #expect(queue.canAcquireResourceLock(for: childTask, accessMode: .write))
+    }
+
     @Test("resource lock events are persisted for later audit")
     func resourceLockEventsArePersistedForAudit() throws {
         let root = try temporaryRoot()

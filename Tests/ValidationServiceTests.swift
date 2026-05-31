@@ -96,6 +96,49 @@ struct ValidationServiceTests {
         #expect(correctiveEvent.payload.contains("Fix the work until this command exits 0"))
     }
 
+    @Test("validation contract command allowlist blocks shell composition before execution")
+    func validationContractCommandAllowlistBlocksShellCompositionBeforeExecution() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Validation Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate safely", goal: "Reject composed validation commands", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let markerPath = (root as NSString).appendingPathComponent("should-not-exist.txt")
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Reject unsafe proof command",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "unsafe-command",
+                    description: "Composed shell command is rejected",
+                    method: .command,
+                    command: "true; touch \(markerPath)"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(!FileManager.default.fileExists(atPath: markerPath))
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("command_not_allowed")
+        })
+    }
+
     @Test("validation contract artifact check resolves task output folder paths")
     func validationContractArtifactCheckUsesTaskFolder() async throws {
         let root = try temporaryRoot()

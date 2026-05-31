@@ -385,6 +385,16 @@ enum ValidationService {
                 reason: "missing_command"
             )
         }
+        guard isAllowedValidationCommand(command) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Command assertion is outside ASTRA's validation command allowlist.",
+                command: command,
+                reason: "command_not_allowed"
+            )
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -1000,6 +1010,79 @@ enum ValidationService {
             candidates.append((workspacePath as NSString).appendingPathComponent(path))
         }
         return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
+    }
+
+    private static func isAllowedValidationCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !containsShellComposition(trimmed),
+              let root = shellRoot(trimmed)?.lowercased() else {
+            return false
+        }
+
+        let allowedExactRoots: Set<String> = [
+            "true",
+            "false",
+            "test",
+            "[",
+            "pytest",
+            "npm",
+            "yarn",
+            "pnpm",
+            "swift",
+            "xcodebuild",
+            "make"
+        ]
+        if allowedExactRoots.contains(root) {
+            return commandArgumentsAreValidationOrBuildOnly(root: root, command: trimmed)
+        }
+        if root == "python" || root == "python3" {
+            return trimmed.contains(" -m pytest") || trimmed.hasSuffix(" -m pytest")
+        }
+        if root.hasPrefix("./script/") || root.hasPrefix("script/") {
+            return true
+        }
+        return false
+    }
+
+    private static func containsShellComposition(_ command: String) -> Bool {
+        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r"]
+        return disallowedFragments.contains { command.contains($0) }
+    }
+
+    private static func shellRoot(_ command: String) -> String? {
+        command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {
+        switch root {
+        case "true", "false", "test", "[":
+            return true
+        case "swift":
+            return command == "swift test" ||
+                command.hasPrefix("swift test ") ||
+                command == "swift build" ||
+                command.hasPrefix("swift build ")
+        case "xcodebuild":
+            return command.contains(" test") || command.contains(" build")
+        case "pytest":
+            return true
+        case "npm":
+            return command == "npm test" ||
+                command.hasPrefix("npm test ") ||
+                command == "npm run test" ||
+                command.hasPrefix("npm run test")
+        case "yarn", "pnpm":
+            return command == "\(root) test" ||
+                command.hasPrefix("\(root) test ") ||
+                command == "\(root) run test" ||
+                command.hasPrefix("\(root) run test")
+        case "make":
+            return command == "make test" ||
+                command.hasPrefix("make test ")
+        default:
+            return false
+        }
     }
 
     private static func latestPassingAssertionEvent(

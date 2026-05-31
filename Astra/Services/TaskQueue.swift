@@ -819,7 +819,9 @@ final class TaskQueue {
     }
 
     private func canAcquireResourceLock(_ claim: TaskResourceLockClaim) -> Bool {
-        let sameResourceLocks = activeResourceLocks.filter { $0.resourceKey == claim.resourceKey && $0.taskID != claim.taskID }
+        let sameResourceLocks = activeResourceLocks.filter {
+            resourceKeysConflict($0.resourceKey, claim.resourceKey) && $0.taskID != claim.taskID
+        }
         guard !sameResourceLocks.isEmpty else { return true }
         switch claim.accessMode {
         case .readOnly:
@@ -831,10 +833,30 @@ final class TaskQueue {
 
     private func resourceLockBlockerSummary(for claim: TaskResourceLockClaim) -> String {
         let blockers = activeResourceLocks
-            .filter { $0.resourceKey == claim.resourceKey && $0.taskID != claim.taskID }
+            .filter { resourceKeysConflict($0.resourceKey, claim.resourceKey) && $0.taskID != claim.taskID }
         guard !blockers.isEmpty else { return "resource lock unavailable" }
         let modes = blockers.map(\.accessMode.rawValue).joined(separator: ",")
         return "waiting for \(blockers.count) active \(modes) lock\(blockers.count == 1 ? "" : "s")"
+    }
+
+    private func resourceKeysConflict(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.hasPrefix("task:") || rhs.hasPrefix("task:") {
+            return lhs == rhs
+        }
+        let left = URL(fileURLWithPath: lhs)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let right = URL(fileURLWithPath: rhs)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
+    }
+
+    private func isPath(_ possibleAncestor: String, ancestorOf path: String) -> Bool {
+        let ancestor = possibleAncestor.hasSuffix("/") ? possibleAncestor : possibleAncestor + "/"
+        return path.hasPrefix(ancestor)
     }
 
     @MainActor

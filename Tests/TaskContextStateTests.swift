@@ -252,6 +252,57 @@ struct TaskContextStateTests {
         #expect(contract.sourcePointers.contains { $0.kind == "event" && $0.summary.contains("validation.contract.passed") })
     }
 
+    @Test("context capsule scopes validation contract outcome to current plan")
+    func contextCapsuleScopesValidationContractOutcomeToCurrentPlan() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Scoped Contract Plan", primaryPath: root)
+        let task = AgentTask(title: "Scoped contract", goal: "Avoid stale validation status", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let firstPlan = TaskPlanPayload(
+            title: "First plan",
+            goal: "Pass old proof",
+            steps: [TaskPlanPayloadStep(id: "verify-old", title: "Verify old")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "old-proof",
+                    description: "Old proof passes",
+                    method: .command,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(firstPlan, task: task, modelContext: context)
+        _ = await ValidationService.runContract(task: task, plan: firstPlan, run: run, modelContext: context)
+
+        let secondPlan = TaskPlanPayload(
+            title: "Second plan",
+            goal: "Require new proof",
+            steps: [TaskPlanPayloadStep(id: "verify-new", title: "Verify new")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "new-proof",
+                    description: "New proof has not run",
+                    method: .command,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordUpdated(secondPlan, task: task, modelContext: context)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let contract = try #require(state.validationContract)
+        #expect(contract.status == "not_verified")
+        #expect(contract.assertions.map(\.id) == ["new-proof"])
+        #expect(contract.sourcePointers.allSatisfy { !$0.summary.contains(TaskValidationEventTypes.contractPassed) })
+    }
+
     @Test("context capsule records task contract fields")
     func contextCapsuleRecordsTaskContractFields() throws {
         let root = try temporaryRoot()

@@ -818,11 +818,15 @@ enum TaskContextStateManager {
             )
         }
 
-        let contractEvents = task.events.filter {
-            [TaskValidationEventTypes.contractCreated,
-             TaskValidationEventTypes.contractUpdated,
-             TaskValidationEventTypes.contractPassed,
-             TaskValidationEventTypes.contractFailed].contains($0.type)
+        let contractEvents = task.events.filter { event in
+            guard [TaskValidationEventTypes.contractCreated,
+                   TaskValidationEventTypes.contractUpdated,
+                   TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed].contains(event.type),
+                  let payload = decodeContractPayload(event.payload) else {
+                return false
+            }
+            return payload.planID == plan.planID
         }
         let latestContractOutcome = contractEvents
             .filter { [TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed].contains($0.type) }
@@ -1308,6 +1312,11 @@ enum TaskContextStateManager {
     private static func decodeAssertionPayload(_ payload: String) -> TaskValidationAssertionEventPayload? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: data)
+    }
+
+    private static func decodeContractPayload(_ payload: String) -> TaskValidationContractEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data)
     }
 
     private static func validationStrategy(for task: AgentTask, event: TaskEvent) -> String {
