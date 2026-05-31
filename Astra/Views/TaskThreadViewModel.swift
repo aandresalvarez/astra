@@ -10,6 +10,7 @@ final class TaskThreadViewModel {
     private var generatedFilesTask: Task<Void, Never>?
     private var expansionRunCount: Int = 50
     private var lastSnapshotApplyAt: Date = .distantPast
+    private var snapshotRevision: Int = 0
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
 
@@ -49,21 +50,28 @@ final class TaskThreadViewModel {
         let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
         let minimumInterval = Self.liveSnapshotMinimumInterval
         let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
-        snapshotTask = Task { [weak self] in
+        let taskID = task.id
+        let workspaceID = task.workspace?.id
+        snapshotRevision += 1
+        let revision = snapshotRevision
+        snapshotTask = Task.detached(priority: .userInitiated) { [self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 if Task.isCancelled { return }
             }
             let builtSnapshot = await TaskThreadSnapshot.buildAsync(input: input, fields: fields)
             guard !Task.isCancelled else { return }
-            self?.snapshot = builtSnapshot
-            self?.lastSnapshotApplyAt = Date()
-            Self.logSnapshotState(
-                snapshot: builtSnapshot,
-                trigger: trigger,
-                taskID: task.id,
-                workspaceID: task.workspace?.id
-            )
+            await MainActor.run {
+                guard !Task.isCancelled, revision == self.snapshotRevision else { return }
+                self.snapshot = builtSnapshot
+                self.lastSnapshotApplyAt = Date()
+                Self.logSnapshotState(
+                    snapshot: builtSnapshot,
+                    trigger: trigger,
+                    taskID: taskID,
+                    workspaceID: workspaceID
+                )
+            }
         }
     }
 

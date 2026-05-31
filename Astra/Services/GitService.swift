@@ -1,9 +1,18 @@
 import Foundation
 
 struct GitRepositoryInfo: Identifiable, Hashable {
-    let id = UUID()
+    var id: String { path }
     let name: String
     let path: String
+    let subtitle: String
+    let roleLabel: String
+
+    init(name: String, path: String, subtitle: String = "", roleLabel: String = "") {
+        self.name = name
+        self.path = WorkspacePathPresentation.standardizedPath(path)
+        self.subtitle = subtitle
+        self.roleLabel = roleLabel
+    }
 }
 
 struct GitStatusFile: Identifiable, Hashable {
@@ -61,6 +70,95 @@ enum GitWorktreeError: LocalizedError {
     }
 }
 
+/// Lightweight reference to an existing GitHub pull request, used to link to a
+/// branch's open PR instead of offering to create a duplicate.
+struct GitHubPullRequestRef: Equatable, Sendable, Codable {
+    let number: Int
+    let url: String
+    var title: String = ""
+    var isDraft: Bool = false
+    var state: String = "OPEN"
+
+    /// Builds a minimal reference from a freshly created PR URL (`…/pull/<n>`),
+    /// so the panel can flip to the link state immediately after creation while
+    /// a full lookup fills in the remaining metadata.
+    static func fromCreatedURL(_ url: String) -> GitHubPullRequestRef? {
+        guard let range = url.range(of: "/pull/") else { return nil }
+        let digits = url[range.upperBound...].prefix { $0.isNumber }
+        guard let number = Int(digits) else { return nil }
+        return GitHubPullRequestRef(number: number, url: url)
+    }
+}
+
+struct GitHubPullRequestComment: Identifiable, Equatable, Sendable {
+    let id: String
+    let author: String
+    let body: String
+    let path: String?
+    let line: Int?
+    let url: String
+    let createdAt: String
+    let isReviewThread: Bool
+
+    var locationLabel: String {
+        guard let path, !path.isEmpty else { return "Conversation" }
+        if let line, line > 0 {
+            return "\(path):\(line)"
+        }
+        return path
+    }
+
+    var preview: String {
+        Self.compactBody(body, maxLength: 180)
+    }
+
+    private static func compactBody(_ raw: String, maxLength: Int) -> String {
+        let collapsed = raw
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > maxLength else { return collapsed }
+        return String(collapsed.prefix(maxLength)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+}
+
+struct GitHubPullRequestCommentSummary: Equatable, Sendable {
+    let pullRequest: GitHubPullRequestRef
+    let comments: [GitHubPullRequestComment]
+    let unresolvedThreadCount: Int
+    let issueCommentCount: Int
+    let fetchedAt: Date
+
+    var totalCommentCount: Int { comments.count }
+    var hasComments: Bool { totalCommentCount > 0 }
+}
+
+/// Outcome of the passive "does this branch already have a PR?" enrichment.
+/// `unavailable` is deliberately distinct from `none` so callers can log and
+/// present a degraded state without treating an auth/network/tooling failure as
+/// proof that no PR exists.
+enum GitHubPullRequestLookupResult: Equatable, Sendable {
+    case found(GitHubPullRequestRef)
+    case none
+    case unavailable(String)
+
+    var pullRequest: GitHubPullRequestRef? {
+        if case let .found(ref) = self { return ref }
+        return nil
+    }
+}
+
+enum GitHubPullRequestCommentLookupResult: Equatable, Sendable {
+    case found(GitHubPullRequestCommentSummary)
+    case unavailable(String)
+
+    var summary: GitHubPullRequestCommentSummary? {
+        if case let .found(summary) = self { return summary }
+        return nil
+    }
+}
+
 /// Failure modes for GitHub operations performed through the `gh` CLI.
 enum GitHubCLIError: LocalizedError {
     case notInstalled
@@ -77,6 +175,66 @@ enum GitHubCLIError: LocalizedError {
             return detail.isEmpty ? "gh pr create failed." : detail
         }
     }
+}
+
+private struct GitHubPullRequestCommentsGraphQLResponse: Decodable {
+    struct GraphQLError: Decodable {
+        let message: String
+    }
+
+    struct Actor: Decodable {
+        let login: String?
+    }
+
+    struct Connection<Node: Decodable>: Decodable {
+        let nodes: [Node]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            nodes = try container.decodeIfPresent([Node].self, forKey: .nodes) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case nodes
+        }
+    }
+
+    struct IssueComment: Decodable {
+        let author: Actor?
+        let body: String
+        let createdAt: String
+        let url: String
+    }
+
+    struct ReviewComment: Decodable {
+        let author: Actor?
+        let body: String
+        let createdAt: String
+        let url: String
+    }
+
+    struct ReviewThread: Decodable {
+        let isResolved: Bool
+        let path: String?
+        let line: Int?
+        let comments: Connection<ReviewComment>
+    }
+
+    struct PullRequest: Decodable {
+        let comments: Connection<IssueComment>
+        let reviewThreads: Connection<ReviewThread>
+    }
+
+    struct Repository: Decodable {
+        let pullRequest: PullRequest?
+    }
+
+    struct DataNode: Decodable {
+        let repository: Repository?
+    }
+
+    let data: DataNode?
+    let errors: [GraphQLError]?
 }
 
 /// Thread-safe lifecycle/outcome tracker for a single `git` subprocess.
@@ -202,24 +360,28 @@ class GitService {
         _indexBusy = false
     }
 
-    /// Scans a workspace's primary path and additional paths for folders containing a `.git` subdirectory.
+    /// Scans configured workspace roots for folders that are themselves git repositories.
+    /// Non-git additional folders remain browsable in the Files shelf but are not
+    /// returned as Repository-panel candidates.
     func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo] {
-        var repos: [GitRepositoryInfo] = []
-        let allPaths = [primaryPath] + additionalPaths
-        
-        for path in allPaths where !path.isEmpty {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            var isDir: ObjCBool = false
-            let fm = FileManager.default
-            
-            if fm.fileExists(atPath: expandedPath, isDirectory: &isDir), isDir.boolValue {
-                let gitPath = URL(fileURLWithPath: expandedPath).appendingPathComponent(".git")
-                if fm.fileExists(atPath: gitPath.path, isDirectory: &isDir), isDir.boolValue {
-                    let name = URL(fileURLWithPath: expandedPath).lastPathComponent
-                    repos.append(GitRepositoryInfo(name: name, path: expandedPath))
-                }
-            }
+        let descriptors = WorkspacePathPresentation.descriptors(
+            primaryPath: primaryPath,
+            additionalPaths: additionalPaths
+        )
+        let repos = descriptors.compactMap { descriptor -> GitRepositoryInfo? in
+            guard WorkspacePathPresentation.isGitRepository(at: descriptor.path) else { return nil }
+            return GitRepositoryInfo(
+                name: descriptor.title,
+                path: descriptor.path,
+                subtitle: descriptor.subtitle,
+                roleLabel: descriptor.roleLabel
+            )
         }
+        AppLogger.audit(.gitRepositoryScan, category: "Git", fields: [
+            "configured_paths": "\(descriptors.count)",
+            "repositories": "\(repos.count)",
+            "non_git_paths": "\(max(0, descriptors.count - repos.count))"
+        ], level: .debug)
         return repos
     }
     
@@ -227,6 +389,37 @@ class GitService {
     private static let defaultGitTimeout: TimeInterval = 30
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
     private static let networkGitTimeout: TimeInterval = 300
+    private static let pullRequestCommentsGraphQLQuery = """
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          comments(first: 20) {
+            nodes {
+              author { login }
+              body
+              createdAt
+              url
+            }
+          }
+          reviewThreads(first: 50) {
+            nodes {
+              isResolved
+              path
+              line
+              comments(first: 10) {
+                nodes {
+                  author { login }
+                  body
+                  createdAt
+                  url
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
 
     /// Builds the non-interactive environment used for every git invocation.
     ///
@@ -414,8 +607,8 @@ class GitService {
     
     func getStatusFiles(at repoPath: String) async -> [GitStatusFile] {
         do {
-            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain"])
-            return GitService.parseStatusPorcelain(output)
+            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain=v1", "-z"])
+            return GitService.parseStatusPorcelainZ(output)
         } catch {
             return []
         }
@@ -433,7 +626,8 @@ class GitService {
             let y = String(line[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
 
             let fileStartIndex = line.index(line.startIndex, offsetBy: 3)
-            let relativePath = String(line[fileStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawPath = String(line[fileStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let relativePath = displayPathForPorcelainPath(rawPath, stagedStatus: x, unstagedStatus: y)
 
             if x == "?" && y == "?" {
                 files.append(GitStatusFile(relativePath: relativePath, status: "?", isStaged: false))
@@ -448,9 +642,59 @@ class GitService {
         }
         return files
     }
+
+    /// Parses `git status --porcelain=v1 -z`. The NUL-delimited form avoids
+    /// quoting ambiguity and reports rename/copy entries as `XY newPath\0oldPath`.
+    static func parseStatusPorcelainZ(_ output: String) -> [GitStatusFile] {
+        var files: [GitStatusFile] = []
+        let records = output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+        var index = 0
+        while index < records.count {
+            let record = records[index]
+            guard record.count >= 3 else {
+                index += 1
+                continue
+            }
+
+            let x = String(record[record.startIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let yIndex = record.index(after: record.startIndex)
+            let y = String(record[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let pathStart = record.index(record.startIndex, offsetBy: 3)
+            let relativePath = String(record[pathStart...])
+
+            if x == "?" && y == "?" {
+                files.append(GitStatusFile(relativePath: relativePath, status: "?", isStaged: false))
+            } else {
+                if !x.isEmpty {
+                    files.append(GitStatusFile(relativePath: relativePath, status: x, isStaged: true))
+                }
+                if !y.isEmpty {
+                    files.append(GitStatusFile(relativePath: relativePath, status: y, isStaged: false))
+                }
+            }
+
+            if x == "R" || x == "C" || y == "R" || y == "C" {
+                index += 1 // skip original path payload
+            }
+            index += 1
+        }
+        return files
+    }
+
+    private static func displayPathForPorcelainPath(
+        _ rawPath: String,
+        stagedStatus: String,
+        unstagedStatus: String
+    ) -> String {
+        guard stagedStatus == "R" || stagedStatus == "C" || unstagedStatus == "R" || unstagedStatus == "C",
+              let range = rawPath.range(of: " -> ", options: .backwards) else {
+            return rawPath
+        }
+        return String(rawPath[range.upperBound...])
+    }
     
     func stageFile(_ relativePath: String, at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["add", relativePath])
+        _ = try await runGit(at: repoPath, arguments: ["add", "--", relativePath])
     }
     
     func stageAll(at repoPath: String) async throws {
@@ -458,7 +702,7 @@ class GitService {
     }
     
     func unstageFile(_ relativePath: String, at repoPath: String) async throws {
-        _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD", relativePath])
+        _ = try await runGit(at: repoPath, arguments: ["reset", "HEAD", "--", relativePath])
     }
     
     func unstageAll(at repoPath: String) async throws {
@@ -483,10 +727,10 @@ class GitService {
 
     /// Pushes the current branch and sets `origin/<branch>` as its upstream.
     /// Used to publish a branch that has never been pushed before.
-    func pushSetUpstream(branch: String, at repoPath: String) async throws {
+    func pushSetUpstream(branch: String, remote: String = "origin", at repoPath: String) async throws {
         _ = try await runGit(
             at: repoPath,
-            arguments: ["push", "--set-upstream", "origin", branch],
+            arguments: ["push", "--set-upstream", remote, branch],
             timeout: Self.networkGitTimeout
         )
     }
@@ -516,6 +760,11 @@ class GitService {
     ) async throws -> String {
         let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
         guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                "base": base,
+                "head": head,
+                "result": "gh_not_installed"
+            ], level: .warning)
             throw GitHubCLIError.notInstalled
         }
 
@@ -528,6 +777,13 @@ class GitService {
             "--body", body
         ]
         do {
+            AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                "base": normalizedBase,
+                "head": head,
+                "title_bytes": "\(title.utf8.count)",
+                "body_bytes": "\(body.utf8.count)",
+                "method": "gh"
+            ], level: .info)
             let output = try await runProcess(
                 executableURL: URL(fileURLWithPath: ghPath),
                 arguments: arguments,
@@ -539,6 +795,12 @@ class GitService {
             guard let url = GitService.firstURL(in: output) else {
                 throw GitHubCLIError.commandFailed(output.trimmingCharacters(in: .whitespacesAndNewlines))
             }
+            AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                "base": normalizedBase,
+                "head": head,
+                "result": "created",
+                "url": url
+            ], level: .info, fieldMaxLength: 240)
             return url
         } catch let error as GitHubCLIError {
             throw error
@@ -546,14 +808,270 @@ class GitService {
             let message = error.localizedDescription
             // `gh` reports an existing PR with its URL — treat that as success.
             if let existing = GitService.firstURL(in: message) {
+                AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                    "base": normalizedBase,
+                    "head": head,
+                    "result": "existing",
+                    "url": existing
+                ], level: .info, fieldMaxLength: 240)
                 return existing
             }
             if message.localizedCaseInsensitiveContains("auth")
                 || message.localizedCaseInsensitiveContains("logged") {
+                AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                    "base": normalizedBase,
+                    "head": head,
+                    "result": "auth_failed",
+                    "detail": message
+                ], level: .warning, fieldMaxLength: 240)
                 throw GitHubCLIError.notAuthenticated(message)
             }
+            AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                "base": normalizedBase,
+                "head": head,
+                "result": "failed",
+                "detail": message
+            ], level: .error, fieldMaxLength: 240)
             throw GitHubCLIError.commandFailed(message)
         }
+    }
+
+    /// Finds the open pull request whose head is `head`, or nil when there is
+    /// none. Kept as an optional convenience wrapper for call sites/tests that
+    /// only need the PR reference; use `lookupOpenPullRequest` when a diagnostic
+    /// distinction between "none" and "lookup failed" matters.
+    func findOpenPullRequest(
+        repoPath: String,
+        head: String,
+        ghPathOverride: String? = nil
+    ) async -> GitHubPullRequestRef? {
+        await lookupOpenPullRequest(
+            repoPath: repoPath,
+            head: head,
+            ghPathOverride: ghPathOverride
+        ).pullRequest
+    }
+
+    /// Looks up the current branch's open pull request through `gh`, logging the
+    /// degraded cases so a missing/auth-broken/network-broken GitHub CLI cannot
+    /// masquerade as "no PR exists" during diagnostics.
+    func lookupOpenPullRequest(
+        repoPath: String,
+        head: String,
+        ghPathOverride: String? = nil
+    ) async -> GitHubPullRequestLookupResult {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                "head": head,
+                "result": "unavailable",
+                "reason": "gh_not_installed"
+            ], level: .debug)
+            return .unavailable("GitHub CLI (gh) is not installed.")
+        }
+        let trimmedHead = head.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHead.isEmpty else {
+            AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                "result": "unavailable",
+                "reason": "empty_head"
+            ], level: .debug)
+            return .unavailable("Current branch is empty.")
+        }
+
+        let arguments = [
+            "pr", "list",
+            "--head", trimmedHead,
+            "--state", "open",
+            "--json", "number,url,title,isDraft,state",
+            "--limit", "1"
+        ]
+        do {
+            let output = try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: Self.networkGitTimeout,
+                label: "gh pr list",
+                currentDirectory: repoPath
+            )
+            guard let decoded = GitService.decodeOpenPullRequests(from: output) else {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                    "head": trimmedHead,
+                    "result": "unavailable",
+                    "reason": "invalid_json",
+                    "stdout_sample": String(output.prefix(240))
+                ], level: .warning, fieldMaxLength: 240)
+                return .unavailable("GitHub CLI returned PR data ASTRA could not read.")
+            }
+            if let pr = decoded.first(where: { $0.state.uppercased() == "OPEN" }) ?? decoded.first {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                    "head": trimmedHead,
+                    "result": "found",
+                    "number": "\(pr.number)"
+                ], level: .debug)
+                return .found(pr)
+            }
+            AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                "head": trimmedHead,
+                "result": "none"
+            ], level: .debug)
+            return .none
+        } catch {
+            AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                "head": trimmedHead,
+                "result": "unavailable",
+                "reason": error.localizedDescription
+            ], level: .warning, fieldMaxLength: 240)
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    /// Fetches recent PR conversation comments and unresolved review-thread
+    /// comments for the Repository panel. This is intentionally read-only and
+    /// uses `gh api graphql` so inline review threads are available even when
+    /// `gh pr view --comments` omits enough structure to drive an actionable UI.
+    func lookupPullRequestComments(
+        repoPath: String,
+        pullRequest: GitHubPullRequestRef,
+        ghPathOverride: String? = nil
+    ) async -> GitHubPullRequestCommentLookupResult {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+                "number": "\(pullRequest.number)",
+                "result": "unavailable",
+                "reason": "gh_not_installed"
+            ], level: .debug)
+            return .unavailable("GitHub CLI (gh) is not installed.")
+        }
+        guard let locator = GitService.pullRequestLocator(from: pullRequest.url) else {
+            AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+                "number": "\(pullRequest.number)",
+                "result": "unavailable",
+                "reason": "unsupported_url"
+            ], level: .warning)
+            return .unavailable("ASTRA could not identify the GitHub repository for this pull request.")
+        }
+
+        let arguments = [
+            "api", "graphql",
+            "-f", "query=\(Self.pullRequestCommentsGraphQLQuery)",
+            "-F", "owner=\(locator.owner)",
+            "-F", "name=\(locator.name)",
+            "-F", "number=\(pullRequest.number)"
+        ]
+        do {
+            let output = try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: Self.networkGitTimeout,
+                label: "gh api graphql pull request comments",
+                currentDirectory: repoPath
+            )
+            guard let summary = GitService.decodePullRequestComments(
+                from: output,
+                pullRequest: pullRequest
+            ) else {
+                AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+                    "number": "\(pullRequest.number)",
+                    "result": "unavailable",
+                    "reason": "invalid_json",
+                    "stdout_sample": String(output.prefix(240))
+                ], level: .warning, fieldMaxLength: 240)
+                return .unavailable("GitHub CLI returned PR comments ASTRA could not read.")
+            }
+            AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+                "number": "\(pullRequest.number)",
+                "result": "found",
+                "comments": "\(summary.totalCommentCount)",
+                "unresolved_threads": "\(summary.unresolvedThreadCount)"
+            ], level: .debug)
+            return .found(summary)
+        } catch {
+            AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+                "number": "\(pullRequest.number)",
+                "result": "unavailable",
+                "reason": error.localizedDescription
+            ], level: .warning, fieldMaxLength: 240)
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    /// Decodes the first open PR from `gh pr list --json …` array output.
+    static func parseOpenPullRequest(from json: String) -> GitHubPullRequestRef? {
+        guard let list = decodeOpenPullRequests(from: json) else { return nil }
+        return list.first { $0.state.uppercased() == "OPEN" } ?? list.first
+    }
+
+    static func decodeOpenPullRequests(from json: String) -> [GitHubPullRequestRef]? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([GitHubPullRequestRef].self, from: data)
+    }
+
+    static func decodePullRequestComments(
+        from json: String,
+        pullRequest: GitHubPullRequestRef,
+        fetchedAt: Date = Date()
+    ) -> GitHubPullRequestCommentSummary? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        guard let response = try? JSONDecoder().decode(GitHubPullRequestCommentsGraphQLResponse.self, from: data) else {
+            return nil
+        }
+        if let errors = response.errors, !errors.isEmpty { return nil }
+        guard let pr = response.data?.repository?.pullRequest else { return nil }
+
+        var comments: [GitHubPullRequestComment] = []
+        let unresolvedThreads = pr.reviewThreads.nodes.filter { !$0.isResolved }
+        for thread in unresolvedThreads {
+            for node in thread.comments.nodes {
+                comments.append(GitHubPullRequestComment(
+                    id: node.url.isEmpty ? "\(thread.path ?? "review"):\(thread.line ?? 0):\(comments.count)" : node.url,
+                    author: node.author?.login ?? "unknown",
+                    body: node.body,
+                    path: thread.path,
+                    line: thread.line,
+                    url: node.url,
+                    createdAt: node.createdAt,
+                    isReviewThread: true
+                ))
+            }
+        }
+
+        let issueComments = pr.comments.nodes.map { node in
+            GitHubPullRequestComment(
+                id: node.url.isEmpty ? "conversation:\(node.createdAt):\(node.body.count)" : node.url,
+                author: node.author?.login ?? "unknown",
+                body: node.body,
+                path: nil,
+                line: nil,
+                url: node.url,
+                createdAt: node.createdAt,
+                isReviewThread: false
+            )
+        }
+        comments.append(contentsOf: issueComments)
+
+        return GitHubPullRequestCommentSummary(
+            pullRequest: pullRequest,
+            comments: comments,
+            unresolvedThreadCount: unresolvedThreads.count,
+            issueCommentCount: issueComments.count,
+            fetchedAt: fetchedAt
+        )
+    }
+
+    static func pullRequestLocator(from url: String) -> (owner: String, name: String)? {
+        guard let parsed = URL(string: url) else { return nil }
+        let components = parsed.pathComponents.filter { $0 != "/" }
+        guard components.count >= 4,
+              components[2] == "pull",
+              Int(components[3]) != nil else {
+            return nil
+        }
+        return (components[0], components[1])
     }
 
     /// Strips a leading `<remote>/` (e.g. `origin/`) from a base ref so it is a
@@ -624,6 +1142,42 @@ class GitService {
         }
     }
 
+    func getUpstreamBranchRef(at repoPath: String) async -> String? {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+            )
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            return nil
+        }
+    }
+
+    func getRemotes(at repoPath: String) async -> [String] {
+        do {
+            let output = try await runGit(at: repoPath, arguments: ["remote"])
+            return output
+                .split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } catch {
+            return []
+        }
+    }
+
+    func getDefaultRemote(at repoPath: String) async -> String? {
+        if let upstream = await getUpstreamBranchRef(at: repoPath),
+           let slash = upstream.firstIndex(of: "/") {
+            let remote = String(upstream[..<slash])
+            if !remote.isEmpty { return remote }
+        }
+        let remotes = await getRemotes(at: repoPath)
+        if remotes.contains("origin") { return "origin" }
+        return remotes.first
+    }
+
     /// Returns the staged diff (for commit message generation). Truncated to `limit` bytes.
     func getStagedDiff(at repoPath: String, limit: Int = 8 * 1024) async -> String {
         do {
@@ -663,12 +1217,20 @@ class GitService {
         }
     }
 
-    /// Returns the default upstream base branch, e.g. "origin/main", as detected from refs/remotes/origin/HEAD.
-    func getDefaultBaseBranch(at repoPath: String) async -> String {
+    /// Returns the default upstream base branch, e.g. `origin/main`, preferring
+    /// the selected/default remote instead of assuming every repository uses
+    /// `origin`.
+    func getDefaultBaseBranch(at repoPath: String, remote: String? = nil) async -> String {
+        let selectedRemote: String
+        if let remote, !remote.isEmpty {
+            selectedRemote = remote
+        } else {
+            selectedRemote = await getDefaultRemote(at: repoPath) ?? "origin"
+        }
         do {
             let output = try await runGit(
                 at: repoPath,
-                arguments: ["symbolic-ref", "refs/remotes/origin/HEAD"]
+                arguments: ["symbolic-ref", "refs/remotes/\(selectedRemote)/HEAD"]
             )
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("refs/remotes/") {
@@ -677,11 +1239,29 @@ class GitService {
         } catch {
             // ignore
         }
-        return "origin/main"
+
+        for candidate in ["main", "master"] {
+            do {
+                _ = try await runGit(
+                    at: repoPath,
+                    arguments: ["rev-parse", "--verify", "--quiet", "refs/remotes/\(selectedRemote)/\(candidate)"]
+                )
+                return "\(selectedRemote)/\(candidate)"
+            } catch {
+                continue
+            }
+        }
+        return "\(selectedRemote)/main"
     }
 
     /// Returns the formatted log between `base..branch` for PR body generation.
-    func getBranchLog(at repoPath: String, base: String, branch: String, limit: Int = 30) async -> String {
+    func getBranchLog(
+        at repoPath: String,
+        base: String,
+        branch: String,
+        limit: Int = 30,
+        maxBytes: Int = 12 * 1024
+    ) async -> String {
         do {
             let output = try await runGit(
                 at: repoPath,
@@ -692,22 +1272,41 @@ class GitService {
                     "--pretty=- %s%n%w(0,2,2)%b"
                 ]
             )
-            return output
+            return GitService.limitedContext(output, maxBytes: maxBytes)
         } catch {
             return ""
         }
     }
 
     /// Returns the diffstat of `base...branch` for PR body generation.
-    func getBranchDiffStat(at repoPath: String, base: String, branch: String) async -> String {
+    func getBranchDiffStat(
+        at repoPath: String,
+        base: String,
+        branch: String,
+        maxBytes: Int = 12 * 1024
+    ) async -> String {
         do {
-            return try await runGit(
+            let output = try await runGit(
                 at: repoPath,
                 arguments: ["diff", "--stat", "\(base)...\(branch)"]
             )
+            return GitService.limitedContext(output, maxBytes: maxBytes)
         } catch {
             return ""
         }
+    }
+
+    static func limitedContext(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0, text.utf8.count > maxBytes else { return text }
+        var output = ""
+        var used = 0
+        for scalar in text.unicodeScalars {
+            let width = String(scalar).utf8.count
+            if used + width > maxBytes { break }
+            output.unicodeScalars.append(scalar)
+            used += width
+        }
+        return output + "\n...[truncated]"
     }
     
     func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
@@ -915,22 +1514,56 @@ class GitService {
         _ = try await runGit(at: repoPath, arguments: ["worktree", "prune"])
     }
 
-    func getRemoteOriginURL(at repoPath: String) async -> String? {
+    func getRemoteURL(at repoPath: String, remote: String? = nil) async -> String? {
+        let selectedRemote: String
+        if let remote, !remote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedRemote = remote
+        } else if let detected = await getDefaultRemote(at: repoPath) {
+            selectedRemote = detected
+        } else {
+            return nil
+        }
         do {
-            let output = try await runGit(at: repoPath, arguments: ["config", "--get", "remote.origin.url"])
+            let output = try await runGit(at: repoPath, arguments: ["config", "--get", "remote.\(selectedRemote).url"])
             let url = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if url.isEmpty { return nil }
-            
-            var webURL = url
-            if webURL.hasPrefix("git@github.com:") {
-                webURL = webURL.replacingOccurrences(of: "git@github.com:", with: "https://github.com/")
-            }
-            if webURL.hasSuffix(".git") {
-                webURL = String(webURL.dropLast(4))
-            }
-            return webURL
+            return GitService.webURLFromRemoteURL(url)
         } catch {
             return nil
         }
+    }
+
+    func getRemoteOriginURL(at repoPath: String) async -> String? {
+        await getRemoteURL(at: repoPath, remote: "origin")
+    }
+
+    static func webURLFromRemoteURL(_ rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        func dropGitSuffix(_ value: String) -> String {
+            value.hasSuffix(".git") ? String(value.dropLast(4)) : value
+        }
+
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return dropGitSuffix(trimmed)
+        }
+
+        if trimmed.hasPrefix("git@"), let colon = trimmed.firstIndex(of: ":") {
+            let hostStart = trimmed.index(trimmed.startIndex, offsetBy: "git@".count)
+            let host = trimmed[hostStart..<colon]
+            let path = trimmed[trimmed.index(after: colon)...]
+            guard !host.isEmpty, !path.isEmpty else { return nil }
+            return "https://\(host)/\(dropGitSuffix(String(path)))"
+        }
+
+        if let components = URLComponents(string: trimmed),
+           components.scheme == "ssh",
+           let host = components.host {
+            let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !path.isEmpty else { return nil }
+            return "https://\(host)/\(dropGitSuffix(path))"
+        }
+
+        return nil
     }
 }

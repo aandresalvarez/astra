@@ -18,10 +18,10 @@ final class Workspace: Identifiable {
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []
     var isStarred: Bool = false
-    /// The working location new chats default to. `nil` means the repository
-    /// root (`primaryPath`); a non-nil value is the absolute path of a git
-    /// worktree this workspace is currently focused on. Existing threads are
-    /// never moved by this value — it only seeds new tasks at creation time.
+    /// The code location new chats default to. `nil` means the primary path; a
+    /// non-nil value is the absolute path of the active configured repository or
+    /// a git worktree. Existing threads are never moved by this value: they keep
+    /// their own `executionRootPath` snapshot.
     var activeWorkingPath: String?
     var createdAt: Date
     var updatedAt: Date
@@ -65,7 +65,7 @@ final class Workspace: Identifiable {
     }
 
     /// The directory new chats and the Repository panel currently operate in:
-    /// the active worktree when one is selected, otherwise the repository root.
+    /// the active repository/worktree when one is selected, otherwise primary.
     var resolvedWorkingPath: String {
         if let active = activeWorkingPath,
            !active.isEmpty,
@@ -75,7 +75,7 @@ final class Workspace: Identifiable {
         return primaryPath
     }
 
-    /// True when the workspace is focused on a worktree rather than its root.
+    /// True when the workspace is focused on a non-primary code location.
     var isUsingWorktree: Bool {
         guard let active = activeWorkingPath, !active.isEmpty else { return false }
         return active != primaryPath

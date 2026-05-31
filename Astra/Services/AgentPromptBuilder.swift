@@ -144,13 +144,15 @@ enum AgentPromptBuilder {
         if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
             parts.append("WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.")
         }
-        if ws.additionalPaths.count > 1 {
-            let extras = ws.additionalPaths.dropFirst().map { path -> String in
-                let name = (path as NSString).lastPathComponent
-                return "- \(name): \(path)"
-            }.joined(separator: "\n")
-            parts.append("Additional Workspace Folders:\n\(extras)")
-        }
+        let folders = WorkspacePathPresentation.descriptors(
+            primaryPath: ws.primaryPath,
+            additionalPaths: ws.additionalPaths
+        )
+        let folderList = folders.map { descriptor in
+            let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)" : ""
+            return "- \(descriptor.roleLabel) \(descriptor.title)\(active): \(descriptor.path)"
+        }.joined(separator: "\n")
+        parts.append("Workspace Folders:\n\(folderList)")
     }
 
     private static func appendTaskOutputFolder(for task: AgentTask, to parts: inout [String]) {
@@ -725,8 +727,13 @@ enum AgentPromptBuilder {
             }
 
             if !ws.additionalPaths.isEmpty {
-                let paths = ws.additionalPaths.map { "\((($0 as NSString).lastPathComponent)): \($0)" }.joined(separator: ", ")
-                contextParts.append("Additional workspace folders: \(paths)")
+                let paths = WorkspacePathPresentation.descriptors(
+                    primaryPath: ws.primaryPath,
+                    additionalPaths: ws.additionalPaths
+                )
+                .map { "\($0.roleLabel) \($0.title): \($0.path)" }
+                .joined(separator: ", ")
+                contextParts.append("Workspace folders: \(paths)")
             }
 
             if !ws.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

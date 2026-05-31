@@ -123,9 +123,9 @@ final class AgentTask {
         self.isPinned = false
         self.isDone = false
         self.unreadAt = nil
-        // Pin the thread to the workspace's active working location at creation
-        // so it always runs in the same checkout, even if the workspace later
-        // switches worktrees. Only pin when an explicit worktree is active.
+        // Pin the thread to the workspace's active code location at creation so
+        // it always runs in the same checkout/repository, even if the workspace
+        // later switches its default.
         self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
         self.createdAt = Date()
         self.updatedAt = Date()

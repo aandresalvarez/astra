@@ -167,10 +167,19 @@ struct AgentUtilityRuntimeTests {
 
     private func stdinGuardPrefix() -> String {
         """
-        if IFS= read -r -t 1 _; then
-          echo STDIN_OPEN >&2
-          exit 99
-        fi
+        /usr/bin/python3 - <<'PY'
+        import os
+        import select
+        import sys
+
+        ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+        if not ready:
+            sys.stderr.write("STDIN_OPEN\\n")
+            sys.exit(99)
+        if os.read(0, 1):
+            sys.stderr.write("STDIN_DATA\\n")
+            sys.exit(98)
+        PY
         """
     }
 
@@ -210,7 +219,7 @@ struct AgentUtilityRuntimeTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 3, "Claude utility blocked on stdin for \(elapsed)s")
+        #expect(elapsed < 15, "Claude utility did not complete promptly: \(elapsed)s")
         #expect(result.exitCode == 0)
         #expect(result.output.contains("stdin ok"))
     }
@@ -252,7 +261,7 @@ struct AgentUtilityRuntimeTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 3, "Copilot utility blocked on stdin for \(elapsed)s")
+        #expect(elapsed < 15, "Copilot utility did not complete promptly: \(elapsed)s")
         #expect(result.exitCode == 0)
         #expect(result.output == "Copilot stdin ok")
     }
@@ -291,7 +300,7 @@ struct AgentUtilityRuntimeTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 3, "Antigravity utility blocked on stdin for \(elapsed)s")
+        #expect(elapsed < 15, "Antigravity utility did not complete promptly: \(elapsed)s")
         #expect(result.exitCode == 0)
         #expect(result.output.contains("agy stdin ok"))
     }

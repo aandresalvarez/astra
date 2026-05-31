@@ -54,7 +54,7 @@ enum GitAuthoringError: LocalizedError, Equatable {
         case .helperModelUnavailable:
             return "No helper model is configured. Configure Claude or Copilot in Settings to enable suggestions."
         case .providerFailed(let message):
-            return "Helper model failed: \(message)"
+            return "Helper model failed: \(message) (diagnostics logged)."
         case .invalidOutput(let message):
             return "Helper model returned data ASTRA could not read: \(message)"
         case .emptyDiff:
@@ -85,7 +85,18 @@ protocol GitPullRequestGenerating {
 
 struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGenerating {
     var utilityRuntime: AgentUtilityRuntimeConfiguration
-    var timeoutSeconds: Int = 30
+    // Authoring runs a CLI agent (cold start + model inference). The provider
+    // CLIs budget themselves up to 120s, so ASTRA's wrapper must give each call
+    // a realistic, operation-appropriate slice of that ceiling rather than a
+    // single short deadline. A commit subject is one line; a pull-request body
+    // is multi-section markdown over a wider context, so it needs more room.
+    var timeoutSeconds: Int = 45
+    var pullRequestTimeoutSeconds: Int = 90
+
+    private enum Operation: String {
+        case commitMessage = "commit_message"
+        case pullRequest = "pull_request"
+    }
 
     func suggestCommitMessage(
         repoPath: String,
@@ -101,16 +112,31 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             diff: trimmedDiff,
             recentSubjects: recentSubjects
         )
-        let result = await runWithTimeout(prompt: prompt, repoPath: repoPath)
+        let result = await runWithTimeout(
+            operation: .commitMessage,
+            prompt: prompt,
+            repoPath: repoPath,
+            timeoutSeconds: timeoutSeconds
+        )
 
         guard result.exitCode == 0 else {
             let message = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
+            logProviderFailure(
+                operation: .commitMessage,
+                result: result,
+                reason: message.isEmpty ? "exit_code_\(result.exitCode)" : message
+            )
             throw GitAuthoringError.providerFailed(
                 message.isEmpty ? "Exit code \(result.exitCode)" : String(message.prefix(400))
             )
         }
 
         guard let suggestion = GitAuthoringParser.parseCommit(from: result.output) else {
+            logProviderFailure(
+                operation: .commitMessage,
+                result: result,
+                reason: "invalid_output"
+            )
             throw GitAuthoringError.invalidOutput(String(result.output.prefix(400)))
         }
 
@@ -134,16 +160,31 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             log: log,
             diffStat: diffStat
         )
-        let result = await runWithTimeout(prompt: prompt, repoPath: repoPath)
+        let result = await runWithTimeout(
+            operation: .pullRequest,
+            prompt: prompt,
+            repoPath: repoPath,
+            timeoutSeconds: pullRequestTimeoutSeconds
+        )
 
         guard result.exitCode == 0 else {
             let message = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
+            logProviderFailure(
+                operation: .pullRequest,
+                result: result,
+                reason: message.isEmpty ? "exit_code_\(result.exitCode)" : message
+            )
             throw GitAuthoringError.providerFailed(
                 message.isEmpty ? "Exit code \(result.exitCode)" : String(message.prefix(400))
             )
         }
 
         guard let suggestion = GitAuthoringParser.parsePR(from: result.output) else {
+            logProviderFailure(
+                operation: .pullRequest,
+                result: result,
+                reason: "invalid_output"
+            )
             throw GitAuthoringError.invalidOutput(String(result.output.prefix(400)))
         }
 
@@ -154,9 +195,26 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
         return normalized
     }
 
-    private func runWithTimeout(prompt: String, repoPath: String) async -> AgentUtilityRunResult {
-        let timeoutNanos = UInt64(max(1, timeoutSeconds)) * 1_000_000_000
+    private func runWithTimeout(
+        operation: Operation,
+        prompt: String,
+        repoPath: String,
+        timeoutSeconds: Int
+    ) async -> AgentUtilityRunResult {
+        let effectiveTimeout = max(1, timeoutSeconds)
+        let timeoutNanos = UInt64(effectiveTimeout) * 1_000_000_000
         let runtimeConfiguration = utilityRuntime
+        let startedAt = Date()
+        let repoName = URL(fileURLWithPath: repoPath).lastPathComponent
+        AppLogger.audit(.gitAuthoringStarted, category: "Git", fields: [
+            "operation": operation.rawValue,
+            "runtime": runtimeConfiguration.runtime.rawValue,
+            "model": runtimeConfiguration.model,
+            "repo": repoName,
+            "timeout_seconds": "\(effectiveTimeout)",
+            "prompt_bytes": "\(prompt.utf8.count)",
+            "prompt_lines": "\(prompt.split(separator: "\n", omittingEmptySubsequences: false).count)"
+        ], level: .info)
         // Race the helper against the deadline: whichever finishes first wins, and
         // the loser is cancelled. A nil element is the timeout sentinel.
         let result: AgentUtilityRunResult = await withTaskGroup(
@@ -177,18 +235,88 @@ struct AgentGitAuthoringService: GitCommitMessageGenerating, GitPullRequestGener
             defer { group.cancelAll() }
             for await first in group {
                 if let completed = first {
+                    self.logProviderCompletion(
+                        operation: operation,
+                        result: completed,
+                        elapsed: Date().timeIntervalSince(startedAt),
+                        repoName: repoName,
+                        timeoutSeconds: effectiveTimeout
+                    )
                     return completed
                 }
-                AppLogger.warning("Git authoring timed out after \(self.timeoutSeconds)s", category: "Git")
-                return AgentUtilityRunResult(
+                AppLogger.warning("Git authoring timed out after \(effectiveTimeout)s", category: "Git")
+                let timeoutResult = AgentUtilityRunResult(
                     exitCode: 124,
                     output: "",
-                    error: "Timed out after \(self.timeoutSeconds)s"
+                    error: "Timed out after \(effectiveTimeout)s"
                 )
+                self.logProviderCompletion(
+                    operation: operation,
+                    result: timeoutResult,
+                    elapsed: Date().timeIntervalSince(startedAt),
+                    repoName: repoName,
+                    timeoutSeconds: effectiveTimeout,
+                    timedOut: true
+                )
+                return timeoutResult
             }
-            return AgentUtilityRunResult(exitCode: 124, output: "", error: "Timed out after \(self.timeoutSeconds)s")
+            let timeoutResult = AgentUtilityRunResult(
+                exitCode: 124,
+                output: "",
+                error: "Timed out after \(effectiveTimeout)s"
+            )
+            self.logProviderCompletion(
+                operation: operation,
+                result: timeoutResult,
+                elapsed: Date().timeIntervalSince(startedAt),
+                repoName: repoName,
+                timeoutSeconds: effectiveTimeout,
+                timedOut: true
+            )
+            return timeoutResult
         }
         return result
+    }
+
+    private func logProviderCompletion(
+        operation: Operation,
+        result: AgentUtilityRunResult,
+        elapsed: TimeInterval,
+        repoName: String,
+        timeoutSeconds: Int,
+        timedOut: Bool = false
+    ) {
+        let event: AuditEvent = result.exitCode == 0 && !timedOut
+            ? .gitAuthoringCompleted
+            : .gitAuthoringFailed
+        AppLogger.audit(event, category: "Git", fields: [
+            "operation": operation.rawValue,
+            "runtime": utilityRuntime.runtime.rawValue,
+            "model": utilityRuntime.model,
+            "repo": repoName,
+            "exit_code": "\(result.exitCode)",
+            "elapsed_ms": "\(Int(elapsed * 1000))",
+            "timeout_seconds": "\(timeoutSeconds)",
+            "timed_out": timedOut ? "true" : "false",
+            "stdout_bytes": "\(result.output.utf8.count)",
+            "stderr_bytes": "\(result.error.utf8.count)"
+        ], level: result.exitCode == 0 && !timedOut ? .info : .warning)
+    }
+
+    private func logProviderFailure(
+        operation: Operation,
+        result: AgentUtilityRunResult,
+        reason: String
+    ) {
+        AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
+            "operation": operation.rawValue,
+            "runtime": utilityRuntime.runtime.rawValue,
+            "model": utilityRuntime.model,
+            "exit_code": "\(result.exitCode)",
+            "reason": reason,
+            "stdout_sample": String(result.output.prefix(300)),
+            "stderr_sample": String(result.error.prefix(300))
+        ], level: .error, fieldMaxLength: 300)
     }
 }
 

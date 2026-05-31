@@ -8,14 +8,20 @@ import SwiftData
 // Helper-model assists for commit messages and PR drafts via AgentUtilityRuntimeRunner.
 
 struct WorkspaceGitSectionView: View {
+    @Environment(\.modelContext) private var modelContext
     @StateObject var viewModel = WorkspaceGitViewModel()
     let workspace: Workspace
+    var selectedTask: AgentTask?
     var isCompact: Bool = false
+    var onTaskCreated: ((AgentTask) -> Void)?
+    var onOpenWorkspaceFile: ((String) -> Void)?
 
     @State private var isChangesDrawerExpanded = false
     @State private var showCommitSheet = false
     @State private var showPRDraftSheet = false
+    @State private var showRepositoryPopover = false
     @State private var showLocationPopover = false
+    @State private var showPRCommentsPopover = false
 
     // Row scale shared with the sibling rail panels (Capabilities, Workspace
     // setup) so the Repository card reads as part of the same vertical menu.
@@ -33,6 +39,9 @@ struct WorkspaceGitSectionView: View {
             }
 
             VStack(spacing: 0) {
+                repositoryRow
+                rowDivider
+
                 branchRow
                 rowDivider
 
@@ -48,11 +57,21 @@ struct WorkspaceGitSectionView: View {
                 commitOrPushRow
 
                 rowDivider
-                createPullRequestRow
+                if let pr = viewModel.openPullRequest {
+                    pullRequestLinkRow(pr)
+                } else {
+                    createPullRequestRow
+                }
             }
         }
         .onAppear {
-            viewModel.setup(for: workspace)
+            viewModel.setup(for: workspace, selectedTask: selectedTask)
+        }
+        .onChange(of: selectedTask?.id) {
+            viewModel.setup(for: workspace, selectedTask: selectedTask)
+        }
+        .onChange(of: selectedTask?.executionRootPath) {
+            viewModel.setup(for: workspace, selectedTask: selectedTask)
         }
         .onChange(of: viewModel.prDraft) { _, newValue in
             showPRDraftSheet = newValue != nil
@@ -102,12 +121,7 @@ struct WorkspaceGitSectionView: View {
             if viewModel.isSyncing {
                 ProgressView().controlSize(.small)
             } else {
-                HStack(spacing: 12) {
-                    if viewModel.repositories.count > 1 {
-                        repositoryMenu
-                    }
-                    refreshButton
-                }
+                refreshButton
             }
         }
     }
@@ -126,35 +140,6 @@ struct WorkspaceGitSectionView: View {
         .buttonStyle(.plain)
         .frame(width: 22, height: 22)
         .help("Refresh status")
-    }
-
-    /// Repository switcher — shown only when more than one repository exists,
-    /// so it earns its place as a menu instead of padding a single-item one.
-    private var repositoryMenu: some View {
-        Menu {
-            ForEach(viewModel.repositories) { repo in
-                Button {
-                    viewModel.selectedRepository = repo
-                } label: {
-                    HStack {
-                        Text(repo.name)
-                        if repo.path == viewModel.selectedRepository?.path {
-                            Spacer()
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "folder")
-                .font(Stanford.ui(15, weight: .medium))
-                .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Switch repository")
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -217,6 +202,51 @@ struct WorkspaceGitSectionView: View {
             .foregroundStyle(.tertiary)
     }
 
+    // MARK: - Repository row
+
+    private var repositoryRow: some View {
+        Button {
+            showRepositoryPopover = true
+        } label: {
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("folder")
+                VStack(alignment: .leading, spacing: 1) {
+                    rowTitle("Repository")
+                    Text(viewModel.activeSelectionScopeLabel)
+                        .font(Stanford.caption(10).weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(viewModel.selectedRepositoryName)
+                        .font(Stanford.caption(13).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(viewModel.selectedRepositorySubtitle)
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                rowDisclosureChevron
+            }
+            .frame(minHeight: Self.rowMinHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(RowButtonStyle())
+        .popover(isPresented: $showRepositoryPopover, arrowEdge: .trailing) {
+            RepositoryPickerPopoverView(viewModel: viewModel) {
+                showRepositoryPopover = false
+            }
+        }
+        .help(viewModel.canChangeActiveCodePath ? "Choose active repository" : "This task is pinned to its repository")
+    }
+
     // MARK: - Branch row
 
     private var branchRow: some View {
@@ -258,7 +288,7 @@ struct WorkspaceGitSectionView: View {
         } label: {
             HStack(spacing: Self.rowIconSpacing) {
                 rowIcon(viewModel.isUsingWorktree ? "square.split.2x1" : "house")
-                rowTitle("Working in")
+                rowTitle("Checkout")
 
                 Spacer(minLength: 8)
 
@@ -415,6 +445,7 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.stageAll() },
                                 files: unstaged,
                                 rowAction: { viewModel.stage(file: $0) },
+                                openFile: openChangedFile,
                                 icon: "plus",
                                 rowHelp: "Stage file"
                             )
@@ -427,6 +458,7 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.unstageAll() },
                                 files: staged,
                                 rowAction: { viewModel.unstage(file: $0) },
+                                openFile: openChangedFile,
                                 icon: "minus",
                                 rowHelp: "Unstage file"
                             )
@@ -448,6 +480,7 @@ struct WorkspaceGitSectionView: View {
         action: @escaping () -> Void,
         files: [GitStatusFile],
         rowAction: @escaping (GitStatusFile) -> Void,
+        openFile: @escaping (GitStatusFile) -> Void,
         icon: String,
         rowHelp: String
     ) -> some View {
@@ -465,7 +498,13 @@ struct WorkspaceGitSectionView: View {
             .padding(.bottom, 2)
 
             ForEach(files) { file in
-                fileRow(file: file, action: { rowAction(file) }, icon: icon, help: rowHelp)
+                fileRow(
+                    file: file,
+                    openAction: { openFile(file) },
+                    rowAction: { rowAction(file) },
+                    icon: icon,
+                    help: rowHelp
+                )
             }
         }
     }
@@ -474,11 +513,7 @@ struct WorkspaceGitSectionView: View {
 
     private var createPullRequestRow: some View {
         Button {
-            if viewModel.hasUpstream {
-                Task { await viewModel.suggestPullRequest() }
-            } else {
-                viewModel.openPullRequestURL(with: nil)
-            }
+            Task { await viewModel.suggestPullRequest() }
         } label: {
             HStack(spacing: Self.rowIconSpacing) {
                 if viewModel.isSuggestingPR {
@@ -493,7 +528,17 @@ struct WorkspaceGitSectionView: View {
 
                 Spacer(minLength: 8)
 
-                if viewModel.hasUpstream {
+                if let issue = viewModel.pullRequestReadinessIssue {
+                    Text(shortPullRequestIssue(issue))
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let issue = viewModel.pullRequestLookupIssue {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(Stanford.ui(12))
+                        .foregroundStyle(Stanford.statusWarn)
+                        .help("Could not check for an existing pull request: \(issue)")
+                } else {
                     Image(systemName: "sparkles")
                         .font(Stanford.ui(13))
                         .foregroundStyle(.secondary)
@@ -504,7 +549,7 @@ struct WorkspaceGitSectionView: View {
         }
         .buttonStyle(RowButtonStyle())
         .disabled(viewModel.isSuggestingPR)
-        .help(viewModel.hasUpstream ? "Draft and create a pull request" : "Open GitHub to start a pull request")
+        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
         .contextMenu {
             Button("Open GitHub without draft") {
                 viewModel.openPullRequestURL(with: nil)
@@ -512,22 +557,252 @@ struct WorkspaceGitSectionView: View {
         }
     }
 
+    private func shortPullRequestIssue(_ issue: String) -> String {
+        if issue.localizedCaseInsensitiveContains("publish") { return "Publish first" }
+        if issue.localizedCaseInsensitiveContains("push") { return "Push first" }
+        if issue.localizedCaseInsensitiveContains("commit")
+            || issue.localizedCaseInsensitiveContains("stash") {
+            return "Commit first"
+        }
+        return "Not ready"
+    }
+
+    // MARK: - Existing pull request row
+
+    /// When the current branch already has an open PR, link to it instead of
+    /// offering to create a duplicate. Reuses the row grammar with the PR number
+    /// as the trailing value and an external-link affordance.
+    private func pullRequestLinkRow(_ pr: GitHubPullRequestRef) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                viewModel.openExistingPullRequest()
+            } label: {
+                HStack(spacing: Self.rowIconSpacing) {
+                    rowIcon("arrow.triangle.pull")
+                    rowTitle("Pull request")
+
+                    Spacer(minLength: 8)
+
+                    if pr.isDraft {
+                        Text("Draft")
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("#\(pr.number)")
+                        .font(Stanford.caption(13).weight(.semibold))
+                        .foregroundStyle(Stanford.lagunita)
+
+                    Image(systemName: "arrow.up.right")
+                        .font(Stanford.ui(11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(minHeight: Self.rowMinHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(RowButtonStyle())
+            .layoutPriority(1)
+
+            pullRequestCommentStatus
+        }
+        .help(pr.title.isEmpty ? "Open pull request #\(pr.number)" : "Open #\(pr.number): \(pr.title)")
+        .contextMenu {
+            Button("Copy PR URL") { viewModel.copyPullRequestURL() }
+            if viewModel.pullRequestComments?.hasComments == true {
+                Button("Address Comments") { createAddressCommentsTask() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pullRequestCommentStatus: some View {
+        if viewModel.isRefreshingPullRequestComments {
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.62)
+                .frame(width: 18, height: Self.rowMinHeight)
+        } else if let summary = viewModel.pullRequestComments, summary.hasComments {
+            commentBubble(summary)
+                .frame(minHeight: Self.rowMinHeight)
+        } else if viewModel.pullRequestCommentsIssue != nil {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(Stanford.ui(11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: Self.rowMinHeight)
+                .help(viewModel.pullRequestCommentsIssue ?? "Could not load pull request comments")
+        }
+    }
+
+    private func commentBubble(_ summary: GitHubPullRequestCommentSummary) -> some View {
+        Button {
+            showPRCommentsPopover.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "text.bubble.fill")
+                    .font(Stanford.ui(10, weight: .semibold))
+                Text("\(summary.totalCommentCount)")
+                    .font(Stanford.caption(12).weight(.semibold))
+            }
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(Stanford.lagunita.opacity(0.12))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("\(summary.totalCommentCount) pull request comment\(summary.totalCommentCount == 1 ? "" : "s")")
+        .popover(isPresented: $showPRCommentsPopover, arrowEdge: .leading) {
+            PullRequestCommentsPopover(
+                summary: summary,
+                onOpenPR: { viewModel.openExistingPullRequest() },
+                onAddress: {
+                    showPRCommentsPopover = false
+                    createAddressCommentsTask()
+                }
+            )
+        }
+    }
+
+    private func createAddressCommentsTask() {
+        guard let task = viewModel.createPullRequestCommentTask(modelContext: modelContext) else { return }
+        onTaskCreated?(task)
+    }
+
+    private struct PullRequestCommentsPopover: View {
+        let summary: GitHubPullRequestCommentSummary
+        let onOpenPR: () -> Void
+        let onAddress: () -> Void
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(summary.comments.prefix(8)) { comment in
+                            commentRow(comment)
+                        }
+                        if summary.comments.count > 8 {
+                            Text("+\(summary.comments.count - 8) more")
+                                .font(Stanford.caption(12).weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 34)
+                        }
+                    }
+                    .padding(.vertical, 12)
+                }
+                .frame(maxHeight: 300)
+            }
+            .frame(width: 360)
+            .background(Stanford.cardBackground)
+        }
+
+        private var header: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.pull")
+                        .font(Stanford.ui(16, weight: .semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .frame(width: 24, height: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(summary.pullRequest.title.isEmpty ? "Pull request #\(summary.pullRequest.number)" : summary.pullRequest.title)
+                            .font(Stanford.ui(15, weight: .semibold))
+                            .lineLimit(1)
+                        Text(summaryLine)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button("Address", action: onAddress)
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Stanford.lagunita)
+                }
+
+                HStack(spacing: 8) {
+                    Button(action: onOpenPR) {
+                        Label("View PR", systemImage: "arrow.up.right.square")
+                            .font(Stanford.caption(12).weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(14)
+        }
+
+        private var summaryLine: String {
+            let comments = "\(summary.totalCommentCount) comment\(summary.totalCommentCount == 1 ? "" : "s")"
+            guard summary.unresolvedThreadCount > 0 else { return comments }
+            return "\(comments) · \(summary.unresolvedThreadCount) unresolved"
+        }
+
+        private func commentRow(_ comment: GitHubPullRequestComment) -> some View {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "person.crop.circle")
+                    .font(Stanford.ui(18, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(comment.preview)
+                        .font(Stanford.ui(13, design: .monospaced))
+                        .lineLimit(3)
+                        .foregroundStyle(.primary)
+
+                    HStack(spacing: 6) {
+                        Text(comment.locationLabel)
+                            .font(Stanford.caption(12).weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("@\(comment.author)")
+                            .font(Stanford.caption(12))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+
     // MARK: - File row
 
     @ViewBuilder
-    private func fileRow(file: GitStatusFile, action: @escaping () -> Void, icon: String, help: String) -> some View {
+    private func fileRow(
+        file: GitStatusFile,
+        openAction: @escaping () -> Void,
+        rowAction: @escaping () -> Void,
+        icon: String,
+        help: String
+    ) -> some View {
         HStack(spacing: 5) {
-            statusBadge(for: file.status)
+            Button(action: openAction) {
+                HStack(spacing: 5) {
+                    statusBadge(for: file.status)
 
-            Text(file.relativePath)
-                .font(Stanford.ui(11, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.head)
+                    Text(file.relativePath)
+                        .font(Stanford.ui(11, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open in Files shelf")
 
             Spacer(minLength: 4)
 
-            Button(action: action) {
+            Button(action: rowAction) {
                 Image(systemName: icon)
                     .font(Stanford.ui(8, weight: .bold))
                     .foregroundStyle(.secondary)
@@ -540,6 +815,38 @@ struct WorkspaceGitSectionView: View {
         }
         .padding(.vertical, 2)
         .padding(.horizontal, 4)
+        .contextMenu {
+            Button {
+                openAction()
+            } label: {
+                Label("Open in Files Shelf", systemImage: "doc.text")
+            }
+            if let absolutePath = viewModel.absolutePath(for: file) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(absolutePath, forType: .string)
+                } label: {
+                    Label("Copy Path", systemImage: "doc.on.doc")
+                }
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: absolutePath)])
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: absolutePath))
+                } label: {
+                    Label("Open in Default App", systemImage: "arrow.up.right.square")
+                }
+            }
+        }
+    }
+
+    private func openChangedFile(_ file: GitStatusFile) {
+        guard let absolutePath = viewModel.absolutePath(for: file) else { return }
+        let exists = FileManager.default.fileExists(atPath: absolutePath)
+        viewModel.noteChangedFileOpenedInShelf(file, absolutePath: absolutePath, exists: exists)
+        onOpenWorkspaceFile?(absolutePath)
     }
 
     @ViewBuilder
@@ -588,6 +895,102 @@ private enum RepoPopover {
     static let width: CGFloat = 280
     static let rowVerticalPadding: CGFloat = 6
     static let listMaxHeight: CGFloat = 200
+}
+
+// MARK: - Repository picker
+
+struct RepositoryPickerPopoverView: View {
+    @ObservedObject var viewModel: WorkspaceGitViewModel
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Active repository")
+                    .font(Stanford.caption(10).weight(.bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            Divider()
+
+            if !viewModel.canChangeActiveCodePath {
+                Label(viewModel.activeCodePathChangeBlockedMessage, systemImage: "lock")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .padding(12)
+                Divider()
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    if viewModel.repositories.isEmpty {
+                        Text("No configured path contains a git repository.")
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                    } else {
+                        ForEach(viewModel.repositories) { repo in
+                            repositoryRow(repo)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxHeight: RepoPopover.listMaxHeight)
+        }
+        .frame(width: RepoPopover.width)
+    }
+
+    private func repositoryRow(_ repo: GitRepositoryInfo) -> some View {
+        let isActive = repo.path == viewModel.selectedRepository?.path
+        return Button {
+            viewModel.selectRepository(repo)
+            onClose()
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "folder")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(isActive ? Stanford.lagunita : .secondary)
+                    .frame(width: 16)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(repo.name)
+                        .font(Stanford.body(12.5).weight(isActive ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(repo.subtitle.isEmpty ? WorkspacePathPresentation.abbreviatePath(repo.path) : repo.subtitle)
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 6)
+
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(Stanford.ui(10, weight: .bold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.top, 2)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, RepoPopover.rowVerticalPadding)
+            .background(Color.primary.opacity(isActive ? 0.04 : 0))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!viewModel.canChangeActiveCodePath)
+        .help(repo.path)
+    }
 }
 
 // MARK: - Branch picker
@@ -773,6 +1176,15 @@ struct WorktreeLocationPopoverView: View {
 
             Divider()
 
+            if !viewModel.canChangeActiveCodePath {
+                Label(viewModel.activeCodePathChangeBlockedMessage, systemImage: "lock")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .padding(12)
+                Divider()
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     locationRow(
@@ -856,6 +1268,7 @@ struct WorktreeLocationPopoverView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!viewModel.canChangeActiveCodePath)
     }
 }
 
@@ -1298,4 +1711,3 @@ struct WorktreeSheet: View {
         viewModel.removeWorktree(worktree, force: false)
     }
 }
-

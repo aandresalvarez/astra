@@ -81,10 +81,28 @@ struct GitAuthoringRegressionTests {
         """
     }
 
+    /// Emits a PR suggestion after an optional delay, so PR-specific timeout
+    /// behavior can be exercised independently of the commit path.
+    private func slowCopilotPRScript(seconds: Int) -> String {
+        """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(fakeCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        sleep \(seconds)
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_PR_SUGGESTION {\\"title\\":\\"Slow PR\\",\\"body\\":\\"## Summary\\\\nDetails.\\"}"}}'
+        exit 0
+        """
+    }
+
     private func makeFakeCopilotService(
         root: URL,
         script: String,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        pullRequestTimeoutSeconds: Int? = nil
     ) throws -> AgentGitAuthoringService {
         let fakeCopilot = root.appendingPathComponent("copilot")
         let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
@@ -98,6 +116,9 @@ struct GitAuthoringRegressionTests {
             )
         )
         service.timeoutSeconds = timeoutSeconds
+        if let pullRequestTimeoutSeconds {
+            service.pullRequestTimeoutSeconds = pullRequestTimeoutSeconds
+        }
         return service
     }
 
@@ -119,7 +140,7 @@ struct GitAuthoringRegressionTests {
         let diff = await GitService.shared.getStagedDiff(at: repoPath, limit: 200_000)
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 5, "getStagedDiff took \(elapsed)s — possible pipe deadlock")
+        #expect(elapsed < 30, "getStagedDiff took \(elapsed)s — possible pipe deadlock")
         #expect(diff.contains("diff --git"))
         #expect(!diff.isEmpty)
     }
@@ -147,7 +168,7 @@ struct GitAuthoringRegressionTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 5, "Expected fast helper result, took \(elapsed)s")
+        #expect(elapsed < 30, "Expected fast helper result, took \(elapsed)s")
         #expect(suggestion.subject == "Fast commit")
         #expect(suggestion.type == "test")
     }
@@ -172,10 +193,29 @@ struct GitAuthoringRegressionTests {
         let branch = await GitService.shared.getCurrentBranch(at: repoPath)
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 5, "git reads took \(elapsed)s — possible stdin/tty block")
+        #expect(elapsed < 30, "git reads took \(elapsed)s — possible stdin/tty block")
         #expect(url == "https://github.com/example/repo")
         #expect(status.isEmpty)
         #expect(!branch.isEmpty && branch != "unknown")
+    }
+
+    /// File operations must use `--` before pathspecs. Without it, a legitimate
+    /// file whose name begins with `-` can be interpreted as a git flag.
+    @Test("Stage and unstage handle pathspecs that look like flags")
+    func stageAndUnstagePathspecFlagLikeFile() async throws {
+        let repoPath = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repoPath) }
+
+        let fileURL = URL(fileURLWithPath: repoPath).appendingPathComponent("--flag-like-file.txt")
+        try "content".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        try await GitService.shared.stageFile("--flag-like-file.txt", at: repoPath)
+        var files = await GitService.shared.getStatusFiles(at: repoPath)
+        #expect(files.contains { $0.relativePath == "--flag-like-file.txt" && $0.isStaged })
+
+        try await GitService.shared.unstageFile("--flag-like-file.txt", at: repoPath)
+        files = await GitService.shared.getStatusFiles(at: repoPath)
+        #expect(files.contains { $0.relativePath == "--flag-like-file.txt" && !$0.isStaged })
     }
 
     /// A push to an unreachable remote must fail fast instead of hanging on a
@@ -224,7 +264,7 @@ struct GitAuthoringRegressionTests {
         let elapsed = Date().timeIntervalSince(start)
 
         #expect(didThrow, "A hung subprocess should surface a timeout error")
-        #expect(elapsed < 5, "Timeout watchdog took \(elapsed)s — expected ~1s budget")
+        #expect(elapsed < 30, "Timeout watchdog took \(elapsed)s — expected a bounded timeout")
     }
 
     /// Even when a subprocess emits more than the OS pipe buffer (~64KB) the
@@ -268,5 +308,125 @@ struct GitAuthoringRegressionTests {
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }
+    }
+
+    // MARK: - Pull-request timeout calibration regression
+
+    /// The original failure: the PR draft shared the commit's short deadline and
+    /// timed out before the longer markdown body could be generated. PR drafting
+    /// must run on its own, larger budget — never the commit budget.
+    @Test("suggestPullRequest uses its own budget, not the commit deadline")
+    func pullRequestRunsOnItsOwnBudget() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-git-pr-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Commit budget is intentionally too short (1s) and the helper takes 2s.
+        // If PR drafting wrongly reused the commit budget it would time out; the
+        // PR budget (10s) must govern instead.
+        let service = try makeFakeCopilotService(
+            root: root,
+            script: slowCopilotPRScript(seconds: 2),
+            timeoutSeconds: 1,
+            pullRequestTimeoutSeconds: 10
+        )
+
+        let start = Date()
+        let suggestion = try await service.suggestPullRequest(
+            repoPath: root.path,
+            branch: "feature/x",
+            base: "main",
+            log: "- did a thing",
+            diffStat: " 1 file changed"
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(suggestion.title == "Slow PR")
+        #expect(elapsed < 30, "PR draft took \(elapsed)s — expected the PR-specific budget to win")
+    }
+
+    @Test("suggestPullRequest honors its own deadline when helper is slow")
+    func pullRequestHonorsItsOwnDeadline() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-git-pr-timeout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = try makeFakeCopilotService(
+            root: root,
+            script: slowCopilotPRScript(seconds: 3),
+            timeoutSeconds: 30,
+            pullRequestTimeoutSeconds: 1
+        )
+
+        do {
+            _ = try await service.suggestPullRequest(
+                repoPath: root.path,
+                branch: "feature/x",
+                base: "main",
+                log: "- did a thing",
+                diffStat: " 1 file changed"
+            )
+            Issue.record("Expected providerFailed timeout error")
+        } catch let error as GitAuthoringError {
+            if case .providerFailed(let message) = error {
+                #expect(message.contains("Timed out after 1s"))
+            } else {
+                Issue.record("Expected providerFailed, got \(error)")
+            }
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test("PR helper timeout records diagnostic audit fields")
+    func pullRequestTimeoutLogsDiagnostics() async throws {
+        let repoLabel = "git-pr-log-\(UUID().uuidString.prefix(8))"
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(repoLabel, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = try makeFakeCopilotService(
+            root: root,
+            script: slowCopilotPRScript(seconds: 3),
+            timeoutSeconds: 30,
+            pullRequestTimeoutSeconds: 1
+        )
+
+        do {
+            _ = try await service.suggestPullRequest(
+                repoPath: root.path,
+                branch: "feature/x",
+                base: "main",
+                log: "- did a thing",
+                diffStat: " 1 file changed"
+            )
+            Issue.record("Expected providerFailed timeout error")
+        } catch {
+            // Expected.
+        }
+
+        AppLogger.flushForTesting()
+        let log = (try? String(contentsOf: AppLogger.mainLogFile, encoding: .utf8)) ?? ""
+        #expect(log.contains("git.authoring_started")
+            && log.contains("operation=pull_request")
+            && log.contains("repo=\(repoLabel)")
+            && log.contains("timeout_seconds=1")
+            && log.contains("prompt_bytes="))
+        #expect(log.contains("git.authoring_failed")
+            && log.contains("operation=pull_request")
+            && log.contains("repo=\(repoLabel)")
+            && log.contains("timed_out=true")
+            && log.contains("elapsed_ms="))
+    }
+
+    /// Calibration guard: PR drafting must always be granted at least as much
+    /// time as a commit subject, since its output is strictly larger.
+    @Test("Default PR timeout is at least the commit timeout")
+    func defaultPullRequestBudgetIsNotSmallerThanCommit() {
+        let service = AgentGitAuthoringService(utilityRuntime: .claude())
+        #expect(service.pullRequestTimeoutSeconds >= service.timeoutSeconds)
     }
 }

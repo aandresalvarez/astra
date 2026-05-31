@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import SwiftData
 import ASTRACore
 
 @MainActor
@@ -52,6 +53,18 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var isSuggestingPR: Bool = false
     @Published var prDraft: PRSuggestion? = nil
 
+    /// The open pull request for the current branch, when one exists. Drives the
+    /// panel to link to the PR instead of offering to create a duplicate.
+    @Published var openPullRequest: GitHubPullRequestRef? = nil
+    @Published var pullRequestLookupIssue: String? = nil
+    @Published var pullRequestComments: GitHubPullRequestCommentSummary? = nil
+    @Published var pullRequestCommentsIssue: String? = nil
+    @Published var isRefreshingPullRequestComments: Bool = false
+    private var prLookupBranch: String?
+    private var prLookupAt: Date?
+    private var prCommentsKey: String?
+    private var prCommentsLookupAt: Date?
+
     // UI state
     @Published var errorMessage: String? = nil
     @Published var showNewBranchPopover = false
@@ -59,6 +72,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var newBranchName = ""
 
     private var workspace: Workspace?
+    private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
 
     var authoringServiceFactory: (() -> AgentGitAuthoringService)?
@@ -81,9 +95,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         )
     }
 
-    func setup(for workspace: Workspace) {
+    func setup(for workspace: Workspace, selectedTask: AgentTask? = nil) {
         self.workspace = workspace
-        self.activeWorkingPath = workspace.isUsingWorktree ? workspace.activeWorkingPath : nil
+        self.selectedTask = selectedTask
+        self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
         Task { await scanRepositories() }
 
         refreshTimer?.invalidate()
@@ -93,6 +108,14 @@ final class WorkspaceGitViewModel: ObservableObject {
             }
         }
     }
+
+    #if DEBUG
+    func setWorkspaceForTesting(_ workspace: Workspace, selectedTask: AgentTask? = nil) {
+        self.workspace = workspace
+        self.selectedTask = selectedTask
+        self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
+    }
+    #endif
 
     deinit {
         refreshTimer?.invalidate()
@@ -107,12 +130,47 @@ final class WorkspaceGitViewModel: ObservableObject {
             additionalPaths: workspace.additionalPaths
         )
         self.repositories = repos
-        if self.selectedRepository == nil {
+        if let preferred = preferredRepository(in: repos) {
+            self.selectedRepository = preferred
+        } else if self.selectedRepository == nil {
             self.selectedRepository = repos.first
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
         await refreshRepoDetails()
+    }
+
+    private func initialActiveCodePath(workspace: Workspace, selectedTask: AgentTask?) -> String? {
+        if let pinned = selectedTask?.executionRootPath,
+           !pinned.isEmpty,
+           FileManager.default.fileExists(atPath: pinned) {
+            return WorkspacePathPresentation.standardizedPath(pinned)
+        }
+        if let active = workspace.activeWorkingPath,
+           !active.isEmpty,
+           FileManager.default.fileExists(atPath: active) {
+            return WorkspacePathPresentation.standardizedPath(active)
+        }
+        return nil
+    }
+
+    private func preferredRepository(in repos: [GitRepositoryInfo]) -> GitRepositoryInfo? {
+        let candidates = [
+            activeWorkingPath,
+            selectedTask?.executionRootPath,
+            workspace?.activeWorkingPath,
+            selectedRepository?.path,
+            workspace?.primaryPath
+        ]
+        .compactMap { $0 }
+        .map(WorkspacePathPresentation.standardizedPath)
+
+        for candidate in candidates {
+            if let exact = repos.first(where: { $0.path == candidate }) {
+                return exact
+            }
+        }
+        return nil
     }
 
     /// The actual git repository (with a `.git` directory) backing the panel.
@@ -136,6 +194,56 @@ final class WorkspaceGitViewModel: ObservableObject {
     var isUsingWorktree: Bool {
         guard let active = activeWorkingPath, !active.isEmpty else { return false }
         return active != selectedRepository?.path
+    }
+
+    var selectedRepositoryName: String {
+        selectedRepository?.name ?? "No repository"
+    }
+
+    var selectedRepositorySubtitle: String {
+        guard let repo = selectedRepository else { return "No git repository found" }
+        if !repo.subtitle.isEmpty { return repo.subtitle }
+        return WorkspacePathPresentation.abbreviatePath(repo.path)
+    }
+
+    var activeSelectionScopeLabel: String {
+        guard let task = selectedTask else { return "Workspace default" }
+        return task.status == .draft ? "Draft task" : "Pinned task"
+    }
+
+    var canChangeActiveCodePath: Bool {
+        guard let task = selectedTask else { return true }
+        return task.status == .draft
+    }
+
+    var activeCodePathChangeBlockedMessage: String {
+        "This task already has execution history, so its repository is pinned. Fork or start a new task to use another repository."
+    }
+
+    func selectRepository(_ repo: GitRepositoryInfo) {
+        guard canChangeActiveCodePath else {
+            errorMessage = activeCodePathChangeBlockedMessage
+            AppLogger.audit(.gitActiveRepositoryChanged, category: "Git", fields: [
+                "result": "blocked",
+                "repo": repo.path,
+                "scope": activeSelectionScopeLabel
+            ], level: .warning)
+            return
+        }
+
+        selectedRepository = repo
+        setActiveWorkingPath(repo.path)
+        clearPullRequestComments()
+        openPullRequest = nil
+        pullRequestLookupIssue = nil
+        prLookupBranch = nil
+        prLookupAt = nil
+        AppLogger.audit(.gitActiveRepositoryChanged, category: "Git", fields: [
+            "result": "changed",
+            "repo": repo.path,
+            "scope": activeSelectionScopeLabel
+        ])
+        Task { await refreshRepoDetails(force: true) }
     }
 
     func refreshRepoDetails(force: Bool = false) async {
@@ -176,6 +284,209 @@ final class WorkspaceGitViewModel: ObservableObject {
             self.behind = 0
         }
         reconcileActiveWorkingPathWithDisk()
+        refreshOpenPullRequest(force: force)
+    }
+
+    /// Best-effort lookup of an existing open PR for the current branch. Runs
+    /// off the status-refresh path (so it never blocks status updates), is
+    /// throttled to avoid hammering the network on the periodic refresh, and is
+    /// keyed by branch so a stale PR never lingers after a branch switch.
+    func refreshOpenPullRequest(force: Bool) {
+        guard let path = workingPath else { return }
+        let branch = currentBranch
+        guard hasRemote, !branch.isEmpty else {
+            openPullRequest = nil
+            pullRequestLookupIssue = nil
+            pullRequestComments = nil
+            pullRequestCommentsIssue = nil
+            prLookupBranch = nil
+            prLookupAt = nil
+            prCommentsKey = nil
+            prCommentsLookupAt = nil
+            return
+        }
+
+        let branchChanged = branch != prLookupBranch
+        if !force,
+           !branchChanged,
+           let checkedAt = prLookupAt,
+           Date().timeIntervalSince(checkedAt) < 60 {
+            return
+        }
+        // Drop a previous branch's PR immediately so the panel never shows a
+        // mismatched number while the async lookup is in flight.
+        if branchChanged { openPullRequest = nil }
+        if branchChanged { pullRequestLookupIssue = nil }
+        if branchChanged { clearPullRequestComments() }
+        prLookupBranch = branch
+        prLookupAt = Date()
+
+        Task {
+            let result = await GitService.shared.lookupOpenPullRequest(repoPath: path, head: branch)
+            if self.currentBranch == branch {
+                switch result {
+                case let .found(pr):
+                    self.openPullRequest = pr
+                    self.pullRequestLookupIssue = nil
+                    self.refreshPullRequestComments(for: pr, repoPath: path, branch: branch, force: force || branchChanged)
+                case .none:
+                    self.openPullRequest = nil
+                    self.pullRequestLookupIssue = nil
+                    self.clearPullRequestComments()
+                case let .unavailable(detail):
+                    self.openPullRequest = nil
+                    self.pullRequestLookupIssue = detail
+                    self.clearPullRequestComments()
+                }
+            }
+        }
+    }
+
+    func refreshPullRequestComments(
+        for pr: GitHubPullRequestRef,
+        repoPath: String,
+        branch: String,
+        force: Bool
+    ) {
+        let key = "\(repoPath)|\(branch)|\(pr.number)|\(pr.url)"
+        if !force,
+           key == prCommentsKey,
+           let checkedAt = prCommentsLookupAt,
+           Date().timeIntervalSince(checkedAt) < 60 {
+            return
+        }
+        prCommentsKey = key
+        prCommentsLookupAt = Date()
+        isRefreshingPullRequestComments = true
+
+        Task {
+            let result = await GitService.shared.lookupPullRequestComments(
+                repoPath: repoPath,
+                pullRequest: pr
+            )
+            guard self.currentBranch == branch,
+                  self.openPullRequest?.number == pr.number,
+                  self.workingPath == repoPath else {
+                if self.prCommentsKey == key {
+                    self.isRefreshingPullRequestComments = false
+                }
+                return
+            }
+            self.isRefreshingPullRequestComments = false
+            switch result {
+            case let .found(summary):
+                self.pullRequestComments = summary
+                self.pullRequestCommentsIssue = nil
+            case let .unavailable(detail):
+                self.pullRequestComments = nil
+                self.pullRequestCommentsIssue = detail
+            }
+        }
+    }
+
+    private func clearPullRequestComments() {
+        pullRequestComments = nil
+        pullRequestCommentsIssue = nil
+        isRefreshingPullRequestComments = false
+        prCommentsKey = nil
+        prCommentsLookupAt = nil
+    }
+
+    /// Opens the current branch's existing pull request in the browser.
+    func openExistingPullRequest() {
+        guard let pr = openPullRequest, let url = URL(string: pr.url) else { return }
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+
+    /// Copies the existing pull request URL to the pasteboard.
+    func copyPullRequestURL() {
+        guard let pr = openPullRequest else { return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(pr.url, forType: .string)
+        #endif
+    }
+
+    func createPullRequestCommentTask(modelContext: ModelContext) -> AgentTask? {
+        guard let workspace,
+              let path = workingPath,
+              let pr = openPullRequest,
+              let summary = pullRequestComments,
+              summary.hasComments else {
+            return nil
+        }
+
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: UserDefaults.standard.string(forKey: "defaultRuntimeID")
+        )
+        let model = RuntimeModelAvailability.normalizedModel(
+            UserDefaults.standard.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model,
+            for: runtime
+        )
+        let budget = UserDefaults.standard.object(forKey: AppStorageKeys.defaultTokenBudget) as? Int
+            ?? TaskExecutionDefaults.tokenBudget
+        let goal = Self.pullRequestCommentTaskGoal(
+            pullRequest: pr,
+            summary: summary,
+            branch: currentBranch,
+            repoPath: path
+        )
+        let task = AgentTask(
+            title: "Address PR #\(pr.number) comments",
+            goal: goal,
+            workspace: workspace,
+            tokenBudget: budget,
+            model: model,
+            runtime: runtime
+        )
+        task.status = .queued
+        task.executionRootPath = path
+        modelContext.insert(task)
+        modelContext.insert(TaskEvent(task: task, type: "user.message", payload: goal))
+        TaskCapabilitySnapshotter.capture(for: task)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        AppLogger.audit(.gitPullRequestAddressTask, category: "Git", taskID: task.id, fields: [
+            "pr": "#\(pr.number)",
+            "comments": "\(summary.totalCommentCount)",
+            "unresolved_threads": "\(summary.unresolvedThreadCount)",
+            "branch": currentBranch
+        ])
+        return task
+    }
+
+    static func pullRequestCommentTaskGoal(
+        pullRequest pr: GitHubPullRequestRef,
+        summary: GitHubPullRequestCommentSummary,
+        branch: String,
+        repoPath: String
+    ) -> String {
+        let comments = summary.comments.prefix(12).enumerated().map { index, comment in
+            let kind = comment.isReviewThread ? "review thread" : "conversation"
+            return """
+            \(index + 1). \(kind) by @\(comment.author) at \(comment.locationLabel)
+               \(comment.preview)
+               \(comment.url)
+            """
+        }.joined(separator: "\n")
+        let omitted = summary.comments.count > 12
+            ? "\n\nAdditional comments omitted from this prompt: \(summary.comments.count - 12). Re-fetch before editing."
+            : ""
+        return """
+        Address the review comments on GitHub pull request #\(pr.number): \(pr.title.isEmpty ? "Untitled PR" : pr.title)
+
+        PR: \(pr.url)
+        Branch: \(branch)
+        Repository path: \(repoPath)
+        Current unresolved review threads: \(summary.unresolvedThreadCount)
+        Current visible comments: \(summary.totalCommentCount)
+
+        Comments captured by ASTRA:
+        \(comments)\(omitted)
+
+        Before editing, re-fetch the latest unresolved review comments for this PR with the GitHub CLI, because comments may have changed since ASTRA captured this snapshot. Make focused code changes that address the actionable comments, add or update regression tests for each bug fixed, run the narrow relevant tests, and summarize what remains. Do not merge the PR or post GitHub replies unless explicitly asked.
+        """
     }
 
     // MARK: - Worktrees
@@ -186,18 +497,42 @@ final class WorkspaceGitViewModel: ObservableObject {
     private func reconcileActiveWorkingPathWithDisk() {
         guard let active = activeWorkingPath, !active.isEmpty else { return }
         if !FileManager.default.fileExists(atPath: active) {
-            setActiveWorkingPath(nil)
+            if canChangeActiveCodePath {
+                _ = setActiveWorkingPath(nil)
+            } else {
+                activeWorkingPath = nil
+            }
         }
     }
 
-    /// Persists the active working location on the workspace and mirrors it for
-    /// the view. Setting `nil` returns focus to the repository root.
-    private func setActiveWorkingPath(_ path: String?) {
-        let normalized = (path?.isEmpty == true) ? nil : path
+    /// Persists the active code location for the current editing scope and
+    /// mirrors it for the view. For a selected draft task this updates the task
+    /// pin; otherwise it updates the workspace default used by new chats.
+    @discardableResult
+    private func setActiveWorkingPath(_ path: String?) -> Bool {
+        guard canChangeActiveCodePath else {
+            errorMessage = activeCodePathChangeBlockedMessage
+            return false
+        }
+
+        let normalized = path
+            .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            .map(WorkspacePathPresentation.standardizedPath)
+
         activeWorkingPath = normalized
-        guard let workspace else { return }
-        workspace.activeWorkingPath = normalized
-        workspace.updatedAt = Date()
+        guard let workspace else { return true }
+        let persistedOverride = normalized == WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
+            ? nil
+            : normalized
+
+        if let selectedTask {
+            selectedTask.executionRootPath = persistedOverride
+            selectedTask.updatedAt = Date()
+        } else {
+            workspace.activeWorkingPath = persistedOverride
+            workspace.updatedAt = Date()
+        }
+        return true
     }
 
     /// The worktree the panel is currently focused on, if any.
@@ -209,14 +544,14 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// Switches the working location. Existing threads keep their own pinned
     /// location; only new chats follow this selection.
     func switchWorkingLocation(to worktree: GitWorktreeInfo) {
-        setActiveWorkingPath(worktree.isPrimary ? nil : worktree.path)
+        guard setActiveWorkingPath(worktree.isPrimary ? selectedRepository?.path : worktree.path) else { return }
         errorMessage = nil
         Task { await refreshRepoDetails(force: true) }
     }
 
     /// Returns focus to the repository root for new chats.
     func switchToRoot() {
-        setActiveWorkingPath(nil)
+        guard setActiveWorkingPath(selectedRepository?.path) else { return }
         errorMessage = nil
         Task { await refreshRepoDetails(force: true) }
     }
@@ -246,7 +581,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 self.newWorktreeBranch = ""
                 self.errorMessage = nil
                 if makeActive {
-                    self.setActiveWorkingPath(createdPath)
+                    _ = self.setActiveWorkingPath(createdPath)
                 }
                 await refreshRepoDetails(force: true)
             } catch {
@@ -286,7 +621,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                     force: force
                 )
                 if activeWorkingPath == worktree.path {
-                    setActiveWorkingPath(nil)
+                    _ = setActiveWorkingPath(selectedRepository?.path)
                 }
                 self.errorMessage = nil
                 self.worktreePendingForceRemoval = nil
@@ -319,6 +654,62 @@ final class WorkspaceGitViewModel: ObservableObject {
     var canPush: Bool {
         guard hasRemote else { return false }
         return pushableCommitCount > 0
+    }
+
+    var pullRequestReadinessIssue: String? {
+        let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if branch.isEmpty || branch == "unknown" {
+            return "Cannot determine the current branch for a pull request."
+        }
+        guard hasRemote else {
+            return "No remote configured. Add a remote before creating a pull request."
+        }
+        guard hasUpstream else {
+            return "Publish the current branch before creating a pull request."
+        }
+        guard !hasChanges else {
+            return "Commit or stash local changes before creating a pull request."
+        }
+        guard pushableCommitCount == 0 else {
+            let noun = pushableCommitCount == 1 ? "commit" : "commits"
+            return "Push \(pushableCommitCount) local \(noun) before creating a pull request."
+        }
+        return nil
+    }
+
+    var canStartPullRequest: Bool {
+        pullRequestReadinessIssue == nil
+    }
+
+    struct PullRequestActionSnapshot: Equatable {
+        let path: String
+        let branch: String
+    }
+
+    func makePullRequestActionSnapshot() -> PullRequestActionSnapshot? {
+        guard let path = workingPath else { return nil }
+        let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branch.isEmpty, branch != "unknown" else { return nil }
+        return PullRequestActionSnapshot(path: path, branch: branch)
+    }
+
+    func isCurrentPullRequestActionSnapshot(_ snapshot: PullRequestActionSnapshot) -> Bool {
+        currentBranch.trimmingCharacters(in: .whitespacesAndNewlines) == snapshot.branch
+            && workingPath == snapshot.path
+    }
+
+    @discardableResult
+    private func validatePullRequestReadiness() -> Bool {
+        if let issue = pullRequestReadinessIssue {
+            errorMessage = issue
+            AppLogger.audit(.gitPullRequestCreate, category: "Git", fields: [
+                "result": "blocked",
+                "reason": issue,
+                "branch": currentBranch
+            ], level: .info, fieldMaxLength: 240)
+            return false
+        }
+        return true
     }
 
     /// Group-level status for the Changes row, kept in one place so the row can
@@ -371,6 +762,26 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     // MARK: - Staging
+
+    func absolutePath(for file: GitStatusFile) -> String? {
+        guard let path = workingPath else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+            .appendingPathComponent(file.relativePath)
+            .standardizedFileURL
+            .path
+    }
+
+    func noteChangedFileOpenedInShelf(_ file: GitStatusFile, absolutePath: String, exists: Bool) {
+        AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", fields: [
+            "file": file.relativePath,
+            "path": absolutePath,
+            "repo": workingPath ?? "",
+            "exists": exists ? "true" : "false"
+        ], level: exists ? .info : .warning)
+        if !exists {
+            errorMessage = "\(file.relativePath) is not present in the working tree."
+        }
+    }
 
     func stage(file: GitStatusFile) {
         guard let path = workingPath else { return }
@@ -469,7 +880,8 @@ final class WorkspaceGitViewModel: ObservableObject {
                     NSLocalizedDescriptionKey: "Cannot determine the current branch to publish."
                 ])
             }
-            try await GitService.shared.pushSetUpstream(branch: branch, at: repoPath)
+            let remote = await GitService.shared.getDefaultRemote(at: repoPath) ?? "origin"
+            try await GitService.shared.pushSetUpstream(branch: branch, remote: remote, at: repoPath)
         }
     }
 
@@ -611,27 +1023,58 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     func suggestPullRequest() async {
-        guard let path = workingPath else { return }
-        guard hasUpstream else {
-            self.errorMessage = "Push the current branch before drafting a pull request."
-            return
-        }
+        guard validatePullRequestReadiness() else { return }
+        guard let snapshot = makePullRequestActionSnapshot() else { return }
         isSuggestingPR = true
         defer { isSuggestingPR = false }
-        let base = await GitService.shared.getDefaultBaseBranch(at: path)
-        let log = await GitService.shared.getBranchLog(at: path, base: base, branch: currentBranch)
-        let diffStat = await GitService.shared.getBranchDiffStat(at: path, base: base, branch: currentBranch)
+        let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
+        let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+        let log = await GitService.shared.getBranchLog(at: snapshot.path, base: base, branch: snapshot.branch)
+        let diffStat = await GitService.shared.getBranchDiffStat(at: snapshot.path, base: base, branch: snapshot.branch)
+        guard isCurrentPullRequestActionSnapshot(snapshot) else {
+            AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
+                "operation": "pull_request",
+                "reason": "branch_changed",
+                "original_branch": snapshot.branch,
+                "current_branch": currentBranch
+            ], level: .warning)
+            self.errorMessage = "Branch changed while drafting the pull request. Try again."
+            return
+        }
+        guard !log.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !diffStat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
+                "operation": "pull_request",
+                "reason": "empty_branch_delta",
+                "branch": snapshot.branch,
+                "base": base
+            ], level: .info)
+            self.errorMessage = "No committed branch changes were found for a pull request."
+            return
+        }
         do {
             let suggestion = try await makeAuthoringService().suggestPullRequest(
-                repoPath: path,
-                branch: currentBranch,
+                repoPath: snapshot.path,
+                branch: snapshot.branch,
                 base: base,
                 log: log,
                 diffStat: diffStat
             )
+            guard isCurrentPullRequestActionSnapshot(snapshot) else {
+                self.errorMessage = "Branch changed while drafting the pull request. Try again."
+                return
+            }
             self.prDraft = suggestion
             self.errorMessage = nil
         } catch {
+            AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
+                "operation": "pull_request",
+                "reason": error.localizedDescription,
+                "branch": snapshot.branch,
+                "base": base,
+                "log_bytes": "\(log.utf8.count)",
+                "diffstat_bytes": "\(diffStat.utf8.count)"
+            ], level: .error, fieldMaxLength: 240)
             self.errorMessage = error.localizedDescription
         }
     }
@@ -642,19 +1085,22 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// browser. Falls back to the GitHub web compare flow when `gh` is missing
     /// or unauthenticated, so the action always results in a usable next step.
     func createPullRequest(with draft: PRSuggestion) {
-        guard let path = workingPath else { return }
-        guard hasUpstream else {
-            self.errorMessage = "Push the current branch before creating a pull request."
-            return
-        }
+        guard validatePullRequestReadiness() else { return }
+        guard let snapshot = makePullRequestActionSnapshot() else { return }
         isSuggestingPR = true
         Task {
-            let base = await GitService.shared.getDefaultBaseBranch(at: path)
+            let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
+            let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+            guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
+                self.errorMessage = "Branch changed before creating the pull request. Try again."
+                self.isSuggestingPR = false
+                return
+            }
             do {
                 let url = try await GitService.shared.createPullRequest(
-                    repoPath: path,
+                    repoPath: snapshot.path,
                     base: base,
-                    head: currentBranch,
+                    head: snapshot.branch,
                     title: draft.title,
                     body: draft.body
                 )
@@ -665,6 +1111,13 @@ final class WorkspaceGitViewModel: ObservableObject {
                     #endif
                     self.prDraft = nil
                     self.errorMessage = nil
+                    // Flip the panel to the link state at once; a forced lookup
+                    // then backfills title/draft metadata.
+                    if let ref = GitHubPullRequestRef.fromCreatedURL(url) {
+                        self.openPullRequest = ref
+                        self.pullRequestLookupIssue = nil
+                    }
+                    self.refreshOpenPullRequest(force: true)
                 }
             } catch let error as GitHubCLIError {
                 // Graceful fallback to the web compare page.
@@ -674,7 +1127,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 } else {
                     self.errorMessage = "\(error.localizedDescription) Opening GitHub instead."
                 }
-                openPullRequestURL(with: draft)
+                openPullRequestURL(with: draft, requireReady: true)
             } catch {
                 AppLogger.error("Create pull request failed: \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
@@ -686,15 +1139,27 @@ final class WorkspaceGitViewModel: ObservableObject {
     // MARK: - Pull request URL
 
     /// Opens the GitHub PR compare URL with the optional draft pre-filled via `?expand=1&title=...&body=...`.
-    func openPullRequestURL(with draft: PRSuggestion?) {
-        guard let path = workingPath else { return }
+    func openPullRequestURL(with draft: PRSuggestion?, requireReady: Bool = true) {
+        if requireReady {
+            guard validatePullRequestReadiness() else { return }
+        }
+        guard let snapshot = makePullRequestActionSnapshot() else { return }
         Task {
-            guard let baseURL = await GitService.shared.getRemoteOriginURL(at: path) else {
-                self.errorMessage = "Could not detect remote origin URL to create pull request."
+            let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
+            let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+            let baseBranch = GitService.normalizeBaseBranch(base)
+            guard let baseURL = await GitService.shared.getRemoteURL(at: snapshot.path, remote: remote) else {
+                self.errorMessage = "Could not detect the GitHub remote URL to create a pull request."
                 return
             }
-            let branchSegment = currentBranch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? currentBranch
-            var urlString = "\(baseURL)/pull/new/\(branchSegment)"
+            guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
+                self.errorMessage = "Branch changed before opening the pull request page. Try again."
+                return
+            }
+            let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+            let branchSegment = snapshot.branch.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? snapshot.branch
+            let baseSegment = baseBranch.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? baseBranch
+            var urlString = "\(baseURL)/compare/\(baseSegment)...\(branchSegment)"
             if let draft = draft {
                 var components = URLComponents()
                 components.queryItems = [

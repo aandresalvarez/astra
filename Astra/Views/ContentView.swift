@@ -704,7 +704,8 @@ struct ContentView: View {
             onEditSSHConnection: beginEditingSSHConnection,
             onCreateWorkspace: createWorkspace,
             onImportWorkspace: importWorkspace,
-            onOpenGeneratedFile: openGeneratedFile
+            onOpenGeneratedFile: openGeneratedFile,
+            onOpenWorkspaceFile: openWorkspaceFileInShelf
         )
     }
 
@@ -1549,6 +1550,20 @@ struct ContentView: View {
         case nil:
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func openWorkspaceFileInShelf(_ path: String) {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let taskID = selectedTask?.id
+        selectedTaskPreferredMarkdownPath = url.path
+        selectedTaskHasMarkdownShelfContent = true
+        let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+        session.load(url)
+        AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
+            "path": url.path,
+            "result": FileManager.default.fileExists(atPath: url.path) ? "opened" : "missing"
+        ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
+        presentCanvas(.markdown)
     }
 
     private func syncBrowserPresentation() {
@@ -2757,6 +2772,7 @@ private struct ContentDetailAreaView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let onOpenWorkspaceFile: (String) -> Void
 
     private static let contentMinWidth: CGFloat = 480
 
@@ -2869,6 +2885,7 @@ private struct ContentDetailAreaView: View {
     ) -> some View {
         WorkspaceRightRailView(
             workspace: workspace,
+            selectedTask: selectedTask,
             onConfigure: onConfigure,
             onEditWorkspace: onEditWorkspace,
             onNewSchedule: onNewSchedule,
@@ -2876,6 +2893,8 @@ private struct ContentDetailAreaView: View {
             onManageCapabilities: onManageCapabilities,
             onOpenConfigureTab: onOpenConfigureTab,
             onOpenCapabilityPackage: onOpenCapabilityPackage,
+            onTaskCreated: onTaskCreated,
+            onOpenWorkspaceFile: onOpenWorkspaceFile,
             onNewSSHConnection: onNewSSHConnection,
             onEditSSHConnection: onEditSSHConnection,
             sshReloadTrigger: sshReloadTrigger,

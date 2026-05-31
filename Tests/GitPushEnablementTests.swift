@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -67,6 +68,15 @@ struct GitPushEnablementTests {
             "git add \(file) && git -c commit.gpgsign=false -c user.name='ASTRA Tests' "
             + "-c user.email='astra-tests@example.invalid' commit -m 'change \(file)'",
             in: repo
+        )
+    }
+
+    private func makeModelContainer() throws -> ModelContainer {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [config]
         )
     }
 
@@ -153,6 +163,119 @@ struct GitPushEnablementTests {
         vm.unpushedCount = 0
 
         #expect(vm.canOpenCommitSheet == false)
+    }
+
+    @MainActor
+    @Test("Pull request readiness blocks dirty unpublished and unpushed branches")
+    func pullRequestReadinessBlocksIncompleteStates() {
+        let vm = WorkspaceGitViewModel()
+        vm.currentBranch = "feature/pr"
+
+        vm.hasRemote = false
+        #expect(vm.pullRequestReadinessIssue?.contains("No remote") == true)
+
+        vm.hasRemote = true
+        vm.hasUpstream = false
+        #expect(vm.pullRequestReadinessIssue?.contains("Publish") == true)
+
+        vm.hasUpstream = true
+        vm.statusFiles = [GitStatusFile(relativePath: "dirty.swift", status: "M", isStaged: false)]
+        #expect(vm.pullRequestReadinessIssue?.contains("Commit or stash") == true)
+
+        vm.statusFiles = []
+        vm.ahead = 2
+        vm.unpushedCount = 0
+        #expect(vm.pullRequestReadinessIssue?.contains("Push 2 local commits") == true)
+    }
+
+    @MainActor
+    @Test("Pull request snapshot invalidates after branch or location changes")
+    func pullRequestSnapshotInvalidatesOnBranchOrPathChange() throws {
+        let root = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let worktree = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-pr-snapshot-\(UUID().uuidString)", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: worktree) }
+
+        let vm = WorkspaceGitViewModel()
+        vm.selectedRepository = GitRepositoryInfo(name: "repo", path: root)
+        vm.currentBranch = "feature/pr"
+        let snapshot = try #require(vm.makePullRequestActionSnapshot())
+        #expect(vm.isCurrentPullRequestActionSnapshot(snapshot) == true)
+
+        vm.currentBranch = "feature/other"
+        #expect(vm.isCurrentPullRequestActionSnapshot(snapshot) == false)
+
+        vm.currentBranch = "feature/pr"
+        vm.activeWorkingPath = worktree
+        #expect(vm.isCurrentPullRequestActionSnapshot(snapshot) == false)
+    }
+
+    @MainActor
+    @Test("Clean fully pushed branch is pull-request ready")
+    func pullRequestReadyWhenCleanAndPushed() {
+        let vm = WorkspaceGitViewModel()
+        vm.currentBranch = "feature/pr"
+        vm.hasRemote = true
+        vm.hasUpstream = true
+        vm.ahead = 0
+        vm.unpushedCount = 0
+        vm.statusFiles = []
+
+        #expect(vm.canStartPullRequest == true)
+        #expect(vm.pullRequestReadinessIssue == nil)
+    }
+
+    @MainActor
+    @Test("Addressing PR comments creates a queued chat task with review context")
+    func createPullRequestCommentTaskSeedsChatContext() throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let container = try makeModelContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Repo", primaryPath: repo)
+        context.insert(workspace)
+
+        let pr = GitHubPullRequestRef(
+            number: 95,
+            url: "https://github.com/coral/astra/pull/95",
+            title: "Repo comments"
+        )
+        let comment = GitHubPullRequestComment(
+            id: "c1",
+            author: "copilot",
+            body: "GitRepositoryInfo uses a fresh UUID for id.",
+            path: "Astra/Services/GitService.swift",
+            line: 12,
+            url: "https://github.com/coral/astra/pull/95#discussion_r1",
+            createdAt: "2026-05-30T11:00:00Z",
+            isReviewThread: true
+        )
+
+        let vm = WorkspaceGitViewModel()
+        vm.setWorkspaceForTesting(workspace)
+        vm.selectedRepository = GitRepositoryInfo(name: "Repo", path: repo)
+        vm.currentBranch = "feature/pr-comments"
+        vm.openPullRequest = pr
+        vm.pullRequestComments = GitHubPullRequestCommentSummary(
+            pullRequest: pr,
+            comments: [comment],
+            unresolvedThreadCount: 1,
+            issueCommentCount: 0,
+            fetchedAt: Date()
+        )
+
+        let task = try #require(vm.createPullRequestCommentTask(modelContext: context))
+
+        #expect(task.status == .queued)
+        #expect(task.title == "Address PR #95 comments")
+        #expect(task.executionRootPath == repo)
+        #expect(task.goal.contains("GitRepositoryInfo uses a fresh UUID"))
+        #expect(task.goal.contains("re-fetch the latest unresolved review comments"))
+        #expect(task.goal.contains("Do not merge the PR or post GitHub replies"))
     }
 
     // MARK: - GitService integration

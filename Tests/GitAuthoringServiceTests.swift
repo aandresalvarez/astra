@@ -485,7 +485,28 @@ struct GitStatusParsingTests {
         #expect(files.count == 1)
         #expect(files[0].status == "R")
         #expect(files[0].isStaged == true)
-        #expect(files[0].relativePath.contains("new.swift"))
+        #expect(files[0].relativePath == "new.swift")
+    }
+
+    @Test("NUL porcelain parses rename target and skips source payload")
+    func parseNulRenamedFile() {
+        let output = "R  new.swift\0old.swift\0"
+        let files = GitService.parseStatusPorcelainZ(output)
+        #expect(files.count == 1)
+        #expect(files[0].status == "R")
+        #expect(files[0].isStaged == true)
+        #expect(files[0].relativePath == "new.swift")
+    }
+
+    @Test("NUL porcelain preserves spaces and shell-sensitive file names")
+    func parseNulPorcelainPreservesPaths() {
+        let output = "?? --flag file.swift\0 M dir with spaces/file.swift\0"
+        let files = GitService.parseStatusPorcelainZ(output)
+        #expect(files.count == 2)
+        #expect(files[0].relativePath == "--flag file.swift")
+        #expect(files[0].isStaged == false)
+        #expect(files[1].relativePath == "dir with spaces/file.swift")
+        #expect(files[1].isStaged == false)
     }
 
     @Test("Skips lines shorter than 3 characters")
@@ -535,5 +556,13 @@ struct GitStatusParsingTests {
         #expect(files.count == 3)
         #expect(files.allSatisfy { !$0.isStaged })
         #expect(files.allSatisfy { $0.status == "?" })
+    }
+
+    @Test("PR authoring context is byte-limited with a truncation marker")
+    func contextLimitTruncatesByBytes() {
+        let text = String(repeating: "abc", count: 200)
+        let limited = GitService.limitedContext(text, maxBytes: 50)
+        #expect(limited.utf8.count <= 70)
+        #expect(limited.hasSuffix("...[truncated]"))
     }
 }

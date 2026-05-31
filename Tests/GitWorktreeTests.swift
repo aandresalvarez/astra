@@ -200,9 +200,29 @@ struct GitWorktreeTests {
         #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == primary)
     }
 
+    @Test("codeWorkingDirectory uses primary path until an active repository is selected")
+    func resolverDoesNotImplicitlyUseFirstAdditionalPath() throws {
+        let primary = try makeTempDir("primary3")
+        let additional = try makeTempDir("additional3")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: additional)
+        }
+
+        let workspace = Workspace(name: "WS", primaryPath: primary, additionalPaths: [additional])
+        let task = AgentTask(title: "t", goal: "g", workspace: workspace)
+
+        #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == primary)
+
+        workspace.activeWorkingPath = additional
+        let pinned = AgentTask(title: "t2", goal: "g", workspace: workspace)
+        #expect(pinned.executionRootPath == additional)
+        #expect(TaskWorkspaceAccess(task: pinned).codeWorkingDirectory == additional)
+    }
+
     // MARK: - Pin snapshot at creation
 
-    @Test("New task pins the workspace's active worktree at creation")
+    @Test("New task pins the workspace's active code path at creation")
     func taskPinsActiveWorktree() {
         let workspace = Workspace(name: "WS", primaryPath: "/repo/root")
         workspace.activeWorkingPath = "/worktrees/root/feature"
