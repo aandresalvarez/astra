@@ -3747,6 +3747,113 @@ struct TaskThreadSnapshotTests {
     }
 }
 
+// MARK: - TaskCheckpointPresentation
+
+@Suite("TaskCheckpointPresentation")
+struct TaskCheckpointPresentationTests {
+
+    @Test("Checkpoint comparison separates restored branch from later task history")
+    func checkpointComparisonSeparatesRestoredBranchFromLaterHistory() throws {
+        let task = makeTask(goal: "Try alternative implementation branches")
+        let first = makeCheckpointRun(
+            task: task,
+            index: 0,
+            output: "First branch created the model.",
+            tokens: 100,
+            filePaths: ["/tmp/model.swift"]
+        )
+        let second = makeCheckpointRun(
+            task: task,
+            index: 1,
+            output: "Second branch wired the checkpoint browser.",
+            tokens: 200,
+            filePaths: ["/tmp/browser.swift"]
+        )
+        let third = makeCheckpointRun(
+            task: task,
+            index: 2,
+            output: "Later branch changed the restore path.",
+            tokens: 300,
+            filePaths: ["/tmp/restore.swift"]
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [third, first, second].map(runSnapshot))
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: second.id, in: summaries))
+
+        #expect(summaries.map(\.run.id) == [first.id, second.id, third.id])
+        #expect(comparison.selected.stepNumber == 2)
+        #expect(comparison.includedRunCount == 2)
+        #expect(comparison.excludedRunCount == 1)
+        #expect(comparison.includedTokenCount == 300)
+        #expect(comparison.excludedTokenCount == 300)
+        #expect(comparison.includedFileCount == 2)
+        #expect(comparison.excludedFileCount == 1)
+        #expect(comparison.includedFiles == ["/tmp/model.swift", "/tmp/browser.swift"])
+        #expect(comparison.excludedFiles == ["/tmp/restore.swift"])
+        #expect(comparison.selected.outputPreview.contains("checkpoint browser"))
+        #expect(comparison.laterOutputPreview.contains("restore path"))
+        #expect(comparison.branchSummary == "1 later step will stay on the current task.")
+        #expect(comparison.canRestore)
+        #expect(TaskCheckpointPresentation.restoreActionTitle == "Restore as New Branch")
+    }
+
+    @Test("Running checkpoint cannot be restored from browser")
+    func runningCheckpointCannotBeRestoredFromBrowser() throws {
+        let task = makeTask()
+        let run = makeCheckpointRun(
+            task: task,
+            index: 0,
+            status: .running,
+            completed: nil,
+            output: "Still streaming.",
+            tokens: 10,
+            filePaths: []
+        )
+
+        let summaries = TaskCheckpointPresentation.summaries(from: [runSnapshot(run)])
+        let comparison = try #require(TaskCheckpointPresentation.comparison(for: run.id, in: summaries))
+
+        #expect(!comparison.canRestore)
+        #expect(comparison.restoreDisabledReason == "Wait for this step to finish before restoring from it.")
+    }
+
+    private func makeCheckpointRun(
+        task: AgentTask,
+        index: Int,
+        status: RunStatus = .completed,
+        completed: Date? = nil,
+        output: String,
+        tokens: Int,
+        filePaths: [String]
+    ) -> TaskRun {
+        let run = TaskRun(task: task)
+        run.status = status
+        run.startedAt = Date(timeIntervalSince1970: Double(index * 100))
+        run.completedAt = completed ?? (status == .running ? nil : Date(timeIntervalSince1970: Double(index * 100 + 20)))
+        run.output = output
+        run.tokensUsed = tokens
+
+        for path in filePaths {
+            run.appendFileChange(StoredFileChange(
+                from: FileChange(
+                    path: path,
+                    changeType: .write,
+                    content: "content",
+                    oldString: nil,
+                    newString: nil,
+                    timestamp: run.startedAt
+                )
+            ))
+        }
+
+        return run
+    }
+
+    private func runSnapshot(_ run: TaskRun) -> TaskRunSnapshot {
+        TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+    }
+}
+
 // MARK: - ChatPanelView
 
 @Suite("ChatPanelView")

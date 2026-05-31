@@ -82,6 +82,7 @@ struct TaskMainView: View {
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
     @State private var showContextPreview = false
+    @State private var showCheckpointBrowser = false
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
@@ -369,6 +370,14 @@ struct TaskMainView: View {
                     prefillSourceTaskID: task.id
                 )
             }
+        }
+        .sheet(isPresented: $showCheckpointBrowser) {
+            TaskCheckpointBrowserSheet(
+                task: task,
+                snapshot: currentThreadSnapshot,
+                onRestore: forkTask(from:)
+            )
+            .frame(minWidth: 780, minHeight: 540)
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -908,6 +917,13 @@ struct TaskMainView: View {
                 } label: {
                     Label("Context Preview", systemImage: "doc.text.magnifyingglass")
                 }
+
+                Button {
+                    showCheckpointBrowser = true
+                } label: {
+                    Label("Checkpoints", systemImage: "clock.arrow.circlepath")
+                }
+                .disabled(currentThreadSnapshot.sortedRuns.isEmpty)
 
                 Button {
                     showScheduleEditor = true
