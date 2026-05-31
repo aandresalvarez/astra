@@ -1245,6 +1245,11 @@ struct ChatPanelView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration
         )
+        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
+        // the running task when the signature changes, causing withTaskGroup's for-await loop to
+        // exit early with fewer entries than registered runtimes. Writing partial states would
+        // drop providers from the menu until the replacement task completes.
+        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignDefaultRuntimeWithAvailability()
     }
@@ -1299,11 +1304,13 @@ struct ChatPanelView: View {
         }.joined(separator: "\n\n")
 
         if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
-            let pathList = wsObj.additionalPaths.map { path -> String in
-                let name = (path as NSString).lastPathComponent
-                return "- \(name): \(path)"
+            let pathList = WorkspacePathPresentation.descriptors(
+                primaryPath: wsObj.primaryPath,
+                additionalPaths: wsObj.additionalPaths
+            ).map { descriptor -> String in
+                "- \(descriptor.roleLabel) \(descriptor.title): \(descriptor.path)"
             }.joined(separator: "\n")
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Additional workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
         }
 
         if !attachedFiles.isEmpty {

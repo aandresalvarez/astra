@@ -214,6 +214,39 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.isDone == false)
     }
 
+    @Test("active worktree focus travels with the workspace and re-validates on import")
+    @MainActor
+    func activeWorkingPathRoundTrips() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+
+        let root = "/tmp/astra_active_path_\(UUID().uuidString)"
+        let worktree = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-active-wt-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: worktree) }
+
+        let workspace = try makeRichWorkspace(in: context, root: root)
+        workspace.activeWorkingPath = worktree
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        #expect(config.activeWorkingPath == worktree)
+
+        // Worktree present on this machine → focus is restored.
+        let presentContainer = try makeWorkspacePersistenceContainer()
+        let present = WorkspaceConfigManager.importWorkspace(from: config, modelContext: presentContainer.mainContext)
+        #expect(present.activeWorkingPath == worktree)
+        #expect(present.isUsingWorktree == true)
+
+        // Worktree absent (different machine) → focus resets to root.
+        var staleConfig = config
+        staleConfig.activeWorkingPath = "/gone/\(UUID().uuidString)"
+        let absentContainer = try makeWorkspacePersistenceContainer()
+        let absent = WorkspaceConfigManager.importWorkspace(from: staleConfig, modelContext: absentContainer.mainContext)
+        #expect(absent.activeWorkingPath == nil)
+        #expect(absent.isUsingWorktree == false)
+    }
+
     @Test("import skips unsafe local tool definitions from workspace config")
     @MainActor
     func importSkipsUnsafeLocalToolDefinitions() throws {

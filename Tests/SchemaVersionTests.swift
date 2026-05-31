@@ -32,6 +32,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV5.models.count == 10)
     }
 
+    @Test("SchemaV6 declares all 10 model types")
+    func v6ModelCount() {
+        #expect(ASTRASchemaV6.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -57,14 +62,19 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV5")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 5)
+    @Test("SchemaV6 version identifier is 6.0.0")
+    func v6VersionIdentifier() {
+        #expect(ASTRASchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V5 lightweight stages")
+    @Test("Migration plan lists SchemaV1 through SchemaV6")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 6)
+    }
+
+    @Test("Migration plan has V1 to V6 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 4)
+        #expect(ASTRAMigrationPlan.stages.count == 5)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -94,6 +104,7 @@ struct SchemaVersionTests {
         #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
         #expect(workspace.isStarred == false)
+        #expect(workspace.activeWorkingPath == nil)
 
         let skill = Skill(name: "Reader", allowedTools: ["Read"])
         skill.workspace = workspace
@@ -113,6 +124,7 @@ struct SchemaVersionTests {
 
         let task = AgentTask(title: "Test Task", goal: "Do something", workspace: workspace)
         task.skills = [skill]
+        #expect(task.executionRootPath == nil)
         context.insert(task)
 
         let run = TaskRun(task: task)
@@ -340,5 +352,48 @@ struct SchemaVersionTests {
         #expect(try context.fetch(FetchDescriptor<Connector>()).first?.originPackageID == nil)
         #expect(try context.fetch(FetchDescriptor<LocalTool>()).first?.originPackageID == nil)
         #expect(try context.fetch(FetchDescriptor<TaskTemplate>()).first?.originPackageID == nil)
+    }
+
+    @MainActor
+    @Test("SchemaV5 store migrates to SchemaV6 worktree binding fields")
+    func v5StoreMigratesToWorktreeFields() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v5-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV5.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV5.Workspace()
+        oldWorkspace.name = "Legacy V5"
+        oldWorkspace.primaryPath = "/tmp/legacy-v5"
+        oldContext.insert(oldWorkspace)
+
+        let oldTask = ASTRASchemaV5.AgentTask()
+        oldTask.title = "Legacy V5 Task"
+        oldTask.goal = "Do work"
+        oldTask.workspace = oldWorkspace
+        oldContext.insert(oldTask)
+
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(migratedWorkspace.activeWorkingPath == nil)
+        #expect(migratedWorkspace.isUsingWorktree == false)
+
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedTask.executionRootPath == nil)
     }
 }

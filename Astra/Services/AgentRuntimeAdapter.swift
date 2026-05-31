@@ -639,6 +639,20 @@ struct RuntimeReadinessProbeContext {
     let timeout: TimeInterval
     let detectExecutable: @Sendable (String) -> String
     let isExecutable: @Sendable (String) -> Bool
+    let processEnvironment: [String: String]
+
+    init(
+        runner: any BinaryRunner,
+        timeout: TimeInterval,
+        detectExecutable: @Sendable @escaping (String) -> String,
+        isExecutable: @Sendable @escaping (String) -> Bool
+    ) {
+        self.runner = runner
+        self.timeout = timeout
+        self.detectExecutable = detectExecutable
+        self.isExecutable = isExecutable
+        self.processEnvironment = RuntimeProcessEnvironment.enriched()
+    }
 
     func run(
         path: String,
@@ -646,7 +660,7 @@ struct RuntimeReadinessProbeContext {
         timeout overrideTimeout: TimeInterval? = nil,
         environment: [String: String]? = nil
     ) async -> RunResult {
-        await runner.run(path: path, args: args, timeout: overrideTimeout ?? timeout, environment: environment)
+        await runner.run(path: path, args: args, timeout: overrideTimeout ?? timeout, environment: environment ?? processEnvironment)
     }
 
     func checkExecutable(
@@ -670,7 +684,7 @@ struct RuntimeReadinessProbeContext {
             )
         }
 
-        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: nil)
+        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: processEnvironment)
         guard result.isSuccess else {
             return RuntimeExecutableCheckResult(
                 executable: executable,
@@ -1066,6 +1080,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
+        // waiting for input it will never receive (provider-agnostic safeguard).
+        process.standardInput = FileHandle.nullDevice
         let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
     }
@@ -1196,8 +1213,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     private func claudeProviderEnvironment(for configuration: RuntimeReadinessConfiguration) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.agentPathSuffix)"
+        var env = RuntimeProcessEnvironment.enriched()
         guard configuration.claudeProvider == .vertex else { return env }
 
         let project = trimmed(configuration.vertexProjectID)
@@ -1604,7 +1620,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: 120,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: copilotHome
+            copilotHome: copilotHome,
+            disableCustomInstructions: true
         )
 
         try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
@@ -1618,6 +1635,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
+        // waiting for input it will never receive (provider-agnostic safeguard).
+        process.standardInput = FileHandle.nullDevice
         let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
         let output = plan.parsesJSONLines
             ? extractCopilotUtilityText(from: result.stdout)
@@ -2048,6 +2068,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
+        // waiting for input it will never receive (provider-agnostic safeguard).
+        process.standardInput = FileHandle.nullDevice
         let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
         await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
@@ -2066,14 +2089,17 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             "\(Int(timeoutSeconds))s",
             "--sandbox"
         ]
-        var environment = ProcessInfo.processInfo.environment
-        environment["NO_COLOR"] = "1"
-        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
-        environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
+        var extraVars: [String: String] = [
+            "NO_COLOR": "1",
+            "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
+        ]
+        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
+        extraVars["TERM"] = parentTerm ?? "xterm-256color"
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
-            environment["HOME"] = trimmedHome
+            extraVars["HOME"] = trimmedHome
         }
+        let environment = RuntimeProcessEnvironment.enriched(extraVariables: extraVars)
 
         let result = await probes.run(
             path: executable,

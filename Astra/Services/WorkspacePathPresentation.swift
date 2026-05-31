@@ -1,0 +1,154 @@
+import Foundation
+
+struct WorkspacePathDescriptor: Identifiable, Hashable {
+    enum Role: String, Hashable {
+        case primary
+        case additional
+
+        var label: String {
+            switch self {
+            case .primary: "Primary"
+            case .additional: "Additional"
+            }
+        }
+    }
+
+    let id: String
+    let role: Role
+    let index: Int
+    let path: String
+    let title: String
+    let subtitle: String
+    let abbreviatedPath: String
+
+    var roleLabel: String { role.label }
+}
+
+enum WorkspacePathPresentation {
+    static func descriptors(primaryPath: String, additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+        let rawEntries = ([primaryPath] + additionalPaths).enumerated().compactMap { index, rawPath -> RawEntry? in
+            let path = standardizedPath(rawPath)
+            guard !path.isEmpty else { return nil }
+            let role: WorkspacePathDescriptor.Role = index == 0 ? .primary : .additional
+            return RawEntry(role: role, index: index, path: path)
+        }
+
+        var seen: Set<String> = []
+        let entries = rawEntries.filter { entry in
+            seen.insert(entry.path).inserted
+        }
+        let titleMap = disambiguatedTitles(for: entries)
+
+        return entries.map { entry in
+            let abbreviatedPath = abbreviatePath(entry.path)
+            let title = titleMap[entry.path] ?? folderName(for: entry.path)
+            return WorkspacePathDescriptor(
+                id: entry.path,
+                role: entry.role,
+                index: entry.index,
+                path: entry.path,
+                title: title,
+                subtitle: "\(entry.role.label) - \(abbreviatedPath)",
+                abbreviatedPath: abbreviatedPath
+            )
+        }
+    }
+
+    static func descriptor(
+        for path: String,
+        primaryPath: String,
+        additionalPaths: [String]
+    ) -> WorkspacePathDescriptor? {
+        let standardized = standardizedPath(path)
+        return descriptors(primaryPath: primaryPath, additionalPaths: additionalPaths)
+            .first { $0.path == standardized }
+    }
+
+    static func isGitRepository(at path: String, fileManager: FileManager = .default) -> Bool {
+        let standardized = standardizedPath(path)
+        guard !standardized.isEmpty else { return false }
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: standardized, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+        let gitPath = URL(fileURLWithPath: standardized, isDirectory: true)
+            .appendingPathComponent(".git")
+            .path
+        return fileManager.fileExists(atPath: gitPath)
+    }
+
+    static func standardizedPath(_ rawPath: String) -> String {
+        let expanded = NSString(string: rawPath)
+            .expandingTildeInPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expanded.isEmpty else { return "" }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    static func abbreviatePath(_ path: String) -> String {
+        let standardized = standardizedPath(path)
+        guard !standardized.isEmpty else { return "" }
+        let home = NSHomeDirectory()
+        let homePrefix = home + "/"
+        let displayPath: String
+        if standardized == home {
+            displayPath = "~"
+        } else if standardized.hasPrefix(homePrefix) {
+            displayPath = "~/" + standardized.dropFirst(homePrefix.count)
+        } else {
+            displayPath = standardized
+        }
+
+        let components = displayPath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard components.count > 4 else { return displayPath }
+        let prefix = displayPath.hasPrefix("~/") ? "~" : (displayPath.hasPrefix("/") ? "" : components.first ?? "")
+        let suffix = components.suffix(3).joined(separator: "/")
+        return prefix.isEmpty ? "/.../\(suffix)" : "\(prefix)/.../\(suffix)"
+    }
+
+    private struct RawEntry: Hashable {
+        let role: WorkspacePathDescriptor.Role
+        let index: Int
+        let path: String
+    }
+
+    private static func disambiguatedTitles(for entries: [RawEntry]) -> [String: String] {
+        let groupedByFolder = Dictionary(grouping: entries, by: { folderName(for: $0.path).lowercased() })
+        var titles: [String: String] = [:]
+
+        for (_, duplicates) in groupedByFolder {
+            if duplicates.count == 1, let entry = duplicates.first {
+                titles[entry.path] = folderName(for: entry.path)
+                continue
+            }
+
+            let parentTitles = duplicates.map { entry in
+                let folder = folderName(for: entry.path)
+                let parent = parentFolderName(for: entry.path)
+                return (entry, parent.isEmpty ? folder : "\(parent)/\(folder)")
+            }
+            let groupedByParentTitle = Dictionary(grouping: parentTitles, by: { $0.1.lowercased() })
+            for (entry, parentTitle) in parentTitles {
+                if groupedByParentTitle[parentTitle.lowercased()]?.count == 1 {
+                    titles[entry.path] = parentTitle
+                } else {
+                    titles[entry.path] = abbreviatePath(entry.path)
+                }
+            }
+        }
+
+        return titles
+    }
+
+    private static func folderName(for path: String) -> String {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
+    private static func parentFolderName(for path: String) -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        let name = URL(fileURLWithPath: parent).lastPathComponent
+        return name == "/" ? "" : name
+    }
+}

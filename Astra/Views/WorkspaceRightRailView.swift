@@ -166,6 +166,7 @@ enum WorkspaceContextIconography {
 
 struct WorkspaceRightRailView: View {
     let workspace: Workspace
+    var selectedTask: AgentTask?
     let onConfigure: () -> Void
     let onEditWorkspace: () -> Void
     var onNewSchedule: (() -> Void)?
@@ -173,6 +174,8 @@ struct WorkspaceRightRailView: View {
     var onManageCapabilities: (() -> Void)?
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
     var onOpenCapabilityPackage: ((String) -> Void)?
+    var onTaskCreated: ((AgentTask) -> Void)?
+    var onOpenWorkspaceFile: ((String) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
@@ -208,6 +211,7 @@ struct WorkspaceRightRailView: View {
     @State private var scrollMetrics = RightRailScrollMetrics()
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
+    @State private var hasGitRepositories = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -400,6 +404,18 @@ struct WorkspaceRightRailView: View {
         return VStack(alignment: .leading, spacing: panelSpacing) {
             capabilityHealthPanel(snapshot)
 
+            if hasGitRepositories {
+                floatingContextSection {
+                    WorkspaceGitSectionView(
+                        workspace: workspace,
+                        selectedTask: selectedTask,
+                        isCompact: isCompact,
+                        onTaskCreated: onTaskCreated,
+                        onOpenWorkspaceFile: onOpenWorkspaceFile
+                    )
+                }
+            }
+
             floatingContextSection {
                 workspaceSetupChecklistPanel
             }
@@ -410,8 +426,15 @@ struct WorkspaceRightRailView: View {
             loadSSHConnections()
             refreshApprovedCapabilities()
             applyConfigureDefaults()
+            checkGitRepositories()
         }
-        .onChange(of: workspace.primaryPath) { loadSSHConnections() }
+        .onChange(of: workspace.primaryPath) {
+            loadSSHConnections()
+            checkGitRepositories()
+        }
+        .onChange(of: workspace.additionalPaths) {
+            checkGitRepositories()
+        }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
             if !sshConnections.isEmpty {
@@ -1810,17 +1833,18 @@ struct WorkspaceRightRailView: View {
             if workspaceFolderCount == 0 {
                 setupEmptyDetail("No workspace folder selected.")
             } else {
-                let primary = workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !primary.isEmpty {
-                    setupFolderRow(title: "Primary", path: primary)
-                }
-
-                ForEach(Array(workspace.additionalPaths.enumerated()), id: \.offset) { index, path in
+                let descriptors = WorkspacePathPresentation.descriptors(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                )
+                ForEach(descriptors) { descriptor in
+                    let canRemove = descriptor.role == .additional
                     setupFolderRow(
-                        title: "Path",
-                        path: path,
-                        canRemove: true,
-                        removeAction: { removeAdditionalPath(at: index) }
+                        title: descriptor.title,
+                        roleLabel: descriptor.roleLabel,
+                        path: descriptor.path,
+                        canRemove: canRemove,
+                        removeAction: canRemove ? { removeAdditionalPath(at: descriptor.index - 1) } : nil
                     )
                 }
             }
@@ -1955,16 +1979,25 @@ struct WorkspaceRightRailView: View {
 
     private func setupFolderRow(
         title: String,
+        roleLabel: String,
         path: String,
         canRemove: Bool = false,
         removeAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.caption(10).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(roleLabel)
+                        .font(Stanford.caption(9).weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
 
                 Text(compactPath(path))
                     .font(Stanford.mono(10))
@@ -2364,6 +2397,26 @@ struct WorkspaceRightRailView: View {
             return
         }
         sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+    }
+
+    private func checkGitRepositories() {
+        let inputs = WorkspaceGitRepositoryScanInputs(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        Task {
+            let repos = await GitService.shared.scanForGitRepositories(
+                primaryPath: inputs.primaryPath,
+                additionalPaths: inputs.additionalPaths
+            )
+            await MainActor.run {
+                guard inputs.matches(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ) else { return }
+                self.hasGitRepositories = !repos.isEmpty
+            }
+        }
     }
 
     private func applyConfigureDefaults() {
@@ -3319,6 +3372,15 @@ private struct EmptyRailState: View {
 
     private var emptyStateStroke: Color {
         Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
+    }
+}
+
+struct WorkspaceGitRepositoryScanInputs: Equatable {
+    let primaryPath: String
+    let additionalPaths: [String]
+
+    func matches(primaryPath: String, additionalPaths: [String]) -> Bool {
+        self.primaryPath == primaryPath && self.additionalPaths == additionalPaths
     }
 }
 

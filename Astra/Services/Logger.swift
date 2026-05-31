@@ -153,6 +153,24 @@ enum AuditEvent: String, CaseIterable {
     case isolationCleanedUp = "isolation.cleaned_up"
     case isolationFailed = "isolation.failed"
     case gitBranchCreated = "git.branch_created"
+    case gitStageFile = "git.stage_file"
+    case gitUnstageFile = "git.unstage_file"
+    case gitCommit = "git.commit"
+    case gitPush = "git.push"
+    case gitPull = "git.pull"
+    case gitCheckout = "git.checkout"
+    case gitStatusRefresh = "git.status_refresh"
+    case gitAuthoringStarted = "git.authoring_started"
+    case gitAuthoringCompleted = "git.authoring_completed"
+    case gitAuthoringFailed = "git.authoring_failed"
+    case gitPullRequestLookup = "git.pull_request_lookup"
+    case gitPullRequestCreate = "git.pull_request_create"
+    case gitPullRequestComments = "git.pull_request_comments"
+    case gitPullRequestAddressTask = "git.pull_request_address_task"
+    case gitRepositoryScan = "git.repository_scan"
+    case gitActiveRepositoryChanged = "git.active_repository_changed"
+    case gitChangedFileOpenedInShelf = "git.changed_file_opened_in_shelf"
+    case gitChangedFileDiffViewed = "git.changed_file_diff_viewed"
 
     case schedulerStarted = "scheduler.started"
     case schedulerStopped = "scheduler.stopped"
@@ -186,7 +204,7 @@ enum AppLogCategory {
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
         "Keychain", "Updater", "Performance", "Capabilities", "Browser",
-        "Diagnostics", "Plan", "General"
+        "Diagnostics", "Plan", "Git", "General"
     ]
 }
 

@@ -123,23 +123,23 @@ enum AntigravityCLIRuntime {
         }
         args += antigravityPermissionArguments(policy: permissionPolicy)
 
-        var env = ProcessInfo.processInfo.environment
-        let pathSuffix = includeAstraToolsPath
-            ? RuntimePathResolver.agentPathSuffix
-            : RuntimePathResolver.shellPathSuffix
-        env["PATH"] = ([env["PATH"] ?? ""] + uniqueNonEmptyPaths(pathPrefix) + [pathSuffix])
-            .filter { !$0.isEmpty }
-            .joined(separator: ":")
-        env["NO_COLOR"] = "1"
-        env["TERM"] = env["TERM"] ?? "xterm-256color"
-        env["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1"
+        var extraVars: [String: String] = [
+            "NO_COLOR": "1",
+            "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
+        ]
+        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
+        extraVars["TERM"] = parentTerm ?? "xterm-256color"
         for (key, value) in taskEnvironment {
-            env[key] = value
+            extraVars[key] = value
         }
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
-            env["HOME"] = trimmedHome
+            extraVars["HOME"] = trimmedHome
         }
+        let env = RuntimeProcessEnvironment.enriched(
+            additionalPaths: pathPrefix,
+            extraVariables: extraVars
+        )
 
         return AntigravityCLICommandPlan(
             executablePath: executablePath,

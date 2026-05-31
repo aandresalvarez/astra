@@ -49,9 +49,90 @@ private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     }
 }
 
+private struct ChatTopPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = -.infinity
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private enum RunNoticeProminence {
     case actionable
     case detail
+}
+
+/// Streaming agent text rendered as plain `Text` while the run is live. Isolated
+/// into its own `View` so SwiftUI can diff this subtree independently from the
+/// rest of the agent bubble — the bubble re-evaluates often as bucketed snapshot
+/// updates flow in, but only this view's body actually depends on `displayText`.
+private struct StreamingAgentTextView: View {
+    let displayText: String
+
+    var body: some View {
+        Text(MarkdownTextView.normalizedStreamingText(displayText))
+            .font(Stanford.chatBody())
+            .foregroundStyle(Stanford.readingText)
+            .textSelection(.enabled)
+            .lineSpacing(Stanford.chatBodyLineSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Completed agent markdown body. Equatable on its inputs so SwiftUI skips the
+/// expensive `MarkdownTextView` parse when neither the text nor the callback
+/// identity has changed.
+private struct CompletedAgentMarkdownView: View, Equatable {
+    let displayText: String
+    let onSuggestedNextStep: ((String) -> Void)?
+
+    var body: some View {
+        MarkdownTextView(
+            text: displayText,
+            maxContentWidth: Stanford.chatParagraphMaxWidth,
+            onSuggestedNextStep: onSuggestedNextStep
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    static func == (lhs: CompletedAgentMarkdownView, rhs: CompletedAgentMarkdownView) -> Bool {
+        lhs.displayText == rhs.displayText
+            && ((lhs.onSuggestedNextStep == nil) == (rhs.onSuggestedNextStep == nil))
+    }
+}
+
+/// Generated-files attachment list rendered for a finished agent turn. Pulled
+/// into its own struct so the parent bubble does not re-evaluate this `ForEach`
+/// each time unrelated bubble state changes.
+private struct AgentGeneratedFilesListView: View {
+    let paths: [String]
+    let onOpen: ((String) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(paths, id: \.self) { path in
+                Button {
+                    if let onOpen {
+                        onOpen(path)
+                    } else {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: Formatters.fileIcon(for: path))
+                            .font(Stanford.ui(11))
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(Stanford.caption(12))
+                            .underline()
+                    }
+                    .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
+            }
+        }
+    }
 }
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
@@ -99,6 +180,8 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
+    @State private var isExpandingWindow = false
+    @State private var expansionAnchorItemID: String?
     @State private var runtimeHealthNow = Date()
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
@@ -369,6 +452,8 @@ struct TaskMainView: View {
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
             pendingInitialChatScrollTaskID = task.id
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
             runtimeHealthNow = Date()
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
@@ -444,6 +529,11 @@ struct TaskMainView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration
         )
+        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
+        // the running task when the signature changes, causing withTaskGroup's for-await loop to
+        // exit early with fewer entries than registered runtimes. Writing partial states would
+        // drop providers from the menu until the replacement task completes.
+        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
     }
@@ -882,6 +972,10 @@ struct TaskMainView: View {
             GeometryReader { viewport in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chatTop")
+                            .background(chatTopPositionReader())
                         chatThreadContent
                         Color.clear
                             .frame(height: 1)
@@ -899,6 +993,9 @@ struct TaskMainView: View {
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                }
+                .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
+                    handleChatTopPositionChange(topMinY: topMinY)
                 }
                 .onAppear {
                     scrollChatToBottom(proxy, animated: false)
@@ -941,6 +1038,23 @@ struct TaskMainView: View {
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
             agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
                 .padding(.horizontal, 14)
+        }
+
+        if currentThreadSnapshot.omittedRunCount > 0 {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: 40)
+                Text("Earlier activity")
+                    .font(Stanford.chatMeta(11))
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.6))
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 14)
         }
 
         ForEach(currentThreadSnapshot.conversationItems) { item in
@@ -1095,9 +1209,7 @@ struct TaskMainView: View {
               run.status == .running else {
             return false
         }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
-        let presentation = RunActivityPresentation(run: run, activity: activity, notices: notices)
+        let presentation = currentThreadSnapshot.activityPresentation(for: run)
         return shouldShowRunActivityDisclosure(presentation)
     }
 
@@ -1296,6 +1408,24 @@ struct TaskMainView: View {
         }
     }
 
+    private func chatTopPositionReader() -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: ChatTopPositionPreferenceKey.self,
+                value: proxy.frame(in: .named("task-chat-scroll")).minY
+            )
+        }
+    }
+
+    private func handleChatTopPositionChange(topMinY: CGFloat) {
+        guard topMinY > -300 else { return }
+        guard currentThreadSnapshot.omittedRunCount > 0 else { return }
+        guard !isExpandingWindow else { return }
+        isExpandingWindow = true
+        expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
+        threadViewModel.expandWindow(for: task)
+    }
+
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
         if hasUnseenChatActivity && !isChatAtBottom {
@@ -1338,6 +1468,15 @@ struct TaskMainView: View {
         proxy: ScrollViewProxy
     ) {
         guard oldSignature != newSignature else { return }
+
+        if let anchorID = expansionAnchorItemID {
+            expansionAnchorItemID = nil
+            isExpandingWindow = false
+            DispatchQueue.main.async {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            return
+        }
 
         if pendingInitialChatScrollTaskID == task.id {
             scrollChatToBottomAfterLayout(proxy, animated: false)
@@ -1556,13 +1695,7 @@ struct TaskMainView: View {
         let outputPresentation = currentThreadSnapshot.outputPresentation(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
-        let runActivityPresentation = RunActivityPresentation(
-            run: run,
-            activity: activity,
-            notices: displayNotices,
-            suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
-            progressMessages: outputPresentation.progressMessages
-        )
+        let runActivityPresentation = currentThreadSnapshot.activityPresentation(for: run)
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
@@ -1570,47 +1703,22 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
                 if run.status == .running {
-                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText)))
-                        .font(Stanford.chatBody())
-                        .foregroundStyle(Stanford.readingText)
-                        .textSelection(.enabled)
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    StreamingAgentTextView(displayText: outputPresentation.displayText)
                 } else {
-                    MarkdownTextView(
-                        text: outputPresentation.displayText,
-                        maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    CompletedAgentMarkdownView(
+                        displayText: outputPresentation.displayText,
                         onSuggestedNextStep: pursueSuggestedNextStep
                     )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    .equatable()
                 }
             }
 
             // Generated files belong with the finished turn, not the live progress row.
             if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
-                        Button {
-                            if let onOpenGeneratedFile {
-                                onOpenGeneratedFile(path)
-                            } else {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: Formatters.fileIcon(for: path))
-                                    .font(Stanford.ui(11))
-                                Text(URL(fileURLWithPath: path).lastPathComponent)
-                                    .font(Stanford.caption(12))
-                                    .underline()
-                            }
-                            .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
-                    }
-                }
+                AgentGeneratedFilesListView(
+                    paths: threadViewModel.generatedFilePaths,
+                    onOpen: onOpenGeneratedFile
+                )
             }
 
             if protocolState.hasCompletion {
@@ -5099,7 +5207,7 @@ struct MarkdownTextView: View {
 
     private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
         let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
-        cache.countLimit = 200
+        cache.countLimit = 500
         return cache
     }()
 
