@@ -13,9 +13,23 @@ struct GitRepositoryPanelIntegrationTests {
     }
 
     private func markGitRepository(_ path: String) throws {
-        let git = URL(fileURLWithPath: path, isDirectory: true)
-            .appendingPathComponent(".git", isDirectory: true)
-        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+        #expect(runShell("git init -b main", in: path) == 0)
+    }
+
+    private func runShell(_ command: String, in directory: String) -> Int {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return Int(process.terminationStatus)
+        } catch {
+            return -1
+        }
     }
 
     @Test("Workspace path presentation uses folder names instead of ordinal additional labels")

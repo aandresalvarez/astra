@@ -27,6 +27,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     // Diff stats
     @Published var additions: Int = 0
     @Published var deletions: Int = 0
+    @Published var selectedFileDiff: GitFileDiff? = nil
+    @Published var isLoadingFileDiff: Bool = false
 
     // Sync (pull + push)
     @Published var ahead: Int = 0
@@ -60,10 +62,16 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var pullRequestComments: GitHubPullRequestCommentSummary? = nil
     @Published var pullRequestCommentsIssue: String? = nil
     @Published var isRefreshingPullRequestComments: Bool = false
+    @Published var newPullRequestCommentCount: Int = 0
+    @Published var pullRequestChecks: GitHubPullRequestCheckSummary? = nil
+    @Published var pullRequestChecksIssue: String? = nil
+    @Published var isRefreshingPullRequestChecks: Bool = false
     private var prLookupBranch: String?
     private var prLookupAt: Date?
     private var prCommentsKey: String?
     private var prCommentsLookupAt: Date?
+    private var prChecksKey: String?
+    private var prChecksLookupAt: Date?
 
     // UI state
     @Published var errorMessage: String? = nil
@@ -297,12 +305,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard hasRemote, !branch.isEmpty else {
             openPullRequest = nil
             pullRequestLookupIssue = nil
-            pullRequestComments = nil
-            pullRequestCommentsIssue = nil
             prLookupBranch = nil
             prLookupAt = nil
-            prCommentsKey = nil
-            prCommentsLookupAt = nil
+            clearPullRequestComments()
+            clearPullRequestChecks()
             return
         }
 
@@ -318,6 +324,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         if branchChanged { openPullRequest = nil }
         if branchChanged { pullRequestLookupIssue = nil }
         if branchChanged { clearPullRequestComments() }
+        if branchChanged { clearPullRequestChecks() }
         prLookupBranch = branch
         prLookupAt = Date()
 
@@ -329,14 +336,17 @@ final class WorkspaceGitViewModel: ObservableObject {
                     self.openPullRequest = pr
                     self.pullRequestLookupIssue = nil
                     self.refreshPullRequestComments(for: pr, repoPath: path, branch: branch, force: force || branchChanged)
+                    self.refreshPullRequestChecks(for: pr, repoPath: path, branch: branch, force: force || branchChanged)
                 case .none:
                     self.openPullRequest = nil
                     self.pullRequestLookupIssue = nil
                     self.clearPullRequestComments()
+                    self.clearPullRequestChecks()
                 case let .unavailable(detail):
                     self.openPullRequest = nil
                     self.pullRequestLookupIssue = detail
                     self.clearPullRequestComments()
+                    self.clearPullRequestChecks()
                 }
             }
         }
@@ -377,9 +387,11 @@ final class WorkspaceGitViewModel: ObservableObject {
             case let .found(summary):
                 self.pullRequestComments = summary
                 self.pullRequestCommentsIssue = nil
+                self.updateNewPullRequestCommentCount(for: summary)
             case let .unavailable(detail):
                 self.pullRequestComments = nil
                 self.pullRequestCommentsIssue = detail
+                self.newPullRequestCommentCount = 0
             }
         }
     }
@@ -388,8 +400,91 @@ final class WorkspaceGitViewModel: ObservableObject {
         pullRequestComments = nil
         pullRequestCommentsIssue = nil
         isRefreshingPullRequestComments = false
+        newPullRequestCommentCount = 0
         prCommentsKey = nil
         prCommentsLookupAt = nil
+    }
+
+    private func refreshPullRequestChecks(
+        for pr: GitHubPullRequestRef,
+        repoPath: String,
+        branch: String,
+        force: Bool
+    ) {
+        let key = "\(repoPath)|\(branch)|\(pr.number)|\(pr.url)"
+        if !force,
+           key == prChecksKey,
+           let checkedAt = prChecksLookupAt,
+           Date().timeIntervalSince(checkedAt) < 60 {
+            return
+        }
+        prChecksKey = key
+        prChecksLookupAt = Date()
+        isRefreshingPullRequestChecks = true
+
+        Task {
+            let result = await GitService.shared.lookupPullRequestChecks(repoPath: repoPath, pullRequest: pr)
+            guard self.currentBranch == branch,
+                  self.openPullRequest?.number == pr.number,
+                  self.workingPath == repoPath else {
+                if self.prChecksKey == key {
+                    self.isRefreshingPullRequestChecks = false
+                }
+                return
+            }
+            self.isRefreshingPullRequestChecks = false
+            switch result {
+            case let .found(summary):
+                self.pullRequestChecks = summary
+                self.pullRequestChecksIssue = nil
+            case let .unavailable(detail):
+                self.pullRequestChecks = nil
+                self.pullRequestChecksIssue = detail
+            }
+        }
+    }
+
+    private func clearPullRequestChecks() {
+        pullRequestChecks = nil
+        pullRequestChecksIssue = nil
+        isRefreshingPullRequestChecks = false
+        prChecksKey = nil
+        prChecksLookupAt = nil
+    }
+
+    func refreshPullRequestCommentsNow() {
+        guard let pr = openPullRequest, let path = workingPath else { return }
+        refreshPullRequestComments(for: pr, repoPath: path, branch: currentBranch, force: true)
+        refreshPullRequestChecks(for: pr, repoPath: path, branch: currentBranch, force: true)
+    }
+
+    func markPullRequestCommentsSeen() {
+        guard let summary = pullRequestComments,
+              let key = pullRequestCommentsSeenKey(for: summary) else {
+            return
+        }
+        let latest = summary.latestCommentCreatedAt ?? ""
+        UserDefaults.standard.set(latest, forKey: key)
+        newPullRequestCommentCount = 0
+    }
+
+    private func updateNewPullRequestCommentCount(for summary: GitHubPullRequestCommentSummary) {
+        guard let key = pullRequestCommentsSeenKey(for: summary) else {
+            newPullRequestCommentCount = 0
+            return
+        }
+        let seenLatest = UserDefaults.standard.string(forKey: key) ?? ""
+        guard !seenLatest.isEmpty else {
+            newPullRequestCommentCount = summary.totalCommentCount
+            return
+        }
+        newPullRequestCommentCount = summary.comments.filter { $0.createdAt > seenLatest }.count
+    }
+
+    private func pullRequestCommentsSeenKey(for summary: GitHubPullRequestCommentSummary) -> String? {
+        let normalizedURL = summary.pullRequest.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedURL.isEmpty else { return nil }
+        return "repositoryPanel.prCommentsSeen.\(normalizedURL)"
     }
 
     /// Opens the current branch's existing pull request in the browser.
@@ -441,17 +536,18 @@ final class WorkspaceGitViewModel: ObservableObject {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        task.status = .draft
         task.executionRootPath = path
+        task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)
-        modelContext.insert(TaskEvent(task: task, type: "user.message", payload: goal))
         TaskCapabilitySnapshotter.capture(for: task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.gitPullRequestAddressTask, category: "Git", taskID: task.id, fields: [
             "pr": "#\(pr.number)",
             "comments": "\(summary.totalCommentCount)",
             "unresolved_threads": "\(summary.unresolvedThreadCount)",
-            "branch": currentBranch
+            "branch": currentBranch,
+            "mode": "draft"
         ])
         return task
     }
@@ -667,6 +763,9 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard hasUpstream else {
             return "Publish the current branch before creating a pull request."
         }
+        guard !hasConflicts else {
+            return "Resolve merge conflicts before creating a pull request."
+        }
         guard !hasChanges else {
             return "Commit or stash local changes before creating a pull request."
         }
@@ -727,6 +826,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         return .modified(additions: additions, deletions: deletions, fileCount: fileCount)
     }
 
+    var hasConflicts: Bool {
+        statusFiles.contains(where: \.isConflict)
+    }
+
     // MARK: - Branches
 
     func checkout(branch: String) {
@@ -772,15 +875,40 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     func noteChangedFileOpenedInShelf(_ file: GitStatusFile, absolutePath: String, exists: Bool) {
-        AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", fields: [
-            "file": file.relativePath,
-            "path": absolutePath,
-            "repo": workingPath ?? "",
-            "exists": exists ? "true" : "false"
-        ], level: exists ? .info : .warning)
         if !exists {
             errorMessage = "\(file.relativePath) is not present in the working tree."
         }
+    }
+
+    func loadDiff(for file: GitStatusFile) {
+        guard let path = workingPath else { return }
+        selectedFileDiff = GitFileDiff(
+            id: file.id,
+            file: file,
+            kind: file.isStaged ? .staged : (file.isUntracked ? .untracked : .unstaged),
+            diff: "",
+            isTruncated: false,
+            message: nil
+        )
+        isLoadingFileDiff = true
+        AppLogger.audit(.gitChangedFileDiffViewed, category: "Git", fields: [
+            "file": file.relativePath,
+            "status": file.status,
+            "staged": file.isStaged ? "true" : "false",
+            "repo": path
+        ], level: .info)
+        Task {
+            let diff = await GitService.shared.getFileDiff(at: path, file: file)
+            await MainActor.run {
+                self.selectedFileDiff = diff
+                self.isLoadingFileDiff = false
+            }
+        }
+    }
+
+    func clearSelectedFileDiff() {
+        selectedFileDiff = nil
+        isLoadingFileDiff = false
     }
 
     func stage(file: GitStatusFile) {
@@ -788,7 +916,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitStageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
-                try await GitService.shared.stageFile(file.relativePath, at: path)
+                try await GitService.shared.stageFile(file, at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Stage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
@@ -816,7 +944,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitUnstageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
-                try await GitService.shared.unstageFile(file.relativePath, at: path)
+                try await GitService.shared.unstageFile(file, at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Unstage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
@@ -834,6 +962,25 @@ final class WorkspaceGitViewModel: ObservableObject {
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Unstage all failed: \(error.localizedDescription)", category: "Git")
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func applyDiffHunk(_ patch: String, from diff: GitFileDiff) {
+        guard let path = workingPath else { return }
+        let reverse = diff.kind == .staged
+        AppLogger.audit(reverse ? .gitUnstageFile : .gitStageFile, category: "Git", fields: [
+            "file": diff.file.relativePath,
+            "scope": "hunk"
+        ])
+        Task {
+            do {
+                try await GitService.shared.applyDiffPatchToIndex(patch, at: path, reverse: reverse)
+                self.clearSelectedFileDiff()
+                await refreshRepoDetails(force: true)
+            } catch {
+                AppLogger.error("Apply hunk failed for \(diff.file.relativePath): \(error.localizedDescription)", category: "Git")
                 self.errorMessage = error.localizedDescription
             }
         }

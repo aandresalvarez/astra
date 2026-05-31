@@ -382,6 +382,30 @@ struct GitAuthoringServiceTests {
 
 @Suite("Git Status Parsing")
 struct GitStatusParsingTests {
+    private func runShell(_ command: String, in directory: String) -> Int {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return Int(process.terminationStatus)
+        } catch {
+            return -1
+        }
+    }
+
+    private func makeTempGitRepo() throws -> String {
+        let path = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-status-\(UUID().uuidString)", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        #expect(runShell("git init -b main", in: path) == 0)
+        return path
+    }
 
     @Test("Parses staged modified file")
     func parseStagedModified() {
@@ -421,6 +445,80 @@ struct GitStatusParsingTests {
         #expect(files.count == 1)
         #expect(files[0].status == "A")
         #expect(files[0].isStaged == true)
+    }
+
+    @Test("Repository diff presentation classifies friendly colored lines")
+    func repositoryDiffPresentationClassifiesLines() {
+        let diff = """
+        diff --git a/file.swift b/file.swift
+        index 1111111..2222222 100644
+        --- a/file.swift
+        +++ b/file.swift
+        @@ -1,3 +1,4 @@
+         final class Example {
+        -    let title = "Old"
+        +    let title = "New"
+        +    let count = 1
+         }
+        """
+
+        let lines = RepositoryDiffPresentation.lines(from: diff)
+
+        #expect(lines[0].kind == .fileHeader)
+        #expect(lines[1].kind == .fileHeader)
+        #expect(lines[2].kind == .fileHeader)
+        #expect(lines[3].kind == .fileHeader)
+        #expect(lines[4].kind == .hunkHeader)
+        #expect(lines[5].kind == .context)
+        #expect(lines[6].kind == .deletion)
+        #expect(lines[7].kind == .addition)
+        #expect(lines[8].kind == .addition)
+        #expect(lines[9].kind == .context)
+    }
+
+    @Test("Repository diff presentation preserves hunk patches")
+    func repositoryDiffPresentationPreservesHunkPatches() {
+        let diff = """
+        diff --git a/file.swift b/file.swift
+        index 1111111..2222222 100644
+        --- a/file.swift
+        +++ b/file.swift
+        @@ -1,2 +1,2 @@
+        -old
+        +new
+        @@ -8,2 +8,3 @@
+         keep
+        +added
+        """
+
+        let hunks = RepositoryDiffPresentation.hunks(from: diff)
+
+        #expect(hunks.count == 2)
+        #expect(hunks[0].lines.first?.kind == .hunkHeader)
+        #expect(hunks[0].lines.contains { $0.kind == .deletion })
+        #expect(hunks[0].lines.contains { $0.kind == .addition })
+        #expect(hunks[0].patch.hasPrefix("diff --git a/file.swift b/file.swift\nindex 1111111..2222222 100644\n--- a/file.swift\n+++ b/file.swift\n@@ -1,2 +1,2 @@"))
+        #expect(hunks[0].patch.hasSuffix("+new\n"))
+        #expect(hunks[1].patch.contains("@@ -8,2 +8,3 @@"))
+        #expect(hunks[1].patch.hasSuffix("+added\n"))
+    }
+
+    @Test("Repository diff presentation preserves long source lines")
+    func repositoryDiffPresentationPreservesLongSourceLines() {
+        let longLine = "+        #expect(task.goal.contains(\"re-fetch the latest unresolved GitHub review comments before editing and preserve every diagnostic URL\"))"
+        let diff = """
+        diff --git a/file.swift b/file.swift
+        --- a/file.swift
+        +++ b/file.swift
+        @@ -1,1 +1,2 @@
+         context
+        \(longLine)
+        """
+
+        let lines = RepositoryDiffPresentation.lines(from: diff)
+        let addedLine = lines.first { $0.kind == .addition }
+
+        #expect(addedLine?.text == longLine)
     }
 
     @Test("Parses staged deleted file")
@@ -486,6 +584,9 @@ struct GitStatusParsingTests {
         #expect(files[0].status == "R")
         #expect(files[0].isStaged == true)
         #expect(files[0].relativePath == "new.swift")
+        #expect(files[0].originalPath == "old.swift")
+        #expect(files[0].displayPath == "old.swift -> new.swift")
+        #expect(files[0].pathspecs == ["old.swift", "new.swift"])
     }
 
     @Test("NUL porcelain parses rename target and skips source payload")
@@ -496,6 +597,108 @@ struct GitStatusParsingTests {
         #expect(files[0].status == "R")
         #expect(files[0].isStaged == true)
         #expect(files[0].relativePath == "new.swift")
+        #expect(files[0].originalPath == "old.swift")
+    }
+
+    @Test("Conflicted porcelain status is a single unstaged conflict row")
+    func parseConflictedFile() {
+        let output = "UU conflicted.swift"
+        let files = GitService.parseStatusPorcelain(output)
+        #expect(files.count == 1)
+        #expect(files[0].relativePath == "conflicted.swift")
+        #expect(files[0].status == "UU")
+        #expect(files[0].isStaged == false)
+        #expect(files[0].isConflict == true)
+    }
+
+    @Test("Git status file identity is stable across refreshes")
+    func statusFileIdentityIsStable() {
+        let first = GitStatusFile(relativePath: "Astra/Services/GitService.swift", status: "M", isStaged: false)
+        let second = GitStatusFile(relativePath: "Astra/Services/GitService.swift", status: "M", isStaged: false)
+        #expect(first.id == second.id)
+    }
+
+    @Test("Untracked file diff synthesizes an add-style preview")
+    func untrackedFileDiffSynthesizesPreview() async throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let fileURL = URL(fileURLWithPath: repo).appendingPathComponent("new.swift")
+        try "let value = 1\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let file = GitStatusFile(relativePath: "new.swift", status: "?", isStaged: false)
+        let diff = await GitService.shared.getFileDiff(at: repo, file: file)
+
+        #expect(diff.kind == .untracked)
+        #expect(diff.hasDiff)
+        #expect(diff.diff.contains("new file mode"))
+        #expect(diff.diff.contains("+let value = 1"))
+    }
+
+    @Test("Tracked file diff is scoped to the selected changed file")
+    func trackedFileDiffIsScopedToFile() async throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        try "old\n".write(
+            to: URL(fileURLWithPath: repo).appendingPathComponent("edited.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "same\n".write(
+            to: URL(fileURLWithPath: repo).appendingPathComponent("other.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        #expect(runShell("git add edited.txt other.txt && git -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
+
+        try "new\n".write(
+            to: URL(fileURLWithPath: repo).appendingPathComponent("edited.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "changed but not selected\n".write(
+            to: URL(fileURLWithPath: repo).appendingPathComponent("other.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let file = GitStatusFile(relativePath: "edited.txt", status: "M", isStaged: false)
+        let diff = await GitService.shared.getFileDiff(at: repo, file: file)
+
+        #expect(diff.kind == .unstaged)
+        #expect(diff.diff.contains("--- a/edited.txt"))
+        #expect(diff.diff.contains("+++ b/edited.txt"))
+        #expect(diff.diff.contains("-old"))
+        #expect(diff.diff.contains("+new"))
+        #expect(!diff.diff.contains("other.txt"))
+    }
+
+    @Test("Diff hunk patch can be applied to the git index")
+    func diffHunkPatchCanBeAppliedToIndex() async throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let fileURL = URL(fileURLWithPath: repo).appendingPathComponent("edited.txt")
+        try "old\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        #expect(runShell("git add edited.txt && git -c user.name='ASTRA Tests' -c user.email='astra-tests@example.invalid' commit -m init", in: repo) == 0)
+        try "new\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let patch = """
+        diff --git a/edited.txt b/edited.txt
+        index 3367afd..3e75765 100644
+        --- a/edited.txt
+        +++ b/edited.txt
+        @@ -1 +1 @@
+        -old
+        +new
+
+        """
+        try await GitService.shared.applyDiffPatchToIndex(patch, at: repo)
+        let cached = await GitService.shared.getStagedDiff(at: repo, limit: 4096)
+
+        #expect(cached.contains("+new"))
+        #expect(cached.contains("-old"))
     }
 
     @Test("NUL porcelain preserves spaces and shell-sensitive file names")

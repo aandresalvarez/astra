@@ -229,7 +229,7 @@ struct GitPushEnablementTests {
     }
 
     @MainActor
-    @Test("Addressing PR comments creates a queued chat task with review context")
+    @Test("Addressing PR comments creates an editable chat draft with review context")
     func createPullRequestCommentTaskSeedsChatContext() throws {
         let repo = try makeTempGitRepo()
         defer { try? FileManager.default.removeItem(atPath: repo) }
@@ -270,12 +270,14 @@ struct GitPushEnablementTests {
 
         let task = try #require(vm.createPullRequestCommentTask(modelContext: context))
 
-        #expect(task.status == .queued)
+        #expect(task.status == .draft)
         #expect(task.title == "Address PR #95 comments")
         #expect(task.executionRootPath == repo)
         #expect(task.goal.contains("GitRepositoryInfo uses a fresh UUID"))
         #expect(task.goal.contains("re-fetch the latest unresolved review comments"))
         #expect(task.goal.contains("Do not merge the PR or post GitHub replies"))
+        #expect(task.draftMessages.contains("GitRepositoryInfo uses a fresh UUID"))
+        #expect(task.events.isEmpty)
     }
 
     // MARK: - GitService integration

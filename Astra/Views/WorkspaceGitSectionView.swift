@@ -102,6 +102,26 @@ struct WorkspaceGitSectionView: View {
                 showCommitSheet = false
             })
         }
+        .sheet(item: $viewModel.selectedFileDiff, onDismiss: {
+            viewModel.clearSelectedFileDiff()
+        }) { diff in
+            ChangedFileDiffSheet(
+                diff: diff,
+                isLoading: viewModel.isLoadingFileDiff,
+                onOpenFile: { openChangedFileInShelf(diff.file) },
+                onCopyDiff: { copyDiff(diff.diff) },
+                onApplyHunk: { patch in viewModel.applyDiffHunk(patch, from: diff) },
+                onStageToggle: {
+                    if diff.file.isStaged {
+                        viewModel.unstage(file: diff.file)
+                    } else {
+                        viewModel.stage(file: diff.file)
+                    }
+                    viewModel.clearSelectedFileDiff()
+                },
+                onDismiss: { viewModel.clearSelectedFileDiff() }
+            )
+        }
         .sheet(isPresented: $viewModel.isManagingWorktrees) {
             WorktreeSheet(viewModel: viewModel)
         }
@@ -438,6 +458,13 @@ struct WorkspaceGitSectionView: View {
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 6) {
+                        if viewModel.hasConflicts {
+                            Label("Resolve conflicts before creating a pull request.", systemImage: "exclamationmark.triangle.fill")
+                                .font(Stanford.caption(11).weight(.medium))
+                                .foregroundStyle(Stanford.statusError)
+                                .padding(.bottom, 2)
+                        }
+
                         if !unstaged.isEmpty {
                             fileGroup(
                                 title: "Changes (\(unstaged.count))",
@@ -445,7 +472,7 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.stageAll() },
                                 files: unstaged,
                                 rowAction: { viewModel.stage(file: $0) },
-                                openFile: openChangedFile,
+                                openFile: openChangedFileDiff,
                                 icon: "plus",
                                 rowHelp: "Stage file"
                             )
@@ -458,7 +485,7 @@ struct WorkspaceGitSectionView: View {
                                 action: { viewModel.unstageAll() },
                                 files: staged,
                                 rowAction: { viewModel.unstage(file: $0) },
-                                openFile: openChangedFile,
+                                openFile: openChangedFileDiff,
                                 icon: "minus",
                                 rowHelp: "Unstage file"
                             )
@@ -603,14 +630,97 @@ struct WorkspaceGitSectionView: View {
             .buttonStyle(RowButtonStyle())
             .layoutPriority(1)
 
+            pullRequestCheckStatus
             pullRequestCommentStatus
         }
         .help(pr.title.isEmpty ? "Open pull request #\(pr.number)" : "Open #\(pr.number): \(pr.title)")
         .contextMenu {
             Button("Copy PR URL") { viewModel.copyPullRequestURL() }
             if viewModel.pullRequestComments?.hasComments == true {
-                Button("Address Comments") { createAddressCommentsTask() }
+                Button("Address in Chat") { createAddressCommentsTask() }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var pullRequestCheckStatus: some View {
+        if viewModel.isRefreshingPullRequestChecks {
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.62)
+                .frame(width: 18, height: Self.rowMinHeight)
+        } else if let summary = viewModel.pullRequestChecks, summary.totalCount > 0 {
+            checkBubble(summary)
+                .frame(minHeight: Self.rowMinHeight)
+        } else if viewModel.pullRequestChecksIssue != nil {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(Stanford.ui(11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: Self.rowMinHeight)
+                .help(viewModel.pullRequestChecksIssue ?? "Could not load pull request checks")
+        }
+    }
+
+    private func checkBubble(_ summary: GitHubPullRequestCheckSummary) -> some View {
+        Label(checkBubbleText(summary), systemImage: checkBubbleIcon(summary))
+            .labelStyle(.titleAndIcon)
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(checkBubbleColor(summary))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(checkBubbleColor(summary).opacity(0.12)))
+            .help(checkBubbleHelp(summary))
+    }
+
+    private func checkBubbleText(_ summary: GitHubPullRequestCheckSummary) -> String {
+        switch summary.state {
+        case .none:
+            return "0"
+        case .passing:
+            return "\(summary.passingCount)"
+        case .pending:
+            return "\(summary.pendingCount)"
+        case .failing:
+            return "\(summary.failingCount)"
+        }
+    }
+
+    private func checkBubbleIcon(_ summary: GitHubPullRequestCheckSummary) -> String {
+        switch summary.state {
+        case .none:
+            return "circle"
+        case .passing:
+            return "checkmark.circle.fill"
+        case .pending:
+            return "clock.fill"
+        case .failing:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private func checkBubbleColor(_ summary: GitHubPullRequestCheckSummary) -> Color {
+        switch summary.state {
+        case .none:
+            return .secondary
+        case .passing:
+            return Stanford.statusHealthy
+        case .pending:
+            return Stanford.statusWarn
+        case .failing:
+            return Stanford.statusError
+        }
+    }
+
+    private func checkBubbleHelp(_ summary: GitHubPullRequestCheckSummary) -> String {
+        switch summary.state {
+        case .none:
+            return "No pull request checks reported"
+        case .passing:
+            return "\(summary.passingCount) pull request check\(summary.passingCount == 1 ? "" : "s") passing"
+        case .pending:
+            return "\(summary.pendingCount) pull request check\(summary.pendingCount == 1 ? "" : "s") pending"
+        case .failing:
+            return "\(summary.failingCount) pull request check\(summary.failingCount == 1 ? "" : "s") failing"
         }
     }
 
@@ -634,35 +744,64 @@ struct WorkspaceGitSectionView: View {
     }
 
     private func commentBubble(_ summary: GitHubPullRequestCommentSummary) -> some View {
-        Button {
+        let newCount = viewModel.newPullRequestCommentCount
+        return Button {
             showPRCommentsPopover.toggle()
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "text.bubble.fill")
-                    .font(Stanford.ui(10, weight: .semibold))
-                Text("\(summary.totalCommentCount)")
-                    .font(Stanford.caption(12).weight(.semibold))
+            ZStack(alignment: .topTrailing) {
+                HStack(spacing: 5) {
+                    Image(systemName: "text.bubble")
+                        .font(Stanford.ui(10, weight: .semibold))
+                    Text("\(summary.totalCommentCount)")
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Stanford.lagunita.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Stanford.lagunita.opacity(0.18), lineWidth: 1)
+                )
+
+                if newCount > 0 {
+                    Circle()
+                        .fill(Stanford.statusInfo)
+                        .frame(width: 7, height: 7)
+                        .overlay(
+                            Circle()
+                                .stroke(Stanford.cardBackground, lineWidth: 1)
+                        )
+                        .offset(x: 2, y: -2)
+                        .accessibilityLabel("\(newCount) new pull request comments")
+                }
             }
-            .foregroundStyle(Stanford.lagunita)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-                Capsule()
-                    .fill(Stanford.lagunita.opacity(0.12))
-            )
         }
         .buttonStyle(.plain)
-        .help("\(summary.totalCommentCount) pull request comment\(summary.totalCommentCount == 1 ? "" : "s")")
+        .help(commentBubbleHelp(summary, newCount: newCount))
         .popover(isPresented: $showPRCommentsPopover, arrowEdge: .leading) {
             PullRequestCommentsPopover(
                 summary: summary,
+                newCommentCount: newCount,
                 onOpenPR: { viewModel.openExistingPullRequest() },
+                onRefresh: { viewModel.refreshPullRequestCommentsNow() },
+                onMarkRead: { viewModel.markPullRequestCommentsSeen() },
                 onAddress: {
                     showPRCommentsPopover = false
                     createAddressCommentsTask()
                 }
             )
         }
+    }
+
+    private func commentBubbleHelp(_ summary: GitHubPullRequestCommentSummary, newCount: Int) -> String {
+        let comments = "\(summary.totalCommentCount) pull request comment\(summary.totalCommentCount == 1 ? "" : "s")"
+        guard newCount > 0 else { return comments }
+        return "\(comments), \(newCount) new"
     }
 
     private func createAddressCommentsTask() {
@@ -672,7 +811,10 @@ struct WorkspaceGitSectionView: View {
 
     private struct PullRequestCommentsPopover: View {
         let summary: GitHubPullRequestCommentSummary
+        let newCommentCount: Int
         let onOpenPR: () -> Void
+        let onRefresh: () -> Void
+        let onMarkRead: () -> Void
         let onAddress: () -> Void
 
         var body: some View {
@@ -720,7 +862,7 @@ struct WorkspaceGitSectionView: View {
 
                     Spacer(minLength: 0)
 
-                    Button("Address", action: onAddress)
+                    Button("Address in Chat", action: onAddress)
                         .font(Stanford.caption(12).weight(.semibold))
                         .buttonStyle(.plain)
                         .foregroundStyle(Stanford.lagunita)
@@ -734,6 +876,22 @@ struct WorkspaceGitSectionView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
 
+                    Button(action: onRefresh) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .font(Stanford.caption(12).weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    if newCommentCount > 0 {
+                        Button(action: onMarkRead) {
+                            Label("Mark read", systemImage: "checkmark.circle")
+                                .font(Stanford.caption(12).weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+
                     Spacer(minLength: 0)
                 }
             }
@@ -742,8 +900,17 @@ struct WorkspaceGitSectionView: View {
 
         private var summaryLine: String {
             let comments = "\(summary.totalCommentCount) comment\(summary.totalCommentCount == 1 ? "" : "s")"
-            guard summary.unresolvedThreadCount > 0 else { return comments }
-            return "\(comments) · \(summary.unresolvedThreadCount) unresolved"
+            var parts = [comments]
+            if summary.unresolvedThreadCount > 0 {
+                parts.append("\(summary.unresolvedThreadCount) unresolved")
+            }
+            if newCommentCount > 0 {
+                parts.append("\(newCommentCount) new")
+            }
+            if summary.isTruncated {
+                parts.append("truncated")
+            }
+            return parts.joined(separator: " · ")
         }
 
         private func commentRow(_ comment: GitHubPullRequestComment) -> some View {
@@ -789,7 +956,7 @@ struct WorkspaceGitSectionView: View {
                 HStack(spacing: 5) {
                     statusBadge(for: file.status)
 
-                    Text(file.relativePath)
+                    Text(file.displayPath)
                         .font(Stanford.ui(11, design: .monospaced))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -798,7 +965,7 @@ struct WorkspaceGitSectionView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Open in Files shelf")
+            .help("View diff")
 
             Spacer(minLength: 4)
 
@@ -818,6 +985,11 @@ struct WorkspaceGitSectionView: View {
         .contextMenu {
             Button {
                 openAction()
+            } label: {
+                Label("View Diff", systemImage: "plus.forwardslash.minus")
+            }
+            Button {
+                openChangedFileInShelf(file)
             } label: {
                 Label("Open in Files Shelf", systemImage: "doc.text")
             }
@@ -842,11 +1014,21 @@ struct WorkspaceGitSectionView: View {
         }
     }
 
-    private func openChangedFile(_ file: GitStatusFile) {
+    private func openChangedFileDiff(_ file: GitStatusFile) {
+        viewModel.loadDiff(for: file)
+    }
+
+    private func openChangedFileInShelf(_ file: GitStatusFile) {
         guard let absolutePath = viewModel.absolutePath(for: file) else { return }
         let exists = FileManager.default.fileExists(atPath: absolutePath)
         viewModel.noteChangedFileOpenedInShelf(file, absolutePath: absolutePath, exists: exists)
+        guard exists else { return }
         onOpenWorkspaceFile?(absolutePath)
+    }
+
+    private func copyDiff(_ diff: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(diff, forType: .string)
     }
 
     @ViewBuilder
@@ -862,11 +1044,449 @@ struct WorkspaceGitSectionView: View {
     }
 
     private func badgeColor(for status: String) -> Color {
+        if status.contains("U") || ["AA", "DD"].contains(status) {
+            return Stanford.statusError
+        }
         switch status {
         case "A", "?": return Stanford.statusHealthy
         case "M": return Stanford.statusWarn
         case "D": return Stanford.statusError
+        case "R", "C": return Stanford.statusInfo
         default: return Stanford.statusInfo
+        }
+    }
+}
+
+// MARK: - Changed file diff sheet
+
+private struct ChangedFileDiffSheet: View {
+    let diff: GitFileDiff
+    let isLoading: Bool
+    let onOpenFile: () -> Void
+    let onCopyDiff: () -> Void
+    let onApplyHunk: (String) -> Void
+    let onStageToggle: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var isExpanded = false
+
+    private var stageLabel: String {
+        diff.file.isStaged ? "Unstage file" : "Stage file"
+    }
+
+    private var canOpenFile: Bool {
+        !diff.file.isDeleted && diff.kind != .unavailable
+    }
+
+    private var canCopyDiff: Bool {
+        diff.hasDiff
+    }
+
+    private var hunkActionLabel: String {
+        diff.kind == .staged ? "Unstage hunk" : "Stage hunk"
+    }
+
+    private var canApplyHunks: Bool {
+        diff.hasDiff
+            && !diff.file.isConflict
+            && diff.kind != .untracked
+            && diff.kind != .unavailable
+    }
+
+    private var hunks: [RepositoryDiffPresentation.Hunk] {
+        guard canApplyHunks else { return [] }
+        return RepositoryDiffPresentation.hunks(from: diff.diff)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            content
+            Divider()
+            footer
+        }
+        .frame(
+            minWidth: isExpanded ? 900 : 660,
+            idealWidth: isExpanded ? 1120 : 820,
+            maxWidth: isExpanded ? 1400 : 980,
+            minHeight: isExpanded ? 640 : 440,
+            idealHeight: isExpanded ? 820 : 560,
+            maxHeight: isExpanded ? 1000 : 720
+        )
+        .background(Stanford.cardBackground)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            statusBadge
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(diff.file.displayPath)
+                    .font(Stanford.ui(14, design: .monospaced).weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Text(subtitle)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 10)
+
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button {
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .font(Stanford.ui(11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Use compact diff view" : "Expand diff view")
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(Stanford.ui(11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close")
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isLoading && !diff.hasDiff {
+            VStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading diff...")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if diff.hasDiff {
+            GeometryReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    diffScrollContent(availableWidth: proxy.size.width)
+                        .frame(minWidth: max(0, proxy.size.width), alignment: .topLeading)
+                }
+                .background(Stanford.panelBackground.opacity(0.72))
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: messageIcon)
+                    .font(Stanford.ui(22, weight: .medium))
+                    .foregroundStyle(messageColor)
+                Text(diff.message ?? "No textual diff is available for this file.")
+                    .font(Stanford.body(13))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private func diffScrollContent(availableWidth: CGFloat) -> some View {
+        if hunks.isEmpty {
+            DiffLinesView(
+                lines: RepositoryDiffPresentation.lines(from: diff.diff),
+                minimumWidth: max(0, availableWidth - 24)
+            )
+            .padding(12)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(hunks) { hunk in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Hunk")
+                                .font(Stanford.caption(11).weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(hunkActionLabel) {
+                                onApplyHunk(hunk.patch)
+                            }
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .frame(minWidth: max(0, availableWidth - 44), alignment: .leading)
+
+                        DiffLinesView(lines: hunk.lines, minimumWidth: max(0, availableWidth - 44))
+                    }
+                    .padding(10)
+                    .frame(minWidth: max(0, availableWidth - 24), alignment: .leading)
+                    .background(Stanford.panelBackground.opacity(0.78))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if diff.isTruncated {
+                Label("Diff truncated", systemImage: "scissors")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.statusWarn)
+            } else if diff.file.isDeleted {
+                Label("File deleted", systemImage: "trash")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.statusError)
+            } else if diff.file.isConflict {
+                Label("Conflict", systemImage: "exclamationmark.triangle.fill")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.statusError)
+            }
+
+            Spacer(minLength: 10)
+
+            Button(action: onCopyDiff) {
+                Label("Copy diff", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canCopyDiff)
+
+            Button(action: onOpenFile) {
+                Label("Open file", systemImage: "doc.text")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canOpenFile)
+
+            Button(action: onStageToggle) {
+                Label(stageLabel, systemImage: diff.file.isStaged ? "minus.circle" : "plus.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(diff.file.isConflict)
+        }
+        .font(Stanford.caption(12).weight(.medium))
+        .padding(12)
+    }
+
+    private var statusBadge: some View {
+        Text(diff.file.status)
+            .font(Stanford.caption(10).weight(.bold))
+            .foregroundStyle(statusColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(statusColor.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var subtitle: String {
+        switch diff.kind {
+        case .staged: "Staged diff"
+        case .unstaged: "Working tree diff"
+        case .untracked: "Untracked file preview"
+        case .unavailable: "Diff unavailable"
+        }
+    }
+
+    private var statusColor: Color {
+        if diff.file.isConflict { return Stanford.statusError }
+        switch diff.file.status {
+        case "A", "?": return Stanford.statusHealthy
+        case "M": return Stanford.statusWarn
+        case "D": return Stanford.statusError
+        default: return Stanford.statusInfo
+        }
+    }
+
+    private var messageIcon: String {
+        diff.kind == .unavailable ? "exclamationmark.triangle" : "doc.text.magnifyingglass"
+    }
+
+    private var messageColor: Color {
+        diff.kind == .unavailable ? Stanford.statusWarn : .secondary
+    }
+}
+
+struct RepositoryDiffPresentation {
+    struct Line: Identifiable, Equatable {
+        enum Kind: Equatable {
+            case addition
+            case deletion
+            case hunkHeader
+            case fileHeader
+            case context
+        }
+
+        let id: Int
+        let text: String
+        let kind: Kind
+    }
+
+    struct Hunk: Identifiable, Equatable {
+        let id: Int
+        let patch: String
+        let lines: [Line]
+    }
+
+    static func lines(from text: String) -> [Line] {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .enumerated()
+            .map { offset, line in
+                Line(id: offset, text: line, kind: kind(for: line))
+            }
+    }
+
+    static func hunks(from diff: String) -> [Hunk] {
+        let diffLines = diff
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        var header: [String] = []
+        var current: [String] = []
+        var result: [Hunk] = []
+
+        func finishCurrent() {
+            guard !current.isEmpty else { return }
+            let patch = (header + current).joined(separator: "\n") + "\n"
+            result.append(Hunk(id: result.count, patch: patch, lines: lines(from: current.joined(separator: "\n"))))
+            current = []
+        }
+
+        for line in diffLines {
+            if line.hasPrefix("diff --git ") {
+                finishCurrent()
+                header = [line]
+            } else if line.hasPrefix("@@ ") {
+                finishCurrent()
+                current = [line]
+            } else if current.isEmpty {
+                header.append(line)
+            } else {
+                current.append(line)
+            }
+        }
+        finishCurrent()
+        return result
+    }
+
+    static func kind(for line: String) -> Line.Kind {
+        if line.hasPrefix("@@ ") {
+            return .hunkHeader
+        }
+        if line.hasPrefix("diff --git ")
+            || line.hasPrefix("index ")
+            || line.hasPrefix("--- ")
+            || line.hasPrefix("+++ ")
+            || line.hasPrefix("new file mode ")
+            || line.hasPrefix("deleted file mode ") {
+            return .fileHeader
+        }
+        if line.hasPrefix("+") {
+            return .addition
+        }
+        if line.hasPrefix("-") {
+            return .deletion
+        }
+        return .context
+    }
+}
+
+private struct DiffLinesView: View {
+    let lines: [RepositoryDiffPresentation.Line]
+    let minimumWidth: CGFloat
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 1) {
+            ForEach(lines) { line in
+                DiffLineRow(line: line, minimumWidth: minimumWidth)
+            }
+        }
+        .textSelection(.enabled)
+        .frame(minWidth: minimumWidth, alignment: .leading)
+    }
+}
+
+private struct DiffLineRow: View {
+    let line: RepositoryDiffPresentation.Line
+    let minimumWidth: CGFloat
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(prefix)
+                .font(Stanford.ui(11, design: .monospaced))
+                .foregroundStyle(prefixColor)
+                .frame(width: 18, alignment: .trailing)
+
+            Text(displayText)
+                .font(Stanford.ui(11, design: .monospaced))
+                .foregroundStyle(textColor)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .frame(minWidth: minimumWidth, alignment: .leading)
+        .background(backgroundColor)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var displayText: String {
+        line.text.isEmpty ? " " : line.text
+    }
+
+    private var prefix: String {
+        switch line.kind {
+        case .addition: "+"
+        case .deletion: "-"
+        case .hunkHeader: "@@"
+        case .fileHeader: ">"
+        case .context: " "
+        }
+    }
+
+    private var textColor: Color {
+        switch line.kind {
+        case .addition: Stanford.diffAdded
+        case .deletion: Stanford.diffRemoved
+        case .hunkHeader: Stanford.lagunita
+        case .fileHeader: .secondary
+        case .context: .primary.opacity(0.92)
+        }
+    }
+
+    private var prefixColor: Color {
+        switch line.kind {
+        case .addition: Stanford.diffAdded
+        case .deletion: Stanford.diffRemoved
+        case .hunkHeader: Stanford.lagunita
+        case .fileHeader: Stanford.statusInfo
+        case .context: .secondary.opacity(0.55)
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch line.kind {
+        case .addition: Stanford.diffAdded.opacity(0.13)
+        case .deletion: Stanford.diffRemoved.opacity(0.13)
+        case .hunkHeader: Stanford.lagunita.opacity(0.15)
+        case .fileHeader: Color.primary.opacity(0.045)
+        case .context: Color.clear
         }
     }
 }

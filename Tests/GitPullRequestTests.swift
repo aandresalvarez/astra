@@ -160,6 +160,70 @@ struct GitPullRequestTests {
         #expect(summary.comments.first?.locationLabel == "Astra/Services/GitService.swift:120")
         #expect(summary.comments.first?.preview.contains("swallow JSON failures") == true)
         #expect(summary.comments.contains { $0.body == "Resolved thread." } == false)
+        #expect(summary.isTruncated == false)
+        #expect(summary.latestCommentCreatedAt == "2026-05-30T11:00:00Z")
+    }
+
+    @Test("decodePullRequestComments flags truncated GraphQL connections")
+    func decodePullRequestCommentsFlagsTruncatedConnections() throws {
+        let pr = GitHubPullRequestRef(
+            number: 95,
+            url: "https://github.com/coral/astra/pull/95",
+            title: "Repository polish"
+        )
+        let json = """
+        {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "comments": {
+                  "totalCount": 101,
+                  "pageInfo": { "hasNextPage": true },
+                  "nodes": [
+                    {
+                      "author": { "login": "reviewer" },
+                      "body": "Visible comment.",
+                      "createdAt": "2026-05-30T10:00:00Z",
+                      "url": "https://github.com/coral/astra/pull/95#issuecomment-1"
+                    }
+                  ]
+                },
+                "reviewThreads": {
+                  "totalCount": 0,
+                  "pageInfo": { "hasNextPage": false },
+                  "nodes": []
+                }
+              }
+            }
+          }
+        }
+        """
+
+        let summary = try #require(GitService.decodePullRequestComments(from: json, pullRequest: pr))
+        #expect(summary.totalCommentCount == 1)
+        #expect(summary.isTruncated == true)
+    }
+
+    @Test("decodePullRequestChecks summarizes passing pending and failing checks")
+    func decodePullRequestChecksSummarizesStates() throws {
+        let json = """
+        {
+          "statusCheckRollup": [
+            { "__typename": "CheckRun", "name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS" },
+            { "__typename": "CheckRun", "name": "ui", "status": "IN_PROGRESS", "conclusion": null },
+            { "__typename": "StatusContext", "context": "lint", "state": "FAILURE" },
+            { "__typename": "StatusContext", "context": "docs", "state": "SUCCESS" }
+          ]
+        }
+        """
+
+        let summary = try #require(GitService.decodePullRequestChecks(from: json))
+
+        #expect(summary.totalCount == 4)
+        #expect(summary.passingCount == 2)
+        #expect(summary.pendingCount == 1)
+        #expect(summary.failingCount == 1)
+        #expect(summary.state == .failing)
     }
 
     @Test("webURLFromRemoteURL supports common GitHub remote forms")
