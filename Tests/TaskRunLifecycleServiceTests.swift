@@ -376,6 +376,52 @@ struct TaskRunLifecycleServiceTests {
         #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: run))
     }
 
+    @Test("Completed artifact attention ignores older task-folder artifacts")
+    func completedArtifactAttentionIgnoresOlderTaskFolderArtifacts() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "completed-stale-artifact-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Artifact Review", primaryPath: workspacePath)
+        let task = AgentTask(
+            title: "Create page",
+            goal: "create an html web page",
+            workspace: workspace
+        )
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let oldArtifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        try "<html>old</html>".write(to: oldArtifactURL, atomically: true, encoding: .utf8)
+        let now = Date()
+        let oldDate = now.addingTimeInterval(-120)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldArtifactURL.path)
+
+        let priorRun = TaskRun(task: task)
+        priorRun.status = .completed
+        priorRun.startedAt = oldDate.addingTimeInterval(-5)
+        priorRun.completedAt = oldDate.addingTimeInterval(5)
+        priorRun.stopReason = "completed"
+
+        let latestRun = TaskRun(task: task)
+        latestRun.status = .completed
+        latestRun.startedAt = now.addingTimeInterval(30)
+        latestRun.completedAt = now.addingTimeInterval(40)
+        latestRun.stopReason = "completed"
+        context.insert(priorRun)
+        context.insert(latestRun)
+        try context.save()
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun))
+        #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun))
+        #expect(PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: task, latestRun: latestRun))
+    }
+
     @Test("Startup recovery cancels orphaned running task and run")
     func startupRecoveryCancelsOrphanedRunningTaskAndRun() throws {
         let recoveredAt = Date(timeIntervalSince1970: 2_000)

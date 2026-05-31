@@ -893,8 +893,8 @@ final class AgentRuntimeWorker {
         phase: String
     ) -> Bool {
         let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let visibleFileChange = !run.fileChanges.isEmpty
-        guard !visibleOutput, !visibleFileChange else {
+        let visibleFileResult = TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run)
+        guard !visibleOutput, !visibleFileResult else {
             return false
         }
 
@@ -919,6 +919,7 @@ final class AgentRuntimeWorker {
             "exit_code": String(result.exitCode),
             "run_output_chars": String(run.output.count),
             "file_changes": String(run.fileChanges.count),
+            "run_scoped_file_result": String(visibleFileResult),
             "requires_artifact": String(requiredArtifact),
             "stderr_bytes": String(result.error?.utf8.count ?? 0)
         ], level: .warning)

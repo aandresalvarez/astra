@@ -277,6 +277,43 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Antigravity task-folder artifact prevents empty result review")
+    func antigravityTaskFolderArtifactPreventsEmptyResultReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "create an html slide deck about agents",
+            model: "Gemini 3.5 Flash"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.2'
+              exit 0
+            fi
+            printf '%s\\n' '<html>generated</html>' > '\(artifactURL.path)'
+            exit 0
+            """
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(!task.events.contains { $0.type == "error" })
+    }
+
     @Test("Antigravity empty retry ignores earlier artifacts")
     func antigravityEmptyRetryIgnoresEarlierArtifacts() async throws {
         let harness = try HeadlessChatHarness()

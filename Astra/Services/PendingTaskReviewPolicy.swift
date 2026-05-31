@@ -31,7 +31,7 @@ enum PendingTaskReviewPolicy {
         }
 
         return TaskDeliverableExpectation.requiresStandaloneArtifact(task) &&
-            !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun)
+            !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun)
     }
 
     static func reviewState(for task: AgentTask, latestRun: TaskRun?) -> PendingTaskReviewState {
@@ -54,7 +54,7 @@ enum PendingTaskReviewPolicy {
     private static func unresolvedDismissalReason(for task: AgentTask, latestRun: TaskRun) -> PendingTaskDismissalReason? {
         if latestRun.stopReason == "no_usable_result" {
             if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
-               !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun) {
+               !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun) {
                 return .noUsableResult
             }
             return nil
@@ -69,7 +69,7 @@ enum PendingTaskReviewPolicy {
         }
 
         if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
-           !TaskDeliverableExpectation.hasArtifact(for: task, run: latestRun) {
+           !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun) {
             return .missingRequiredArtifact
         }
 

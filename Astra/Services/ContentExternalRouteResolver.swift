@@ -7,6 +7,13 @@ enum ContentExternalRouteResolution {
     case openTask(AgentTask)
     case createdTask(AgentTask, shouldRun: Bool)
     case unresolved(String)
+
+    var noticeMessage: String {
+        switch self {
+        case .unresolved(let message): message
+        case .openWorkspace, .openTask, .createdTask: ""
+        }
+    }
 }
 
 @MainActor

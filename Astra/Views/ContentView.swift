@@ -1687,6 +1687,7 @@ struct ContentView: View {
     }
 
     private func applyExternalRouteResolution(_ resolution: ContentExternalRouteResolution) {
+        externalRouteNotice = resolution.noticeMessage
         switch resolution {
         case .openWorkspace(let workspace):
             openWorkspaceFromExternalRoute(workspace)
@@ -1701,7 +1702,6 @@ struct ContentView: View {
             }
 
         case .unresolved(let message):
-            externalRouteNotice = message
             AppLogger.warning(message, category: "AppIntents")
         }
     }

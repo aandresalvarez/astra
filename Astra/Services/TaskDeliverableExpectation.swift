@@ -51,6 +51,25 @@ enum TaskDeliverableExpectation {
         )
     }
 
+    static func hasRunScopedArtifact(
+        for task: AgentTask,
+        run: TaskRun,
+        scanEntryLimit: Int = artifactScanEntryLimit,
+        scanDepthLimit: Int = artifactScanDepthLimit
+    ) -> Bool {
+        if !run.fileChanges.isEmpty {
+            return true
+        }
+
+        return taskFolderContainsUserArtifact(
+            for: task,
+            entryLimit: scanEntryLimit,
+            depthLimit: scanDepthLimit,
+            runStartedAt: run.startedAt,
+            runCompletedAt: run.completedAt
+        )
+    }
+
     static func missingArtifactMessage(for task: AgentTask) -> String {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let location = taskFolder.isEmpty ? "the task output folder" : taskFolder
@@ -179,7 +198,9 @@ enum TaskDeliverableExpectation {
     private static func taskFolderContainsUserArtifact(
         for task: AgentTask,
         entryLimit: Int,
-        depthLimit: Int
+        depthLimit: Int,
+        runStartedAt: Date? = nil,
+        runCompletedAt: Date? = nil
     ) -> Bool {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty else { return false }
@@ -190,7 +211,7 @@ enum TaskDeliverableExpectation {
             .standardizedFileURL
         guard let enumerator = FileManager.default.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return false
@@ -209,7 +230,9 @@ enum TaskDeliverableExpectation {
                 enumerator.skipDescendants()
                 continue
             }
-            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let values = try? fileURL.resourceValues(
+                forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey]
+            )
             if values?.isDirectory == true, depth >= depthLimit {
                 enumerator.skipDescendants()
             }
@@ -217,9 +240,28 @@ enum TaskDeliverableExpectation {
             if !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative) {
                 continue
             }
+            if let runStartedAt,
+               !fileWasCreatedOrModifiedDuringRun(values, startedAt: runStartedAt, completedAt: runCompletedAt) {
+                continue
+            }
             return true
         }
         return false
+    }
+
+    private static func fileWasCreatedOrModifiedDuringRun(
+        _ values: URLResourceValues?,
+        startedAt: Date,
+        completedAt: Date?
+    ) -> Bool {
+        let upperBound = completedAt?.addingTimeInterval(1)
+        return [values?.creationDate, values?.contentModificationDate].contains { date in
+            guard let date, date >= startedAt else { return false }
+            if let upperBound {
+                return date <= upperBound
+            }
+            return true
+        }
     }
 
     private static func relativeDepth(of relative: String) -> Int {
