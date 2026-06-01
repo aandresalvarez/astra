@@ -6,6 +6,7 @@ struct AntigravityCLICommandPlan: Equatable {
     var arguments: [String]
     var environment: [String: String]
     var parsesJSONLines: Bool
+    var diagnosticLogPath: String?
 }
 
 enum AntigravityCLIRuntime {
@@ -108,7 +109,8 @@ enum AntigravityCLIRuntime {
         taskEnvironment: [String: String],
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
-        includeAstraToolsPath: Bool = false
+        includeAstraToolsPath: Bool = false,
+        diagnosticLogPath: String? = nil
     ) -> AntigravityCLICommandPlan {
         var args = [
             "--print",
@@ -116,6 +118,10 @@ enum AntigravityCLIRuntime {
             "--print-timeout",
             printTimeoutArgument(timeoutSeconds)
         ]
+        if let diagnosticLogPath,
+           !diagnosticLogPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args += ["--log-file", diagnosticLogPath]
+        }
 
         let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
         for path in uniquePaths {
@@ -145,7 +151,91 @@ enum AntigravityCLIRuntime {
             executablePath: executablePath,
             arguments: args,
             environment: env,
-            parsesJSONLines: false
+            parsesJSONLines: false,
+            diagnosticLogPath: diagnosticLogPath
+        )
+    }
+
+    static func diagnosticLogPath(task: AgentTask, runID: UUID) -> String? {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !taskFolder.isEmpty else { return nil }
+        let diagnostics = (taskFolder as NSString).appendingPathComponent("diagnostics")
+        let shortRunID = String(runID.uuidString.prefix(8))
+        return (diagnostics as NSString).appendingPathComponent("antigravity-\(shortRunID).log")
+    }
+
+    static func diagnosticLogDirectory(for logPath: String?) -> String? {
+        guard let logPath,
+              !logPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return (logPath as NSString).deletingLastPathComponent
+    }
+
+    struct DiagnosticSummary: Equatable {
+        var primaryCode: String
+        var message: String
+        var findings: [String]
+        var evidence: String
+        var logPath: String
+
+        var auditFields: [String: String] {
+            [
+                "provider_failure_category": primaryCode,
+                "provider_diagnostic_log": logPath,
+                "provider_diagnostic_findings": findings.joined(separator: ","),
+                "provider_diagnostic_evidence": evidence
+            ]
+        }
+    }
+
+    static func diagnosticSummary(logPath: String?) -> DiagnosticSummary? {
+        guard let logPath,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: logPath)),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return diagnosticSummary(logText: raw, logPath: logPath)
+    }
+
+    static func diagnosticSummary(logText: String, logPath: String) -> DiagnosticSummary? {
+        let lower = logText.lowercased()
+        var findings: [String] = []
+        var evidenceLines: [String] = []
+
+        func addFinding(_ code: String, patterns: [String]) {
+            guard patterns.contains(where: { lower.contains($0) }) else { return }
+            findings.append(code)
+            if let line = firstLine(in: logText, matching: patterns) {
+                evidenceLines.append(line)
+            }
+        }
+
+        addFinding("quota_exhausted", patterns: [
+            "resource_exhausted",
+            "exhausted your capacity",
+            "capacity on this model",
+            "quota will reset"
+        ])
+        addFinding("account_ineligible", patterns: ["account ineligible", "not eligible for antigravity"])
+        if !antigravityLogShowsSuccessfulAuth(logText) {
+            addFinding("auth_required", patterns: ["not logged into antigravity", "authentication required"])
+        }
+        addFinding("malformed_mcp_config", patterns: ["mcp_config.json", "unexpected end of json input"])
+
+        guard !findings.isEmpty else { return nil }
+        let uniqueFindings = uniqueStrings(findings)
+        let primary = uniqueFindings.first ?? "antigravity_hidden_failure"
+        let evidence = uniqueStrings(evidenceLines)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = diagnosticMessage(primary: primary, findings: uniqueFindings, evidence: evidence)
+        return DiagnosticSummary(
+            primaryCode: primary,
+            message: message,
+            findings: uniqueFindings,
+            evidence: String(RuntimeReadinessRedactor.redacted(evidence).prefix(500)),
+            logPath: logPath
         )
     }
 
@@ -204,6 +294,66 @@ enum AntigravityCLIRuntime {
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
             return trimmed
         }
+    }
+
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            guard seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+
+    private static func firstLine(in text: String, matching patterns: [String]) -> String? {
+        text.components(separatedBy: .newlines).first { line in
+            let lower = line.lowercased()
+            return patterns.contains { lower.contains($0) }
+        }?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func antigravityLogShowsSuccessfulAuth(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("oauth: authenticated successfully")
+            || lower.contains("silent auth succeeded")
+            || lower.contains("authenticated via keyring")
+    }
+
+    private static func diagnosticMessage(primary: String, findings: [String], evidence: String) -> String {
+        let primaryMessage: String
+        switch primary {
+        case "quota_exhausted":
+            let reset = quotaResetText(from: evidence)
+            let resetText = reset.map { " \($0)." } ?? ""
+            primaryMessage = "Antigravity quota is exhausted for the selected model.\(resetText) Wait for the quota reset, choose another eligible Antigravity account/model, or switch providers."
+        case "account_ineligible":
+            primaryMessage = "The authenticated Google account is not eligible for Antigravity. Sign in with an eligible account or switch providers."
+        case "auth_required":
+            primaryMessage = "Antigravity is not authenticated for non-interactive use. Run `agy` in Terminal, complete Google Sign-In, then retry."
+        case "malformed_mcp_config":
+            primaryMessage = "Antigravity has a malformed local MCP config. Repair or remove `~/.gemini/config/mcp_config.json`, then retry."
+        default:
+            primaryMessage = "Antigravity logged a hidden provider failure."
+        }
+        let secondary = findings.dropFirst()
+        let secondaryText = secondary.isEmpty ? "" : " Additional findings: \(secondary.joined(separator: ", "))."
+        let evidenceText = evidence.isEmpty ? "" : " Evidence: \(String(RuntimeReadinessRedactor.redacted(evidence).prefix(300)))"
+        return primaryMessage + secondaryText + evidenceText
+    }
+
+    private static func quotaResetText(from evidence: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)quota will reset after\s+([A-Za-z0-9:._ -]+?)(?:\.|$)"#
+        ) else {
+            return nil
+        }
+        let range = NSRange(evidence.startIndex..<evidence.endIndex, in: evidence)
+        guard let match = regex.firstMatch(in: evidence, range: range),
+              match.numberOfRanges > 1,
+              let resetRange = Range(match.range(at: 1), in: evidence) else {
+            return nil
+        }
+        let reset = evidence[resetRange].trimmingCharacters(in: .whitespacesAndNewlines)
+        return reset.isEmpty ? nil : "Quota will reset after \(reset)"
     }
 
     private static func plainTextPermissionPrompt(line: String) -> (tool: String, reason: String, isBlocking: Bool)? {

@@ -153,6 +153,156 @@ struct TaskContextStateTests {
         #expect(state.nextLikelyAction == "Continue with plan step: Add state file")
     }
 
+    @Test("context capsule records validation contract summary")
+    func contextCapsuleRecordsValidationContractSummary() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Contract Plan", primaryPath: root)
+        let task = AgentTask(title: "Plan contract", goal: "Prove completion before finishing", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let plan = TaskPlanPayload(
+            title: "Evidence gated plan",
+            goal: "Require proof before completion",
+            steps: [
+                TaskPlanPayloadStep(id: "verify", title: "Verify the work", likelyTools: ["Bash"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "focused-tests",
+                    scope: .plan,
+                    description: "Focused tests pass",
+                    method: .command,
+                    command: "swift test --filter TaskContextStateTests"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let contract = try #require(state.validationContract)
+        #expect(contract.status == "not_verified")
+        #expect(contract.assertionCount == 1)
+        #expect(contract.requiredTotal == 1)
+        #expect(contract.assertions[0].id == "focused-tests")
+        #expect(contract.assertions[0].method == TaskValidationAssertionMethod.command.rawValue)
+        #expect(contract.sourcePointers.contains { $0.kind == "event" && $0.summary.contains("validation.contract.created") })
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: task)
+        #expect(prompt.contains("Validation contract: not_verified"))
+        #expect(prompt.contains("focused-tests"))
+        #expect(prompt.contains("Focused tests pass"))
+
+        let markdown = try String(
+            contentsOfFile: (TaskWorkspaceAccess(task: task).taskFolder as NSString)
+                .appendingPathComponent(TaskContextStateManager.markdownFileName),
+            encoding: .utf8
+        )
+        #expect(markdown.contains("## Validation Contract"))
+        #expect(markdown.contains("focused-tests"))
+    }
+
+    @Test("context capsule marks optional-only validation contract passed after verification")
+    func contextCapsuleMarksOptionalOnlyValidationContractPassed() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Optional Contract Plan", primaryPath: root)
+        let task = AgentTask(title: "Optional contract", goal: "Capture advisory evidence", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let plan = TaskPlanPayload(
+            title: "Optional evidence plan",
+            goal: "Capture advisory proof before completion",
+            steps: [
+                TaskPlanPayloadStep(id: "verify", title: "Verify optional evidence", likelyTools: ["Bash"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "advisory-proof",
+                    scope: .plan,
+                    description: "Advisory proof command passes",
+                    method: .command,
+                    required: false,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+
+        let result = await ValidationService.runContract(task: task, plan: plan, run: run, modelContext: context)
+        #expect(result.canComplete)
+
+        TaskContextStateManager.refresh(task: task)
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let contract = try #require(state.validationContract)
+        #expect(contract.status == "passed")
+        #expect(contract.requiredTotal == 0)
+        #expect(contract.requiredPassed == 0)
+        #expect(contract.assertions.first?.status == "passed")
+        #expect(contract.sourcePointers.contains { $0.kind == "event" && $0.summary.contains("validation.contract.passed") })
+    }
+
+    @Test("context capsule scopes validation contract outcome to current plan")
+    func contextCapsuleScopesValidationContractOutcomeToCurrentPlan() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Scoped Contract Plan", primaryPath: root)
+        let task = AgentTask(title: "Scoped contract", goal: "Avoid stale validation status", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let firstPlan = TaskPlanPayload(
+            title: "First plan",
+            goal: "Pass old proof",
+            steps: [TaskPlanPayloadStep(id: "verify-old", title: "Verify old")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "old-proof",
+                    description: "Old proof passes",
+                    method: .command,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(firstPlan, task: task, modelContext: context)
+        _ = await ValidationService.runContract(task: task, plan: firstPlan, run: run, modelContext: context)
+
+        let secondPlan = TaskPlanPayload(
+            title: "Second plan",
+            goal: "Require new proof",
+            steps: [TaskPlanPayloadStep(id: "verify-new", title: "Verify new")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "new-proof",
+                    description: "New proof has not run",
+                    method: .command,
+                    command: "true"
+                )
+            ])
+        )
+        TaskPlanService.recordUpdated(secondPlan, task: task, modelContext: context)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let contract = try #require(state.validationContract)
+        #expect(contract.status == "not_verified")
+        #expect(contract.assertions.map(\.id) == ["new-proof"])
+        #expect(contract.sourcePointers.allSatisfy { !$0.summary.contains(TaskValidationEventTypes.contractPassed) })
+    }
+
     @Test("context capsule records task contract fields")
     func contextCapsuleRecordsTaskContractFields() throws {
         let root = try temporaryRoot()

@@ -109,6 +109,49 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var sourcePointers: [SourcePointer]
     }
 
+    struct ValidationAssertionSummary: Codable, Sendable, Equatable, Hashable {
+        var id: String
+        var scope: String
+        var stepID: String?
+        var method: String
+        var required: Bool
+        var description: String
+        var status: String
+        var summary: String?
+        var sourcePointers: [SourcePointer]
+    }
+
+    struct ValidationContractSummary: Codable, Sendable, Equatable, Hashable {
+        var status: String
+        var assertionCount: Int
+        var requiredPassed: Int
+        var requiredTotal: Int
+        var assertions: [ValidationAssertionSummary]
+        var sourcePointers: [SourcePointer]
+    }
+
+    struct HandoffSummary: Codable, Sendable, Equatable, Hashable {
+        var runID: String
+        var taskStatus: String
+        var runStatus: String
+        var completedWork: [String]
+        var unfinishedWork: [String]
+        var blockers: [String]
+        var suggestedNextAction: String?
+        var sourcePointers: [SourcePointer]
+    }
+
+    struct CorrectiveWorkSummary: Codable, Sendable, Equatable, Hashable {
+        var correctiveStepID: String
+        var failedAssertionID: String
+        var status: String
+        var failureSummary: String
+        var suggestedRepair: String
+        var correctiveTaskID: String?
+        var dismissedReason: String?
+        var sourcePointers: [SourcePointer]
+    }
+
     var schemaVersion: Int
     var mode: TaskThreadMode
     var startingRequest: String
@@ -129,6 +172,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var changedFiles: [ChangedFile]
     var artifacts: [ArtifactReference]
     var verification: Verification
+    var validationContract: ValidationContractSummary?
+    var latestHandoff: HandoffSummary?
+    var correctiveWork: [CorrectiveWorkSummary]?
     var sourcePointers: [SourcePointer]
     var nextLikelyAction: String?
     var turns: [Turn]
@@ -235,6 +281,7 @@ enum TaskContextStateManager {
         }
         appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
         appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
+        appendValidationContract(state.validationContract, to: &lines, limit: 8)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             lines.append("- Test command: \(boundedInline(testCommand, maxCharacters: 320))")
         }
@@ -250,6 +297,8 @@ enum TaskContextStateManager {
         }
         appendSourcePointerList("Verification evidence", state.verification.evidence, to: &lines, limit: 4)
         appendArtifactReferences(state.artifacts, to: &lines, limit: 6)
+        appendLatestHandoff(state.latestHandoff, to: &lines)
+        appendCorrectiveWork(state.correctiveWork, to: &lines, limit: 5)
         if let next = state.nextLikelyAction, !next.isEmpty {
             lines.append("- Next likely action: \(boundedInline(next, maxCharacters: 320))")
         }
@@ -313,6 +362,7 @@ enum TaskContextStateManager {
         }
         appendMarkdownFacts("Constraints", state.constraints, to: &parts)
         appendMarkdownFacts("Acceptance Criteria", state.acceptanceCriteria, to: &parts)
+        appendMarkdownValidationContract(state.validationContract, to: &parts)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             parts.append("")
             parts.append("## Test Command")
@@ -329,6 +379,8 @@ enum TaskContextStateManager {
         appendMarkdownChangedFiles(state.changedFiles, to: &parts)
         appendMarkdownVerification(state.verification, to: &parts)
         appendMarkdownArtifacts(state.artifacts, to: &parts)
+        appendMarkdownHandoff(state.latestHandoff, to: &parts)
+        appendMarkdownCorrectiveWork(state.correctiveWork, to: &parts)
         if let next = state.nextLikelyAction, !next.isEmpty {
             parts.append("")
             parts.append("## Next Likely Action")
@@ -386,6 +438,9 @@ enum TaskContextStateManager {
             changedFiles: [],
             artifacts: [],
             verification: verificationState(task: task, latestRun: nil),
+            validationContract: nil,
+            latestHandoff: nil,
+            correctiveWork: nil,
             sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task context")],
             nextLikelyAction: nil,
             turns: [],
@@ -460,6 +515,9 @@ enum TaskContextStateManager {
         state.changedFiles = changedFileReferences(for: task)
         state.artifacts = artifactReferences(for: task)
         state.verification = verificationState(task: task, latestRun: latestRun)
+        state.validationContract = validationContractState(task: task, planState: planState)
+        state.latestHandoff = latestHandoffState(task: task)
+        state.correctiveWork = correctiveWorkState(task: task)
         state.sourcePointers = sourcePointers(for: task, state: state)
     }
 
@@ -565,6 +623,9 @@ enum TaskContextStateManager {
             changedFiles: changedFiles,
             artifacts: [],
             verification: verification,
+            validationContract: nil,
+            latestHandoff: nil,
+            correctiveWork: nil,
             sourcePointers: sourcePointers,
             nextLikelyAction: legacy.nextLikelyAction,
             turns: legacy.turns,
@@ -711,6 +772,174 @@ enum TaskContextStateManager {
     }
 
     @MainActor
+    private static func validationContractState(
+        task: AgentTask,
+        planState: TaskPlanState
+    ) -> TaskContextState.ValidationContractSummary? {
+        guard let plan = planState.plan,
+              let contract = plan.validationContract,
+              !contract.assertions.isEmpty else {
+            return nil
+        }
+
+        let assertionEvents = latestAssertionEventsByID(task: task, planID: plan.planID)
+        var requiredPassed = 0
+        let assertions = contract.assertions.map { assertion in
+            let eventPair = assertionEvents[assertion.id]
+            let status = eventPair?.payload.status ?? "not_run"
+            if assertion.required && status == "passed" {
+                requiredPassed += 1
+            }
+            var sources = [
+                sourcePointer(kind: "plan", id: plan.planID.uuidString, summary: "Validation contract assertion")
+            ]
+            if let event = eventPair?.event {
+                sources.append(eventSource(event, summary: "Validation assertion \(status)"))
+            }
+            if let evidencePath = eventPair?.payload.evidence,
+               evidencePath.hasPrefix("/") {
+                sources.append(sourcePointer(
+                    kind: "validation_evidence",
+                    id: assertion.id,
+                    path: evidencePath,
+                    summary: "Validation evidence artifact"
+                ))
+            }
+            return TaskContextState.ValidationAssertionSummary(
+                id: assertion.id,
+                scope: assertion.scope.rawValue,
+                stepID: assertion.stepID,
+                method: assertion.method.rawValue,
+                required: assertion.required,
+                description: boundedInline(assertion.description, maxCharacters: 320),
+                status: status,
+                summary: eventPair?.payload.summary,
+                sourcePointers: dedupeSourcePointers(sources)
+            )
+        }
+
+        let contractEvents = task.events.filter { event in
+            guard [TaskValidationEventTypes.contractCreated,
+                   TaskValidationEventTypes.contractUpdated,
+                   TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed].contains(event.type),
+                  let payload = decodeContractPayload(event.payload) else {
+                return false
+            }
+            return payload.planID == plan.planID
+        }
+        let latestContractOutcome = contractEvents
+            .filter { [TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed].contains($0.type) }
+            .sorted { $0.timestamp > $1.timestamp }
+            .first
+        let requiredTotal = contract.assertions.filter(\.required).count
+        let hasStartedAssertions = assertions.contains { $0.status == "started" }
+        let hasRequiredFailure = assertions.contains { $0.required && $0.status == "failed" }
+        let allAssertionsTerminal = assertions.allSatisfy { summary in
+            ["passed", "failed", "skipped", "reviewed"].contains(summary.status)
+        }
+        let status: String
+        if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
+            status = "failed"
+        } else if latestContractOutcome?.type == TaskValidationEventTypes.contractPassed {
+            status = "passed"
+        } else if requiredTotal > 0 && requiredPassed == requiredTotal {
+            status = "passed"
+        } else if requiredTotal == 0 && allAssertionsTerminal && !hasStartedAssertions {
+            status = "passed"
+        } else if hasRequiredFailure {
+            status = "failed"
+        } else if hasStartedAssertions {
+            status = "running"
+        } else {
+            status = "not_verified"
+        }
+        let eventPointers = contractEvents
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(4)
+            .map { eventSource($0, summary: "Validation contract event \($0.type)") }
+
+        return TaskContextState.ValidationContractSummary(
+            status: status,
+            assertionCount: contract.assertions.count,
+            requiredPassed: requiredPassed,
+            requiredTotal: requiredTotal,
+            assertions: assertions,
+            sourcePointers: dedupeSourcePointers(
+                [sourcePointer(kind: "plan", id: plan.planID.uuidString, summary: "Validation contract")]
+                    + eventPointers
+            )
+        )
+    }
+
+    private static func latestAssertionEventsByID(
+        task: AgentTask,
+        planID: UUID
+    ) -> [String: (event: TaskEvent, payload: TaskValidationAssertionEventPayload)] {
+        var results: [String: (event: TaskEvent, payload: TaskValidationAssertionEventPayload)] = [:]
+        let validationEventTypes = [
+            TaskValidationEventTypes.assertionDefined,
+            TaskValidationEventTypes.assertionStarted,
+            TaskValidationEventTypes.assertionPassed,
+            TaskValidationEventTypes.assertionFailed,
+            TaskValidationEventTypes.assertionSkipped,
+            TaskValidationEventTypes.assertionReviewed
+        ]
+        for event in task.events
+            .filter({ validationEventTypes.contains($0.type) })
+            .sorted(by: { $0.timestamp > $1.timestamp }) {
+            guard let payload = decodeAssertionPayload(event.payload),
+                  payload.planID == planID,
+                  results[payload.assertionID] == nil else {
+                continue
+            }
+            results[payload.assertionID] = (event, payload)
+        }
+        return results
+    }
+
+    @MainActor
+    private static func latestHandoffState(task: AgentTask) -> TaskContextState.HandoffSummary? {
+        guard let event = task.events
+            .filter({ $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated })
+            .sorted(by: { $0.timestamp > $1.timestamp })
+            .first,
+            let payload = TaskWorkerHandoffService.decode(event.payload) else {
+            return nil
+        }
+
+        return TaskContextState.HandoffSummary(
+            runID: payload.runID.uuidString,
+            taskStatus: payload.taskStatus,
+            runStatus: payload.runStatus,
+            completedWork: Array(payload.completedWork.prefix(8)),
+            unfinishedWork: Array(payload.unfinishedWork.prefix(8)),
+            blockers: Array(payload.blockers.prefix(8)),
+            suggestedNextAction: payload.suggestedNextAction,
+            sourcePointers: [eventSource(event, summary: "Structured worker handoff")]
+        )
+    }
+
+    @MainActor
+    private static func correctiveWorkState(task: AgentTask) -> [TaskContextState.CorrectiveWorkSummary]? {
+        let records = TaskCorrectiveWorkService.latestCorrectiveSteps(for: task)
+        guard !records.isEmpty else { return nil }
+        return records.prefix(10).map { record in
+            let payload = record.payload
+            return TaskContextState.CorrectiveWorkSummary(
+                correctiveStepID: TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload),
+                failedAssertionID: payload.failedAssertionID,
+                status: payload.status,
+                failureSummary: boundedInline(payload.failureSummary, maxCharacters: 360),
+                suggestedRepair: boundedInline(payload.suggestedRepair, maxCharacters: 360),
+                correctiveTaskID: payload.correctiveTaskID?.uuidString,
+                dismissedReason: payload.dismissedReason,
+                sourcePointers: [eventSource(record.event, summary: "Corrective work \(payload.status)")]
+            )
+        }
+    }
+
+    @MainActor
     private static func verificationState(task: AgentTask, latestRun: TaskRun?) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
         let artifactStatus = artifactVerificationStatus(for: task)
@@ -723,7 +952,7 @@ enum TaskContextStateManager {
             let status = verificationStatus(for: event)
             return TaskContextState.Verification(
                 status: status,
-                strategy: task.validationStrategy.rawValue,
+                strategy: validationStrategy(for: task, event: event),
                 command: command,
                 summary: boundedInline(event.payload, maxCharacters: 500),
                 evidence: [eventSource(event, summary: "Validation event")],
@@ -810,6 +1039,16 @@ enum TaskContextStateManager {
             pointers.append(checkpointPointer)
         }
         pointers += state.verification.evidence
+        if let validationContract = state.validationContract {
+            pointers += validationContract.sourcePointers
+            pointers += validationContract.assertions.flatMap(\.sourcePointers)
+        }
+        if let latestHandoff = state.latestHandoff {
+            pointers += latestHandoff.sourcePointers
+        }
+        if let correctiveWork = state.correctiveWork {
+            pointers += correctiveWork.flatMap(\.sourcePointers)
+        }
         pointers += state.decisionFacts.flatMap(\.sourcePointers)
         pointers += state.blockerFacts.flatMap(\.sourcePointers)
         pointers += state.changedFiles.flatMap(\.sourcePointers)
@@ -899,7 +1138,12 @@ enum TaskContextStateManager {
         return .execution
     }
 
+    @MainActor
     private static func nextLikelyAction(task: AgentTask, planState: TaskPlanState) -> String? {
+        if let correction = TaskCorrectiveWorkService.openCorrectiveSteps(for: task).first {
+            let payload = correction.payload
+            return "Review corrective work for failed assertion \(payload.failedAssertionID): \(boundedInline(payload.suggestedRepair, maxCharacters: 220))"
+        }
         if let plan = planState.plan,
            let nextStep = TaskPlanService.nextExecutableStep(in: plan) {
             return "Continue with plan step: \(nextStep.title)"
@@ -1033,6 +1277,10 @@ enum TaskContextStateManager {
     }
 
     private static func isValidationEvent(_ event: TaskEvent) -> Bool {
+        if event.type == TaskValidationEventTypes.contractPassed ||
+            event.type == TaskValidationEventTypes.contractFailed {
+            return true
+        }
         let payload = event.payload.lowercased()
         if event.type == "task.completed" {
             return payload.contains("tests passed") || payload.contains("ai check passed")
@@ -1045,6 +1293,12 @@ enum TaskContextStateManager {
     }
 
     private static func verificationStatus(for event: TaskEvent) -> String {
+        if event.type == TaskValidationEventTypes.contractPassed {
+            return "passed"
+        }
+        if event.type == TaskValidationEventTypes.contractFailed {
+            return "failed"
+        }
         let payload = event.payload.lowercased()
         if event.type == "task.completed" {
             return "passed"
@@ -1053,6 +1307,24 @@ enum TaskContextStateManager {
             return "error"
         }
         return "failed"
+    }
+
+    private static func decodeAssertionPayload(_ payload: String) -> TaskValidationAssertionEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: data)
+    }
+
+    private static func decodeContractPayload(_ payload: String) -> TaskValidationContractEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data)
+    }
+
+    private static func validationStrategy(for task: AgentTask, event: TaskEvent) -> String {
+        if event.type == TaskValidationEventTypes.contractPassed ||
+            event.type == TaskValidationEventTypes.contractFailed {
+            return "validation_contract"
+        }
+        return task.validationStrategy.rawValue
     }
 
     private static func appendList(_ label: String, _ values: [String], to lines: inout [String], limit: Int) {
@@ -1103,6 +1375,49 @@ enum TaskContextStateManager {
         for value in items {
             let stale = value.isStale ? " stale" : ""
             lines.append("  - \(value.type) v\(value.version)\(stale): \(boundedInline(value.path, maxCharacters: 280))")
+        }
+    }
+
+    private static func appendValidationContract(
+        _ contract: TaskContextState.ValidationContractSummary?,
+        to lines: inout [String],
+        limit: Int
+    ) {
+        guard let contract else { return }
+        lines.append("- Validation contract: \(contract.status) (\(contract.requiredPassed)/\(contract.requiredTotal) required assertions passed)")
+        for assertion in contract.assertions.prefix(limit) {
+            let required = assertion.required ? "required" : "optional"
+            let step = assertion.stepID.map { " step:\($0)" } ?? ""
+            lines.append("  - [\(assertion.status)] \(assertion.id) \(required) \(assertion.method)\(step): \(boundedInline(assertion.description, maxCharacters: 240))")
+        }
+    }
+
+    private static func appendLatestHandoff(
+        _ handoff: TaskContextState.HandoffSummary?,
+        to lines: inout [String]
+    ) {
+        guard let handoff else { return }
+        lines.append("- Latest handoff: run \(String(handoff.runID.prefix(8))) task \(handoff.taskStatus), run \(handoff.runStatus)")
+        appendList("Handoff completed work", handoff.completedWork, to: &lines, limit: 4)
+        appendList("Handoff unfinished work", handoff.unfinishedWork, to: &lines, limit: 4)
+        appendList("Handoff blockers", handoff.blockers, to: &lines, limit: 4)
+        if let next = handoff.suggestedNextAction, !next.isEmpty {
+            lines.append("  - Handoff next action: \(boundedInline(next, maxCharacters: 260))")
+        }
+    }
+
+    private static func appendCorrectiveWork(
+        _ correctiveWork: [TaskContextState.CorrectiveWorkSummary]?,
+        to lines: inout [String],
+        limit: Int
+    ) {
+        let items = correctiveWork?.prefix(limit) ?? []
+        guard !items.isEmpty else { return }
+        lines.append("- Corrective work:")
+        for item in items {
+            let task = item.correctiveTaskID.map { " task:\(String($0.prefix(8)))" } ?? ""
+            lines.append("  - [\(item.status)] \(item.correctiveStepID) assertion:\(item.failedAssertionID)\(task)")
+            lines.append("    - Repair: \(boundedInline(item.suggestedRepair, maxCharacters: 260))")
         }
     }
 
@@ -1187,6 +1502,67 @@ enum TaskContextStateManager {
             let stale = value.isStale ? " stale" : ""
             parts.append("- \(value.type) v\(value.version)\(stale): `\(value.path)`")
             appendMarkdownSources(value.sourcePointers, to: &parts)
+        }
+    }
+
+    private static func appendMarkdownValidationContract(
+        _ contract: TaskContextState.ValidationContractSummary?,
+        to parts: inout [String]
+    ) {
+        guard let contract else { return }
+        parts.append("")
+        parts.append("## Validation Contract")
+        parts.append("- Status: \(contract.status)")
+        parts.append("- Required passed: \(contract.requiredPassed)/\(contract.requiredTotal)")
+        parts.append("- Assertion count: \(contract.assertionCount)")
+        for assertion in contract.assertions {
+            let required = assertion.required ? "required" : "optional"
+            let step = assertion.stepID.map { " step `\($0)`" } ?? ""
+            parts.append("- [\(assertion.status)] `\(assertion.id)` \(required) \(assertion.method)\(step): \(assertion.description)")
+            if let summary = assertion.summary, !summary.isEmpty {
+                parts.append("  - Summary: \(summary)")
+            }
+            appendMarkdownSources(assertion.sourcePointers, to: &parts)
+        }
+    }
+
+    private static func appendMarkdownHandoff(
+        _ handoff: TaskContextState.HandoffSummary?,
+        to parts: inout [String]
+    ) {
+        guard let handoff else { return }
+        parts.append("")
+        parts.append("## Latest Handoff")
+        parts.append("- Run: \(handoff.runID)")
+        parts.append("- Task status: \(handoff.taskStatus)")
+        parts.append("- Run status: \(handoff.runStatus)")
+        appendMarkdownList(label: "Completed work", handoff.completedWork, to: &parts)
+        appendMarkdownList(label: "Unfinished work", handoff.unfinishedWork, to: &parts)
+        appendMarkdownList(label: "Blockers", handoff.blockers, to: &parts)
+        if let next = handoff.suggestedNextAction, !next.isEmpty {
+            parts.append("- Next action: \(next)")
+        }
+        appendMarkdownSources(handoff.sourcePointers, to: &parts)
+    }
+
+    private static func appendMarkdownCorrectiveWork(
+        _ correctiveWork: [TaskContextState.CorrectiveWorkSummary]?,
+        to parts: inout [String]
+    ) {
+        guard let correctiveWork, !correctiveWork.isEmpty else { return }
+        parts.append("")
+        parts.append("## Corrective Work")
+        for item in correctiveWork {
+            parts.append("- [\(item.status)] `\(item.correctiveStepID)` for assertion `\(item.failedAssertionID)`")
+            parts.append("  - Failure: \(item.failureSummary)")
+            parts.append("  - Repair: \(item.suggestedRepair)")
+            if let correctiveTaskID = item.correctiveTaskID {
+                parts.append("  - Corrective task: \(correctiveTaskID)")
+            }
+            if let dismissedReason = item.dismissedReason, !dismissedReason.isEmpty {
+                parts.append("  - Dismissed reason: \(dismissedReason)")
+            }
+            appendMarkdownSources(item.sourcePointers, to: &parts)
         }
     }
 

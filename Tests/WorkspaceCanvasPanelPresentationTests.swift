@@ -28,6 +28,32 @@ struct WorkspaceCanvasPanelPresentationTests {
         #expect(PlanShelfPresentation.showsStatusBadgesOnlyForExceptionalStates == true)
     }
 
+    @Test("plan shelf summarizes validation contract proof")
+    func planShelfSummarizesValidationContractProof() {
+        let plan = TaskPlan(
+            title: "Proof plan",
+            goal: "Show proof status",
+            steps: [TaskPlanStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "tests",
+                    description: "Focused tests pass",
+                    method: .command,
+                    command: "swift test --filter ViewTests"
+                ),
+                TaskValidationAssertion(
+                    id: "screenshot",
+                    description: "Screenshot exists",
+                    method: .artifact,
+                    required: false,
+                    path: "screen.png"
+                )
+            ])
+        )
+
+        #expect(PlanShelfPresentation.validationContractSummary(for: plan) == "1 required proof, 1 optional")
+    }
+
     @Test("plan shelf groups current next and done steps")
     func planShelfGroupsCurrentNextAndDoneSteps() {
         let steps = [

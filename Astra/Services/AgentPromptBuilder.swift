@@ -1774,6 +1774,7 @@ enum AgentPromptBuilder {
             If blocked, emit ASTRA_EVENT {"v":1,"type":"plan.step.blocked","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"blocked","reason":"What is blocking progress"} and explain the blocker.
             If skipped, emit ASTRA_EVENT {"v":1,"type":"plan.step.skipped","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"skipped","reason":"Why skipped"}.
             Do not materially change the approved plan without saying why.
+            If the approved plan has a validationContract, treat it as the required proof rubric. Do the work needed to satisfy each assertion, but do not claim completion unless the required command, artifact, manual, or structured evidence assertions can pass.
             The user has explicitly approved this plan in ASTRA. Do not ask for a separate interactive tool approval; if a permission or policy blocks work, emit a blocked marker and explain the exact missing permission.
             """
         ]

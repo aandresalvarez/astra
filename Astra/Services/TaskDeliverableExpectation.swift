@@ -36,11 +36,11 @@ enum TaskDeliverableExpectation {
         scanEntryLimit: Int = artifactScanEntryLimit,
         scanDepthLimit: Int = artifactScanDepthLimit
     ) -> Bool {
-        if !run.fileChanges.isEmpty {
+        if run.fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
             return true
         }
 
-        if task.artifacts.contains(where: { !$0.isStale }) {
+        if task.artifacts.contains(where: { !$0.isStale && isUserArtifactPath($0.path, task: task) }) {
             return true
         }
 
@@ -57,7 +57,7 @@ enum TaskDeliverableExpectation {
         scanEntryLimit: Int = artifactScanEntryLimit,
         scanDepthLimit: Int = artifactScanDepthLimit
     ) -> Bool {
-        if !run.fileChanges.isEmpty {
+        if run.fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
             return true
         }
 
@@ -225,6 +225,7 @@ enum TaskDeliverableExpectation {
             }
 
             guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
+            guard !isRuntimeDiagnosticRelativePath(relative) else { continue }
             let depth = relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
@@ -262,6 +263,23 @@ enum TaskDeliverableExpectation {
             }
             return true
         }
+    }
+
+    private static func isUserArtifactPath(_ path: String, task: AgentTask) -> Bool {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !taskFolder.isEmpty else { return true }
+        let root = URL(fileURLWithPath: taskFolder)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let url = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard let relative = relativePath(of: url, taskFolder: root) else { return true }
+        return !isRuntimeDiagnosticRelativePath(relative)
+    }
+
+    private static func isRuntimeDiagnosticRelativePath(_ relative: String) -> Bool {
+        relative == "diagnostics" || relative.hasPrefix("diagnostics/")
     }
 
     private static func relativeDepth(of relative: String) -> Int {

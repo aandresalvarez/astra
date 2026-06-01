@@ -16,6 +16,11 @@ final class TaskQueue {
     /// Track active task IDs for status reporting
     var activeTasks: Set<UUID> = []
 
+    /// Track exclusive/shared resource ownership so write-capable work cannot
+    /// mutate the same checkout concurrently.
+    private(set) var activeResourceLocks: [TaskResourceLockClaim] = []
+    private(set) var waitingResourceLocks: [UUID: TaskResourceLockClaim] = [:]
+
     /// Track tasks that have been dispatched but may not yet be marked as .running.
     /// Prevents the queue loop from double-dispatching a task during the brief
     /// window between dispatch and the worker setting isRunning = true.
@@ -138,10 +143,35 @@ final class TaskQueue {
 
     /// Execute a single task on the next available worker
     @MainActor
-    func executeTask(_ task: AgentTask, modelContext: ModelContext, onEvent: @escaping (ParsedEvent) -> Void = { _ in }) async {
-        guard let worker = nextAvailableWorker() else {
+    func executeTask(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        resourceAccess: TaskResourceAccessMode = .write,
+        onEvent: @escaping (ParsedEvent) -> Void = { _ in }
+    ) async {
+        guard hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "pool_busy",
+                "pool_size": String(poolSize)
+            ], level: .warning)
+            return
+        }
+
+        guard let resourceClaim = await waitForResourceLock(
+            task: task,
+            accessMode: resourceAccess,
+            runMode: "task",
+            modelContext: modelContext
+        ) else {
+            return
+        }
+        defer {
+            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+        }
+
+        guard let worker = nextAvailableWorker() else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "pool_busy_after_resource_lock",
                 "pool_size": String(poolSize)
             ], level: .warning)
             return
@@ -321,13 +351,32 @@ final class TaskQueue {
         message: String,
         modelContext: ModelContext,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
         // Try to find the original worker, or use any available one
-        let worker = taskWorkerMap[task.id] ?? nextAvailableWorker()
-        guard let worker else {
+        guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue"
+            ], level: .warning)
+            return
+        }
+
+        guard let resourceClaim = await waitForResourceLock(
+            task: task,
+            accessMode: resourceAccess,
+            runMode: "continue",
+            modelContext: modelContext
+        ) else {
+            return
+        }
+        defer {
+            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+        }
+
+        guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "no_worker_for_continue_after_resource_lock"
             ], level: .warning)
             return
         }
@@ -354,11 +403,33 @@ final class TaskQueue {
         plan: TaskPlanPayload,
         mode: TaskPlanExecutionMode = .fullPlan,
         modelContext: ModelContext,
+        resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
-        guard let worker = nextAvailableWorker() else {
+        guard hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "pool_busy",
+                "mode": "approved_plan",
+                "pool_size": String(poolSize)
+            ], level: .warning)
+            return
+        }
+
+        guard let resourceClaim = await waitForResourceLock(
+            task: task,
+            accessMode: resourceAccess,
+            runMode: "approved_plan",
+            modelContext: modelContext
+        ) else {
+            return
+        }
+        defer {
+            releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
+        }
+
+        guard let worker = nextAvailableWorker() else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "pool_busy_after_resource_lock",
                 "mode": "approved_plan",
                 "pool_size": String(poolSize)
             ], level: .warning)
@@ -461,8 +532,30 @@ final class TaskQueue {
                 continue
             }
 
-            // Skip tasks already dispatched but not yet marked as .running
-            guard let next = tasks.first(where: { !dispatchedTasks.contains($0.id) }) else {
+            // Skip tasks already dispatched and tasks waiting on an exclusive
+            // resource lock. Later tasks in different roots may still run.
+            guard let next = tasks.first(where: {
+                !dispatchedTasks.contains($0.id)
+                    && canAcquireResourceLock(for: $0, accessMode: resourceAccess(for: $0))
+            }) else {
+                if let blocked = tasks.first(where: { !dispatchedTasks.contains($0.id) }) {
+                    let accessMode = resourceAccess(for: blocked)
+                    let claim = TaskResourceLockClaim(
+                        taskID: blocked.id,
+                        resourceKey: resourceKey(for: blocked),
+                        accessMode: accessMode,
+                        runMode: "task"
+                    )
+                    if waitingResourceLocks[blocked.id] == nil {
+                        waitingResourceLocks[blocked.id] = claim
+                        AppLogger.audit(.resourceLockWaiting, category: "Queue", taskID: blocked.id, fields: [
+                            "resource_key": claim.resourceKey,
+                            "access_mode": claim.accessMode.rawValue,
+                            "run_mode": claim.runMode,
+                            "reason": resourceLockBlockerSummary(for: claim)
+                        ], level: .warning)
+                    }
+                }
                 do { try await Task.sleep(for: .milliseconds(200)) }
                 catch { break }
                 continue
@@ -479,7 +572,7 @@ final class TaskQueue {
 
             let queue = self
             Task { @MainActor in
-                await queue.executeTask(next, modelContext: modelContext)
+                await queue.executeTask(next, modelContext: modelContext, resourceAccess: queue.resourceAccess(for: next))
                 queue.dispatchedTasks.remove(next.id)
             }
 
@@ -516,6 +609,9 @@ final class TaskQueue {
         }
         taskWorkerMap.removeAll()
         activeTasks.removeAll()
+        dispatchedTasks.removeAll()
+        activeResourceLocks.removeAll()
+        waitingResourceLocks.removeAll()
         isProcessingScheduled = false
         processingScheduleGeneration += 1
         isProcessing = false
@@ -563,6 +659,250 @@ final class TaskQueue {
 
     private func workerIndex(_ worker: AgentRuntimeWorker) -> Int {
         workers.firstIndex(where: { $0 === worker }) ?? 0
+    }
+
+    // MARK: - Resource Locks
+
+    @MainActor
+    func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
+        let declarations = task.constraints + task.inputs
+        let normalized = declarations
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .replacingOccurrences(of: "-", with: "_")
+            }
+        let readOnlyMarkers = [
+            "astra_resource_access=read_only",
+            "astra_resource_access:read_only",
+            "resource_access=read_only",
+            "resource_access:read_only"
+        ]
+        if normalized.contains(where: { declaration in
+            readOnlyMarkers.contains { marker in
+                declaration.replacingOccurrences(of: " ", with: "").contains(marker)
+            }
+        }) {
+            return .readOnly
+        }
+        return .write
+    }
+
+    @MainActor
+    func resourceKey(for task: AgentTask) -> String {
+        let access = TaskWorkspaceAccess(task: task)
+        let rawPath = access.codeWorkingDirectory.isEmpty ? access.effectiveWorkspacePath : access.codeWorkingDirectory
+        let expanded = (rawPath as NSString).expandingTildeInPath
+        guard !expanded.isEmpty else {
+            return "task:\(task.id.uuidString)"
+        }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    @MainActor
+    func canAcquireResourceLock(for task: AgentTask, accessMode: TaskResourceAccessMode) -> Bool {
+        canAcquireResourceLock(
+            TaskResourceLockClaim(
+                taskID: task.id,
+                resourceKey: resourceKey(for: task),
+                accessMode: accessMode,
+                runMode: "probe"
+            )
+        )
+    }
+
+    @MainActor
+    @discardableResult
+    func acquireResourceLockIfAvailable(
+        task: AgentTask,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        modelContext: ModelContext? = nil
+    ) -> TaskResourceLockClaim? {
+        let claim = TaskResourceLockClaim(
+            taskID: task.id,
+            resourceKey: resourceKey(for: task),
+            accessMode: accessMode,
+            runMode: runMode
+        )
+        guard canAcquireResourceLock(claim) else {
+            return nil
+        }
+        activeResourceLocks.append(claim)
+        waitingResourceLocks.removeValue(forKey: task.id)
+        recordResourceLockEvent(
+            type: TaskResourceLockEventTypes.acquired,
+            auditEvent: .resourceLockAcquired,
+            task: task,
+            claim: claim,
+            status: "acquired",
+            modelContext: modelContext
+        )
+        return claim
+    }
+
+    @MainActor
+    func releaseResourceLock(
+        _ claim: TaskResourceLockClaim,
+        task: AgentTask,
+        modelContext: ModelContext? = nil
+    ) {
+        activeResourceLocks.removeAll { $0 == claim }
+        waitingResourceLocks.removeValue(forKey: task.id)
+        recordResourceLockEvent(
+            type: TaskResourceLockEventTypes.released,
+            auditEvent: .resourceLockReleased,
+            task: task,
+            claim: claim,
+            status: "released",
+            modelContext: modelContext
+        )
+    }
+
+    @MainActor
+    private func waitForResourceLock(
+        task: AgentTask,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        modelContext: ModelContext
+    ) async -> TaskResourceLockClaim? {
+        let claim = TaskResourceLockClaim(
+            taskID: task.id,
+            resourceKey: resourceKey(for: task),
+            accessMode: accessMode,
+            runMode: runMode
+        )
+        recordResourceLockEvent(
+            type: TaskResourceLockEventTypes.requested,
+            auditEvent: .resourceLockRequested,
+            task: task,
+            claim: claim,
+            status: "requested",
+            modelContext: modelContext
+        )
+
+        var recordedWaiting = false
+        while !Task.isCancelled {
+            if let acquired = acquireResourceLockIfAvailable(
+                task: task,
+                accessMode: accessMode,
+                runMode: runMode,
+                modelContext: modelContext
+            ) {
+                return acquired
+            }
+
+            waitingResourceLocks[task.id] = claim
+            if !recordedWaiting {
+                recordResourceLockEvent(
+                    type: TaskResourceLockEventTypes.waiting,
+                    auditEvent: .resourceLockWaiting,
+                    task: task,
+                    claim: claim,
+                    status: "waiting",
+                    reason: resourceLockBlockerSummary(for: claim),
+                    modelContext: modelContext
+                )
+                recordedWaiting = true
+            }
+
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                waitingResourceLocks.removeValue(forKey: task.id)
+                return nil
+            }
+        }
+
+        waitingResourceLocks.removeValue(forKey: task.id)
+        return nil
+    }
+
+    private func canAcquireResourceLock(_ claim: TaskResourceLockClaim) -> Bool {
+        let sameResourceLocks = activeResourceLocks.filter {
+            resourceKeysConflict($0.resourceKey, claim.resourceKey)
+        }
+        guard !sameResourceLocks.isEmpty else { return true }
+        switch claim.accessMode {
+        case .readOnly:
+            return sameResourceLocks.allSatisfy { $0.accessMode == .readOnly }
+        case .write:
+            return false
+        }
+    }
+
+    private func resourceLockBlockerSummary(for claim: TaskResourceLockClaim) -> String {
+        let blockers = activeResourceLocks
+            .filter { resourceKeysConflict($0.resourceKey, claim.resourceKey) }
+        guard !blockers.isEmpty else { return "resource lock unavailable" }
+        let modes = blockers.map(\.accessMode.rawValue).joined(separator: ",")
+        return "waiting for \(blockers.count) active \(modes) lock\(blockers.count == 1 ? "" : "s")"
+    }
+
+    private func resourceKeysConflict(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.hasPrefix("task:") || rhs.hasPrefix("task:") {
+            return lhs == rhs
+        }
+        let left = URL(fileURLWithPath: lhs)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let right = URL(fileURLWithPath: rhs)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
+    }
+
+    private func isPath(_ possibleAncestor: String, ancestorOf path: String) -> Bool {
+        let ancestor = possibleAncestor.hasSuffix("/") ? possibleAncestor : possibleAncestor + "/"
+        return path.hasPrefix(ancestor)
+    }
+
+    @MainActor
+    private func recordResourceLockEvent(
+        type: String,
+        auditEvent: AuditEvent,
+        task: AgentTask,
+        claim: TaskResourceLockClaim,
+        status: String,
+        reason: String? = nil,
+        modelContext: ModelContext?
+    ) {
+        let holder = activeResourceLocks.first {
+            $0.resourceKey == claim.resourceKey && $0.taskID != claim.taskID
+        }?.taskID
+        let payload = TaskResourceLockPayload(
+            version: 1,
+            resourceKey: claim.resourceKey,
+            accessMode: claim.accessMode,
+            runMode: claim.runMode,
+            status: status,
+            holderTaskID: holder,
+            reason: reason
+        )
+        if let modelContext {
+            modelContext.insert(TaskEvent(task: task, type: type, payload: encodeResourceLockPayload(payload)))
+            try? modelContext.save()
+        }
+        AppLogger.audit(auditEvent, category: "Queue", taskID: task.id, fields: [
+            "resource_key": claim.resourceKey,
+            "access_mode": claim.accessMode.rawValue,
+            "run_mode": claim.runMode,
+            "status": status,
+            "holder_task_id": holder?.uuidString ?? "none",
+            "reason": reason ?? "none"
+        ], level: type == TaskResourceLockEventTypes.waiting ? .warning : .info)
+    }
+
+    private func encodeResourceLockPayload(_ payload: TaskResourceLockPayload) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
     }
 
     // MARK: - Template Hooks Injection

@@ -468,7 +468,68 @@ extension TaskPlanService {
             ))
         }
 
-        return TaskPlanPayload(version: 1, planID: plan.planID, title: title, goal: goal, steps: steps)
+        let validationContract = normalizeValidationContract(
+            plan.validationContract,
+            validStepIDs: Set(steps.map(\.id))
+        )
+
+        return TaskPlanPayload(
+            version: 1,
+            planID: plan.planID,
+            title: title,
+            goal: goal,
+            steps: steps,
+            validationContract: validationContract
+        )
+    }
+
+    private static func normalizeValidationContract(
+        _ contract: TaskValidationContract?,
+        validStepIDs: Set<String>
+    ) -> TaskValidationContract? {
+        guard let contract, contract.version == 1 else { return nil }
+        var seenIDs = Set<String>()
+        var assertions: [TaskValidationAssertion] = []
+        assertions.reserveCapacity(contract.assertions.count)
+
+        for assertion in contract.assertions {
+            let id = assertion.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let description = assertion.description.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !description.isEmpty, !seenIDs.contains(id) else { continue }
+
+            let stepID = assertion.stepID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            if assertion.scope == .step {
+                guard let stepID, validStepIDs.contains(stepID) else { continue }
+                assertions.append(normalizedAssertion(assertion, id: id, description: description, stepID: stepID))
+            } else {
+                assertions.append(normalizedAssertion(assertion, id: id, description: description, stepID: nil))
+            }
+            seenIDs.insert(id)
+        }
+
+        guard !assertions.isEmpty else { return nil }
+        return TaskValidationContract(version: 1, assertions: assertions)
+    }
+
+    private static func normalizedAssertion(
+        _ assertion: TaskValidationAssertion,
+        id: String,
+        description: String,
+        stepID: String?
+    ) -> TaskValidationAssertion {
+        TaskValidationAssertion(
+            id: id,
+            scope: assertion.scope,
+            stepID: stepID,
+            description: description,
+            method: assertion.method,
+            required: assertion.required,
+            command: assertion.command?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            path: assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            expectedArtifactType: assertion.expectedArtifactType?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            manualReviewLabel: assertion.manualReviewLabel?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            evidenceQuery: assertion.evidenceQuery?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        )
     }
 
     private static func enrichedLikelyTools(existing: [String], textParts: [String]) -> [String] {
@@ -545,10 +606,80 @@ extension TaskPlanService {
     ) -> TaskEvent {
         let event = TaskEvent(task: task, type: type, payload: encodePlanPayload(plan))
         modelContext.insert(event)
+        recordValidationContractSnapshotIfNeeded(
+            plan: plan,
+            planEventType: type,
+            task: task,
+            modelContext: modelContext
+        )
         task.updatedAt = Date()
         auditPlanLifecycle(type: type, planID: plan.planID, task: task, stepCount: plan.steps.count)
         TaskContextStateManager.refresh(task: task)
         return event
+    }
+
+    @MainActor
+    private static func recordValidationContractSnapshotIfNeeded(
+        plan: TaskPlanPayload,
+        planEventType: String,
+        task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        guard let contract = plan.validationContract, !contract.assertions.isEmpty else { return }
+        let contractEventType: String
+        let auditEvent: AuditEvent
+        switch planEventType {
+        case TaskPlanEventTypes.created:
+            contractEventType = TaskValidationEventTypes.contractCreated
+            auditEvent = .validationContractCreated
+        case TaskPlanEventTypes.updated:
+            contractEventType = TaskValidationEventTypes.contractUpdated
+            auditEvent = .validationContractUpdated
+        default:
+            return
+        }
+
+        let requiredTotal = contract.assertions.filter(\.required).count
+        let contractPayload = TaskValidationContractEventPayload(
+            version: 1,
+            planID: plan.planID,
+            status: "defined",
+            requiredPassed: 0,
+            requiredTotal: requiredTotal,
+            failedRequiredAssertionIDs: [],
+            summary: "\(contract.assertions.count) validation assertion\(contract.assertions.count == 1 ? "" : "s") defined"
+        )
+        modelContext.insert(TaskEvent(task: task, type: contractEventType, payload: encode(contractPayload)))
+
+        for assertion in contract.assertions {
+            let assertionPayload = TaskValidationAssertionEventPayload(
+                version: 1,
+                planID: plan.planID,
+                assertionID: assertion.id,
+                scope: assertion.scope,
+                stepID: assertion.stepID,
+                method: assertion.method,
+                required: assertion.required,
+                status: "defined",
+                summary: assertion.description,
+                command: assertion.command,
+                exitCode: nil,
+                path: assertion.path,
+                evidence: nil,
+                reason: nil
+            )
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: TaskValidationEventTypes.assertionDefined,
+                payload: encode(assertionPayload)
+            ))
+        }
+
+        AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
+            "plan_id": plan.planID.uuidString,
+            "assertion_count": String(contract.assertions.count),
+            "required_count": String(requiredTotal)
+        ])
     }
 
     @MainActor

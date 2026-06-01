@@ -242,6 +242,61 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Antigravity empty run surfaces hidden diagnostic log failure")
+    func antigravityEmptyRunSurfacesHiddenDiagnosticLogFailure() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            log_file=""
+            while [ "$#" -gt 0 ]; do
+              if [ "$1" = "--log-file" ]; then
+                shift
+                log_file="$1"
+              fi
+              shift
+            done
+            if [ -n "$log_file" ]; then
+              mkdir -p "$(dirname "$log_file")"
+              {
+                printf '%s\\n' 'W server_oauth.go:99] Account ineligible: Your current account is not eligible for Antigravity.'
+                printf '%s\\n' 'E log.go:398] RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity on this model. Your quota will reset after 91h11m50s.'
+                printf '%s\\n' 'E discovery.go:383] Failed to load JSON config file /Users/alvaro1/.gemini/config/mcp_config.json: unexpected end of JSON input'
+              } > "$log_file"
+            fi
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Answer from Antigravity",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        let logPath = try #require(AntigravityCLIRuntime.diagnosticLogPath(task: task, runID: run.id))
+        let errorPayload = try #require(task.events.first { $0.type == "error" }?.payload)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(FileManager.default.fileExists(atPath: logPath))
+        #expect(errorPayload.contains("quota is exhausted"))
+        #expect(errorPayload.contains("account_ineligible"))
+        #expect(errorPayload.contains("malformed_mcp_config"))
+        #expect(errorPayload.contains(logPath))
+    }
+
     @Test("Antigravity empty misspelled artifact task stays pending review")
     func antigravityEmptyMisspelledArtifactTaskStaysPendingReview() async throws {
         let harness = try HeadlessChatHarness()
@@ -1611,6 +1666,97 @@ struct HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "plan.step.completed" })
     }
 
+    @Test("Approved plan completion is blocked when validation contract fails")
+    func approvedPlanCompletionBlockedWhenValidationContractFails() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Contract gated plan",
+            goal: "Do work with proof",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Implement", likelyTools: ["Write"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "proof-command",
+                    description: "Proof command passes",
+                    method: .command,
+                    command: "false"
+                )
+            ])
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan work completed"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .pendingUser)
+        #expect(state.lifecycleStatus == .executing)
+        #expect(!task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionFailed })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Validation contract failed") })
+    }
+
+    @Test("Approved plan completion proceeds when validation contract passes")
+    func approvedPlanCompletionProceedsWhenValidationContractPasses() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Contract gated plan",
+            goal: "Do work with proof",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Implement", likelyTools: ["Write"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "proof-command",
+                    description: "Proof command passes",
+                    method: .command,
+                    command: "true"
+                )
+            ])
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan work completed"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(state.lifecycleStatus == .completed)
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+        #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+    }
+
     @Test("Approved plan execution records failure lifecycle on failure")
     func approvedPlanExecutionRecordsFailureLifecycleOnFailure() async throws {
         let harness = try HeadlessChatHarness()
@@ -1753,6 +1899,74 @@ struct HeadlessChatScenarioTests {
         #expect(finalState.lifecycleStatus == .completed)
         #expect(finalState.plan?.steps.allSatisfy { $0.status == .done } == true)
         #expect(task.events.contains { $0.type == "plan.execution.completed" })
+    }
+
+    @Test("Review mode validates contract only after the final approved step")
+    func reviewModeValidatesContractOnlyAfterFinalApprovedStep() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let countFile = harness.rootURL.appendingPathComponent("review-contract-count.txt")
+        let proofURL = harness.rootURL.appendingPathComponent("final-proof.txt")
+        let plan = TaskPlanPayload(
+            title: "Two step proof plan",
+            goal: "Build proof across multiple approvals",
+            steps: [
+                TaskPlanPayloadStep(id: "step-1", title: "Prepare proof", likelyTools: ["Write"]),
+                TaskPlanPayloadStep(id: "step-2", title: "Finish proof", likelyTools: ["Write"])
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "final-proof",
+                    description: "Final proof exists",
+                    method: .command,
+                    command: "test -f \(Self.shQuote(proofURL.path))"
+                )
+            ])
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
+            count=$((count + 1))
+            printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
+            else
+              touch \(Self.shQuote(proofURL.path))
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
+            fi
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
+
+        let stateAfterFirstStep = TaskPlanService.reconstruct(for: task)
+        let currentPlan = try #require(stateAfterFirstStep.plan)
+        #expect(task.status == .pendingUser)
+        #expect(stateAfterFirstStep.lifecycleStatus == .executing)
+        #expect(stateAfterFirstStep.plan?.steps.first(where: { $0.id == "step-1" })?.status == .done)
+        #expect(stateAfterFirstStep.plan?.steps.first(where: { $0.id == "step-2" })?.status == .pending)
+        #expect(!task.events.contains { $0.type == TaskValidationEventTypes.assertionStarted })
+        #expect(!task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
+        #expect(!task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+
+        _ = await harness.executeApprovedPlan(task: task, plan: currentPlan, worker: worker, mode: .nextStep)
+
+        let finalState = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(finalState.lifecycleStatus == .completed)
+        #expect(finalState.plan?.steps.allSatisfy { $0.status == .done } == true)
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+        #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
     }
 
     @Test("Review mode preserves blocked plan steps for user approval")

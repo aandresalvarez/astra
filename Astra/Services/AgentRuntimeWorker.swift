@@ -103,6 +103,13 @@ final class AgentRuntimeWorker {
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
+            guard await validateApprovedPlanContractForFinalCompletion(
+                task: task,
+                plan: currentPlan,
+                modelContext: modelContext
+            ) else {
+                return
+            }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
             task.status = .completed
             task.updatedAt = Date()
@@ -135,14 +142,14 @@ final class AgentRuntimeWorker {
         )
         if task.status == .completed {
             if let approvedStep {
-                finalizeApprovedPlanStep(
+                await finalizeApprovedPlanStep(
                     approvedStep,
                     plan: currentPlan,
                     task: task,
                     modelContext: modelContext
                 )
             } else {
-                finalizeApprovedFullPlan(
+                await finalizeApprovedFullPlan(
                     currentPlan,
                     task: task,
                     modelContext: modelContext
@@ -164,7 +171,7 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) {
+    ) async {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
         let shouldFallbackComplete: Bool = {
@@ -210,6 +217,13 @@ final class AgentRuntimeWorker {
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
         } else {
+            guard await validateApprovedPlanContractForFinalCompletion(
+                task: task,
+                plan: refreshedPlan,
+                modelContext: modelContext
+            ) else {
+                return
+            }
             TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
         }
     }
@@ -219,7 +233,7 @@ final class AgentRuntimeWorker {
         _ plan: TaskPlanPayload,
         task: AgentTask,
         modelContext: ModelContext
-    ) {
+    ) async {
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
             pauseApprovedPlanForUser(
@@ -233,7 +247,45 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard await validateApprovedPlanContractForFinalCompletion(
+            task: task,
+            plan: refreshedPlan,
+            modelContext: modelContext
+        ) else {
+            return
+        }
         TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
+    }
+
+    @MainActor
+    private func validateApprovedPlanContractForFinalCompletion(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        modelContext: ModelContext
+    ) async -> Bool {
+        let contractEvaluation = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
+            modelContext: modelContext,
+            verifierRuntime: utilityRuntimeConfiguration(
+                for: .verifier,
+                task: task,
+                fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
+                preferredModel: validationModel,
+                modelContext: modelContext
+            )
+        )
+        guard contractEvaluation.canComplete else {
+            pauseApprovedPlanForUser(
+                task: task,
+                modelContext: modelContext,
+                message: contractEvaluation.summary,
+                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
+            return false
+        }
+        return true
     }
 
     @MainActor
@@ -528,6 +580,7 @@ final class AgentRuntimeWorker {
             timeoutSeconds: timeoutSeconds,
             phase: auditPhase,
             nativeContinuationSessionID: nativeContinuationSessionID,
+            runID: run.id,
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
                     streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -783,8 +836,11 @@ final class AgentRuntimeWorker {
                         claudePath: claudePath,
                         model: validationModel,
                         utilityRuntime: utilityRuntimeConfiguration(
-                            for: selectedRuntime,
-                            preferredModel: validationModel
+                            for: .verifier,
+                            task: task,
+                            fallbackRuntime: selectedRuntime,
+                            preferredModel: validationModel,
+                            modelContext: modelContext
                         )
                     )
                     switch aiResult {
@@ -871,7 +927,7 @@ final class AgentRuntimeWorker {
         }
 
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
-            scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime)
+            scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)
         }
 
         if shouldCleanupIsolation {
@@ -916,15 +972,23 @@ final class AgentRuntimeWorker {
 
         let providerName = runtimeAdapter.descriptor.displayName
         let requiredArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        let antigravityDiagnostic = runtimeAdapter.id == .antigravityCLI
+            ? AntigravityCLIRuntime.diagnosticSummary(
+                logPath: AntigravityCLIRuntime.diagnosticLogPath(task: task, runID: run.id)
+            )
+            : nil
         var payload = requiredArtifact
             ? "\(providerName) finished with exit code 0 but did not return text output and did not create a usable file for this run. Retry this task or switch providers."
             : "\(providerName) finished with exit code 0 but did not return text output or create a visible file. Retry this task or switch providers."
+        if let antigravityDiagnostic {
+            payload += " \(antigravityDiagnostic.message) Diagnostic log: \(antigravityDiagnostic.logPath)"
+        }
         if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             payload += " Provider stderr: \(String(RuntimeReadinessRedactor.redacted(error).prefix(300)))"
         }
         let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
         modelContext.insert(event)
-        AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: [
+        var auditFields = [
             "runtime": runtimeAdapter.id.rawValue,
             "phase": phase,
             "exit_code": String(result.exitCode),
@@ -933,7 +997,11 @@ final class AgentRuntimeWorker {
             "run_scoped_file_result": String(visibleFileResult),
             "requires_artifact": String(requiredArtifact),
             "stderr_bytes": String(result.error?.utf8.count ?? 0)
-        ], level: .warning)
+        ]
+        if let antigravityDiagnostic {
+            auditFields.merge(antigravityDiagnostic.auditFields) { _, new in new }
+        }
+        AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: auditFields, level: .warning)
         return true
     }
 
@@ -1018,16 +1086,26 @@ final class AgentRuntimeWorker {
         )
     }
 
+    @MainActor
     private func utilityRuntimeConfiguration(
-        for runtime: AgentRuntimeID,
-        preferredModel: String
+        for role: TaskRoleID,
+        task: AgentTask,
+        fallbackRuntime: AgentRuntimeID,
+        preferredModel: String,
+        modelContext: ModelContext
     ) -> AgentUtilityRuntimeConfiguration {
-        let model = RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime)
-        return AgentUtilityRuntimeConfiguration(
-            runtime: runtime,
-            model: model,
+        let roleRuntime = TaskRoleProfileStore.utilityRuntime(
+            for: role,
+            task: task,
+            defaultRuntimeID: fallbackRuntime.rawValue,
+            defaultModel: preferredModel,
+            validationModel: preferredModel,
+            defaultBudget: task.tokenBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerSettings: runtimeConfiguration.configuredProviderSettings
         )
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
+        return roleRuntime.configuration
     }
 
     @MainActor
@@ -1070,7 +1148,8 @@ final class AgentRuntimeWorker {
     @MainActor
     private func scheduleGeneratedTitleIfNeeded(
         for task: AgentTask,
-        selectedRuntime: AgentRuntimeID
+        selectedRuntime: AgentRuntimeID,
+        modelContext: ModelContext
     ) {
         guard task.runs.count == 1,
               task.title == String(task.goal.prefix(60)),
@@ -1081,8 +1160,11 @@ final class AgentRuntimeWorker {
         let goalText = task.goal
         let wsPath = ws.primaryPath
         let titleRuntime = utilityRuntimeConfiguration(
-            for: selectedRuntime,
-            preferredModel: validationModel
+            for: .summarizer,
+            task: task,
+            fallbackRuntime: selectedRuntime,
+            preferredModel: validationModel,
+            modelContext: modelContext
         )
         let taskRef = task
         Task.detached {
