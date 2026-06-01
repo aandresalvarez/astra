@@ -35,7 +35,14 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "GET", path: "/trace")
         case "benchmark":
             let endpoint = try browserEndpoint()
-            return try await request(endpoint: endpoint, method: "GET", path: "/benchmark")
+            var items: [URLQueryItem] = []
+            if let suite = args.value(after: "--suite"), !suite.isEmpty {
+                items.append(URLQueryItem(name: "suite", value: suite))
+            }
+            if args.contains("--definition-only") {
+                items.append(URLQueryItem(name: "run", value: "false"))
+            }
+            return try await request(endpoint: endpoint, method: "GET", path: "/benchmark", queryItems: items)
         case "analyze", "analyse":
             let endpoint = try browserEndpoint()
             var items: [URLQueryItem] = []
@@ -557,7 +564,7 @@ struct AstraBrowserTool {
                 "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
                 "ASTRA_BROWSER_DEBUG_CAPTURE=0 astra-browser click --role button --name Save  # suppress rich failure evidence for this command",
                 "astra-browser trace",
-                "astra-browser benchmark",
+                "astra-browser benchmark [--suite browser-v2-smoke] [--definition-only]",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
                 "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size chars]",
                 "astra-browser page [--query text] [--limit n]",

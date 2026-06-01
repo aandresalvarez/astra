@@ -437,6 +437,13 @@ struct BrowserAnalysis {
         controls.first { $0.controlID == id }
     }
 
+    func controlRef(for control: BrowserControl, debug: Bool = false) -> BrowserControlRef {
+        BrowserControlRef(
+            control: control,
+            accessibilityNode: accessibilitySnapshot?.matchingNode(for: control)
+        )
+    }
+
     func responseObject(
         query: String?,
         full: Bool,
@@ -482,10 +489,7 @@ struct BrowserAnalysis {
         ]
         if version == .v2 {
             let refs = returned.map {
-                BrowserControlRef(
-                    control: $0,
-                    accessibilityNode: accessibilitySnapshot?.matchingNode(for: $0)
-                )
+                controlRef(for: $0, debug: debug)
             }
             object["analysisVersion"] = version.rawValue
             object["controlRefs"] = refs.map { $0.jsonObject(debug: debug) }
@@ -524,6 +528,180 @@ struct BrowserAnalysis {
             "recommendedActions": v2["recommendedActions"] as? [[String: Any]] ?? [],
             "controlRefs": v2["controlRefs"] as? [[String: Any]] ?? []
         ]
+    }
+}
+
+struct BrowserControlRefMatch {
+    let control: BrowserControl
+    let controlRef: BrowserControlRef
+    let strategy: String
+    let usedSelectorFallback: Bool
+
+    var jsonObject: [String: Any] {
+        [
+            "strategy": strategy,
+            "usedSelectorFallback": usedSelectorFallback,
+            "controlRef": controlRef.jsonObject(debug: false)
+        ]
+    }
+}
+
+enum BrowserControlResolver {
+    static func matchingLiveControl(
+        cachedControl: BrowserControl,
+        cachedAnalysis: BrowserAnalysis,
+        liveAnalysis: BrowserAnalysis
+    ) -> BrowserControlRefMatch? {
+        let cachedRef = cachedAnalysis.controlRef(for: cachedControl)
+        if cachedRef.source == .accessibility,
+           let semantic = bestSemanticMatch(
+            cachedControl: cachedControl,
+            cachedRef: cachedRef,
+            liveAnalysis: liveAnalysis,
+            requireLiveAccessibility: true,
+            strategy: "accessibility"
+           ) {
+            return semantic
+        }
+
+        if let semantic = bestSemanticMatch(
+            cachedControl: cachedControl,
+            cachedRef: cachedRef,
+            liveAnalysis: liveAnalysis,
+            requireLiveAccessibility: false,
+            strategy: "controlRef"
+        ) {
+            return semantic
+        }
+
+        if let exact = liveAnalysis.control(id: cachedControl.controlID) {
+            return match(control: exact, liveAnalysis: liveAnalysis, strategy: "controlID", usedSelectorFallback: false)
+        }
+
+        if let identity = liveAnalysis.controls.first(where: { $0.identityHash == cachedControl.identityHash }) {
+            return match(control: identity, liveAnalysis: liveAnalysis, strategy: "identityHash", usedSelectorFallback: false)
+        }
+
+        if !cachedControl.selector.isEmpty,
+           let selector = liveAnalysis.controls.first(where: {
+               $0.selector == cachedControl.selector
+                   && ($0.label == cachedControl.label || cachedControl.label.isEmpty || $0.label.isEmpty)
+                   && ($0.role == cachedControl.role || cachedControl.role.isEmpty || $0.role.isEmpty)
+           }) {
+            return match(control: selector, liveAnalysis: liveAnalysis, strategy: "selectorFallback", usedSelectorFallback: true)
+        }
+
+        return nil
+    }
+
+    private static func bestSemanticMatch(
+        cachedControl: BrowserControl,
+        cachedRef: BrowserControlRef,
+        liveAnalysis: BrowserAnalysis,
+        requireLiveAccessibility: Bool,
+        strategy: String
+    ) -> BrowserControlRefMatch? {
+        let ranked = liveAnalysis.controls.compactMap { control -> (control: BrowserControl, score: Double)? in
+            let liveRef = liveAnalysis.controlRef(for: control)
+            guard !requireLiveAccessibility || liveRef.source == .accessibility else { return nil }
+            let score = semanticScore(cachedControl: cachedControl, cachedRef: cachedRef, liveControl: control, liveRef: liveRef)
+            guard score > 0 else { return nil }
+            return (control, score)
+        }.sorted { left, right in
+            if left.score == right.score {
+                return left.control.controlID < right.control.controlID
+            }
+            return left.score > right.score
+        }
+
+        guard let best = ranked.first else { return nil }
+        if let second = ranked.dropFirst().first, second.score == best.score {
+            return nil
+        }
+        return match(control: best.control, liveAnalysis: liveAnalysis, strategy: strategy, usedSelectorFallback: false)
+    }
+
+    private static func semanticScore(
+        cachedControl: BrowserControl,
+        cachedRef: BrowserControlRef,
+        liveControl: BrowserControl,
+        liveRef: BrowserControlRef
+    ) -> Double {
+        let cachedName = normalized(cachedRef.control.name.isEmpty ? cachedRef.control.label : cachedRef.control.name)
+        let liveName = normalized(liveRef.control.name.isEmpty ? liveRef.control.label : liveRef.control.name)
+        let cachedRole = normalized(cachedRef.control.role)
+        let liveRole = normalized(liveRef.control.role)
+
+        let roleMatches = cachedRole.isEmpty || liveRole.isEmpty || liveRole.contains(cachedRole) || cachedRole.contains(liveRole)
+        let nameMatches = cachedName.isEmpty || liveName == cachedName || liveName.contains(cachedName) || cachedName.contains(liveName)
+        guard roleMatches && nameMatches else { return 0 }
+
+        var score = 1.0
+        if liveRef.source == cachedRef.source {
+            score += 20
+        }
+        if liveRef.source == .accessibility {
+            score += 60
+        }
+        if !cachedRole.isEmpty, cachedRole == liveRole {
+            score += 30
+        }
+        if !cachedName.isEmpty, cachedName == liveName {
+            score += 50
+        } else if nameMatches {
+            score += 20
+        }
+        if !cachedControl.placeholder.isEmpty, cachedControl.placeholder == liveControl.placeholder {
+            score += 15
+        }
+        if !cachedControl.testID.isEmpty, cachedControl.testID == liveControl.testID {
+            score += 20
+        }
+        if !cachedControl.href.isEmpty, cachedControl.href == liveControl.href {
+            score += 20
+        }
+        if cachedControl.framePath == liveControl.framePath {
+            score += 10
+        }
+        score += max(0, 25 - boundsDistance(cachedControl.bounds, liveControl.bounds) / 10)
+        if liveControl.supports(cachedControl.primaryAction ?? .click) {
+            score += 10
+        }
+        return score
+    }
+
+    private static func match(
+        control: BrowserControl,
+        liveAnalysis: BrowserAnalysis,
+        strategy: String,
+        usedSelectorFallback: Bool
+    ) -> BrowserControlRefMatch {
+        BrowserControlRefMatch(
+            control: control,
+            controlRef: liveAnalysis.controlRef(for: control),
+            strategy: strategy,
+            usedSelectorFallback: usedSelectorFallback
+        )
+    }
+
+    private static func boundsDistance(_ left: [String: Any], _ right: [String: Any]) -> Double {
+        let leftX = double(left["centerX"]) ?? double(left["x"]) ?? 0
+        let leftY = double(left["centerY"]) ?? double(left["y"]) ?? 0
+        let rightX = double(right["centerX"]) ?? double(right["x"]) ?? 0
+        let rightY = double(right["centerY"]) ?? double(right["y"]) ?? 0
+        return abs(leftX - rightX) + abs(leftY - rightY)
+    }
+
+    private static func normalized(_ value: String) -> String {
+        BrowserAnalysisBuilder.normalizedName(value)
+    }
+
+    private static func double(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        if let int = value as? Int { return Double(int) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
     }
 }
 

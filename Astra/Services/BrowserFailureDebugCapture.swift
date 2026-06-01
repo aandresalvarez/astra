@@ -122,7 +122,7 @@ enum BrowserFailureDebugCapture {
         let consoleEvents = object["consoleEvents"] as? [[String: Any]] ?? []
         let navigationEvents = object["navigationEvents"] as? [[String: Any]] ?? []
         let networkEvents = object["networkEvents"] as? [[String: Any]] ?? []
-        return [
+        var compact: [String: Any] = [
             "ok": boolValue(object["ok"]),
             "url": BrowserFlightPageSnapshot.redactedURLString(stringValue(object["url"])),
             "title": String(stringValue(object["title"]).prefix(160)),
@@ -133,6 +133,14 @@ enum BrowserFailureDebugCapture {
             "navigationEvents": navigationEvents.suffix(max(0, limit)).map(compactNavigationEvent),
             "networkEvents": networkEvents.suffix(max(0, limit)).map(compactNetworkEvent)
         ]
+        let captureMode = stringValue(object["captureMode"])
+        if !captureMode.isEmpty {
+            compact["captureMode"] = captureMode
+        }
+        if let capabilities = object["capabilities"] as? [String: Any] {
+            compact["capabilities"] = compactCDPCapabilities(capabilities)
+        }
+        return compact
     }
 
     static func screenshotObject(
@@ -342,6 +350,24 @@ enum BrowserFailureDebugCapture {
         let error = stringValue(event["error"])
         if !error.isEmpty {
             object["error"] = compactText(redactURLs(in: error), includePreview: true)
+        }
+        return object
+    }
+
+    private static func compactCDPCapabilities(_ capabilities: [String: Any]) -> [String: Any] {
+        var object: [String: Any] = [
+            "browser": String(stringValue(capabilities["browser"]).prefix(80)),
+            "protocolVersion": String(stringValue(capabilities["protocolVersion"]).prefix(40))
+        ]
+        if let domains = capabilities["domains"] as? [String: Bool] {
+            object["domains"] = domains
+        } else if let domains = capabilities["domains"] as? [String: Any] {
+            object["domains"] = domains.mapValues { boolValue($0) }
+        }
+        if let errors = capabilities["errors"] as? [String: String], !errors.isEmpty {
+            object["errors"] = errors.mapValues { String($0.prefix(160)) }
+        } else if let errors = capabilities["errors"] as? [String: Any], !errors.isEmpty {
+            object["errors"] = errors.mapValues { String(stringValue($0).prefix(160)) }
         }
         return object
     }
