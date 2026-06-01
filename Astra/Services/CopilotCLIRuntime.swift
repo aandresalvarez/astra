@@ -154,6 +154,7 @@ enum CopilotCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         localToolCommands: [String] = [],
+        runtimeSupportTools: [String] = [],
         disableCustomInstructions: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
@@ -188,6 +189,7 @@ enum CopilotCLIRuntime {
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
             supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
@@ -244,6 +246,7 @@ enum CopilotCLIRuntime {
         policy: PermissionPolicy,
         allowedTools: [String],
         localToolCommands: [String] = [],
+        runtimeSupportTools: [String] = [],
         supportsAllowAll: Bool = false,
         supportsAllowAllTools: Bool = false,
         supportsAllowAllPaths: Bool = false,
@@ -253,6 +256,9 @@ enum CopilotCLIRuntime {
         let localToolPermissions = shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
             ? copilotShellPermissions(forLocalToolCommands: localToolCommands)
             : []
+        let supportToolPermissions = Array(Set(runtimeSupportTools.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })).sorted()
         switch policy {
         case .autonomous:
             if supportsAllowAll {
@@ -280,7 +286,7 @@ enum CopilotCLIRuntime {
         case .restricted:
             let mapped = (allowedTools.isEmpty
                 ? ["read", "shell(git status)", "shell(git diff)", "shell(git log)"]
-                : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)) + localToolPermissions
+                : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)) + localToolPermissions + supportToolPermissions
             guard !mapped.isEmpty else { return [] }
             return ["--allow-tool"] + Array(Set(mapped)).sorted()
         case .interactive:

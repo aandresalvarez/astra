@@ -425,6 +425,80 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
     }
 
+    @Test("Copilot launch audit separates task and runtime support tools")
+    @MainActor
+    func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {
+        let workspace = Workspace(name: "Copilot Support", primaryPath: "/tmp/astra-copilot-support")
+        let task = AgentTask(
+            title: "Copilot",
+            goal: "Who are you?",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let supportTools = CopilotPolicyAdapter().runtimeSupportTools
+        let providerRender = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["read"],
+            runtimeSupportTools: supportTools,
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .copilotCLI,
+            providerVersion: nil,
+            model: "gpt-5",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: "/tmp/astra-provider-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["runtime_support_tool_count"] == "2")
+        #expect(plan.commandPlannedFields["runtime_support_tool_names"] == "fetch_copilot_cli_documentation,report_intent")
+        #expect(plan.arguments.contains("read"))
+        #expect(plan.arguments.contains("fetch_copilot_cli_documentation"))
+        #expect(plan.arguments.contains("report_intent"))
+    }
+
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
     func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)

@@ -36,6 +36,65 @@ struct HeadlessChatScenarioTests {
         #expect(events.contains { if case .text("Headless Copilot response") = $0 { true } else { false } })
     }
 
+    @Test("Fake Copilot runtime support tools complete who-are-you prompt")
+    func fakeCopilotRuntimeSupportToolsCompleteWhoAreYouPrompt() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"intent-1","toolName":"report_intent","arguments":{"intent":"Answering provider identity question"}}}'
+            printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"intent-1","success":true,"result":{"content":"ok"}}}'
+            printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"docs-1","toolName":"fetch_copilot_cli_documentation","arguments":{}}}'
+            printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"docs-1","success":true,"result":{"content":"ok"}}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I am GitHub Copilot CLI running through ASTRA."}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "who are you?", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(run.output == "I am GitHub Copilot CLI running through ASTRA.")
+    }
+
+    @Test("Fake Copilot malformed runtime support tool input fails before output")
+    func fakeCopilotMalformedRuntimeSupportToolInputFailsBeforeOutput() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"docs-1","toolName":"fetch_copilot_cli_documentation","arguments":{"command":"git status"}}}'
+            /bin/sleep 20
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "who are you?", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "policy_violation")
+        #expect(run.output.isEmpty)
+        #expect(task.events.contains {
+            $0.type == "error" && $0.payload.contains("provider support tool carried action-like input")
+        })
+    }
+
     @Test("Fake Claude chat completes through the worker without UI")
     func fakeClaudeChatCompletes() async throws {
         let harness = try HeadlessChatHarness()

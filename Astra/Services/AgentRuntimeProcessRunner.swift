@@ -593,6 +593,20 @@ final class AgentRuntimeProcessRunner {
         return Array(Set(baseAllowedTools + runtimeGrants)).sorted()
     }
 
+    static func providerRuntimeSupportToolPermissions(
+        for runtime: AgentRuntimeID,
+        permissionManifest: RunPermissionManifest?
+    ) -> [String] {
+        guard let permissionManifest,
+              permissionManifest.providerID == runtime else {
+            return []
+        }
+        return Array(Set(permissionManifest.providerRender.runtimeSupportTools.compactMap { descriptor in
+            let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return permission?.isEmpty == false ? permission : nil
+        })).sorted()
+    }
+
     static func ensureSubAgentPermissions(
         at workspacePath: String,
         policy: PermissionPolicy,

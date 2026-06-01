@@ -6,6 +6,7 @@ protocol ProviderPolicyAdapter {
     var providerID: AgentRuntimeID { get }
     var adapterVersion: Int { get }
     var supportedFeatures: ProviderPolicyFeatures { get }
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] { get }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender
     func validate(render: ProviderPolicyRender, context: PolicyRenderContext) -> [PolicyDiagnostic]
@@ -16,6 +17,8 @@ protocol ProviderPolicyAdapter {
 }
 
 extension ProviderPolicyAdapter {
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] { [] }
+
     func validate(render: ProviderPolicyRender, context _: PolicyRenderContext) -> [PolicyDiagnostic] {
         render.diagnostics
     }
@@ -112,6 +115,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             configOwnership: context.providerConfigOwnership,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: allowedTools,
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,
@@ -175,6 +179,25 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     let providerID: AgentRuntimeID = .copilotCLI
     let adapterVersion = 1
     var capabilities: AgentRuntimePolicyCapabilities = .conservative
+
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] {
+        [
+            ProviderRuntimeSupportToolDescriptor(
+                name: "fetch_copilot_cli_documentation",
+                providerNativePermission: "fetch_copilot_cli_documentation",
+                purpose: "Read GitHub Copilot CLI help and documentation for self-description questions.",
+                allowedInputKeys: [],
+                maxSummaryLength: 2
+            ),
+            ProviderRuntimeSupportToolDescriptor(
+                name: "report_intent",
+                providerNativePermission: "report_intent",
+                purpose: "Report non-mutating provider progress intent to the runtime.",
+                allowedInputKeys: ["intent"],
+                maxSummaryLength: 240
+            )
+        ]
+    }
 
     var supportedFeatures: ProviderPolicyFeatures {
         ProviderPolicyFeatures(
@@ -240,6 +263,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             configOwnership: .generated,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: providerAllowedTools,
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,
@@ -356,6 +380,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             configOwnership: .generated,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,

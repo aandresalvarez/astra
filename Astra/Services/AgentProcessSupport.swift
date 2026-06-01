@@ -1661,6 +1661,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let reason = violation.requiresApproval ? "runtime_policy_approval_required" : "runtime_policy_violation"
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
             "reason": reason,
+            "violation_category": violation.violationCategory,
             "tool": violation.toolName ?? "unknown",
             "message": violation.reason,
             "approval_grant": PermissionBroker.providerGrantStrings(
@@ -1702,6 +1703,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 reason: violation.reason,
                 toolName: violation.toolName,
                 detail: redactedDetail,
+                violationCategory: violation.violationCategory,
                 requiresApproval: violation.requiresApproval,
                 permissionRequest: violation.permissionRequest,
                 approvalGrants: violation.approvalGrants

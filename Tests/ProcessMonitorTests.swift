@@ -975,7 +975,11 @@ struct RuntimePolicyGuardTests {
 
     @Test("Runtime support tools do not trip policy")
     func runtimeSupportToolsDoNotTripPolicy() {
-        let manifest = runtimePolicyManifest(allowedTools: ["Read", "Glob", "Grep"])
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools
+        )
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
             taskID: manifest.taskID,
@@ -992,9 +996,36 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalRequired == false)
     }
 
+    @Test("Copilot documentation support tool with empty input does not trip policy")
+    func copilotDocumentationSupportToolWithEmptyInputDoesNotTripPolicy() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "fetch_copilot_cli_documentation", id: "t1", input: ["summary": "{}"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
     @Test("Runtime support tool exemption does not hide actionable fields")
     func runtimeSupportToolExemptionDoesNotHideActionableFields() {
-        let manifest = runtimePolicyManifest(allowedTools: ["Read", "Glob", "Grep"])
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools
+        )
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
             taskID: manifest.taskID,
@@ -1009,6 +1040,35 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == true)
         #expect(monitor.policyViolation == true)
         #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("provider support tool carried action-like input") == true)
+    }
+
+    @Test("Runtime support tool schema rejects disallowed keys")
+    func runtimeSupportToolSchemaRejectsDisallowedKeys() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "report_intent",
+                id: "t1",
+                input: ["summary": #"{"intent":"Listing PRs","extra":"bad"}"#]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("unsupported input keys: extra") == true)
     }
 
     @Test("Ask-first tool pauses for runtime approval")
@@ -1907,7 +1967,8 @@ private func runtimePolicyManifest(
     providerID: AgentRuntimeID = .claudeCode,
     policyLevel: AgentPolicyLevel = .review,
     usesBroadProviderPermissions: Bool = false,
-    approvalGrants: [PermissionGrant] = []
+    approvalGrants: [PermissionGrant] = [],
+    runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] = []
 ) -> RunPermissionManifest {
     let render = ProviderPolicyRender(
         providerID: providerID,
@@ -1916,6 +1977,7 @@ private func runtimePolicyManifest(
         configOwnership: .generated,
         permissionMode: permissionMode,
         allowedTools: allowedTools,
+        runtimeSupportTools: runtimeSupportTools,
         askFirstTools: askFirstTools,
         deniedTools: deniedTools,
         allowedShellPatterns: allowedShellPatterns,

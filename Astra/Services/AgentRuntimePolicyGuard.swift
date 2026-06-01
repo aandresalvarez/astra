@@ -5,6 +5,7 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var reason: String
     var toolName: String?
     var detail: String?
+    var violationCategory: String = "runtime_policy"
     var requiresApproval: Bool = false
     var permissionRequest: PermissionRequest?
     var approvalGrants: [PermissionGrant] = []
@@ -161,11 +162,8 @@ struct AgentRuntimePolicyGuard: Sendable {
             return AgentRuntimePolicyViolation(reason: "The provider reported an unnamed tool use", toolName: nil, detail: observed.summary)
         }
 
-        if isPolicyExemptTool(toolName),
-           observed.command == nil,
-           observed.path == nil,
-           observed.url == nil {
-            return nil
+        if let supportTool = runtimeSupportToolDescriptor(for: toolName) {
+            return validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName)
         }
 
         if toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.deniedTools) {
@@ -233,6 +231,52 @@ struct AgentRuntimePolicyGuard: Sendable {
         if isNetworkTool(toolName) || observed.url != nil || observed.command?.lowercased().contains("curl ") == true,
            let violation = validateNetwork(urls: networkURLs(from: observed), toolName: toolName) {
             return violation
+        }
+
+        return nil
+    }
+
+    private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {
+        let normalized = Self.normalizedToolName(toolName)
+        return manifest.providerRender.runtimeSupportTools.first {
+            Self.normalizedToolName($0.name) == normalized
+        }
+    }
+
+    private func validateRuntimeSupportTool(
+        _ descriptor: ProviderRuntimeSupportToolDescriptor,
+        observed: PolicyObservedEvent,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        if observed.command != nil || observed.path != nil || observed.url != nil {
+            return AgentRuntimePolicyViolation(
+                reason: "The provider support tool carried action-like input outside its safe runtime schema",
+                toolName: toolName,
+                detail: observed.summary,
+                violationCategory: "runtime_support_tool_action_field"
+            )
+        }
+
+        let allowedKeys = Set(descriptor.allowedInputKeys)
+        let observedKeys = Set(observed.inputKeys)
+        let unsupportedKeys = observedKeys.subtracting(allowedKeys).sorted()
+        if !unsupportedKeys.isEmpty {
+            return AgentRuntimePolicyViolation(
+                reason: "The provider support tool used unsupported input keys: \(unsupportedKeys.joined(separator: ", "))",
+                toolName: toolName,
+                detail: observed.summary,
+                violationCategory: "runtime_support_tool_input_schema"
+            )
+        }
+
+        if let summary = observed.summary,
+           summary.count > descriptor.maxSummaryLength {
+            return AgentRuntimePolicyViolation(
+                reason: "The provider support tool input exceeded its safe summary limit",
+                toolName: toolName,
+                detail: String(summary.prefix(240)),
+                violationCategory: "runtime_support_tool_summary_length"
+            )
         }
 
         return nil
@@ -617,10 +661,6 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func isNetworkTool(_ tool: String) -> Bool {
         ["webfetch", "websearch"].contains(Self.normalizedToolName(tool))
-    }
-
-    private func isPolicyExemptTool(_ tool: String) -> Bool {
-        ["report_intent"].contains(Self.normalizedToolName(tool))
     }
 
     private static func normalizedToolName(_ tool: String) -> String {

@@ -974,6 +974,11 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
+        let nativeAllowedTools = Array(Set(providerAllowed + runtimeSupportTools)).sorted()
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = [
             "-p",
@@ -994,13 +999,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
             policy: effectivePermissionPolicy,
-            allowedTools: providerAllowed
+            allowedTools: nativeAllowedTools
         )
         if context.task.maxTurns > 0 {
             args += ["--max-turns", String(context.task.maxTurns)]
         }
-        if !providerAllowed.isEmpty {
-            args += ["--allowedTools"] + providerAllowed
+        if !nativeAllowedTools.isEmpty {
+            args += ["--allowedTools"] + nativeAllowedTools
         }
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1032,6 +1037,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
+                "runtime_support_tool_count": String(runtimeSupportTools.count),
+                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
                 "max_turns": String(context.task.maxTurns),
@@ -1511,6 +1518,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1536,7 +1547,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            localToolCommands: localToolCommands
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1574,6 +1586,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
+                "runtime_support_tool_count": String(runtimeSupportTools.count),
+                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),

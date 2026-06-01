@@ -207,6 +207,16 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Provider support tool arguments preserve structured keys for policy")
+    func providerSupportToolArgumentsPreserveStructuredKeysForPolicy() throws {
+        let line = #"{"type":"tool.execution_start","data":{"toolCallId":"docs-1","toolName":"fetch_copilot_cli_documentation","arguments":{"command":"git status"}}}"#
+        let parsed = try #require(CopilotStreamEventParser.parse(line: line))
+        let observed = try #require(PolicyObservedEvent(providerEvent: parsed))
+
+        #expect(observed.command == "git status")
+        #expect(observed.inputKeys == ["command"])
+    }
+
     @Test("Permission request maps to permission denied event")
     func permissionRequest() {
         let line = #"{"type":"permission_request","tool":"shell(rm)","message":"approval needed"}"#
@@ -770,6 +780,32 @@ struct CopilotCLICommandPlanningTests {
         #expect(joined.contains("shell(git:*)"))
         #expect(joined.contains("shell(astra-browser:*)"))
         #expect(joined.contains("shell(stanford-graph-mail:*)"))
+    }
+
+    @Test("Restricted command planning includes runtime support tool permissions")
+    func restrictedCommandPlanningIncludesRuntimeSupportToolPermissions() throws {
+        let capabilities = CopilotCLICapabilities(helpText: "--allow-tool --output-format --stream --no-ask-user")
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Who are you?",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+        )
+
+        let allowIndex = try #require(plan.arguments.firstIndex(of: "--allow-tool"))
+        let allowedEntries = Set(plan.arguments[plan.arguments.index(after: allowIndex)...])
+
+        #expect(allowedEntries.contains("read"))
+        #expect(allowedEntries.contains("fetch_copilot_cli_documentation"))
+        #expect(allowedEntries.contains("report_intent"))
     }
 
     @Test("Restricted permissions do not grant local tools without Bash")
