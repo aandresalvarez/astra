@@ -7,6 +7,21 @@ import SwiftData
 // Rows: Branch · Sync (combined pull+push) · Changes drawer · Open Pull Request.
 // Helper-model assists for commit messages and PR drafts via AgentUtilityRuntimeRunner.
 
+enum WorkspaceGitPanelPresentation {
+    static let startsCollapsed = false
+    static let collapsedVisibleRowCount = 1
+    static let expandedDetailRowCount = 6
+    static let repositorySelectorRowMinHeight: CGFloat = 50
+    static let detailRowMinHeight: CGFloat = 44
+    static let showDetailsActionTitle = "Show all"
+    static let hideDetailsActionTitle = "Hide"
+}
+
+private enum WorkspaceGitDetailsMode {
+    case summary
+    case details
+}
+
 struct WorkspaceGitSectionView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject var viewModel = WorkspaceGitViewModel()
@@ -22,56 +37,48 @@ struct WorkspaceGitSectionView: View {
     @State private var showRepositoryPopover = false
     @State private var showLocationPopover = false
     @State private var showPRCommentsPopover = false
+    @State private var repositoryDetailsMode: WorkspaceGitDetailsMode =
+        WorkspaceGitPanelPresentation.startsCollapsed ? .summary : .details
 
     // Row scale shared with the sibling rail panels (Capabilities, Workspace
     // setup) so the Repository card reads as part of the same vertical menu.
-    private static let rowIconGlyphSize: CGFloat = 20
-    private static let rowIconFrame: CGFloat = 40
-    private static let rowIconSpacing: CGFloat = 14
-    private static let rowMinHeight: CGFloat = 48
+    private static let rowIconGlyphSize = CapabilityRailLayout.leadingIconFontSize
+    private static let rowIconFrame = CapabilityRailLayout.leadingIconFrame
+    private static let rowIconSpacing = CapabilityRailLayout.leadingIconSpacing
+    private static let rowMinHeight = WorkspaceGitPanelPresentation.detailRowMinHeight
+    private static let repositoryRowMinHeight = WorkspaceGitPanelPresentation.repositorySelectorRowMinHeight
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isCompact ? 14 : Stanford.railSectionContentSpacing) {
+        VStack(
+            alignment: .leading,
+            spacing: isCompact
+                ? CapabilityRailLayout.compactSectionContentSpacing
+                : CapabilityRailLayout.regularSectionContentSpacing
+        ) {
             header
 
             if let error = viewModel.errorMessage {
                 errorBanner(error)
             }
 
-            VStack(spacing: 0) {
-                repositoryRow
-                rowDivider
-
-                branchRow
-                rowDivider
-
-                workingLocationRow
-                rowDivider
-
-                changesRow
-                if isChangesDrawerExpanded {
-                    changesDrawer
-                }
-
-                rowDivider
-                commitOrPushRow
-
-                rowDivider
-                if let pr = viewModel.openPullRequest {
-                    pullRequestLinkRow(pr)
-                } else {
-                    createPullRequestRow
-                }
+            if repositoryDetailsMode == .details {
+                repositoryDetailRows
+                collapseDetailsButton
+            } else {
+                repositorySummaryRow
             }
         }
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
+            applyInitialRepositoryPresentation()
         }
         .onChange(of: selectedTask?.id) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
+            applyInitialRepositoryPresentation()
         }
         .onChange(of: selectedTask?.executionRootPath) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
+            applyInitialRepositoryPresentation()
         }
         .onChange(of: viewModel.prDraft) { _, newValue in
             showPRDraftSheet = newValue != nil
@@ -132,7 +139,7 @@ struct WorkspaceGitSectionView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
             Text("Repository")
-                .font(Stanford.ui(17, weight: .semibold))
+                .font(Stanford.ui(CapabilityRailLayout.sectionTitleFontSize, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
 
@@ -153,13 +160,21 @@ struct WorkspaceGitSectionView: View {
             Task { await viewModel.scanRepositories() }
         } label: {
             Image(systemName: "arrow.clockwise")
-                .font(Stanford.ui(15, weight: .medium))
+                .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .medium))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: 22, height: 22)
+        .frame(width: 20, height: 20)
         .help("Refresh status")
+    }
+
+    private func applyInitialRepositoryPresentation() {
+        repositoryDetailsMode = WorkspaceGitPanelPresentation.startsCollapsed ? .summary : .details
+        isChangesDrawerExpanded = false
+        showRepositoryPopover = false
+        showLocationPopover = false
+        viewModel.showBranchPickerPopover = false
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -192,7 +207,7 @@ struct WorkspaceGitSectionView: View {
     }
 
     /// Row separator that begins after the leading icon column, matching the
-    /// sibling rail panels (`checklistDivider`): start after the 40pt icon
+    /// sibling rail panels (`checklistDivider`): start after the leading icon
     /// frame, low opacity, no table-like trailing rule.
     private var rowDivider: some View {
         Divider()
@@ -201,7 +216,7 @@ struct WorkspaceGitSectionView: View {
     }
 
     /// Shared leading icon for every collapsed row, sized to the rail's row
-    /// grammar (20pt glyph centered in a 40pt column) so the Repository card
+    /// grammar so the Repository card
     /// scans at the same rhythm as Capabilities and Workspace setup.
     private func rowIcon(_ name: String, color: Color = Stanford.lagunita) -> some View {
         Image(systemName: name)
@@ -212,14 +227,136 @@ struct WorkspaceGitSectionView: View {
 
     private func rowTitle(_ text: String) -> some View {
         Text(text)
-            .font(Stanford.ui(16, weight: .semibold))
+            .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
             .foregroundStyle(.primary)
     }
 
     private var rowDisclosureChevron: some View {
         Image(systemName: "chevron.down")
-            .font(Stanford.ui(11, weight: .semibold))
+            .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
             .foregroundStyle(.tertiary)
+    }
+
+    private var repositorySummaryRow: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                repositoryDetailsMode = .details
+            }
+        } label: {
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("folder")
+
+                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
+                    rowTitle(repositorySummaryTitle)
+                    Text(repositorySummarySubtitle)
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 8)
+
+                Text(WorkspaceGitPanelPresentation.showDetailsActionTitle)
+                    .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show repository controls")
+    }
+
+    private var repositoryDetailRows: some View {
+        VStack(spacing: 0) {
+            repositoryRow
+            rowDivider
+
+            branchRow
+            rowDivider
+
+            workingLocationRow
+            rowDivider
+
+            changesRow
+            if isChangesDrawerExpanded {
+                changesDrawer
+            }
+
+            rowDivider
+            commitOrPushRow
+
+            rowDivider
+            if let pr = viewModel.openPullRequest {
+                pullRequestLinkRow(pr)
+            } else {
+                createPullRequestRow
+            }
+        }
+    }
+
+    private var collapseDetailsButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                repositoryDetailsMode = .summary
+                isChangesDrawerExpanded = false
+            }
+        } label: {
+            Text(WorkspaceGitPanelPresentation.hideDetailsActionTitle)
+                .font(Stanford.caption(11).weight(.medium))
+                .foregroundStyle(Stanford.lagunita)
+                .padding(.leading, Self.rowIconFrame)
+                .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .help("Hide repository controls")
+    }
+
+    private var repositorySummaryTitle: String {
+        let name = viewModel.selectedRepositoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == "No repository" ? "Repository" : name
+    }
+
+    private var repositorySummarySubtitle: String {
+        guard viewModel.selectedRepository != nil else {
+            return viewModel.selectedRepositorySubtitle
+        }
+
+        var parts: [String] = []
+        let branch = viewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !branch.isEmpty, branch != "unknown" {
+            parts.append(branch)
+        }
+        parts.append(workingLocationLabel)
+        parts.append(changesSummaryCompactText)
+
+        if let pr = viewModel.openPullRequest {
+            parts.append("PR #\(pr.number)")
+        } else if let issue = viewModel.pullRequestReadinessIssue {
+            parts.append(shortPullRequestIssue(issue))
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private var changesSummaryCompactText: String {
+        switch viewModel.changesSummary {
+        case .clean:
+            return "Clean"
+        case let .modified(additions, deletions, fileCount):
+            let stats = [
+                additions > 0 ? "+\(additions)" : nil,
+                deletions > 0 ? "-\(deletions)" : nil
+            ].compactMap { $0 }
+            return stats.isEmpty ? "\(fileCount) changed" : stats.joined(separator: " ")
+        }
     }
 
     // MARK: - Repository row
@@ -242,7 +379,7 @@ struct WorkspaceGitSectionView: View {
 
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(viewModel.selectedRepositoryName)
-                        .font(Stanford.caption(13).weight(.semibold))
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -255,7 +392,7 @@ struct WorkspaceGitSectionView: View {
 
                 rowDisclosureChevron
             }
-            .frame(minHeight: Self.rowMinHeight)
+            .frame(minHeight: Self.repositoryRowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
@@ -280,7 +417,7 @@ struct WorkspaceGitSectionView: View {
                 Spacer(minLength: 8)
 
                 Text(viewModel.currentBranch.isEmpty ? "Select…" : viewModel.currentBranch)
-                    .font(Stanford.caption(13).weight(.medium))
+                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -313,7 +450,7 @@ struct WorkspaceGitSectionView: View {
                 Spacer(minLength: 8)
 
                 Text(workingLocationLabel)
-                    .font(Stanford.caption(13).weight(.medium))
+                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
                     .foregroundStyle(viewModel.isUsingWorktree ? Stanford.lagunita : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -365,17 +502,17 @@ struct WorkspaceGitSectionView: View {
         let hasMessage = !viewModel.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasStaged && hasMessage {
             Text("Ready")
-                .font(Stanford.caption(13).weight(.medium))
+                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
                 .foregroundStyle(Stanford.statusHealthy)
         } else if viewModel.pushableCommitCount > 0 {
             Label("\(viewModel.pushableCommitCount)", systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
                 .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(13).weight(.semibold))
+                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                 .foregroundStyle(Stanford.lagunita)
         } else if viewModel.behind > 0 {
             Label("\(viewModel.behind)", systemImage: "arrow.down")
                 .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(13).weight(.semibold))
+                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                 .foregroundStyle(Stanford.statusInfo)
         }
     }
@@ -397,7 +534,7 @@ struct WorkspaceGitSectionView: View {
                 changesBadge
 
                 Image(systemName: "chevron.right")
-                    .font(Stanford.ui(11, weight: .semibold))
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(isChangesDrawerExpanded ? 90 : 0))
             }
@@ -413,23 +550,23 @@ struct WorkspaceGitSectionView: View {
         switch viewModel.changesSummary {
         case .clean:
             Text("Clean")
-                .font(Stanford.caption(13).weight(.medium))
+                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
                 .foregroundStyle(Stanford.statusHealthy)
         case let .modified(additions, deletions, fileCount):
             if additions == 0 && deletions == 0 {
                 Text("\(fileCount) changed")
-                    .font(Stanford.caption(13).weight(.medium))
+                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
                     .foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 6) {
                     if additions > 0 {
                         Text("+\(additions)")
-                            .font(Stanford.caption(13).weight(.semibold))
+                            .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                             .foregroundStyle(Stanford.statusHealthy)
                     }
                     if deletions > 0 {
                         Text("-\(deletions)")
-                            .font(Stanford.caption(13).weight(.semibold))
+                            .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                             .foregroundStyle(Stanford.statusError)
                     }
                 }
@@ -567,7 +704,7 @@ struct WorkspaceGitSectionView: View {
                         .help("Could not check for an existing pull request: \(issue)")
                 } else {
                     Image(systemName: "sparkles")
-                        .font(Stanford.ui(13))
+                        .font(Stanford.ui(CapabilityRailLayout.rowSubtitleFontSize))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -617,7 +754,7 @@ struct WorkspaceGitSectionView: View {
                     }
 
                     Text("#\(pr.number)")
-                        .font(Stanford.caption(13).weight(.semibold))
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
                         .foregroundStyle(Stanford.lagunita)
 
                     Image(systemName: "arrow.up.right")

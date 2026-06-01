@@ -164,15 +164,17 @@ In code, prefer existing rail tokens in `StanfordTheme.swift`:
 
 Header shape:
 
-- Left: section title, `Stanford.ui(17, weight: .semibold)`.
+- Left: section title, `Stanford.ui(15, weight: .semibold)` in a
+  docked desktop rail.
 - Right: optional compact action.
+- Keep secondary header copy out of the default docked state. Use help text or
+  a tooltip before stacking a second action line.
 - Avoid summary pills unless they add new information not shown by groups.
 
 Example:
 
 ```text
 Capabilities                                      Add
-                                                  Browse library
 ```
 
 ### Group Heading
@@ -204,14 +206,19 @@ Use the same scan pattern for comparable rows:
 
 Recommended proportions:
 
-- Leading icon frame: 40pt.
-- Icon size: about 20pt.
-- Title: `Stanford.ui(16, weight: .semibold)`.
-- Subtitle: `Stanford.caption(13)`, 1-2 lines.
-- Row minimum height: about 72pt for summary rows.
-- Trailing chevron: secondary, about 13pt.
+- Leading icon frame: about 30pt.
+- Icon size: about 16pt.
+- Title: `Stanford.ui(14, weight: .semibold)` for docked inspector rows.
+- Subtitle: `Stanford.caption(12)`, 1-2 lines.
+- Row minimum height: about 44-48pt for one-line operational controls, 56pt
+  for two-line setup rows, and 58pt for summary rows.
+- Trailing chevron: secondary, about 11pt.
 
 Rows should be full-width with no inner rounded border in collapsed state.
+
+The rail should stay visually subordinate to the work canvas. Do not size rail
+section headers or row titles at or above the task conversation body unless the
+rail is presented as the primary surface.
 
 ### Dividers
 
@@ -246,6 +253,11 @@ Expanded state:
 - Shows configuration.
 - Exposes edit, remove, copy, and add controls.
 - Preserves the row's card context.
+
+Repository is the deliberate exception to summary-first disclosure: show it
+expanded by default when Git repositories exist, because the panel only appears
+when source control is actionable workspace context. Keep its rows at rail
+density and offer `Hide` to compress the controls after the user has seen them.
 
 Empty state:
 
@@ -370,4 +382,3 @@ Before shipping a UI change, ask:
 - Does the layout still work with real workspace data?
 - Did a focused presentation test encode the rule?
 - Was the change visually checked in `ASTRA Dev.app`?
-

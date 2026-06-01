@@ -4,6 +4,7 @@ import SwiftUI
 
 private enum WorkspaceHomeLayout {
     static let boardMaxWidth: CGFloat = 1_520
+    static let minimumPageRailWidth: CGFloat = 920
     static let pagePadding: CGFloat = 24
 }
 
@@ -13,13 +14,246 @@ enum WorkspaceHomePresentation {
     static let contextRowsUseSummaryPattern = true
     static let contextCardShowsCapabilitiesRow = true
     static let contextCardAlignsWithBoardColumns = true
-    static let headerShowsPrimaryNewTaskAction = true
+    static let headerShowsWorkspaceStatus = false
+    static let headerUsesOverviewMetrics = false
+    static let headerUsesCompactOverviewMetrics = false
+    static let statusCountsStayOnBoard = true
+    static let instructionsArePrimaryWorkspaceSurface = true
+    static let instructionsExpandByDefaultWhenConfigured = false
+    static let instructionsShowPreviewWhenConfigured = true
+    static let emptyInstructionsUseSinglePrompt = true
+    static let instructionBlockUsesPrimaryCTAWhenEmpty = true
+    static let usesMinimumWelcomeRailWidth = true
+    static let headerShowsPrimaryNewTaskAction = false
     static let routinesUseSummaryRows = true
     static let instructionEditorStaysInsideContextCard = true
     static let rowIconFrame: CGFloat = 40
     static let rowMinHeight: CGFloat = 72
     static let rowSpacing: CGFloat = 14
     static let cardCornerRadius: CGFloat = 12
+    static let minimumWelcomeRailWidth = WorkspaceHomeLayout.minimumPageRailWidth
+}
+
+struct WorkspaceInstructionBlock: Equatable {
+    var title: String?
+    var items: [String]
+}
+
+enum WorkspaceInstructionPresentation {
+    static let emptyPromptTitle = "Tell the agent how you work"
+    static let emptyPromptBody = "Add conventions, tone, and what to avoid. They apply to every task in this workspace."
+    static let emptyActionTitle = "Add instructions"
+    static let configuredSubtitle = "Workspace prompt"
+    static let configuredFallbackSubtitle = "Workspace guidance configured"
+    static let usesReadableExpandedBlocks = true
+    static let previewItemLimit = 2
+    static let detailTitleFontSize: CGFloat = 12
+    static let detailBodyFontSize: CGFloat = 13
+    static let detailLineSpacing: CGFloat = 3
+    static let detailBlockSpacing: CGFloat = 10
+    static let detailItemSpacing: CGFloat = 6
+    static let bulletSize: CGFloat = 4
+    static let bulletColumnWidth: CGFloat = 12
+
+    static func subtitle(for instructions: String) -> String {
+        let blocks = blocks(from: instructions)
+        let itemCount = blocks.reduce(0) { $0 + $1.items.count }
+
+        if itemCount > 1 {
+            return "\(itemCount) guidance items"
+        }
+
+        return blocks.first?.items.first
+            ?? configuredFallbackSubtitle
+    }
+
+    static func previewItems(from instructions: String) -> [String] {
+        Array(
+            blocks(from: instructions)
+                .flatMap(\.items)
+                .prefix(previewItemLimit)
+        )
+    }
+
+    static func blocks(from instructions: String) -> [WorkspaceInstructionBlock] {
+        var seenItems = Set<String>()
+        var renderedBlocks: [WorkspaceInstructionBlock] = []
+
+        for paragraph in normalizedParagraphs(from: instructions) {
+            if let firstLine = paragraph.first,
+               firstLine.hasSuffix(":"),
+               paragraph.count > 1 {
+                appendBlock(
+                    title: formattedHeading(firstLine),
+                    items: paragraph.dropFirst().flatMap { sentenceFragments(from: $0) },
+                    seenItems: &seenItems,
+                    renderedBlocks: &renderedBlocks
+                )
+                continue
+            }
+
+            var plainItems: [String] = []
+            var activeSectionTitle: String?
+            var activeSectionItems: [String] = []
+
+            for fragment in sentenceFragments(from: paragraph.joined(separator: " ")) {
+                if let section = splitSection(from: fragment) {
+                    appendBlock(
+                        title: nil,
+                        items: plainItems,
+                        seenItems: &seenItems,
+                        renderedBlocks: &renderedBlocks
+                    )
+                    plainItems = []
+
+                    if activeSectionTitle != section.title {
+                        appendBlock(
+                            title: activeSectionTitle,
+                            items: activeSectionItems,
+                            seenItems: &seenItems,
+                            renderedBlocks: &renderedBlocks
+                        )
+                        activeSectionTitle = section.title
+                        activeSectionItems = []
+                    }
+
+                    activeSectionItems.append(section.item)
+                } else if activeSectionTitle != nil {
+                    activeSectionItems.append(fragment)
+                } else {
+                    plainItems.append(fragment)
+                }
+            }
+
+            appendBlock(
+                title: nil,
+                items: plainItems,
+                seenItems: &seenItems,
+                renderedBlocks: &renderedBlocks
+            )
+            appendBlock(
+                title: activeSectionTitle,
+                items: activeSectionItems,
+                seenItems: &seenItems,
+                renderedBlocks: &renderedBlocks
+            )
+        }
+
+        return renderedBlocks
+    }
+
+    private static func appendBlock(
+        title: String?,
+        items: [String],
+        seenItems: inout Set<String>,
+        renderedBlocks: inout [WorkspaceInstructionBlock]
+    ) {
+        let uniqueItems = items.compactMap { item -> String? in
+            let normalized = normalizedDisplayText(item)
+            guard !normalized.isEmpty else { return nil }
+
+            let key = normalized
+                .lowercased()
+                .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !seenItems.contains(key) else { return nil }
+            seenItems.insert(key)
+            return normalized
+        }
+
+        guard !uniqueItems.isEmpty else { return }
+        renderedBlocks.append(WorkspaceInstructionBlock(title: title, items: uniqueItems))
+    }
+
+    private static func normalizedParagraphs(from instructions: String) -> [[String]] {
+        let lines = instructions
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+
+        var paragraphs: [[String]] = []
+        var current: [String] = []
+
+        for line in lines {
+            let normalized = normalizedDisplayText(line)
+            if normalized.isEmpty {
+                if !current.isEmpty {
+                    paragraphs.append(current)
+                    current = []
+                }
+            } else {
+                current.append(stripListMarker(from: normalized))
+            }
+        }
+
+        if !current.isEmpty {
+            paragraphs.append(current)
+        }
+
+        return paragraphs
+    }
+
+    private static func sentenceFragments(from text: String) -> [String] {
+        let normalized = normalizedDisplayText(text)
+        var fragments: [String] = []
+        var current = ""
+
+        for character in normalized {
+            current.append(character)
+            if character == "." || character == "!" || character == "?" {
+                let fragment = normalizedDisplayText(current)
+                if !fragment.isEmpty {
+                    fragments.append(fragment)
+                }
+                current = ""
+            }
+        }
+
+        let remainder = normalizedDisplayText(current)
+        if !remainder.isEmpty {
+            fragments.append(remainder)
+        }
+
+        return fragments
+    }
+
+    private static func splitSection(from fragment: String) -> (title: String, item: String)? {
+        guard let colonIndex = fragment.firstIndex(of: ":") else { return nil }
+
+        let title = normalizedDisplayText(String(fragment[..<colonIndex]))
+        let itemStart = fragment.index(after: colonIndex)
+        let item = normalizedDisplayText(String(fragment[itemStart...]))
+
+        guard !title.isEmpty,
+              !item.isEmpty,
+              title.count <= 48,
+              !title.contains(".") else {
+            return nil
+        }
+
+        return (formattedHeading(title), item)
+    }
+
+    private static func formattedHeading(_ text: String) -> String {
+        let trimmed = normalizedDisplayText(text.trimmingCharacters(in: CharacterSet(charactersIn: ":")))
+        guard let first = trimmed.first else { return trimmed }
+        return String(first).uppercased() + trimmed.dropFirst()
+    }
+
+    private static func stripListMarker(from text: String) -> String {
+        text.replacingOccurrences(
+            of: #"^([-*•]|\d+[.)])\s+"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
+    private static func normalizedDisplayText(_ text: String) -> String {
+        text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+([,.;:!?])"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
 }
 
 struct WorkspaceHomeContainerView: View {
@@ -103,6 +337,7 @@ struct WorkspaceHomeView: View {
     @State private var isEditingInstructions = false
     @State private var editedInstructions = ""
     @State private var isInstructionsExpanded = false
+    @State private var initializedInstructionsWorkspaceID: UUID?
     @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
     @FocusState private var isInstructionsFocused: Bool
 
@@ -160,6 +395,13 @@ struct WorkspaceHomeView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Stanford.panelBackground)
+        .onAppear {
+            initializeInstructionsPresentationIfNeeded()
+        }
+        .onChange(of: workspace.id) {
+            initializedInstructionsWorkspaceID = nil
+            initializeInstructionsPresentationIfNeeded()
+        }
     }
 
     private var boardDensity: KanbanBoardDensity {
@@ -185,7 +427,10 @@ struct WorkspaceHomeView: View {
     private var pageRailWidth: CGFloat {
         min(
             WorkspaceHomeLayout.boardMaxWidth,
-            boardContentWidth + (KanbanBoardLayout.outerPadding * 2)
+            max(
+                WorkspaceHomeLayout.minimumPageRailWidth,
+                boardContentWidth + (KanbanBoardLayout.outerPadding * 2)
+            )
         )
     }
 
@@ -196,30 +441,16 @@ struct WorkspaceHomeView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            // Bare folder icon — the tinted chip that used to sit behind
-            // this made the workspace name feel like a badge. Cleaner as
-            // just an inline glyph next to the title.
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: "folder.fill")
-                .font(Stanford.ui(20, weight: .semibold))
+                .font(Stanford.ui(21, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
+                .frame(width: 28, height: 28)
 
             Text(workspace.name)
                 .font(Stanford.heading(22))
-
-            Spacer()
-
-            Button(action: onCreateTask) {
-                Label("New task", systemImage: "plus")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Stanford.lagunita)
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("Create a task in \(workspace.name)")
+                .foregroundStyle(.primary)
+                .lineLimit(1)
         }
     }
 
@@ -236,19 +467,7 @@ struct WorkspaceHomeView: View {
             }
             .padding(.bottom, 8)
 
-            instructionsSummaryRow
-
-            if isEditingInstructions {
-                instructionsEditor
-                    .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
-                    .padding(.top, 4)
-                    .padding(.bottom, 8)
-            } else if isInstructionsExpanded {
-                instructionsExpandedDetail
-                    .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
-            }
+            instructionsBlock
 
             workspaceDivider
 
@@ -257,97 +476,202 @@ struct WorkspaceHomeView: View {
         .workspaceSectionPanel()
     }
 
-    private var instructionsSummaryRow: some View {
-        WorkspaceHomeSummaryRow(
-            icon: "text.alignleft",
-            iconColor: Stanford.lagunita,
-            title: "Instructions",
-            subtitle: instructionsSubtitle,
-            onSelect: {
-                guard hasInstructions else {
-                    startEditingInstructions()
-                    return
-                }
-                withAnimation(disclosureAnimation) {
-                    isInstructionsExpanded.toggle()
-                }
-            }
-        ) {
-            HStack(spacing: 12) {
-                Button {
-                    startEditingInstructions()
-                } label: {
-                    Text(hasInstructions ? "Edit" : "Add")
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-                .help(hasInstructions ? "Edit workspace instructions" : "Add workspace instructions")
-
-                if hasInstructions {
-                    Image(systemName: isInstructionsExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
+    @ViewBuilder
+    private var instructionsBlock: some View {
+        if isEditingInstructions {
+            instructionsEditingBlock
+        } else if hasInstructions {
+            instructionsConfiguredBlock
+        } else {
+            instructionsEmptyBlock
         }
     }
 
-    private var instructionsEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextEditor(text: $editedInstructions)
-                .font(Stanford.mono(13))
-                .focused($isInstructionsFocused)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 120, maxHeight: 280)
-                .padding(10)
-                .background(Color.primary.opacity(0.026))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Stanford.lagunita.opacity(0.32), lineWidth: 1)
-                )
-                .onAppear { isInstructionsFocused = true }
+    private var instructionsEmptyBlock: some View {
+        Button(action: startEditingInstructions) {
+            HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
+                Image(systemName: "text.alignleft")
+                    .font(Stanford.ui(19, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: WorkspaceHomePresentation.rowIconFrame)
+                    .padding(.top, 2)
 
-            HStack(spacing: 10) {
-                Spacer()
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(WorkspaceInstructionPresentation.emptyPromptTitle)
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-                Button {
-                    isEditingInstructions = false
-                } label: {
-                    Text("Cancel")
-                        .font(Stanford.caption(12).weight(.medium))
+                    Text(WorkspaceInstructionPresentation.emptyPromptBody)
+                        .font(Stanford.caption(13))
                         .foregroundStyle(.secondary)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(.plain)
 
-                Button {
-                    workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-                    workspace.updatedAt = Date()
-                    isEditingInstructions = false
-                    isInstructionsExpanded = !workspace.instructions.isEmpty
-                } label: {
-                    Text("Save")
-                        .font(Stanford.caption(12).weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Stanford.lagunita)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Spacer(minLength: 12)
+
+                Label(WorkspaceInstructionPresentation.emptyActionTitle, systemImage: "plus")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(Stanford.lagunita)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+            .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Add workspace instructions")
+    }
+
+    private var instructionsConfiguredBlock: some View {
+        HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
+            Image(systemName: "text.alignleft")
+                .font(Stanford.ui(19, weight: .medium))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: WorkspaceHomePresentation.rowIconFrame)
+                .padding(.top, 13)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Instructions")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+
+                        Text(WorkspaceInstructionPresentation.configuredSubtitle)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Button {
+                        startEditingInstructions()
+                    } label: {
+                        Text("Edit")
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit workspace instructions")
+
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            isInstructionsExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(isInstructionsExpanded ? "Hide" : "Read")
+                            Image(systemName: isInstructionsExpanded ? "chevron.up" : "chevron.down")
+                                .font(Stanford.ui(10, weight: .semibold))
+                        }
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isInstructionsExpanded ? "Collapse workspace instructions" : "Read workspace instructions")
                 }
-                .buttonStyle(.plain)
+
+                if isInstructionsExpanded {
+                    instructionsExpandedDetail
+                } else {
+                    instructionsPreview
+                }
+            }
+            .layoutPriority(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .padding(.vertical, 10)
+    }
+
+    private var instructionsEditingBlock: some View {
+        HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
+            Image(systemName: "text.alignleft")
+                .font(Stanford.ui(19, weight: .medium))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: WorkspaceHomePresentation.rowIconFrame)
+                .padding(.top, 13)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Instructions")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                TextEditor(text: $editedInstructions)
+                    .font(Stanford.mono(13))
+                    .focused($isInstructionsFocused)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 120, maxHeight: 280)
+                    .padding(10)
+                    .background(Color.primary.opacity(0.026))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Stanford.lagunita.opacity(0.32), lineWidth: 1)
+                    )
+                    .onAppear { isInstructionsFocused = true }
+
+                HStack(spacing: 10) {
+                    Spacer()
+
+                    Button {
+                        isEditingInstructions = false
+                    } label: {
+                        Text("Cancel")
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+                        workspace.updatedAt = Date()
+                        isEditingInstructions = false
+                        isInstructionsExpanded = !workspace.instructions.isEmpty
+                    } label: {
+                        Text("Save")
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Stanford.lagunita)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .layoutPriority(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 10)
+    }
+
+    private var instructionsPreview: some View {
+        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
+            ForEach(Array(instructionPreviewItems.enumerated()), id: \.offset) { _, item in
+                instructionItem(item)
+            }
+
+            let remainingCount = max(0, instructionItemCount - instructionPreviewItems.count)
+            if remainingCount > 0 {
+                Text("\(remainingCount) more \(remainingCount == 1 ? "guidance item" : "guidance items")")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, WorkspaceInstructionPresentation.bulletColumnWidth + 6)
             }
         }
     }
 
     private var instructionsExpandedDetail: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(workspace.instructions)
-                .font(Stanford.ui(13))
-                .foregroundStyle(Stanford.black)
-                .textSelection(.enabled)
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailBlockSpacing) {
+            ForEach(Array(instructionBlocks.enumerated()), id: \.offset) { _, block in
+                instructionBlock(block)
+            }
 
             if !workspace.additionalPaths.isEmpty {
                 Text("Includes \(workspace.additionalPaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))")
@@ -396,22 +720,29 @@ struct WorkspaceHomeView: View {
         !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var instructionsSubtitle: String {
-        guard hasInstructions else {
-            return "Add guidance for how tasks should run"
-        }
-        return workspace.instructions
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private var instructionBlocks: [WorkspaceInstructionBlock] {
+        WorkspaceInstructionPresentation.blocks(from: workspace.instructions)
+    }
+
+    private var instructionPreviewItems: [String] {
+        WorkspaceInstructionPresentation.previewItems(from: workspace.instructions)
     }
 
     private var capabilityHeadline: String {
-        let count = max(
+        let count = capabilityCount
+        guard count > 0 else { return "No active capabilities" }
+        return "\(count) active \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    private var instructionItemCount: Int {
+        instructionBlocks.reduce(0) { $0 + $1.items.count }
+    }
+
+    private var capabilityCount: Int {
+        max(
             workspace.enabledCapabilityIDs.count,
             workspace.skills.count + workspace.connectors.count + workspace.localTools.count
         )
-        guard count > 0 else { return "No active capabilities" }
-        return "\(count) active \(count == 1 ? "capability" : "capabilities")"
     }
 
     private var capabilitySubtitle: String {
@@ -436,6 +767,51 @@ struct WorkspaceHomeView: View {
         editedInstructions = workspace.instructions
         isEditingInstructions = true
         isInstructionsExpanded = false
+    }
+
+    private func initializeInstructionsPresentationIfNeeded() {
+        guard initializedInstructionsWorkspaceID != workspace.id else { return }
+        initializedInstructionsWorkspaceID = workspace.id
+        isEditingInstructions = false
+        isInstructionsExpanded = false
+    }
+
+    @ViewBuilder
+    private func instructionBlock(_ block: WorkspaceInstructionBlock) -> some View {
+        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
+            if let title = block.title {
+                Text(title)
+                    .font(Stanford.caption(WorkspaceInstructionPresentation.detailTitleFontSize).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
+                ForEach(Array(block.items.enumerated()), id: \.offset) { _, item in
+                    instructionItem(item)
+                }
+            }
+        }
+    }
+
+    private func instructionItem(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Circle()
+                .fill(Color.secondary.opacity(0.55))
+                .frame(
+                    width: WorkspaceInstructionPresentation.bulletSize,
+                    height: WorkspaceInstructionPresentation.bulletSize
+                )
+                .frame(width: WorkspaceInstructionPresentation.bulletColumnWidth)
+                .padding(.top, 7)
+
+            Text(text)
+                .font(Stanford.ui(WorkspaceInstructionPresentation.detailBodyFontSize))
+                .foregroundStyle(.primary)
+                .lineSpacing(WorkspaceInstructionPresentation.detailLineSpacing)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
 }

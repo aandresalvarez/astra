@@ -82,13 +82,33 @@ struct CapabilityRailPresentationTests {
         #expect(presentation.rowSubtitle == "Capability available to tasks")
     }
 
-    @Test("compact capability rows reserve space for title and subtitle")
-    func compactRowsReserveSpaceForTitleAndSubtitle() {
+    @Test("workspace context uses desktop inspector density")
+    func workspaceContextUsesDesktopInspectorDensity() {
+        #expect(WorkspaceRightRailPresentation.headerTitleFontSize == 16)
+        #expect(WorkspaceRightRailPresentation.headerSubtitleFontSize == 12)
+        #expect(WorkspaceRightRailPresentation.headerIconFontSize == 15)
+        #expect(WorkspaceRightRailPresentation.headerIconFrame == 22)
+        #expect(CapabilityRailLayout.sectionTitleFontSize == 15)
+        #expect(CapabilityRailLayout.rowTitleFontSize == 14)
+        #expect(CapabilityRailLayout.rowSubtitleFontSize == 12)
+        #expect(CapabilityRailLayout.rowTitleFontSize < Stanford.chatBodyPointSize)
+        #expect(CapabilityRailLayout.sectionTitleFontSize < Stanford.chatBodyPointSize)
+        #expect(CapabilityRailLayout.regularSectionPadding == 16)
+        #expect(CapabilityRailLayout.regularPanelSpacing == 12)
+        #expect(CapabilityRailLayout.regularGroupSpacing == 12)
+    }
+
+    @Test("capability rows reserve space without mobile scale")
+    func capabilityRowsReserveSpaceWithoutMobileScale() {
         #expect(CapabilityRailLayout.minimumTwoLineRowHeight > 34)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
-        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= 64)
-        #expect(CapabilityRailLayout.summaryRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
-        #expect(CapabilityRailLayout.setupRowMinHeight >= CapabilityRailLayout.rowMinHeight(isCompact: true))
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: false) == 56)
+        #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) == 60)
+        #expect(CapabilityRailLayout.summaryRowMinHeight == 58)
+        #expect(CapabilityRailLayout.setupRowMinHeight == 56)
+        #expect(CapabilityRailLayout.leadingIconFontSize == 16)
+        #expect(CapabilityRailLayout.leadingIconFrame == 30)
+        #expect(CapabilityRailLayout.dividerLeadingPadding(isCompact: false) == CapabilityRailLayout.leadingIconFrame)
     }
 
     @Test("capability groups use full section width without nested table chrome")
@@ -112,7 +132,7 @@ struct CapabilityRailPresentationTests {
     func capabilityRailTreatsAddingAsActionNotAvailableCountSection() {
         #expect(CapabilityRailSectionPresentation.sectionTitle == "Capabilities")
         #expect(CapabilityRailSectionPresentation.addActionTitle == "Add")
-        #expect(CapabilityRailSectionPresentation.addActionSubtitle == "Browse library")
+        #expect(CapabilityRailSectionPresentation.addActionSubtitle == "")
         #expect(CapabilityRailSectionPresentation.addActionHelp == "Browse capability library")
         #expect(CapabilityRailSectionPresentation.addActionShowsPlusIcon == false)
         #expect(CapabilityRailSectionPresentation.showsAvailableToAddCount == false)
@@ -154,6 +174,18 @@ struct CapabilityRailPresentationTests {
             WorkspaceSetupChecklistPresentation.sectionTitle,
             CapabilityRailSectionPresentation.sectionTitle
         ])
+    }
+
+    @Test("repository rail exposes git controls by default")
+    func repositoryRailExposesGitControlsByDefault() {
+        #expect(WorkspaceGitPanelPresentation.startsCollapsed == false)
+        #expect(WorkspaceGitPanelPresentation.collapsedVisibleRowCount == 1)
+        #expect(WorkspaceGitPanelPresentation.expandedDetailRowCount == 6)
+        #expect(WorkspaceGitPanelPresentation.repositorySelectorRowMinHeight == 50)
+        #expect(WorkspaceGitPanelPresentation.detailRowMinHeight == 44)
+        #expect(WorkspaceGitPanelPresentation.detailRowMinHeight < CapabilityRailLayout.setupRowMinHeight)
+        #expect(WorkspaceGitPanelPresentation.showDetailsActionTitle == "Show all")
+        #expect(WorkspaceGitPanelPresentation.hideDetailsActionTitle == "Hide")
     }
 
     @Test("workspace setup checklist summary stays compact")
