@@ -67,7 +67,11 @@ struct GitRepositoryPanelIntegrationTests {
         let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
 
         #expect(next.repositoryDetailsMode == .details)
+        #expect(next.isChangesDrawerExpanded == false)
+        #expect(next.showRepositoryPopover == false)
+        #expect(next.showLocationPopover == false)
         #expect(next.showPRCommentsPopover == false)
+        #expect(next.showBranchPickerPopover == false)
     }
 
     @Test("Workspace path presentation uses folder names instead of ordinal additional labels")
