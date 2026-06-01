@@ -15,11 +15,33 @@ enum WorkspaceGitPanelPresentation {
     static let detailRowMinHeight: CGFloat = 44
     static let showDetailsActionTitle = "Show all"
     static let hideDetailsActionTitle = "Hide"
+
+    static func transientStateAfterRepositoryContextChange(
+        _ state: WorkspaceGitTransientPresentationState
+    ) -> WorkspaceGitTransientPresentationState {
+        WorkspaceGitTransientPresentationState(
+            repositoryDetailsMode: state.repositoryDetailsMode,
+            isChangesDrawerExpanded: false,
+            showRepositoryPopover: false,
+            showLocationPopover: false,
+            showPRCommentsPopover: false,
+            showBranchPickerPopover: false
+        )
+    }
 }
 
-private enum WorkspaceGitDetailsMode {
+enum WorkspaceGitDetailsMode: Equatable {
     case summary
     case details
+}
+
+struct WorkspaceGitTransientPresentationState: Equatable {
+    var repositoryDetailsMode: WorkspaceGitDetailsMode
+    var isChangesDrawerExpanded: Bool
+    var showRepositoryPopover: Bool
+    var showLocationPopover: Bool
+    var showPRCommentsPopover: Bool
+    var showBranchPickerPopover: Bool
 }
 
 struct WorkspaceGitSectionView: View {
@@ -70,15 +92,15 @@ struct WorkspaceGitSectionView: View {
         }
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
-            applyInitialRepositoryPresentation()
+            clearTransientRepositoryPresentation()
         }
         .onChange(of: selectedTask?.id) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
-            applyInitialRepositoryPresentation()
+            clearTransientRepositoryPresentation()
         }
         .onChange(of: selectedTask?.executionRootPath) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
-            applyInitialRepositoryPresentation()
+            clearTransientRepositoryPresentation()
         }
         .onChange(of: viewModel.prDraft) { _, newValue in
             showPRDraftSheet = newValue != nil
@@ -169,12 +191,23 @@ struct WorkspaceGitSectionView: View {
         .help("Refresh status")
     }
 
-    private func applyInitialRepositoryPresentation() {
-        repositoryDetailsMode = WorkspaceGitPanelPresentation.startsCollapsed ? .summary : .details
-        isChangesDrawerExpanded = false
-        showRepositoryPopover = false
-        showLocationPopover = false
-        viewModel.showBranchPickerPopover = false
+    private func clearTransientRepositoryPresentation() {
+        let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(
+            WorkspaceGitTransientPresentationState(
+                repositoryDetailsMode: repositoryDetailsMode,
+                isChangesDrawerExpanded: isChangesDrawerExpanded,
+                showRepositoryPopover: showRepositoryPopover,
+                showLocationPopover: showLocationPopover,
+                showPRCommentsPopover: showPRCommentsPopover,
+                showBranchPickerPopover: viewModel.showBranchPickerPopover
+            )
+        )
+        repositoryDetailsMode = next.repositoryDetailsMode
+        isChangesDrawerExpanded = next.isChangesDrawerExpanded
+        showRepositoryPopover = next.showRepositoryPopover
+        showLocationPopover = next.showLocationPopover
+        showPRCommentsPopover = next.showPRCommentsPopover
+        viewModel.showBranchPickerPopover = next.showBranchPickerPopover
     }
 
     private func errorBanner(_ message: String) -> some View {

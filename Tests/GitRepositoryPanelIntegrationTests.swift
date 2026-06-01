@@ -32,6 +32,48 @@ struct GitRepositoryPanelIntegrationTests {
         }
     }
 
+    @Test("Repository context changes preserve hidden details and clear transient popovers")
+    func repositoryContextChangesPreserveHiddenDetailsAndClearTransientPopovers() {
+        let initial = WorkspaceGitTransientPresentationState(
+            repositoryDetailsMode: .summary,
+            isChangesDrawerExpanded: true,
+            showRepositoryPopover: true,
+            showLocationPopover: true,
+            showPRCommentsPopover: true,
+            showBranchPickerPopover: true
+        )
+
+        let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
+
+        #expect(next.repositoryDetailsMode == .summary)
+        #expect(next.isChangesDrawerExpanded == false)
+        #expect(next.showRepositoryPopover == false)
+        #expect(next.showLocationPopover == false)
+        #expect(next.showPRCommentsPopover == false)
+        #expect(next.showBranchPickerPopover == false)
+    }
+
+    @Test("Repository context changes preserve expanded details while closing transients")
+    func repositoryContextChangesPreserveExpandedDetails() {
+        let initial = WorkspaceGitTransientPresentationState(
+            repositoryDetailsMode: .details,
+            isChangesDrawerExpanded: true,
+            showRepositoryPopover: true,
+            showLocationPopover: true,
+            showPRCommentsPopover: true,
+            showBranchPickerPopover: true
+        )
+
+        let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
+
+        #expect(next.repositoryDetailsMode == .details)
+        #expect(next.isChangesDrawerExpanded == false)
+        #expect(next.showRepositoryPopover == false)
+        #expect(next.showLocationPopover == false)
+        #expect(next.showPRCommentsPopover == false)
+        #expect(next.showBranchPickerPopover == false)
+    }
+
     @Test("Workspace path presentation uses folder names instead of ordinal additional labels")
     func workspacePathPresentationNamesFolders() throws {
         let root = try makeTempDir("root")
