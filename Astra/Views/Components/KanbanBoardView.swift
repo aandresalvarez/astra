@@ -222,6 +222,8 @@ enum KanbanBoardPresentation {
     static let taskCardsReserveTopMetadataRow = false
     static let visibleTrashIsQuietUntilDrag = true
     static let reviewCardsUseLeadingAccentOnly = true
+    static let taskCardsDeduplicateRepeatedTitles = true
+    static let taskCardsExposeOutcomeMetadata = true
     static let columnBaseFillOpacity: Double = 0.012
     static let persistentColumnFillOpacity: Double = 0.016
     static let columnStrokeOpacity: Double = 0.045
@@ -1586,30 +1588,32 @@ struct KanbanTaskCardView: View {
     }
 
     private var outcomeState: OutcomeState? {
+        guard let label = Self.outcomeLabel(for: task.status) else { return nil }
+
         switch task.status {
         case .pendingUser:
             return OutcomeState(
-                label: "Needs input",
+                label: label,
                 color: Stanford.pendingUser
             )
         case .completed:
             return OutcomeState(
-                label: "Run finished",
+                label: label,
                 color: Stanford.completed
             )
         case .failed:
             return OutcomeState(
-                label: "Run failed",
+                label: label,
                 color: Stanford.failed
             )
         case .cancelled:
             return OutcomeState(
-                label: "Cancelled",
+                label: label,
                 color: Stanford.cancelled
             )
         case .budgetExceeded:
             return OutcomeState(
-                label: "Budget hit",
+                label: label,
                 color: Stanford.failed
             )
         case .draft, .queued, .running:
@@ -1646,28 +1650,42 @@ struct KanbanTaskCardView: View {
     }
 
     private var displayTitle: String {
+        Self.displayTitle(for: task.title, titleBadge: titleBadge)
+    }
+
+    static func displayTitle(for title: String, titleBadge: String? = nil) -> String {
         let base: String
-        if let titleBadge, let badgeRange = task.title.range(of: titleBadge) {
-            var stripped = task.title
+        if let titleBadge, let badgeRange = title.range(of: titleBadge) {
+            var stripped = title
             stripped.removeSubrange(badgeRange)
             base = stripped.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         } else {
-            base = task.title
+            base = title
         }
-        return Self.shortenIdentifierTokens(base)
+        return Self.shortenIdentifierTokens(Self.deduplicatedRepeatedTitle(base))
+    }
+
+    static func deduplicatedRepeatedTitle(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count.isMultiple(of: 2), !trimmed.isEmpty else { return trimmed }
+
+        let midpoint = trimmed.index(trimmed.startIndex, offsetBy: trimmed.count / 2)
+        let firstHalf = String(trimmed[..<midpoint])
+        let secondHalf = String(trimmed[midpoint...])
+
+        guard firstHalf == secondHalf else { return trimmed }
+        return firstHalf.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var metadataLine: String? {
-        var parts: [String] = []
-        if let titleBadge {
-            parts.append(titleBadge)
-        }
-        if showDetails {
-            parts.append(threadMessageLabel)
-        }
-        if showDetails || category == .review || category == .done {
-            parts.append(Formatters.relativeShort(task.updatedAt))
-        }
+        let parts = Self.metadataParts(
+            titleBadge: titleBadge,
+            showDetails: showDetails,
+            category: category,
+            status: task.status,
+            threadMessageLabel: threadMessageLabel,
+            relativeUpdatedAt: Formatters.relativeShort(task.updatedAt)
+        )
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: " · ")
     }
@@ -1685,6 +1703,47 @@ struct KanbanTaskCardView: View {
             maxTokenLength: maxTokenLength,
             keepEachSide: keepEachSide
         )
+    }
+
+    static func outcomeLabel(for status: TaskStatus) -> String? {
+        switch status {
+        case .pendingUser:
+            return "Needs input"
+        case .completed:
+            return "Run finished"
+        case .failed:
+            return "Run failed"
+        case .cancelled:
+            return "Cancelled"
+        case .budgetExceeded:
+            return "Budget hit"
+        case .draft, .queued, .running:
+            return nil
+        }
+    }
+
+    static func metadataParts(
+        titleBadge: String?,
+        showDetails: Bool,
+        category: KanbanCategory,
+        status: TaskStatus,
+        threadMessageLabel: String,
+        relativeUpdatedAt: String
+    ) -> [String] {
+        var parts: [String] = []
+        if (category == .review || category == .done), let outcome = outcomeLabel(for: status) {
+            parts.append(outcome)
+        }
+        if let titleBadge {
+            parts.append(titleBadge)
+        }
+        if showDetails {
+            parts.append(threadMessageLabel)
+        }
+        if showDetails || category == .review || category == .done {
+            parts.append(relativeUpdatedAt)
+        }
+        return parts
     }
 
     @ViewBuilder
@@ -1795,7 +1854,7 @@ struct KanbanTaskCardView: View {
         if let badge = titleBadge {
             parts.append("identifier \(badge)")
         }
-        parts.append(task.title)
+        parts.append(displayTitle)
         return parts.joined(separator: ", ")
     }
 }

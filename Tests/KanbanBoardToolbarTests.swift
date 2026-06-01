@@ -59,6 +59,8 @@ struct KanbanBoardToolbarTests {
         #expect(KanbanBoardPresentation.taskCardsReserveTopMetadataRow == false)
         #expect(KanbanBoardPresentation.visibleTrashIsQuietUntilDrag == true)
         #expect(KanbanBoardPresentation.reviewCardsUseLeadingAccentOnly == true)
+        #expect(KanbanBoardPresentation.taskCardsDeduplicateRepeatedTitles == true)
+        #expect(KanbanBoardPresentation.taskCardsExposeOutcomeMetadata == true)
     }
 
     @Test("Kanban content width is shared with workspace page alignment")
@@ -71,5 +73,34 @@ struct KanbanBoardToolbarTests {
 
         #expect(KanbanBoardLayout.outerPadding == 12)
         #expect(KanbanBoardLayout.contentWidth(for: categories, density: .spacious) == expected)
+    }
+
+    @Test("Kanban task cards collapse adjacent duplicate titles")
+    func taskCardsCollapseAdjacentDuplicateTitles() {
+        let repeated = "Create 3D 2x2 Rubik's Cube websiteCreate 3D 2x2 Rubik's Cube website"
+
+        #expect(KanbanTaskCardView.displayTitle(for: repeated) == "Create 3D 2x2 Rubik's Cube website")
+        #expect(KanbanTaskCardView.displayTitle(for: "Create 2030 agent landscape slide deck") == "Create 2030 agent landscape slide deck")
+    }
+
+    @Test("Review task cards include outcome in metadata")
+    func reviewTaskCardsIncludeOutcomeInMetadata() {
+        #expect(KanbanTaskCardView.metadataParts(
+            titleBadge: nil,
+            showDetails: false,
+            category: .review,
+            status: .completed,
+            threadMessageLabel: "13 messages",
+            relativeUpdatedAt: "2h"
+        ) == ["Run finished", "2h"])
+
+        #expect(KanbanTaskCardView.metadataParts(
+            titleBadge: nil,
+            showDetails: true,
+            category: .review,
+            status: .failed,
+            threadMessageLabel: "6 messages",
+            relativeUpdatedAt: "5d"
+        ) == ["Run failed", "6 messages", "5d"])
     }
 }
