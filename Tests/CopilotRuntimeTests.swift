@@ -768,23 +768,56 @@ struct CopilotCLICommandPlanningTests {
     func restrictedPermissions() {
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: .restricted,
-            allowedTools: ["Read", "Bash", "Edit"],
+            allowedTools: ["Read", "Bash", "Edit", "Write"],
             localToolCommands: ["stanford-graph-mail", "astra-browser"],
             requiresAllowAllToolsForPrompt: false
         )
         let joined = args.joined(separator: " ")
         #expect(args.first == "--allow-tool")
         #expect(!args.contains { $0.contains(",") })
-        #expect(joined.contains("read"))
+        #expect(joined.contains("view"))
+        #expect(joined.contains("grep"))
+        #expect(joined.contains("glob"))
         #expect(joined.contains("write"))
+        #expect(!args.contains("create"))
+        #expect(!args.contains("edit"))
         #expect(joined.contains("shell(git:*)"))
         #expect(joined.contains("shell(astra-browser:*)"))
         #expect(joined.contains("shell(stanford-graph-mail:*)"))
     }
 
+    @Test("Restricted command planning separates Copilot write permission from create/edit tool surface")
+    func restrictedCommandPlanningSeparatesWritePermissionFromCreateToolSurface() throws {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home"
+        )
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(allowedEntries.contains("write"))
+        #expect(!allowedEntries.contains("create"))
+        #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+    }
+
     @Test("Restricted command planning includes runtime support tool permissions")
     func restrictedCommandPlanningIncludesRuntimeSupportToolPermissions() throws {
-        let capabilities = CopilotCLICapabilities(helpText: "--allow-tool --output-format --stream --no-ask-user")
+        let capabilities = CopilotCLICapabilities(helpText: "--allow-tool --output-format --stream --no-ask-user --available-tools --excluded-tools")
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: "/bin/copilot",
             prompt: "Who are you?",
@@ -803,9 +836,106 @@ struct CopilotCLICommandPlanningTests {
         let allowIndex = try #require(plan.arguments.firstIndex(of: "--allow-tool"))
         let allowedEntries = Set(plan.arguments[plan.arguments.index(after: allowIndex)...])
 
-        #expect(allowedEntries.contains("read"))
+        #expect(allowedEntries.contains("view"))
+        #expect(allowedEntries.contains("grep"))
+        #expect(allowedEntries.contains("glob"))
         #expect(allowedEntries.contains("fetch_copilot_cli_documentation"))
         #expect(allowedEntries.contains("report_intent"))
+    }
+
+    @Test("Restricted command planning hides Copilot task delegation unless allowed")
+    func restrictedCommandPlanningHidesTaskDelegationUnlessAllowed() throws {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Who are you?",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+        )
+
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+        let excludedEntries = Set(Self.argumentValues(after: "--excluded-tools", in: plan.arguments))
+
+        #expect(availableEntries.contains("view"))
+        #expect(availableEntries.contains("grep"))
+        #expect(availableEntries.contains("glob"))
+        #expect(availableEntries.contains("fetch_copilot_cli_documentation"))
+        #expect(availableEntries.contains("report_intent"))
+        #expect(!availableEntries.contains("task"))
+        #expect(excludedEntries.contains("task"))
+    }
+
+    @Test("Restricted command planning surfaces ask-first write tools without auto-allowing them")
+    func restrictedCommandPlanningSurfacesAskFirstWriteToolsWithoutAutoAllowing() throws {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            askFirstTools: ["Write", "Edit", "MultiEdit"]
+        )
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(allowedEntries.contains("view"))
+        #expect(allowedEntries.contains("grep"))
+        #expect(allowedEntries.contains("glob"))
+        #expect(!allowedEntries.contains("write"))
+        #expect(!allowedEntries.contains("create"))
+        #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(!availableEntries.contains("task"))
+    }
+
+    @Test("Restricted command planning keeps Copilot task delegation when Agent is allowed")
+    func restrictedCommandPlanningKeepsTaskDelegationWhenAgentAllowed() throws {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Coordinate work",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Agent"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            runtimeSupportTools: ["report_intent"]
+        )
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+        let excludedEntries = Set(Self.argumentValues(after: "--excluded-tools", in: plan.arguments))
+
+        #expect(allowedEntries.contains("task"))
+        #expect(availableEntries.contains("task"))
+        #expect(!excludedEntries.contains("task"))
     }
 
     @Test("Restricted permissions do not grant local tools without Bash")
@@ -818,7 +948,9 @@ struct CopilotCLICommandPlanningTests {
         )
         let joined = args.joined(separator: " ")
 
-        #expect(joined.contains("read"))
+        #expect(joined.contains("view"))
+        #expect(joined.contains("grep"))
+        #expect(joined.contains("glob"))
         #expect(!joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(astra-browser:*)"))
     }
@@ -833,7 +965,9 @@ struct CopilotCLICommandPlanningTests {
         )
         let joined = args.joined(separator: " ")
 
-        #expect(joined.contains("read"))
+        #expect(joined.contains("view"))
+        #expect(joined.contains("grep"))
+        #expect(joined.contains("glob"))
         #expect(joined.contains("shell(curl:*)"))
         #expect(!joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(git:*)"))
@@ -849,7 +983,9 @@ struct CopilotCLICommandPlanningTests {
         )
         let joined = args.joined(separator: " ")
 
-        #expect(joined.contains("read"))
+        #expect(joined.contains("view"))
+        #expect(joined.contains("grep"))
+        #expect(joined.contains("glob"))
         #expect(joined.contains("shell(set:*)"))
         #expect(!joined.contains("shell(gh:*)"))
         #expect(!joined.contains("shell(git:*)"))
@@ -867,6 +1003,13 @@ struct CopilotCLICommandPlanningTests {
         #expect(permissions.contains("shell(stanford-graph-mail:*)"))
         #expect(permissions.contains("shell(/opt/homebrew/bin/gh:*)"))
         #expect(!permissions.contains { $0.contains("bad)tool") })
+    }
+
+    private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
+        guard let index = arguments.firstIndex(of: flag) else { return [] }
+        let start = arguments.index(after: index)
+        guard start < arguments.endIndex else { return [] }
+        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 }
 
@@ -1337,8 +1480,8 @@ struct CopilotWorkerExecutionTests {
         #expect(!errorEvent.payload.contains("person@example.invalid"))
     }
 
-    @Test("Approved plan precreates relative task folder before Copilot launch")
-    func approvedPlanPrecreatesRelativeTaskFolder() async throws {
+    @Test("Approved plan precreates nested task artifact parents before Copilot launch")
+    func approvedPlanPrecreatesNestedTaskArtifactParents() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-plan-folder-\(UUID().uuidString)", isDirectory: true)
         let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
@@ -1369,7 +1512,11 @@ struct CopilotWorkerExecutionTests {
           printf 'missing task folder: %s\\n' "$task_folder" >&2
           exit 2
         fi
-        printf 'artifact\\n' > "$task_folder/index.html"
+        if [ ! -d "$task_folder/docs" ]; then
+          printf 'missing nested artifact parent\\n' >&2
+          exit 3
+        fi
+        printf 'artifact\\n' > "$task_folder/docs/requirements.md"
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"created plan artifact"}}'
         printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
         exit 0
@@ -1397,15 +1544,22 @@ struct CopilotWorkerExecutionTests {
 
         let plan = TaskPlanPayload(
             title: "Write artifact",
-            goal: "Create one HTML file",
-            steps: [TaskPlanPayloadStep(id: "write", title: "Write HTML", likelyTools: ["Write"])]
+            goal: "Create one nested requirements file",
+            steps: [
+                TaskPlanPayloadStep(
+                    id: "write",
+                    title: "Write requirements",
+                    likelyTools: ["Write"],
+                    doneSignal: "docs/requirements.md exists"
+                )
+            ]
         )
         await worker.executeApprovedPlan(task: task, plan: plan, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
         #expect(FileManager.default.fileExists(atPath: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")))
-        #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("index.html")))
+        #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("docs/requirements.md")))
     }
 
     @Test("Worker stops when Copilot path permission prompt cannot be scoped")

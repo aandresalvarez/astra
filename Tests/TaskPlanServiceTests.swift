@@ -48,6 +48,31 @@ struct TaskPlanServiceTests {
         #expect(roundTrip.validationContract == contract)
     }
 
+    @Test("Structured ASTRA_PLAN payload parses step outputs")
+    func structuredPlanParsesStepOutputs() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Artifact plan","goal":"Write nested artifacts","steps":[{"id":"requirements","title":"Write requirements","status":"pending","risk":"low","likelyTools":["Write"],"doneSignal":"docs/requirements.md exists","outputs":[{"kind":"file","scope":"task_output","path":"docs/requirements.md","required":true,"prepareParentDirectories":true},{"kind":"directory","scope":"task_output","path":"assets/","required":false}]}]}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let outputs = plan.steps[0].outputs
+
+        #expect(outputs.count == 2)
+        #expect(outputs[0].kind == .file)
+        #expect(outputs[0].scope == .taskOutput)
+        #expect(outputs[0].path == "docs/requirements.md")
+        #expect(outputs[0].prepareParentDirectories)
+        #expect(outputs[0].source == "step:requirements")
+        #expect(outputs[1].kind == .directory)
+        #expect(outputs[1].path == "assets/")
+
+        let encoded = TaskPlanService.encodePlanPayload(plan)
+        #expect(encoded.contains("\"outputs\""))
+        let roundTrip = try #require(TaskPlanService.decodePlanPayload(encoded))
+        #expect(roundTrip.steps[0].outputs == outputs)
+    }
+
     @Test("Structured ASTRA_PLAN payload parses verifier validation assertions")
     func structuredPlanParsesVerifierValidationAssertion() throws {
         let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
@@ -73,6 +98,20 @@ struct TaskPlanServiceTests {
         #expect(assertion.method == .browserBehavior)
         #expect(assertion.path == "index.html")
         #expect(assertion.evidenceQuery == "Checkout Ready")
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses text contains validation assertions")
+    func structuredPlanParsesTextContainsValidationAssertion() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Text plan","goal":"Validate artifact text","steps":[{"id":"write","title":"Write page","status":"pending","risk":"low","likelyTools":["Write"],"doneSignal":"Page exists"}],"validationContract":{"version":1,"assertions":[{"id":"page-text","scope":"plan","description":"Page names Med13","method":"file_contains","required":true,"path":"index.html","evidenceQuery":"Med13 Foundation"}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let assertion = try #require(plan.validationContract?.assertions.first)
+        #expect(assertion.method == .textContains)
+        #expect(assertion.path == "index.html")
+        #expect(assertion.evidenceQuery == "Med13 Foundation")
     }
 
     @Test("Invalid validation contract assertions are dropped without rejecting old plan payload")

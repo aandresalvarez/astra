@@ -164,6 +164,16 @@ struct TaskRunLifecycleServiceTests {
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Misspelled JavaScript page build request still requires artifact")
+    func misspelledJavaScriptPageBuildRequestStillRequiresArtifact() {
+        let task = AgentTask(
+            title: "buid a rubis cuve solved in 3d in ajavascript page",
+            goal: "buid a rubis cuve solved in 3d in ajavascript page"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Coordinator approval completes generic failed pending tasks")
     func coordinatorApprovalCompletesGenericFailedPendingTasks() throws {
         let container = try makeTaskRunLifecycleContainer()
@@ -186,6 +196,74 @@ struct TaskRunLifecycleServiceTests {
         #expect(task.completedAt != nil)
         #expect(task.events.contains { $0.type == "task.approved" })
         #expect(!task.events.contains { $0.type == "task.dismissed" })
+    }
+
+    @Test("Coordinator approval records explicit override for failed validation contracts")
+    func coordinatorApprovalRecordsValidationOverride() throws {
+        let root = NSTemporaryDirectory() + "task-lifecycle-validation-override-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Override", primaryPath: root)
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Validated result",
+            goal: "Close a failed validation result",
+            workspace: workspace
+        )
+        task.status = .pendingUser
+        context.insert(task)
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let plan = TaskPlanPayload(
+            planID: planID,
+            title: "Proof plan",
+            goal: "Close a failed validation result",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Do work")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "required-proof",
+                    description: "Required proof passes",
+                    method: .textContains,
+                    path: "index.html",
+                    evidenceQuery: "Med13"
+                )
+            ])
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        let payload = TaskValidationContractEventPayload(
+            version: 1,
+            planID: planID,
+            status: "failed",
+            requiredPassed: 0,
+            requiredTotal: 1,
+            failedRequiredAssertionIDs: ["required-proof"],
+            summary: "Validation contract failed: 1 required assertion did not pass."
+        )
+        let data = try JSONEncoder().encode(payload)
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskValidationEventTypes.contractFailed,
+            payload: String(data: data, encoding: .utf8) ?? "{}"
+        ))
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        coordinator.approveTask(task)
+
+        #expect(task.status == .completed)
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.contractOverridden &&
+                $0.payload.contains("\"status\":\"overridden\"")
+        })
+        #expect(task.events.contains {
+            $0.type == "task.approved" &&
+                $0.payload.contains("despite a failed required validation contract")
+        })
+        TaskContextStateManager.refresh(task: task)
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.validationContract?.status == "overridden")
+        #expect(state.verification.status == "overridden")
     }
 
     @Test("Coordinator approval completes stale no-usable-result when artifact requirement no longer applies")

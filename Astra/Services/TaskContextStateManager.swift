@@ -822,14 +822,19 @@ enum TaskContextStateManager {
             guard [TaskValidationEventTypes.contractCreated,
                    TaskValidationEventTypes.contractUpdated,
                    TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed].contains(event.type),
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
                   let payload = decodeContractPayload(event.payload) else {
                 return false
             }
             return payload.planID == plan.planID
         }
         let latestContractOutcome = contractEvents
-            .filter { [TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed].contains($0.type) }
+            .filter {
+                [TaskValidationEventTypes.contractPassed,
+                 TaskValidationEventTypes.contractFailed,
+                 TaskValidationEventTypes.contractOverridden].contains($0.type)
+            }
             .sorted { $0.timestamp > $1.timestamp }
             .first
         let requiredTotal = contract.assertions.filter(\.required).count
@@ -839,7 +844,9 @@ enum TaskContextStateManager {
             ["passed", "failed", "skipped", "reviewed"].contains(summary.status)
         }
         let status: String
-        if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
+        if latestContractOutcome?.type == TaskValidationEventTypes.contractOverridden {
+            status = "overridden"
+        } else if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
             status = "failed"
         } else if latestContractOutcome?.type == TaskValidationEventTypes.contractPassed {
             status = "passed"
@@ -1278,7 +1285,8 @@ enum TaskContextStateManager {
 
     private static func isValidationEvent(_ event: TaskEvent) -> Bool {
         if event.type == TaskValidationEventTypes.contractPassed ||
-            event.type == TaskValidationEventTypes.contractFailed {
+            event.type == TaskValidationEventTypes.contractFailed ||
+            event.type == TaskValidationEventTypes.contractOverridden {
             return true
         }
         let payload = event.payload.lowercased()
@@ -1298,6 +1306,9 @@ enum TaskContextStateManager {
         }
         if event.type == TaskValidationEventTypes.contractFailed {
             return "failed"
+        }
+        if event.type == TaskValidationEventTypes.contractOverridden {
+            return "overridden"
         }
         let payload = event.payload.lowercased()
         if event.type == "task.completed" {
@@ -1321,7 +1332,8 @@ enum TaskContextStateManager {
 
     private static func validationStrategy(for task: AgentTask, event: TaskEvent) -> String {
         if event.type == TaskValidationEventTypes.contractPassed ||
-            event.type == TaskValidationEventTypes.contractFailed {
+            event.type == TaskValidationEventTypes.contractFailed ||
+            event.type == TaskValidationEventTypes.contractOverridden {
             return "validation_contract"
         }
         return task.validationStrategy.rawValue

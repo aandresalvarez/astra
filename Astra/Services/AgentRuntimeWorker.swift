@@ -117,6 +117,22 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard TaskExecutionArtifactPreparer.prepareTaskOutputArtifacts(
+            task: task,
+            plan: currentPlan,
+            step: approvedStep,
+            modelContext: modelContext,
+            phase: "approved_plan"
+        ) else {
+            TaskPlanService.recordExecutionFailed(
+                planID: currentPlan.planID,
+                task: task,
+                modelContext: modelContext,
+                reason: "artifact_preflight_failed"
+            )
+            return
+        }
+
         TaskPlanService.recordExecutionStarted(planID: currentPlan.planID, task: task, modelContext: modelContext)
         let prompt = if let approvedStep {
             AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: task, plan: currentPlan, step: approvedStep)

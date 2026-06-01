@@ -1071,6 +1071,42 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolationMessage?.contains("unsupported input keys: extra") == true)
     }
 
+    @Test("Copilot task delegation is not treated as runtime support plumbing")
+    func copilotTaskDelegationIsNotRuntimeSupportPlumbing() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "task",
+                id: "t1",
+                input: [
+                    "description": "Report intent and fetch documentation",
+                    "prompt": "Call report_intent then fetch Copilot CLI documentation.",
+                    "agent_type": "task",
+                    "name": "identity-fetch",
+                    "mode": "sync",
+                    "model": "gpt-4.1"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
+        #expect(monitor.policyViolationMessage?.contains("provider support tool") == false)
+    }
+
     @Test("Ask-first tool pauses for runtime approval")
     func askFirstToolPausesForRuntimeApproval() {
         let manifest = runtimePolicyManifest(

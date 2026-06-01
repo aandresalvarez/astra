@@ -267,7 +267,7 @@ struct AgentPolicyTests {
             context: policyRenderContext(runtime: .copilotCLI, features: adapter.supportedFeatures)
         )
 
-        #expect(render.allowedTools == ["read"])
+        #expect(render.allowedTools == ["glob", "grep", "view"])
         #expect(render.generatedConfigPreview.contains("--allow-tool"))
         #expect(render.enforcementTiers.contains(.astraBrokered))
     }
@@ -288,7 +288,7 @@ struct AgentPolicyTests {
         let supportToolNames = render.runtimeSupportTools.map(\.name)
 
         #expect(supportToolNames == ["fetch_copilot_cli_documentation", "report_intent"])
-        #expect(render.allowedTools == ["read"])
+        #expect(render.allowedTools == ["glob", "grep", "view"])
         #expect(!render.allowedTools.contains("fetch_copilot_cli_documentation"))
         #expect(!render.allowedTools.contains("report_intent"))
         #expect(!render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))

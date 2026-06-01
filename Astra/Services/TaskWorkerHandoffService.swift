@@ -111,6 +111,21 @@ enum TaskWorkerHandoffService {
     }
 
     private static func blockerFacts(run: TaskRun, runEvents: [TaskEvent]) -> [String] {
+        let planBlockers = runEvents
+            .filter { $0.type == TaskPlanEventTypes.stepBlocked }
+            .compactMap { event -> String? in
+                guard let payload = TaskPlanService.decodeStepProgressPayload(event.payload) else {
+                    return "plan.step.blocked: \(boundedInline(event.payload, maxCharacters: 260))"
+                }
+                let reason = [
+                    payload.reason,
+                    payload.detail,
+                    payload.summary
+                ]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty } ?? "No reason recorded"
+                return "Plan step blocked: \(payload.stepID) - \(boundedInline(reason, maxCharacters: 220))"
+            }
         let eventBlockers = runEvents
             .filter {
                 ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) ||
@@ -118,7 +133,12 @@ enum TaskWorkerHandoffService {
             }
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 260))" }
         let stopReason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
-        return dedupe((stopReason.isEmpty || stopReason == "completed" ? [] : ["Run stopped: \(stopReason)"]) + eventBlockers, limit: 12)
+        return dedupe(
+            (stopReason.isEmpty || stopReason == "completed" ? [] : ["Run stopped: \(stopReason)"]) +
+                planBlockers +
+                eventBlockers,
+            limit: 12
+        )
     }
 
     private static func riskFacts(task: AgentTask, run: TaskRun, blockers: [String]) -> [String] {
@@ -186,4 +206,3 @@ enum TaskWorkerHandoffService {
         return string
     }
 }
-

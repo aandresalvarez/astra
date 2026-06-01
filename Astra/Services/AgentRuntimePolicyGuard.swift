@@ -559,7 +559,7 @@ struct AgentRuntimePolicyGuard: Sendable {
                 return true
             }
             if candidateTool == "write",
-               ["write", "edit", "multiedit"].contains(observedTool) {
+               ["write", "create", "edit", "multiedit"].contains(observedTool) {
                 return true
             }
         }

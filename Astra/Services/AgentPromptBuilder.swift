@@ -1774,7 +1774,8 @@ enum AgentPromptBuilder {
             If blocked, emit ASTRA_EVENT {"v":1,"type":"plan.step.blocked","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"blocked","reason":"What is blocking progress"} and explain the blocker.
             If skipped, emit ASTRA_EVENT {"v":1,"type":"plan.step.skipped","planID":"\(plan.planID.uuidString)","stepID":"STEP_ID","status":"skipped","reason":"Why skipped"}.
             Do not materially change the approved plan without saying why.
-            If the approved plan has a validationContract, treat it as the required proof rubric. Do the work needed to satisfy each assertion, but do not claim completion unless the required command, artifact, manual, or structured evidence assertions can pass.
+            ASTRA prepares safe parent directories for structured task-output step outputs before launching the provider. If you need a new task-output subdirectory that was not declared in the plan, create it only with an approved tool or emit a blocked marker that names the missing directory.
+            If the approved plan has a validationContract, treat it as the required proof rubric. Do the work needed to satisfy each assertion, but do not claim completion unless the required command, artifact, text_contains, manual, browser_behavior, verifier, or structured evidence assertions can pass.
             The user has explicitly approved this plan in ASTRA. Do not ask for a separate interactive tool approval; if a permission or policy blocks work, emit a blocked marker and explain the exact missing permission.
             """
         ]

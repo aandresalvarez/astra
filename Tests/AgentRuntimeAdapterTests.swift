@@ -494,7 +494,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
         #expect(plan.commandPlannedFields["runtime_support_tool_count"] == "2")
         #expect(plan.commandPlannedFields["runtime_support_tool_names"] == "fetch_copilot_cli_documentation,report_intent")
-        #expect(plan.arguments.contains("read"))
+        #expect(plan.arguments.contains("view"))
+        #expect(plan.arguments.contains("grep"))
+        #expect(plan.arguments.contains("glob"))
         #expect(plan.arguments.contains("fetch_copilot_cli_documentation"))
         #expect(plan.arguments.contains("report_intent"))
     }

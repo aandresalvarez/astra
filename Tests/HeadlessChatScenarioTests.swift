@@ -41,9 +41,11 @@ struct HeadlessChatScenarioTests {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
+        let argsURL = harness.rootURL.appendingPathComponent("who-are-you-copilot-args.txt")
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
-            script: Self.copilotScript(body: """
+            script: Self.copilotScript(
+                body: """
             printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"intent-1","toolName":"report_intent","arguments":{"intent":"Answering provider identity question"}}}'
             printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"intent-1","success":true,"result":{"content":"ok"}}}'
             printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"docs-1","toolName":"fetch_copilot_cli_documentation","arguments":{}}}'
@@ -51,7 +53,9 @@ struct HeadlessChatScenarioTests {
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I am GitHub Copilot CLI running through ASTRA."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
             exit 0
-            """)
+            """,
+                argsFile: argsURL
+            )
         )
 
         let task = harness.makeTask(runtime: .copilotCLI, goal: "who are you?", model: "gpt-5")
@@ -64,6 +68,16 @@ struct HeadlessChatScenarioTests {
         #expect(run.status == .completed)
         #expect(run.stopReason == "completed")
         #expect(run.output == "I am GitHub Copilot CLI running through ASTRA.")
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: args))
+        let excludedEntries = Set(Self.argumentValues(after: "--excluded-tools", in: args))
+        #expect(availableEntries.contains("fetch_copilot_cli_documentation"))
+        #expect(availableEntries.contains("report_intent"))
+        #expect(!availableEntries.contains("task"))
+        #expect(excludedEntries.contains("task"))
     }
 
     @Test("Fake Copilot malformed runtime support tool input fails before output")
@@ -261,6 +275,38 @@ struct HeadlessChatScenarioTests {
         #expect(run.status == .failed)
         #expect(run.stopReason == "no_usable_result")
         #expect(task.completedAt == nil)
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+        #expect(!task.events.contains { $0.type == "task.completed" })
+    }
+
+    @Test("Misspelled JavaScript page task without created files stays pending review")
+    func misspelledJavaScriptPageTaskWithoutCreatedFilesStaysPendingReview() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote .astra/tasks/9B2FC25F/index.html\\n\\nFile: .astra/tasks/9B2FC25F/index.html\\n<html></html>"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "buid a rubis cuve solved in 3d in ajavascript page",
+            model: "gpt-5"
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "no_usable_result")
+        #expect(run.fileChanges.isEmpty)
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
@@ -893,6 +939,18 @@ struct HeadlessChatScenarioTests {
         let reviewArgs = try String(contentsOf: reviewArgsURL, encoding: .utf8)
         #expect(reviewArgs.contains("--allow-tool"))
         #expect(!reviewArgs.contains("--allow-all-tools"))
+        let reviewArgList = reviewArgs
+            .split(separator: "\n")
+            .map(String.init)
+        let reviewAllowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: reviewArgList))
+        let reviewAvailableEntries = Set(Self.argumentValues(after: "--available-tools", in: reviewArgList))
+        let reviewExcludedEntries = Set(Self.argumentValues(after: "--excluded-tools", in: reviewArgList))
+        #expect(!reviewAllowedEntries.contains("write"))
+        #expect(!reviewAllowedEntries.contains("create"))
+        #expect(!reviewAllowedEntries.contains("edit"))
+        #expect(reviewAvailableEntries.contains("create"))
+        #expect(reviewAvailableEntries.contains("edit"))
+        #expect(reviewExcludedEntries.contains("task"))
 
         let autoHarness = try HeadlessChatHarness()
         defer { autoHarness.cleanup() }
@@ -1001,9 +1059,23 @@ struct HeadlessChatScenarioTests {
         let argsURL = harness.rootURL.appendingPathComponent("permission-approval-args.txt")
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
-            script: Self.copilotScript(
+                script: Self.copilotScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -Fxq -- 'write'; then
+                allowed_write=0
+                mode=""
+                for arg in "$@"; do
+                  if [ "$arg" = "--allow-tool" ]; then
+                    mode="allow"
+                    continue
+                  fi
+                  case "$arg" in
+                    --*) mode="" ;;
+                  esac
+                  if [ "$mode" = "allow" ] && [ "$arg" = "write" ]; then
+                    allowed_write=1
+                  fi
+                done
+                if [ "$allowed_write" = "1" ]; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote the approved story"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
                   exit 0
@@ -1049,6 +1121,7 @@ struct HeadlessChatScenarioTests {
         #expect(runs.count == 2)
         #expect(!args.contains("--allow-all-tools"))
         #expect(args.contains("write"))
+        #expect(args.contains("create"))
         #expect(task.status == .completed)
         #expect(runs[1].output == "Wrote the approved story")
     }
@@ -1061,9 +1134,23 @@ struct HeadlessChatScenarioTests {
         let argsURL = harness.rootURL.appendingPathComponent("ui-permission-approval-args.txt")
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
-            script: Self.copilotScript(
+                script: Self.copilotScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -Fxq -- 'write'; then
+                allowed_write=0
+                mode=""
+                for arg in "$@"; do
+                  if [ "$arg" = "--allow-tool" ]; then
+                    mode="allow"
+                    continue
+                  fi
+                  case "$arg" in
+                    --*) mode="" ;;
+                  esac
+                  if [ "$mode" = "allow" ] && [ "$arg" = "write" ]; then
+                    allowed_write=1
+                  fi
+                done
+                if [ "$allowed_write" = "1" ]; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Approved through UI path"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
                   exit 0
@@ -1107,6 +1194,7 @@ struct HeadlessChatScenarioTests {
         #expect(runs.count == 2)
         #expect(!args.contains("--allow-all-tools"))
         #expect(args.contains("write"))
+        #expect(args.contains("create"))
         #expect(runs.last?.output == "Approved through UI path")
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
     }
@@ -1816,6 +1904,80 @@ struct HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
     }
 
+    @Test("Approved artifact plan validates generated files without shell composition")
+    func approvedArtifactPlanValidatesGeneratedFilesWithoutShellComposition() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let plan = TaskPlanPayload(
+            title: "Med13 homepage",
+            goal: "Create a static homepage for Med13",
+            steps: [
+                TaskPlanPayloadStep(
+                    id: "step-1",
+                    title: "Generate static homepage files",
+                    likelyTools: ["Write"],
+                    outputs: [
+                        TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "index.html"),
+                        TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "styles.css")
+                    ]
+                )
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "index-exists",
+                    description: "Index page exists",
+                    method: .artifact,
+                    path: "index.html"
+                ),
+                TaskValidationAssertion(
+                    id: "styles-exists",
+                    description: "Stylesheet exists",
+                    method: .artifact,
+                    path: "styles.css"
+                ),
+                TaskValidationAssertion(
+                    id: "index-med13",
+                    description: "Index page contains Med13",
+                    method: .textContains,
+                    path: "index.html",
+                    evidenceQuery: "Med13"
+                )
+            ])
+        )
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (taskFolder as NSString).appendingPathComponent("index.html")
+        let stylesPath = (taskFolder as NSString).appendingPathComponent("styles.css")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            cat > \(Self.shQuote(indexPath)) <<'HTML'
+            <!doctype html>
+            <html><body><h1>Med13 Foundation</h1></body></html>
+            HTML
+            printf 'body { font-family: system-ui; }\\n' > \(Self.shQuote(stylesPath))
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Created Med13 homepage artifacts\\"}\\n"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created Med13 homepage artifacts."}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
+
+        let state = TaskPlanService.reconstruct(for: task)
+        #expect(task.status == .completed)
+        #expect(state.lifecycleStatus == .completed)
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed && $0.payload.contains("index-med13") })
+        #expect(!task.events.contains { $0.payload.contains("command_not_allowed") })
+        #expect(!task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
+    }
+
     @Test("Approved plan execution records failure lifecycle on failure")
     func approvedPlanExecutionRecordsFailureLifecycleOnFailure() async throws {
         let harness = try HeadlessChatHarness()
@@ -1892,6 +2054,7 @@ struct HeadlessChatScenarioTests {
         #expect(!args.contains("--allow-all-tools"))
         #expect(args.contains("--allow-tool"))
         #expect(args.contains("write"))
+        #expect(args.contains("create"))
         #expect(args.contains("ASTRA review mode approved only the next plan step"))
         #expect(args.contains("Execute exactly this approved step and stop: step-1"))
         #expect(args.contains("Do not execute later plan steps"))
@@ -3524,6 +3687,7 @@ struct HeadlessChatScenarioTests {
         if [ "$1" = "help" ]; then
           cat <<'HELP'
         --output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR
+        --available-tools=TOOLS --excluded-tools=TOOLS
         --allow-all-tools required for non-interactive mode
         HELP
           exit 0
@@ -3548,6 +3712,13 @@ struct HeadlessChatScenarioTests {
 
     private static func shQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
+        guard let index = arguments.firstIndex(of: flag) else { return [] }
+        let start = arguments.index(after: index)
+        guard start < arguments.endIndex else { return [] }
+        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 }
 

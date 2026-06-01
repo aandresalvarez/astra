@@ -15,7 +15,7 @@ enum TaskDeliverableExpectation {
             .lowercased()
 
         let artifactActionWords = [
-            "write", "create", "creat", "cerate", "build", "make", "generate", "save"
+            "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
         ]
         let artifactActionPhrases = [
             "put this in files", "write this in files"

@@ -124,14 +124,61 @@ final class TaskLifecycleCoordinator {
             return
         }
 
-        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id)
+        let recordedValidationOverride = recordValidationOverrideIfNeeded(for: task)
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": recordedValidationOverride ? "validation_override" : "completion"
+        ])
         task.status = .completed
         task.updatedAt = Date()
         task.completedAt = Date()
         task.markRead()
-        let event = TaskEvent(task: task, type: "task.approved", payload: "Task approved by user.")
+        let event = TaskEvent(
+            task: task,
+            type: "task.approved",
+            payload: recordedValidationOverride
+                ? "Task approved by user despite a failed required validation contract."
+                : "Task approved by user."
+        )
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func recordValidationOverrideIfNeeded(for task: AgentTask) -> Bool {
+        guard let failedContract = latestFailedValidationContract(for: task) else { return false }
+        let payload = TaskValidationContractEventPayload(
+            version: 1,
+            planID: failedContract.planID,
+            status: "overridden",
+            requiredPassed: failedContract.requiredPassed,
+            requiredTotal: failedContract.requiredTotal,
+            failedRequiredAssertionIDs: failedContract.failedRequiredAssertionIDs,
+            summary: "User closed the task despite failed required validation assertions."
+        )
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: TaskValidationEventTypes.contractOverridden,
+            payload: Self.encode(payload)
+        ))
+        return true
+    }
+
+    private func latestFailedValidationContract(for task: AgentTask) -> TaskValidationContractEventPayload? {
+        let currentPlanID = TaskPlanService.reconstruct(for: task).plan?.planID
+        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard [TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
+                  let payload = Self.decodeContractPayload(event.payload),
+                  currentPlanID.map({ $0 == payload.planID }) ?? true else {
+                return nil
+            }
+            return (event, payload)
+        }
+        guard let latest = contractEvents.sorted(by: { $0.event.timestamp > $1.event.timestamp }).first,
+              latest.event.type == TaskValidationEventTypes.contractFailed else {
+            return nil
+        }
+        return latest.payload
     }
 
     private func dismissibleLatestRun(for task: AgentTask) -> TaskRun? {
@@ -653,6 +700,21 @@ final class TaskLifecycleCoordinator {
         guard trimmed.count >= 4, trimmed.count <= 80 else { return false }
         guard !trimmed.contains("\n") else { return false }
         return true
+    }
+
+    private static func decodeContractPayload(_ payload: String) -> TaskValidationContractEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data)
+    }
+
+    private static func encode<T: Encodable>(_ payload: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return string
     }
 
     // MARK: - Migration

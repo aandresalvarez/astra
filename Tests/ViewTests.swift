@@ -4878,6 +4878,41 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [newer.id, middle.id, older.id])
     }
 
+    @Test("Workspace sidebar shows retry attempts as separate task rows")
+    func workspaceSidebarShowsRetryAttemptsAsSeparateRows() {
+        let workspace = makeWorkspace(name: "Astra Work")
+        let titles = [
+            "Build solved Rubik's cube",
+            "Build solved Rubik's cube (attempt 2)",
+            "Create 3D page",
+            "Create 3D solver",
+            "Explain who you are",
+            "Describe who you are",
+            "Build solved cube notes",
+            "Review output"
+        ]
+
+        let tasks = titles.enumerated().map { offset, title in
+            let task = makeTask(title: title, status: .completed, workspace: workspace)
+            task.updatedAt = Date(timeIntervalSince1970: TimeInterval(800 - offset))
+            return task
+        }
+
+        let index = SidebarTaskIndex(tasks: tasks, searchText: "")
+        let reviewTasks = index.reviewTasks(for: workspace)
+        let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(reviewTasks, isShowingAll: false)
+
+        #expect(reviewTasks.count == 8)
+        #expect(visibleTasks.map(\.id) == Array(reviewTasks.prefix(6)).map(\.id))
+        #expect(visibleTasks.map(\.id).contains(tasks[0].id))
+        #expect(visibleTasks.map(\.id).contains(tasks[1].id))
+        #expect(Set(visibleTasks.map(\.id)).count == 6)
+        #expect(SidebarWorkspaceTaskList.hiddenTaskCount(
+            totalTasks: reviewTasks.count,
+            visibleTasks: visibleTasks.count
+        ) == 2)
+    }
+
     @Test("SidebarTaskIndex surfaces unread tasks under the dock")
     func sidebarTaskIndexUnreadTasks() {
         let workspace = makeWorkspace(name: "Unread")

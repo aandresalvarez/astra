@@ -155,6 +155,8 @@ struct MissionControlPresentation: Equatable {
                 return ("Verified", "\(contract.requiredPassed)/\(contract.requiredTotal) required proofs passed", .verified)
             case "failed":
                 return ("Validation failed", "\(contract.requiredPassed)/\(contract.requiredTotal) required proofs passed", .failed)
+            case "overridden":
+                return ("Validation override", "\(contract.requiredPassed)/\(contract.requiredTotal) required proofs passed", .attention)
             case "running":
                 return ("Validating", "\(contract.requiredPassed)/\(contract.requiredTotal) required proofs passed", .running)
             default:
