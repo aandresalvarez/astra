@@ -465,19 +465,19 @@ enum CopilotCLIRuntime {
         let lower = trimmed.lowercased()
         switch lower {
         case "read":
-            return ["view", "grep", "glob"]
+            return ["view", "grep", "glob", "rg"]
         case "view":
             return ["view"]
         case "grep":
-            return ["grep"]
+            return ["grep", "rg"]
         case "glob", "ls":
             return ["glob"]
         case "write":
-            return ["create", "edit"]
+            return ["create", "edit", "apply_patch"]
         case "create":
-            return ["create"]
+            return ["create", "apply_patch"]
         case "edit", "multiedit", "multi_edit":
-            return ["edit"]
+            return ["edit", "apply_patch"]
         case "bash", "shell", "webfetch", "websearch":
             return ["shell"]
         case "agent", "task":

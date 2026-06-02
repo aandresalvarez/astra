@@ -502,6 +502,116 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.arguments.contains("report_intent"))
     }
 
+    @Test("Copilot artifact launch grants bootstrap write without counting it as a task tool")
+    @MainActor
+    func copilotArtifactLaunchGrantsBootstrapWriteWithoutCountingAsTaskTool() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-artifact-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Artifact", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash"]
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(allowedEntries.contains("view"))
+        #expect(allowedEntries.contains("grep"))
+        #expect(allowedEntries.contains("glob"))
+        #expect(allowedEntries.contains("write"))
+        #expect(!allowedEntries.contains("create"))
+        #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("apply_patch"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(availableEntries.contains("rg"))
+    }
+
+    @Test("Copilot informational launch does not get artifact bootstrap write")
+    @MainActor
+    func copilotInformationalLaunchDoesNotGetArtifactBootstrapWrite() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-info-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Info", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash"]
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
+        #expect(!allowedEntries.contains("write"))
+        #expect(availableEntries.contains("apply_patch"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(availableEntries.contains("rg"))
+    }
+
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")
     @MainActor
     func claudeLaunchSurfacesAskFirstToolsWithoutCountingThemAsAllowedTaskTools() throws {
@@ -750,5 +860,80 @@ struct AgentRuntimeAdapterTests {
         #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
         #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
         #expect(antigravity.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
+    }
+
+    private static func copilotManifest(
+        task: AgentTask,
+        workspacePath: String,
+        allowedTools: [String],
+        askFirstTools: [String]
+    ) -> RunPermissionManifest {
+        let providerRender = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: allowedTools,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
+            askFirstTools: askFirstTools,
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        return RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .copilotCLI,
+            providerVersion: nil,
+            model: task.model,
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+    }
+
+    private static func writeFakeCopilotExecutable(in directory: URL) throws -> String {
+        let url = directory.appendingPathComponent("copilot")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user
+        HELP
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url.path
+    }
+
+    private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
+        guard let index = arguments.firstIndex(of: flag) else { return [] }
+        let start = arguments.index(after: index)
+        guard start < arguments.endIndex else { return [] }
+        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 }

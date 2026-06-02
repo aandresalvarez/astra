@@ -263,11 +263,11 @@ public enum CopilotStreamEventParser {
             }
         }
         if let input = object["input"] ?? object["arguments"] ?? object["args"] {
-            return stableJSONString(input)
+            return stableInputSummary(input)
         }
         if let payload = payloadObject(in: object),
            let input = payload["input"] ?? payload["arguments"] ?? payload["args"] {
-            return stableJSONString(input)
+            return stableInputSummary(input)
         }
         return nil
     }
@@ -277,7 +277,7 @@ public enum CopilotStreamEventParser {
         return [
             "bash", "shell",
             "read", "view", "grep", "glob",
-            "write", "create", "edit", "multiedit", "multi_edit",
+            "write", "create", "edit", "multiedit", "multi_edit", "apply_patch",
             "webfetch", "websearch"
         ].contains(normalized)
     }
@@ -649,6 +649,14 @@ public enum CopilotStreamEventParser {
             return nil
         }
         return string
+    }
+
+    private static func stableInputSummary(_ value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return stableJSONString(value)
     }
 
     private static func jsonDictionary(from text: String) -> [String: Any]? {

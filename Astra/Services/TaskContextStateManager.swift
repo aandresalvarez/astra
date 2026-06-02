@@ -437,7 +437,7 @@ enum TaskContextStateManager {
             filesChanged: [],
             changedFiles: [],
             artifacts: [],
-            verification: verificationState(task: task, latestRun: nil),
+            verification: verificationState(task: task, latestRun: nil, artifacts: []),
             validationContract: nil,
             latestHandoff: nil,
             correctiveWork: nil,
@@ -451,6 +451,7 @@ enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanService.reconstruct(for: task)
+        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
@@ -499,7 +500,8 @@ enum TaskContextStateManager {
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
-        state.filesChanged = dedupeKeepingOrder(state.filesChanged + changedFiles, limit: 50)
+        let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
+        state.filesChanged = dedupeKeepingOrder(state.filesChanged + changedFiles + discoveredChangedFiles, limit: 50)
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
         state.nextLikelyAction = nextLikelyAction(task: task, planState: planState)
         state.objective = objectiveState(task: task, planState: planState, state: state)
@@ -512,9 +514,9 @@ enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers)
-        state.changedFiles = changedFileReferences(for: task)
-        state.artifacts = artifactReferences(for: task)
-        state.verification = verificationState(task: task, latestRun: latestRun)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
+        state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(task: task, planState: planState)
         state.latestHandoff = latestHandoffState(task: task)
         state.correctiveWork = correctiveWorkState(task: task)
@@ -639,6 +641,7 @@ enum TaskContextStateManager {
         return folder.isEmpty ? nil : folder
     }
 
+    @MainActor
     private static func makeTurn(
         number: Int,
         message: String,
@@ -650,11 +653,15 @@ enum TaskContextStateManager {
             .filter { $0.run?.id == run.id }
             .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
             .map { boundedInline($0.payload, maxCharacters: 220) }
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(
+            during: run,
+            from: TaskOutputDiscovery.files(in: taskFolder)
+        ).map(\.path)
         return TaskContextState.Turn(
             turn: number,
             ask: boundedInline(message, maxCharacters: 400),
             summary: summarizeOutput(run.output, fallback: run.stopReason),
-            filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path), limit: 20),
+            filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 20),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
             outputFile: formattedOutputFileName(turn: number),
             runStatus: run.status.rawValue,
@@ -726,7 +733,10 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func changedFileReferences(for task: AgentTask) -> [TaskContextState.ChangedFile] {
+    private static func changedFileReferences(
+        for task: AgentTask,
+        discoveredFiles: [TaskOutputDiscoveredFile]
+    ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
         var indexByPath: [String: Int] = [:]
@@ -750,14 +760,33 @@ enum TaskContextStateManager {
                 }
             }
         }
+        for file in discoveredFiles {
+            let pointer = sourcePointer(
+                kind: "task_output_file",
+                path: file.path,
+                summary: "Discovered task output file \(file.relativePath)"
+            )
+            if let index = indexByPath[file.path] {
+                output[index].sourcePointers = dedupeSourcePointers(output[index].sourcePointers + [pointer])
+            } else {
+                indexByPath[file.path] = output.count
+                output.append(TaskContextState.ChangedFile(
+                    path: file.path,
+                    changeType: "discovered",
+                    sourcePointers: [pointer]
+                ))
+            }
+        }
         return Array(output.suffix(50))
     }
 
     @MainActor
-    private static func artifactReferences(for task: AgentTask) -> [TaskContextState.ArtifactReference] {
-        task.artifacts
+    private static func artifactReferences(
+        for task: AgentTask,
+        discoveredFiles: [TaskOutputDiscoveredFile]
+    ) -> [TaskContextState.ArtifactReference] {
+        var references = task.artifacts
             .sorted { $0.createdAt < $1.createdAt }
-            .suffix(30)
             .map { artifact in
                 TaskContextState.ArtifactReference(
                     type: artifact.type,
@@ -769,6 +798,24 @@ enum TaskContextStateManager {
                     ]
                 )
             }
+        var seenPaths = Set(references.map(\.path))
+        for file in discoveredFiles where !seenPaths.contains(file.path) {
+            seenPaths.insert(file.path)
+            references.append(TaskContextState.ArtifactReference(
+                type: file.type,
+                path: file.path,
+                version: 1,
+                isStale: false,
+                sourcePointers: [
+                    sourcePointer(
+                        kind: "task_output_file",
+                        path: file.path,
+                        summary: "Discovered task output artifact \(file.relativePath)"
+                    )
+                ]
+            ))
+        }
+        return Array(references.suffix(30))
     }
 
     @MainActor
@@ -947,9 +994,13 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func verificationState(task: AgentTask, latestRun: TaskRun?) -> TaskContextState.Verification {
+    private static func verificationState(
+        task: AgentTask,
+        latestRun: TaskRun?,
+        artifacts: [TaskContextState.ArtifactReference]
+    ) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
-        let artifactStatus = artifactVerificationStatus(for: task)
+        let artifactStatus = artifactVerificationStatus(for: artifacts)
         let latestValidation = task.events
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
@@ -1007,9 +1058,7 @@ enum TaskContextStateManager {
         )
     }
 
-    @MainActor
-    private static func artifactVerificationStatus(for task: AgentTask) -> String {
-        let artifacts = task.artifacts
+    private static func artifactVerificationStatus(for artifacts: [TaskContextState.ArtifactReference]) -> String {
         guard !artifacts.isEmpty else { return "none recorded" }
         let staleCount = artifacts.filter(\.isStale).count
         let currentCount = artifacts.count - staleCount

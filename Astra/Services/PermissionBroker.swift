@@ -454,7 +454,7 @@ enum PermissionBroker {
         case "read": return "Read"
         case "grep": return "Grep"
         case "glob": return "Glob"
-        case "write", "create": return "Write"
+        case "write", "create", "apply_patch": return "Write"
         case "edit": return "Edit"
         case "multiedit": return "MultiEdit"
         case "webfetch": return "WebFetch"
@@ -474,7 +474,7 @@ enum PermissionBroker {
             return "bash"
         case "view":
             return "read"
-        case "create":
+        case "create", "apply_patch":
             return "write"
         case "multi_edit":
             return "multiedit"

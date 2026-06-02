@@ -207,6 +207,33 @@ struct CopilotStreamEventParserTests {
         }
     }
 
+    @Test("Tool execution preserves raw apply patch arguments for policy")
+    func toolExecutionPreservesRawApplyPatchArgumentsForPolicy() throws {
+        let patch = """
+        *** Begin Patch
+        *** Add File: /tmp/astra-policy-guard/.astra/tasks/7296659E/index.html
+        +<html></html>
+        *** End Patch
+        """
+        let payload: [String: Any] = [
+            "type": "tool.execution_start",
+            "data": [
+                "toolCallId": "patch-1",
+                "toolName": "apply_patch",
+                "arguments": patch
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let line = try #require(String(data: data, encoding: .utf8))
+        let parsed = try #require(CopilotStreamEventParser.parse(line: line))
+        let observed = try #require(PolicyObservedEvent(providerEvent: parsed))
+
+        #expect(observed.kind == .fileChange)
+        #expect(observed.toolName == "apply_patch")
+        #expect(observed.path == "/tmp/astra-policy-guard/.astra/tasks/7296659E/index.html")
+        #expect(observed.summary?.contains("*** Add File: /tmp/astra-policy-guard/.astra/tasks/7296659E/index.html") == true)
+    }
+
     @Test("Provider support tool arguments preserve structured keys for policy")
     func providerSupportToolArgumentsPreserveStructuredKeysForPolicy() throws {
         let line = #"{"type":"tool.execution_start","data":{"toolCallId":"docs-1","toolName":"fetch_copilot_cli_documentation","arguments":{"command":"git status"}}}"#
@@ -811,6 +838,7 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
     }
@@ -901,9 +929,11 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
+        #expect(availableEntries.contains("rg"))
         #expect(!allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
         #expect(!availableEntries.contains("task"))

@@ -311,6 +311,87 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
+    @Test("Copilot artifact task receives bootstrap write permission and creates a file")
+    func copilotArtifactTaskReceivesBootstrapWritePermissionAndCreatesFile() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            model: "gpt-5.3-codex",
+            tokenBudget: 200_000
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("index.html")
+        let argsURL = harness.rootURL.appendingPathComponent("copilot-artifact-bootstrap-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                allowed_write=0
+                visible_apply_patch=0
+                mode=""
+                for arg in "$@"; do
+                  if [ "$arg" = "--allow-tool" ]; then
+                    mode="allow"
+                    continue
+                  fi
+                  if [ "$arg" = "--available-tools" ]; then
+                    mode="available"
+                    continue
+                  fi
+                  case "$arg" in
+                    --*) mode="" ;;
+                  esac
+                  if [ "$mode" = "allow" ] && [ "$arg" = "write" ]; then
+                    allowed_write=1
+                  fi
+                  if [ "$mode" = "available" ] && [ "$arg" = "apply_patch" ]; then
+                    visible_apply_patch=1
+                  fi
+                done
+                if [ "$allowed_write" = "1" ] && [ "$visible_apply_patch" = "1" ]; then
+                  mkdir -p \(Self.shQuote(taskFolder))
+                  printf '%s\\n' '<!doctype html><html><body><h1>Masterball solver</h1><script>console.log("solver")</script></body></html>' > \(Self.shQuote(artifactURL.path))
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created the Masterball solver page at .astra/tasks/bootstrap/index.html"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I could not directly write files in this run because the available tools are read-only, so here is a ready-to-save artifact for index.html: <html></html>"}}'
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .restricted
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: args))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: args))
+        let run = try #require(task.runs.first)
+
+        #expect(allowedEntries.contains("write"))
+        #expect(availableEntries.contains("apply_patch"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+    }
+
     @Test("Antigravity empty non-artifact task stays pending review")
     func antigravityEmptyNonArtifactTaskStaysPendingReview() async throws {
         let harness = try HeadlessChatHarness()
@@ -1459,11 +1540,20 @@ struct HeadlessChatScenarioTests {
         defer { harness.cleanup() }
 
         let argsURL = harness.rootURL.appendingPathComponent("ui-claude-path-approval-args.txt")
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "createa web page wit a masterball with a solver in javascript",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         let claudePath = try harness.writeExecutable(
             named: "claude",
             script: Self.claudeScript(
                 body: """
                 if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(ls dev/workspaces/test/.astra/tasks/bf0b91bc/ *)'; then
+                  mkdir -p \(Self.shQuote(taskFolder))
+                  printf '%s\\n' '<!doctype html><html><body><h1>Approved ls completed</h1></body></html>' > \(Self.shQuote("\(taskFolder)/index.html"))
                   printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-path-approved","model":"claude-sonnet-4-6"}'
                   printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_ls_approved","input":{"command":"ls /Users/alvaro1/Documents/Astra\\\\ Dev/Workspaces/test/.astra/tasks/BF0B91BC/"}}]}}'
                   printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Approved ls completed"}]}}'
@@ -1479,12 +1569,6 @@ struct HeadlessChatScenarioTests {
             )
         )
 
-        let task = harness.makeTask(
-            runtime: .claudeCode,
-            goal: "createa web page wit a masterball with a solver in javascript",
-            model: "claude-sonnet-4-6",
-            tokenBudget: 200_000
-        )
         let queue = TaskQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
@@ -3103,6 +3187,12 @@ struct HeadlessChatScenarioTests {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            model: "claude-sonnet-4-6"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         let claudePath = try harness.writeExecutable(
             named: "claude",
             script: Self.claudeScript(body: """
@@ -3113,6 +3203,8 @@ struct HeadlessChatScenarioTests {
                 exit 42
                 ;;
             esac
+            mkdir -p \(Self.shQuote(taskFolder))
+            printf '%s\\n' '<!doctype html><html><body><h1>Created a clean Masterball solver page.</h1></body></html>' > \(Self.shQuote("\(taskFolder)/index.html"))
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"clean-capability-session","model":"claude-sonnet-4-6"}'
             printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Created a clean Masterball solver page."}]}}'
             printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Created a clean Masterball solver page.","usage":{"input_tokens":7,"output_tokens":9}}'
@@ -3120,11 +3212,6 @@ struct HeadlessChatScenarioTests {
             """)
         )
 
-        let task = harness.makeTask(
-            runtime: .claudeCode,
-            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
-            model: "claude-sonnet-4-6"
-        )
         let mailSkill = Skill(
             name: "Stanford Graph Mail Agent",
             skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",

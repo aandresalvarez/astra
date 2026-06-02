@@ -505,6 +505,7 @@ struct TaskMainView: View {
             loadSSHConnections()
             alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
+            refreshTaskContextState()
             refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
@@ -516,6 +517,7 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            refreshTaskContextState()
             refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
@@ -592,6 +594,10 @@ struct TaskMainView: View {
         guard cachedPlanStateSignature != signature else { return }
         cachedPlanState = TaskPlanService.reconstruct(for: task)
         cachedPlanStateSignature = signature
+    }
+
+    private func refreshTaskContextState() {
+        TaskContextStateManager.refresh(task: task)
     }
 
     private func schedulePlanStateCacheRefresh() {

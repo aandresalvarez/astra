@@ -1998,6 +1998,64 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Ask-first task output apply patch is allowed without approval")
+    func askFirstTaskOutputApplyPatchIsAllowedWithoutApproval() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let patch = """
+        *** Begin Patch
+        *** Add File: \(workspacePath)/.astra/tasks/B405BA1D/index.html
+        +<html></html>
+        *** End Patch
+        """
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "apply_patch", id: "t1", input: ["summary": patch]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Apply patch outside allowed paths stops provider")
+    func applyPatchOutsideAllowedPathsStopsProvider() {
+        let manifest = runtimePolicyManifest(allowedTools: ["Write"])
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let patch = """
+        *** Begin Patch
+        *** Add File: /etc/astra-owned.html
+        +<html></html>
+        *** End Patch
+        """
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "apply_patch", id: "t1", input: ["summary": patch]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("patch file path is outside the workspace paths") == true)
+    }
+
     @Test("Ask-first workspace artifact write outside task output still asks")
     func askFirstWorkspaceArtifactWriteOutsideTaskOutputStillAsks() throws {
         let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))

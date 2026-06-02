@@ -43,6 +43,10 @@ enum TaskWorkerHandoffService {
         let validationEvidence = runEvents
             .filter { $0.type.hasPrefix("validation.") }
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 220))" }
+        let discoveredFiles = TaskOutputDiscovery.files(for: task)
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: discoveredFiles).map(\.path)
+        let filesChanged = dedupe(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 50)
+        let artifactsCreated = dedupe(task.artifacts.map(\.path) + discoveredFiles.map(\.path), limit: 30)
         let commands = runEvents
             .filter { $0.type == "tool.use" }
             .prefix(12)
@@ -62,8 +66,8 @@ enum TaskWorkerHandoffService {
             completedWork: completedWork,
             unfinishedWork: unfinishedWork,
             commands: Array(commands),
-            filesChanged: Array(run.fileChanges.map(\.path).prefix(50)),
-            artifactsCreated: Array(task.artifacts.map(\.path).prefix(30)),
+            filesChanged: filesChanged,
+            artifactsCreated: artifactsCreated,
             validationEvidence: Array(validationEvidence.prefix(12)),
             blockers: blockers,
             risks: risks,

@@ -256,6 +256,40 @@ struct RealProviderSmokeTests {
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
     }
 
+    @Test(
+        "Real Copilot Masterball launch creates task output artifact",
+        .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
+    )
+    func realCopilotMasterballLaunchCreatesTaskOutputArtifact() async throws {
+        let harness = try RealProviderHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try #require(Self.findExecutable("copilot"))
+        let model = ProcessInfo.processInfo.environment["REAL_COPILOT_ARTIFACT_MODEL"]
+            ?? ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"]
+            ?? "gpt-5.3-codex"
+        let worker = harness.makeWorker(copilotPath: copilotPath)
+        worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
+            ?? 240
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            model: model
+        )
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try harness.context.save()
+
+        _ = try await harness.execute(task: task, worker: worker)
+        let run = try #require(task.runs.first)
+        Self.printRunSummary(label: "real copilot masterball artifact", task: task, run: run)
+
+        #expect(run.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
     // MARK: - Multi-turn conversation continuity (real provider output)
 
     @Test(

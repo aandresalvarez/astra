@@ -487,6 +487,123 @@ struct TaskContextStateTests {
         #expect(prompt.contains("html v1 stale"))
     }
 
+    @Test("context capsule discovers task output files when provider metadata is missing")
+    func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Discovered Artifact", primaryPath: root)
+        let task = AgentTask(
+            title: "Masterball artifact",
+            goal: "Create a standalone puzzle page",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.startedAt = Date().addingTimeInterval(-30)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Created .astra/tasks/\(String(task.id.uuidString.prefix(8)))/index.html."
+        run.completedAt = Date().addingTimeInterval(30)
+        task.status = .completed
+        context.insert(run)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try "<!doctype html><html><body>Masterball</body></html>".write(
+            toFile: indexPath,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "history".write(
+            toFile: (folder as NSString).appendingPathComponent("session_history.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let outsidePath = (outsideRoot as NSString).appendingPathComponent("outside.txt")
+        try "outside".write(toFile: outsidePath, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            atPath: (folder as NSString).appendingPathComponent("outside.txt"),
+            withDestinationPath: outsidePath
+        )
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Create the page")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.filesChanged.contains(indexPath))
+        #expect(!state.filesChanged.contains { $0.hasSuffix("session_history.md") })
+        #expect(!state.filesChanged.contains { $0.hasSuffix("outside.txt") })
+        #expect(state.changedFiles.contains {
+            $0.path == indexPath &&
+                $0.changeType == "discovered" &&
+                $0.sourcePointers.contains { $0.kind == "task_output_file" }
+        })
+        #expect(state.artifacts.contains {
+            $0.path == indexPath &&
+                $0.type == "html" &&
+                !$0.isStale &&
+                $0.sourcePointers.contains { $0.kind == "task_output_file" }
+        })
+        #expect(state.verification.artifactStatus == "1 current")
+        #expect(state.turns.first?.filesChanged.contains(indexPath) == true)
+    }
+
+    @Test("context capsule refresh repairs stale task output metadata")
+    func contextCapsuleRefreshRepairsStaleTaskOutputMetadata() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Stale Capsule Repair", primaryPath: root)
+        let task = AgentTask(
+            title: "Repair task state",
+            goal: "Create an artifact after state was written",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.startedAt = Date().addingTimeInterval(-30)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Created index.html."
+        run.completedAt = Date().addingTimeInterval(30)
+        task.status = .completed
+        context.insert(run)
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Create the page")
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        var staleState = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(staleState.artifacts.isEmpty)
+        #expect(staleState.changedFiles.isEmpty)
+        #expect(staleState.verification.artifactStatus == "none recorded")
+
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try "<!doctype html><html><body>Late artifact</body></html>".write(
+            toFile: indexPath,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        staleState = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(staleState.artifacts.isEmpty)
+        TaskContextStateManager.refresh(task: task)
+
+        let repairedState = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(repairedState.filesChanged.contains(indexPath))
+        #expect(repairedState.changedFiles.contains { $0.path == indexPath })
+        #expect(repairedState.artifacts.contains { $0.path == indexPath && $0.type == "html" })
+        #expect(repairedState.verification.artifactStatus == "1 current")
+    }
+
     @Test("context capsule is primary prompt context before raw transcript")
     func contextCapsulePrecedesRawTranscript() throws {
         let root = try temporaryRoot()

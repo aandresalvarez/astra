@@ -665,10 +665,15 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
         case .toolUse(let name, _, let input):
             let normalizedInput = Self.normalizedToolInput(input)
             let inputKeys = Self.providerInputKeys(from: input)
+            let patchText = Self.isPatchTool(name)
+                ? Self.firstString(in: normalizedInput, keys: ["arguments", "input", "args", "summary"])
+                : nil
+            let patchPath = patchText.flatMap { Self.patchFilePaths(in: $0).first }
             let command = Self.firstString(in: normalizedInput, keys: ["command", "cmd"])
                 ?? (Self.isShellTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let path = Self.firstString(in: normalizedInput, keys: ["file_path", "path", "target_path"])
-                ?? (Self.isFileTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
+                ?? patchPath
+                ?? (Self.isFileTool(name) && !Self.isPatchTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let url = Self.firstString(in: input, keys: ["url", "uri"])
                 ?? Self.firstString(in: normalizedInput, keys: ["url", "uri"])
                 ?? (Self.isNetworkTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
@@ -686,7 +691,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
                 command: command,
                 path: path,
                 url: url,
-                summary: command ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"]),
+                summary: command ?? patchText ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"]),
                 inputKeys: inputKeys
             )
         case .toolResult(let toolId, let content):
@@ -761,17 +766,45 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     }
 
     private static func isFileTool(_ tool: String) -> Bool {
-        ["read", "view", "write", "create", "edit", "multiedit", "multi_edit"].contains(
+        ["read", "view", "write", "create", "edit", "multiedit", "multi_edit", "apply_patch"].contains(
             tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         )
     }
 
     private static func isMutationTool(_ tool: String) -> Bool {
-        ["write", "create", "edit", "multiedit", "multi_edit"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        ["write", "create", "edit", "multiedit", "multi_edit", "apply_patch"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private static func isNetworkTool(_ tool: String) -> Bool {
         ["webfetch", "websearch"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    private static func isPatchTool(_ tool: String) -> Bool {
+        tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "apply_patch"
+    }
+
+    public static func patchFilePaths(in patch: String) -> [String] {
+        let patterns = [
+            #"(?m)^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$"#,
+            #"(?m)^\*\*\* Move to:\s*(.+?)\s*$"#
+        ]
+        var paths: [String] = []
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(patch.startIndex..<patch.endIndex, in: patch)
+            for match in regex.matches(in: patch, range: range) {
+                guard match.numberOfRanges > 1,
+                      let valueRange = Range(match.range(at: 1), in: patch) else {
+                    continue
+                }
+                let path = String(patch[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !path.isEmpty {
+                    paths.append(path)
+                }
+            }
+        }
+        var seen: Set<String> = []
+        return paths.filter { seen.insert($0).inserted }
     }
 
     private static func jsonDictionary(from text: String) -> [String: Any]? {

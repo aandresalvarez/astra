@@ -47,7 +47,7 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
         if normalizedTool == "bash" || normalizedTool == "shell" {
             return "Bash command: \(trimmedDetail)"
         }
-        if ["read", "view", "write", "create", "edit", "multiedit"].contains(normalizedTool) {
+        if ["read", "view", "write", "create", "edit", "multiedit", "apply_patch"].contains(normalizedTool) {
             return "\(toolName) path: \(trimmedDetail)"
         }
         if ["webfetch", "websearch"].contains(normalizedTool) {
@@ -84,7 +84,7 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
         switch normalizedTool {
         case "read", "view":
             return "Allow only if the provider should read that path for this task."
-        case "write", "create", "edit", "multiedit":
+        case "write", "create", "edit", "multiedit", "apply_patch":
             return "Allow only if the provider should change that path for this task."
         case "webfetch", "websearch":
             return "Allow only if that web or network access is expected for this task."
@@ -221,6 +221,11 @@ struct AgentRuntimePolicyGuard: Sendable {
                 toolName: toolName,
                 detail: observed.summary
             )
+        }
+
+        if isPatchMutationTool(toolName),
+           let violation = validatePatchMutationPaths(observed, toolName: toolName) {
+            return violation
         }
 
         if (isShellTool(toolName) || (observed.command != nil && !isFileTool(toolName) && !isNetworkTool(toolName))),
@@ -407,14 +412,70 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func matchesTaskOutputFileMutation(_ observed: PolicyObservedEvent, toolName: String) -> Bool {
         guard isMutationTool(toolName),
-              observed.command == nil,
-              let path = observed.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              observed.command == nil else {
+            return false
+        }
+
+        if isPatchMutationTool(toolName) {
+            let paths = patchMutationPaths(from: observed)
+            guard !paths.isEmpty,
+                  paths.allSatisfy(isPathInTaskOutput) else {
+                return false
+            }
+            return toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
+        }
+
+        guard let path = observed.path?.trimmingCharacters(in: .whitespacesAndNewlines),
               !path.isEmpty,
               isPathInTaskOutput(path) else {
             return false
         }
-
         return toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
+    }
+
+    private func validatePatchMutationPaths(
+        _ observed: PolicyObservedEvent,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        let paths = patchMutationPaths(from: observed)
+        guard !paths.isEmpty else {
+            return AgentRuntimePolicyViolation(
+                reason: "ASTRA could not validate the patch file paths for a mutating tool",
+                toolName: toolName,
+                detail: observed.summary
+            )
+        }
+
+        if let outsidePath = paths.first(where: { !isPathInScope($0) }) {
+            return AgentRuntimePolicyViolation(
+                reason: "The patch file path is outside the workspace paths allowed for this run",
+                toolName: toolName,
+                detail: outsidePath
+            )
+        }
+
+        return nil
+    }
+
+    private func patchMutationPaths(from observed: PolicyObservedEvent) -> [String] {
+        let candidates = [
+            observed.summary,
+            observed.path
+        ].compactMap { $0 }
+
+        var paths: [String] = []
+        for candidate in candidates {
+            paths.append(contentsOf: PolicyObservedEvent.patchFilePaths(in: candidate))
+        }
+
+        if paths.isEmpty,
+           let path = observed.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !path.isEmpty {
+            paths.append(path)
+        }
+
+        var seen: Set<String> = []
+        return paths.filter { seen.insert($0).inserted }
     }
 
     private func validateNetwork(urls: [String], toolName: String) -> AgentRuntimePolicyViolation? {
@@ -737,6 +798,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         ["write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
     }
 
+    private func isPatchMutationTool(_ tool: String) -> Bool {
+        tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "apply_patch"
+    }
+
     private func isFileTool(_ tool: String) -> Bool {
         ["read", "write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
     }
@@ -755,7 +820,7 @@ struct AgentRuntimePolicyGuard: Sendable {
             return "bash"
         case "view":
             return "read"
-        case "create":
+        case "create", "apply_patch":
             return "write"
         case "multi_edit":
             return "multiedit"

@@ -1621,6 +1621,12 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionManifest: context.permissionManifest
         )
         let askFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let artifactBootstrapTools = Self.artifactBootstrapTools(
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy,
+            askFirstTools: askFirstTools
+        )
+        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools)).sorted()
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1638,7 +1644,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
             permissionPolicy: effectivePermissionPolicy,
-            allowedTools: providerAllowed,
+            allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
             taskEnvironment: taskEnv,
@@ -1688,10 +1694,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
+                "provider_launch_allowed_tool_count": String(providerLaunchAllowed.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "ask_first_tool_count": String(askFirstTools.count),
                 "ask_first_tool_names": askFirstTools.joined(separator: ","),
+                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
+                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
+                "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),
@@ -1711,6 +1721,28 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
             ]
         )
+    }
+
+    private static func artifactBootstrapTools(
+        task: AgentTask,
+        permissionPolicy: PermissionPolicy,
+        askFirstTools: [String]
+    ) -> [String] {
+        guard permissionPolicy == .restricted,
+              TaskDeliverableExpectation.requiresStandaloneArtifact(task),
+              askFirstTools.contains(where: isFileMutationTool) else {
+            return []
+        }
+        return ["Write"]
+    }
+
+    private static func isFileMutationTool(_ tool: String) -> Bool {
+        let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "write"
+            || normalized == "create"
+            || normalized == "edit"
+            || normalized == "multiedit"
+            || normalized == "multi_edit"
     }
 
     private static func argumentList(_ arguments: [String], after flag: String) -> [String] {
