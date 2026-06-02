@@ -39,6 +39,8 @@ final class TaskEvent {
              "validation.contract.passed", "validation.contract.failed", "validation.contract.override",
              "validation.behavior.started", "validation.behavior.passed",
              "validation.behavior.failed", "validation.behavior.evidence.attached",
+             "deliverable.verification.passed", "deliverable.verification.review_needed",
+             "deliverable.verification.failed",
              "verifier.started", "verifier.completed", "verifier.failed",
              "handoff.created", "handoff.updated", "handoff.missing",
              "corrective.step.created", "corrective.step.approved",

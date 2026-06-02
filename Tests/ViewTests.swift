@@ -4605,6 +4605,29 @@ struct AgentTaskPropertyTests {
         #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
     }
 
+    @Test("verificationPresentation surfaces deliverable review quality")
+    func verificationPresentationDeliverableReviewNeeded() {
+        let verification = TaskContextState.Verification(
+            status: "review_needed",
+            strategy: "deliverable_verification",
+            command: nil,
+            summary: "Deliverable artifact exists, but ASTRA needs human review.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "1 current",
+            deliverableLevel: "needs_human_review",
+            deliverableSummary: "Deterministic probes were incomplete."
+        )
+
+        let presentation = TaskPresentationState.verificationPresentation(for: verification)
+
+        #expect(presentation.title == "Needs review")
+        #expect(presentation.summary == "Needs review")
+        #expect(presentation.tone == .attention)
+        #expect(presentation.detail?.contains("Deliverable quality: needs_human_review") == true)
+    }
+
     @Test("verification loader reads finished task state asynchronously")
     @MainActor
     func verificationLoaderReadsFinishedTaskState() async throws {

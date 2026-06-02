@@ -185,6 +185,16 @@ enum TaskPresentationState {
             )
         }
 
+        if status == "review_needed" {
+            return TaskVerificationPresentation(
+                title: "Needs review",
+                summary: "Needs review",
+                detail: detail,
+                systemImage: "eye.fill",
+                tone: .attention
+            )
+        }
+
         if ["failed", "budget_exceeded", "timeout", "error"].contains(status) {
             return TaskVerificationPresentation(
                 title: "Verification failed",
@@ -214,6 +224,17 @@ enum TaskPresentationState {
         let artifactStatus = verification.artifactStatus.trimmingCharacters(in: .whitespacesAndNewlines)
         if !artifactStatus.isEmpty, artifactStatus != "unknown" {
             parts.append("Artifacts: \(artifactStatus)")
+        }
+        if let deliverableLevel = verification.deliverableLevel?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !deliverableLevel.isEmpty {
+            parts.append("Deliverable quality: \(deliverableLevel)")
+        }
+        let failedChecks = verification.deliverableChecks
+            .filter { $0.status == TaskDeliverableCheckStatus.failed.rawValue }
+            .prefix(2)
+            .map { "\($0.title): \($0.summary)" }
+        for check in failedChecks {
+            parts.append(check)
         }
         let summary = verification.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty {

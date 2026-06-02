@@ -41,6 +41,14 @@ struct TaskContextState: Codable, Sendable, Equatable {
     }
 
     struct Verification: Codable, Sendable, Equatable {
+        struct DeliverableCheckSummary: Codable, Sendable, Equatable, Hashable {
+            var id: String
+            var title: String
+            var status: String
+            var summary: String
+            var path: String?
+        }
+
         var status: String
         var strategy: String
         var command: String?
@@ -49,6 +57,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var updatedAt: String?
         var completionVerified: Bool
         var artifactStatus: String
+        var deliverableLevel: String?
+        var deliverableSummary: String?
+        var deliverableChecks: [DeliverableCheckSummary]
 
         init(
             status: String,
@@ -58,7 +69,10 @@ struct TaskContextState: Codable, Sendable, Equatable {
             evidence: [SourcePointer],
             updatedAt: String?,
             completionVerified: Bool? = nil,
-            artifactStatus: String = "unknown"
+            artifactStatus: String = "unknown",
+            deliverableLevel: String? = nil,
+            deliverableSummary: String? = nil,
+            deliverableChecks: [DeliverableCheckSummary] = []
         ) {
             self.status = status
             self.strategy = strategy
@@ -68,6 +82,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
             self.updatedAt = updatedAt
             self.completionVerified = completionVerified ?? (status == "passed")
             self.artifactStatus = artifactStatus
+            self.deliverableLevel = deliverableLevel
+            self.deliverableSummary = deliverableSummary
+            self.deliverableChecks = deliverableChecks
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -79,6 +96,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
             case updatedAt
             case completionVerified
             case artifactStatus
+            case deliverableLevel
+            case deliverableSummary
+            case deliverableChecks
         }
 
         init(from decoder: Decoder) throws {
@@ -92,6 +112,12 @@ struct TaskContextState: Codable, Sendable, Equatable {
             let decodedCompletionVerified = try container.decodeIfPresent(Bool.self, forKey: .completionVerified)
             completionVerified = decodedCompletionVerified ?? (status == "passed")
             artifactStatus = try container.decodeIfPresent(String.self, forKey: .artifactStatus) ?? "unknown"
+            deliverableLevel = try container.decodeIfPresent(String.self, forKey: .deliverableLevel)
+            deliverableSummary = try container.decodeIfPresent(String.self, forKey: .deliverableSummary)
+            deliverableChecks = try container.decodeIfPresent(
+                [DeliverableCheckSummary].self,
+                forKey: .deliverableChecks
+            ) ?? []
         }
     }
 
@@ -292,6 +318,13 @@ enum TaskContextStateManager {
         lines.append("- Verification: \(state.verification.status) via \(state.verification.strategy) - \(boundedInline(state.verification.summary, maxCharacters: 320))")
         lines.append("  - Completion verified: \(state.verification.completionVerified ? "yes" : "no")")
         lines.append("  - Artifact status: \(boundedInline(state.verification.artifactStatus, maxCharacters: 240))")
+        if let deliverableLevel = state.verification.deliverableLevel, !deliverableLevel.isEmpty {
+            lines.append("  - Deliverable quality: \(boundedInline(deliverableLevel, maxCharacters: 120))")
+        }
+        if let deliverableSummary = state.verification.deliverableSummary, !deliverableSummary.isEmpty {
+            lines.append("  - Deliverable summary: \(boundedInline(deliverableSummary, maxCharacters: 320))")
+        }
+        appendDeliverableChecks(state.verification.deliverableChecks, to: &lines, limit: 4)
         if let command = state.verification.command, !command.isEmpty {
             lines.append("  - Verification command: \(boundedInline(command, maxCharacters: 320))")
         }
@@ -452,6 +485,7 @@ enum TaskContextStateManager {
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanService.reconstruct(for: task)
         let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
+        TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts(discoveredTaskOutputFiles, for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
@@ -798,22 +832,25 @@ enum TaskContextStateManager {
                     ]
                 )
             }
-        var seenPaths = Set(references.map(\.path))
-        for file in discoveredFiles where !seenPaths.contains(file.path) {
-            seenPaths.insert(file.path)
-            references.append(TaskContextState.ArtifactReference(
-                type: file.type,
+        var indexByPath = Dictionary(uniqueKeysWithValues: references.enumerated().map { ($0.element.path, $0.offset) })
+        for file in discoveredFiles {
+            let pointer = sourcePointer(
+                kind: "task_output_file",
                 path: file.path,
-                version: 1,
-                isStale: false,
-                sourcePointers: [
-                    sourcePointer(
-                        kind: "task_output_file",
-                        path: file.path,
-                        summary: "Discovered task output artifact \(file.relativePath)"
-                    )
-                ]
-            ))
+                summary: "Discovered task output artifact \(file.relativePath)"
+            )
+            if let index = indexByPath[file.path] {
+                references[index].sourcePointers = dedupeSourcePointers(references[index].sourcePointers + [pointer])
+            } else {
+                indexByPath[file.path] = references.count
+                references.append(TaskContextState.ArtifactReference(
+                    type: file.type,
+                    path: file.path,
+                    version: 1,
+                    isStale: false,
+                    sourcePointers: [pointer]
+                ))
+            }
         }
         return Array(references.suffix(30))
     }
@@ -1005,8 +1042,13 @@ enum TaskContextStateManager {
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
+        let latestDeliverableVerification = task.events
+            .filter(isDeliverableVerificationEvent)
+            .sorted { $0.timestamp > $1.timestamp }
+            .first
 
-        if let event = latestValidation {
+        if let event = latestValidation,
+           latestDeliverableVerification == nil || event.timestamp >= latestDeliverableVerification!.timestamp {
             let status = verificationStatus(for: event)
             return TaskContextState.Verification(
                 status: status,
@@ -1017,6 +1059,29 @@ enum TaskContextStateManager {
                 updatedAt: timestamp(event.timestamp),
                 completionVerified: status == "passed",
                 artifactStatus: artifactStatus
+            )
+        }
+
+        if let event = latestDeliverableVerification,
+           let payload = TaskDeliverableVerificationService.decode(event.payload) {
+            let evidence = dedupeSourcePointers(
+                [eventSource(event, summary: "Deliverable verification \(payload.status)")]
+                    + payload.evidencePaths.prefix(6).map {
+                        sourcePointer(kind: "task_output_file", path: $0, summary: "Deliverable verification evidence")
+                    }
+            )
+            return TaskContextState.Verification(
+                status: payload.status,
+                strategy: "deliverable_verification",
+                command: command,
+                summary: boundedInline(payload.summary, maxCharacters: 500),
+                evidence: evidence,
+                updatedAt: timestamp(payload.verifiedAt),
+                completionVerified: payload.status == "passed",
+                artifactStatus: artifactStatus,
+                deliverableLevel: payload.level.rawValue,
+                deliverableSummary: boundedInline(payload.summary, maxCharacters: 500),
+                deliverableChecks: payload.checks.map(deliverableCheckSummary)
             )
         }
 
@@ -1349,6 +1414,24 @@ enum TaskContextStateManager {
             || payload.contains("ai check error")
     }
 
+    private static func isDeliverableVerificationEvent(_ event: TaskEvent) -> Bool {
+        event.type == TaskDeliverableVerificationEventTypes.passed ||
+            event.type == TaskDeliverableVerificationEventTypes.reviewNeeded ||
+            event.type == TaskDeliverableVerificationEventTypes.failed
+    }
+
+    private static func deliverableCheckSummary(
+        _ check: TaskDeliverableCheck
+    ) -> TaskContextState.Verification.DeliverableCheckSummary {
+        TaskContextState.Verification.DeliverableCheckSummary(
+            id: check.id,
+            title: check.title,
+            status: check.status.rawValue,
+            summary: boundedInline(check.summary, maxCharacters: 500),
+            path: check.path
+        )
+    }
+
     private static func verificationStatus(for event: TaskEvent) -> String {
         if event.type == TaskValidationEventTypes.contractPassed {
             return "passed"
@@ -1496,6 +1579,20 @@ enum TaskContextStateManager {
         }
     }
 
+    private static func appendDeliverableChecks(
+        _ values: [TaskContextState.Verification.DeliverableCheckSummary],
+        to lines: inout [String],
+        limit: Int
+    ) {
+        let items = values.prefix(limit)
+        guard !items.isEmpty else { return }
+        lines.append("  - Deliverable checks:")
+        for check in items {
+            let path = check.path.map { " path: \(boundedInline($0, maxCharacters: 180))" } ?? ""
+            lines.append("    - [\(check.status)] \(boundedInline(check.title, maxCharacters: 100))\(path): \(boundedInline(check.summary, maxCharacters: 220))")
+        }
+    }
+
     private static func appendMarkdownSection(_ title: String, _ values: [String], to parts: inout [String]) {
         guard !values.isEmpty else { return }
         parts.append("")
@@ -1545,6 +1642,19 @@ enum TaskContextStateManager {
         }
         parts.append("- Completion verified: \(verification.completionVerified ? "yes" : "no")")
         parts.append("- Artifact status: \(verification.artifactStatus)")
+        if let deliverableLevel = verification.deliverableLevel, !deliverableLevel.isEmpty {
+            parts.append("- Deliverable quality: \(deliverableLevel)")
+        }
+        if let deliverableSummary = verification.deliverableSummary, !deliverableSummary.isEmpty {
+            parts.append("- Deliverable summary: \(deliverableSummary)")
+        }
+        if !verification.deliverableChecks.isEmpty {
+            parts.append("- Deliverable checks:")
+            for check in verification.deliverableChecks.prefix(8) {
+                let path = check.path.map { " `\($0)`" } ?? ""
+                parts.append("  - [\(check.status)] \(check.title)\(path): \(check.summary)")
+            }
+        }
         parts.append("- Summary: \(verification.summary)")
         if let updatedAt = verification.updatedAt {
             parts.append("- Updated: \(updatedAt)")

@@ -841,70 +841,77 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 budgetEnforcementMode: budgetEnforcementMode
             )
-            if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
-                switch task.validationStrategy {
-                case .manual:
+            let blockedByDeliverableVerification = await Self.applyDeliverableVerificationFailureIfNeeded(
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            if !blockedByDeliverableVerification {
+                if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
+                    switch task.validationStrategy {
+                    case .manual:
+                        Self.applyManualCompletion(
+                            task: task,
+                            run: run,
+                            modelContext: modelContext,
+                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                        )
+                    case .runTests:
+                        let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
+                        modelContext.insert(testEvent)
+                        let testResult = await ValidationService.runTests(task: task)
+                        switch testResult {
+                        case .passed(let details):
+                            task.status = .completed
+                            let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                            modelContext.insert(event)
+                        case .failed(let details):
+                            task.status = .failed
+                            let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                            modelContext.insert(event)
+                        case .error(let msg):
+                            task.status = .pendingUser
+                            let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
+                            modelContext.insert(event)
+                        }
+                    case .aiCheck:
+                        let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
+                        modelContext.insert(checkEvent)
+                        let aiResult = await ValidationService.aiCheck(
+                            task: task,
+                            claudePath: claudePath,
+                            model: validationModel,
+                            utilityRuntime: utilityRuntimeConfiguration(
+                                for: .verifier,
+                                task: task,
+                                fallbackRuntime: selectedRuntime,
+                                preferredModel: validationModel,
+                                modelContext: modelContext
+                            )
+                        )
+                        switch aiResult {
+                        case .passed(let details):
+                            task.status = .completed
+                            let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                            modelContext.insert(event)
+                        case .failed(let details):
+                            task.status = .pendingUser
+                            let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                            modelContext.insert(event)
+                        case .error(let msg):
+                            task.status = .pendingUser
+                            let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
+                            modelContext.insert(event)
+                        }
+                    }
+                } else {
                     Self.applyManualCompletion(
                         task: task,
                         run: run,
                         modelContext: modelContext,
                         successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
                     )
-                case .runTests:
-                    let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
-                    modelContext.insert(testEvent)
-                    let testResult = await ValidationService.runTests(task: task)
-                    switch testResult {
-                    case .passed(let details):
-                        task.status = .completed
-                        let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
-                        modelContext.insert(event)
-                    case .failed(let details):
-                        task.status = .failed
-                        let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
-                        modelContext.insert(event)
-                    case .error(let msg):
-                        task.status = .pendingUser
-                        let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
-                        modelContext.insert(event)
-                    }
-                case .aiCheck:
-                    let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
-                    modelContext.insert(checkEvent)
-                    let aiResult = await ValidationService.aiCheck(
-                        task: task,
-                        claudePath: claudePath,
-                        model: validationModel,
-                        utilityRuntime: utilityRuntimeConfiguration(
-                            for: .verifier,
-                            task: task,
-                            fallbackRuntime: selectedRuntime,
-                            preferredModel: validationModel,
-                            modelContext: modelContext
-                        )
-                    )
-                    switch aiResult {
-                    case .passed(let details):
-                        task.status = .completed
-                        let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
-                        modelContext.insert(event)
-                    case .failed(let details):
-                        task.status = .pendingUser
-                        let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
-                        modelContext.insert(event)
-                    case .error(let msg):
-                        task.status = .pendingUser
-                        let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
-                        modelContext.insert(event)
-                    }
                 }
-            } else {
-                Self.applyManualCompletion(
-                    task: task,
-                    run: run,
-                    modelContext: modelContext,
-                    successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
-                )
             }
         } else if Self.shouldPauseForRuntimePermissionApproval(
             failureDiagnostic: failureDiagnostic,
@@ -1042,6 +1049,61 @@ final class AgentRuntimeWorker {
             auditFields.merge(antigravityDiagnostic.auditFields) { _, new in new }
         }
         AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: auditFields, level: .warning)
+        return true
+    }
+
+    @MainActor
+    private static func applyDeliverableVerificationFailureIfNeeded(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) async -> Bool {
+        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run)
+        guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
+            return false
+        }
+
+        let event = TaskEvent(
+            task: task,
+            type: eventType,
+            payload: TaskDeliverableVerificationService.encode(result),
+            run: run
+        )
+        modelContext.insert(event)
+
+        let auditEvent: AuditEvent = switch result.status {
+        case "passed":
+            .deliverableVerificationPassed
+        case "review_needed":
+            .deliverableVerificationReviewNeeded
+        default:
+            .deliverableVerificationFailed
+        }
+        AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
+            "run_id": run.id.uuidString,
+            "profile": result.profile.rawValue,
+            "level": result.level.rawValue,
+            "status": result.status,
+            "can_complete": String(result.canComplete),
+            "requires_human_review": String(result.requiresHumanReview),
+            "check_count": String(result.checks.count),
+            "evidence_count": String(result.evidencePaths.count)
+        ], level: result.shouldBlockCompletion ? .warning : .info)
+
+        guard result.shouldBlockCompletion else {
+            return false
+        }
+
+        run.status = .failed
+        run.stopReason = result.level == .noArtifact ? "no_usable_result" : "deliverable_verification_failed"
+        task.status = .pendingUser
+        task.completedAt = nil
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: "error",
+            payload: result.userVisibleFailureMessage,
+            run: run
+        ))
         return true
     }
 

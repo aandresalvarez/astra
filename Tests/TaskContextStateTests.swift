@@ -551,8 +551,17 @@ struct TaskContextStateTests {
                 !$0.isStale &&
                 $0.sourcePointers.contains { $0.kind == "task_output_file" }
         })
+        #expect(task.artifacts.contains {
+            $0.path == indexPath &&
+                $0.type == "html" &&
+                !$0.isStale
+        })
+        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
         #expect(state.verification.artifactStatus == "1 current")
         #expect(state.turns.first?.filesChanged.contains(indexPath) == true)
+
+        TaskContextStateManager.refresh(task: task)
+        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
     }
 
     @Test("context capsule refresh repairs stale task output metadata")
@@ -601,7 +610,64 @@ struct TaskContextStateTests {
         #expect(repairedState.filesChanged.contains(indexPath))
         #expect(repairedState.changedFiles.contains { $0.path == indexPath })
         #expect(repairedState.artifacts.contains { $0.path == indexPath && $0.type == "html" })
+        #expect(task.artifacts.contains { $0.path == indexPath && $0.type == "html" && !$0.isStale })
+        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
         #expect(repairedState.verification.artifactStatus == "1 current")
+
+        TaskContextStateManager.refresh(task: task)
+        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+    }
+
+    @Test("context capsule surfaces deliverable verification evidence")
+    func contextCapsuleSurfacesDeliverableVerificationEvidence() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Deliverable Evidence", primaryPath: root)
+        let task = AgentTask(
+            title: "Create HTML",
+            goal: "create a web page with html and javascript",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.completedAt = Date()
+        task.status = .completed
+        context.insert(run)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try """
+        <!doctype html><html><body><script>function ok() { return true; }</script></body></html>
+        """.write(toFile: indexPath, atomically: true, encoding: .utf8)
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: task,
+            run: run,
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskDeliverableVerificationEventTypes.passed,
+            payload: TaskDeliverableVerificationService.encode(result),
+            run: run
+        ))
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.verification.status == "passed")
+        #expect(state.verification.strategy == "deliverable_verification")
+        #expect(state.verification.deliverableLevel == "syntax_verified")
+        #expect(state.verification.deliverableChecks.contains {
+            $0.id.hasPrefix("javascript.syntax") && $0.status == "passed"
+        })
+        #expect(TaskContextStateManager.promptContext(for: task)?.contains("Deliverable quality: syntax_verified") == true)
     }
 
     @Test("context capsule is primary prompt context before raw transcript")

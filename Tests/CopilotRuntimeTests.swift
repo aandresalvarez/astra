@@ -1075,24 +1075,6 @@ struct CopilotWorkerExecutionTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        let script = """
-        #!/bin/sh
-        if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
-          exit 0
-        fi
-        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
-          echo "copilot fake 1.0"
-          exit 0
-        fi
-        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from fake copilot"}}'
-        printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
-        printf 'changed\\n' > copilot-output.txt
-        exit 0
-        """
-        try script.write(to: binURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
-
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
@@ -1105,6 +1087,29 @@ struct CopilotWorkerExecutionTests {
         task.status = .queued
         context.insert(task)
         try context.save()
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let outputURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("copilot-output.txt")
+        let workspaceOutputURL = workspaceURL.appendingPathComponent("copilot-output.txt")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from fake copilot"}}'
+        printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
+        mkdir -p \(Self.shQuote(taskFolder))
+        printf 'changed\\n' > \(Self.shQuote(outputURL.path))
+        printf 'changed\\n' > \(Self.shQuote(workspaceOutputURL.path))
+        exit 0
+        """
+        try script.write(to: binURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
         let worker = AgentRuntimeWorker()
         worker.copilotPath = binURL.path
@@ -1120,7 +1125,8 @@ struct CopilotWorkerExecutionTests {
         #expect(run.output.contains("hello from fake copilot"))
         #expect(run.inputTokens == 2)
         #expect(run.outputTokens == 3)
-        #expect(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("copilot-output.txt").path))
+        #expect(FileManager.default.fileExists(atPath: outputURL.path))
+        #expect(FileManager.default.fileExists(atPath: workspaceOutputURL.path))
         #expect(run.fileChanges.contains { $0.path.hasSuffix("copilot-output.txt") })
     }
 
@@ -1853,5 +1859,9 @@ struct CopilotWorkerExecutionTests {
             )
         }
         return output
+    }
+
+    private static func shQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 }

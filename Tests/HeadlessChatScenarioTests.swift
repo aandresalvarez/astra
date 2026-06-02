@@ -389,7 +389,59 @@ struct HeadlessChatScenarioTests {
         #expect(run.status == .completed)
         #expect(run.stopReason == "completed")
         #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+        #expect(task.artifacts.contains {
+            $0.path == artifactURL.path &&
+                $0.type == "html" &&
+                !$0.isStale
+        })
+        #expect(task.artifacts.filter { $0.path == artifactURL.path }.count == 1)
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
+    }
+
+    @Test("Broken deliverable syntax blocks fake provider completion")
+    func brokenDeliverableSyntaxBlocksFakeProviderCompletion() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "create a json file named config.json",
+            model: "gpt-5"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("config.json")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            mkdir -p \(Self.shQuote(taskFolder))
+            printf '%s\\n' '{ invalid json' > \(Self.shQuote(artifactURL.path))
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created config.json"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(task.artifacts.contains {
+            $0.path == artifactURL.path &&
+                $0.type == "json" &&
+                !$0.isStale
+        })
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "deliverable_verification_failed")
+        #expect(task.events.contains {
+            $0.type == TaskDeliverableVerificationEventTypes.failed &&
+                $0.payload.contains("\"level\":\"failed\"")
+        })
+        #expect(task.events.contains {
+            $0.type == "error" && $0.payload.contains("failed deterministic verification")
+        })
+        #expect(!task.events.contains { $0.type == "task.completed" })
     }
 
     @Test("Antigravity empty non-artifact task stays pending review")
