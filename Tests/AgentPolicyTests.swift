@@ -223,7 +223,12 @@ struct AgentPolicyTests {
         #expect(render.policyLevel == .review)
         #expect(render.permissionMode == PermissionPolicy.restricted.rawValue)
         #expect(render.allowedTools.contains("Read"))
+        #expect(!render.allowedTools.contains("Write"))
         #expect(render.askFirstTools.contains("Bash"))
+        #expect(render.settingsSummary.contains("allow=3 ask=6"))
+        #expect(render.generatedConfigPreview.contains("Write(*)"))
+        #expect(render.generatedConfigPreview.contains("Edit(*)"))
+        #expect(render.generatedConfigPreview.contains("Bash(*)"))
         #expect(!render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "claude.shell-deny-provider-native-gap" })
     }
@@ -1166,6 +1171,63 @@ struct RunPermissionManifestTests {
 
         #expect(manifest.policyLevel == .build)
         #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser *)"))
+    }
+
+    @Test("Preflight manifest excludes pruned artifact task capabilities")
+    func preflightManifestExcludesPrunedArtifactTaskCapabilities() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Artifact Policy", primaryPath: "/tmp/artifact-policy-workspace")
+        let skill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Read Stanford email through Microsoft Graph",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: "Do NOT use Write or Edit.",
+            environmentVariables: ["MAIL_PROFILE": "stanford"]
+        )
+        skill.workspace = workspace
+        let tool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read Stanford mail",
+            command: "stanford-graph-mail"
+        )
+        tool.skill = skill
+        let task = AgentTask(
+            title: "Create Masterball puzzle solver webpage",
+            goal: "create a web page with a masterball solver in javascript",
+            workspace: workspace
+        )
+        task.skills = [skill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(tool)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: AgentRuntimeExecutionPolicy(
+                permissionPolicyOverride: nil,
+                allowedToolsOverride: ["Bash"],
+                permissionGrantsOverride: nil
+            ),
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.environmentKeyNames.isEmpty)
+        #expect(!manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
+        #expect(!manifest.providerRender.generatedConfigPreview.contains("stanford-graph-mail"))
     }
 
     @Test("Preflight manifest includes catalog-approved MCP servers")

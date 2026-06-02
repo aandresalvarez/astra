@@ -3,6 +3,19 @@ import Foundation
 final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
     static let shared = ShelfBrowserBridgeRegistry()
 
+    struct PromptState: Sendable, Equatable {
+        var isEnabled: Bool
+        var isPresented: Bool
+        var isTaskBound: Bool
+        var hasEndpoint: Bool
+        var hasCurrentURL: Bool
+        var enabledBrowserAdapters: [String]
+
+        var isExposed: Bool {
+            isEnabled && isTaskBound && hasEndpoint
+        }
+    }
+
     private let lock = NSLock()
     private var endpoint: String?
     private var currentURL: String?
@@ -90,6 +103,26 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
             variables[BrowserFailureDebugCapture.environmentVariable] = "1"
         }
         return variables
+    }
+
+    func promptState(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> PromptState {
+        lock.lock()
+        let boundTaskID = self.taskID
+        let isPresented = self.isPresented
+        let isEnabled = self.isEnabled
+        let hasEndpoint = endpoint != nil
+        let hasCurrentURL = currentURL?.isEmpty == false
+        let storedAdapterIDs = enabledBrowserAdapters
+        lock.unlock()
+
+        return PromptState(
+            isEnabled: isEnabled,
+            isPresented: isPresented,
+            isTaskBound: boundTaskID == taskID,
+            hasEndpoint: hasEndpoint,
+            hasCurrentURL: hasCurrentURL,
+            enabledBrowserAdapters: override.map(normalizedAdapterList) ?? storedAdapterIDs
+        )
     }
 
     func promptContext(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> String? {

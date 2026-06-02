@@ -42,6 +42,14 @@ private let toolUseJSON = """
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","id":"msg3","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool_123","name":"Glob","input":{"pattern":"*"}}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":10}}}
 """
 
+private let partialThinkingDeltaJSON = """
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants a web page"}},"session_id":"session-1","parent_tool_use_id":null,"uuid":"event-1"}
+"""
+
+private let partialTextDeltaJSON = """
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I will create the requested page."}},"session_id":"session-1","parent_tool_use_id":null,"uuid":"event-2"}
+"""
+
 private let resultJSON = """
 {"type":"result","subtype":"success","is_error":false,"duration_ms":3401,"num_turns":1,"result":"Hello world!","total_cost_usd":0.029,"modelUsage":{"claude-sonnet-4-6":{"inputTokens":3,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":7849,"costUSD":0.029}}}
 """
@@ -97,6 +105,26 @@ struct StreamParserTests {
             }
             return false
         })
+    }
+
+    @Test("Partial thinking delta parses as semantic thinking")
+    func partialThinkingDeltaParsesAsThinking() throws {
+        let parsed = StreamEventParser.parse(line: partialThinkingDeltaJSON)
+        guard case .thinking(let text) = parsed else {
+            Issue.record("Expected .thinking, got \(String(describing: parsed))")
+            return
+        }
+        #expect(text == "The user wants a web page")
+    }
+
+    @Test("Partial text delta parses as progress-only thinking")
+    func partialTextDeltaParsesAsProgressOnlyThinking() throws {
+        let parsed = StreamEventParser.parse(line: partialTextDeltaJSON)
+        guard case .thinking(let text) = parsed else {
+            Issue.record("Expected .thinking, got \(String(describing: parsed))")
+            return
+        }
+        #expect(text == "I will create the requested page.")
     }
 
     @Test("Result event parsing")

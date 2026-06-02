@@ -206,7 +206,12 @@ enum AgentPromptBuilder {
         appendSkillInstructions(from: capabilityScope, to: &sections)
         appendConnectorContext(from: capabilityScope, to: &sections)
         appendToolContext(from: capabilityScope, to: &sections)
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
+        appendShelfBrowserContext(
+            for: task,
+            contextText: "",
+            enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters,
+            to: &sections
+        )
         appendDocumentReaderContext(to: &sections)
         if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
             appendAstraRunProtocolInstructions(to: &sections)
@@ -229,11 +234,28 @@ enum AgentPromptBuilder {
     }
 
     private static func currentTaskBlock(for task: AgentTask) -> String {
-        """
+        let artifactContract = initialArtifactActionContract(for: task)
+        return """
         Current Task:
         \(task.goal)
 
         Complete this task now. Treat recent tasks, memories, skills, browser state, and protocol notes as supporting context only.
+        \(artifactContract)
+        """
+    }
+
+    private static func initialArtifactActionContract(for task: AgentTask) -> String {
+        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+
+        let taskDir = TaskWorkspaceAccess(task: task).taskFolder
+        let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir) ?? taskDir
+        let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
+        return """
+
+        Artifact first-action requirement:
+        The user asked for a generated artifact. Your first provider-visible action should be to create or update a useful baseline deliverable in \(relativePath), preferably \(suggestedFile) when that fits the request.
+        Do not spend an extended period on hidden planning before creating the baseline artifact. Create the baseline first, then improve it.
+        If file-write permission is required, request that permission immediately instead of continuing hidden planning.
         """
     }
 
@@ -341,6 +363,7 @@ enum AgentPromptBuilder {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
+            let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
             if let relativePath {
                 appendSection("""
                 Task Output Folder: \(relativePath)
@@ -348,6 +371,7 @@ enum AgentPromptBuilder {
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
+                \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             } else {
                 appendSection("""
@@ -355,9 +379,49 @@ enum AgentPromptBuilder {
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
+                \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             }
         }
+    }
+
+    private static func standaloneArtifactDirective(
+        for task: AgentTask,
+        relativePath: String?,
+        taskDir: String
+    ) -> String {
+        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+
+        let location = relativePath ?? taskDir
+        let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
+        return """
+        Artifact delivery contract:
+        The user asked for a generated artifact. Create the first useful deliverable promptly in \(location), preferably as \(suggestedFile) when that fits the request.
+        Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact. Write a working baseline first, then improve it.
+        If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning.
+        """
+    }
+
+    private static func suggestedStandaloneArtifactFilename(for task: AgentTask) -> String {
+        let text = [
+            task.title,
+            task.goal,
+            task.inputs.joined(separator: " "),
+            task.acceptanceCriteria.joined(separator: " ")
+        ]
+            .joined(separator: " ")
+            .lowercased()
+
+        if text.contains("web page") || text.contains("webpage") || text.contains("html") || text.contains("javascript") || text.contains(".html") {
+            return "index.html"
+        }
+        if text.contains("slide") || text.contains("presentation") || text.contains("deck") {
+            return "deck.html or slides.md"
+        }
+        if text.contains("script") || text.contains(".js") {
+            return "script.js"
+        }
+        return "a conventional filename for the requested artifact"
     }
 
     private static func relativeTaskFolderPath(for task: AgentTask, taskDir: String) -> String? {
@@ -723,9 +787,11 @@ enum AgentPromptBuilder {
 
     private static func appendShelfBrowserContext(
         for task: AgentTask,
+        contextText: String,
         enabledBrowserAdapters: [String],
         to sections: inout [PromptContextSection]
     ) {
+        guard TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) else { return }
         let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
         guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
             for: task.id,
@@ -790,6 +856,7 @@ enum AgentPromptBuilder {
             sourcePointers: taskSourcePointers(task)
         )
         appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
+        appendSection(initialArtifactActionContract(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
         appendThreadIntentContext(for: task, to: &sections)
         appendContextSourceIndex(for: task, to: &sections)
         appendNativeContinuationPolicy(for: task, to: &sections)
@@ -883,7 +950,12 @@ enum AgentPromptBuilder {
 
         appendConnectorContext(from: capabilityScope, to: &sections)
 
-        appendShelfBrowserContext(for: task, enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters, to: &sections)
+        appendShelfBrowserContext(
+            for: task,
+            contextText: message,
+            enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters,
+            to: &sections
+        )
 
         if let memoriesBlock = workspaceMemoriesBlock(
             for: task.workspace,

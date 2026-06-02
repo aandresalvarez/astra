@@ -417,6 +417,7 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
     public var providerNativePermission: String?
     public var purpose: String
     public var allowedInputKeys: [String]
+    public var deniedInputKeys: [String]
     public var maxSummaryLength: Int
 
     private enum CodingKeys: String, CodingKey {
@@ -424,6 +425,7 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
         case providerNativePermission
         case purpose
         case allowedInputKeys
+        case deniedInputKeys
         case maxSummaryLength
     }
 
@@ -432,6 +434,7 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
         providerNativePermission: String? = nil,
         purpose: String,
         allowedInputKeys: [String] = [],
+        deniedInputKeys: [String] = Self.defaultDeniedActionInputKeys,
         maxSummaryLength: Int = 500
     ) {
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -439,6 +442,9 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
         self.providerNativePermission = nativePermission.isEmpty ? nil : nativePermission
         self.purpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
         self.allowedInputKeys = Array(Set(allowedInputKeys.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.filter { !$0.isEmpty })).sorted()
+        self.deniedInputKeys = Array(Set(deniedInputKeys.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }.filter { !$0.isEmpty })).sorted()
         self.maxSummaryLength = max(0, maxSummaryLength)
@@ -451,9 +457,32 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
             providerNativePermission: try container.decodeIfPresent(String.self, forKey: .providerNativePermission),
             purpose: try container.decode(String.self, forKey: .purpose),
             allowedInputKeys: try container.decodeIfPresent([String].self, forKey: .allowedInputKeys) ?? [],
+            deniedInputKeys: try container.decodeIfPresent([String].self, forKey: .deniedInputKeys) ?? Self.defaultDeniedActionInputKeys,
             maxSummaryLength: try container.decodeIfPresent(Int.self, forKey: .maxSummaryLength) ?? 500
         )
     }
+
+    public static let defaultDeniedActionInputKeys: [String] = [
+        "body",
+        "cmd",
+        "command",
+        "cwd",
+        "directory",
+        "endpoint",
+        "file",
+        "file_path",
+        "filepath",
+        "href",
+        "method",
+        "path",
+        "request",
+        "script",
+        "shell",
+        "target",
+        "target_path",
+        "uri",
+        "url"
+    ]
 }
 
 public struct ProviderPolicyRender: Codable, Equatable, Sendable {

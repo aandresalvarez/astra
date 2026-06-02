@@ -5192,9 +5192,10 @@ struct TaskMainView: View {
 
     private func taskCapabilitySkillContext() -> String {
         let resolver = TaskCapabilityResolver(task: task)
-        let skills = resolver.allBehaviorSkills
-        let connectors = resolver.allConnectors
-        let localTools = resolver.allLocalTools
+        let scope = resolver.promptScope()
+        let skills = scope.behaviorSkills
+        let connectors = scope.connectors
+        let localTools = scope.localTools
 
         var sections: [String] = []
         if !skills.isEmpty {
@@ -5222,6 +5223,9 @@ struct TaskMainView: View {
         if !localTools.isEmpty {
             let toolList = localTools.map { "- \($0.name) (\($0.toolType))" }.joined(separator: "\n")
             sections.append("Enabled local tools for this task:\n\(toolList)")
+        }
+        if scope.prunedForBrowserTask, !scope.excludedSkillNames.isEmpty {
+            sections.append("Configured capabilities excluded from this provider task scope:\n\(scope.excludedSkillNames.map { "- \($0)" }.joined(separator: "\n"))")
         }
         return sections.joined(separator: "\n\n")
     }

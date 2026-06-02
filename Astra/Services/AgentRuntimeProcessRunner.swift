@@ -272,7 +272,8 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func runtimeLocalToolCommands(for task: AgentTask) -> [String] {
-        Array(Set(TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        return Array(Set(capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -347,7 +348,7 @@ final class AgentRuntimeProcessRunner {
         for (key, value) in taskEnv {
             extraVars[key] = value
         }
-        var env = RuntimeProcessEnvironment.enriched(
+        let env = RuntimeProcessEnvironment.enriched(
             additionalPaths: prefixPaths,
             extraVariables: extraVars
         )
@@ -552,28 +553,30 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func scopedEnvironmentVariables(for task: AgentTask) -> [String: String] {
-        var taskEnv = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
-        if hasStanfordOutlookMailAccess(task) {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
+        if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
-        for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
-            taskEnv[key] = value
+        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task) {
+            for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
+                taskEnv[key] = value
+            }
         }
         return taskEnv
     }
 
     @MainActor
     static func hasActiveCLITools(_ task: AgentTask) -> Bool {
-        TaskCapabilityResolver(task: task).allLocalTools.contains { tool in
+        TaskCapabilityResolver(task: task).promptScope().localTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
-    @MainActor
-    private static func hasStanfordOutlookMailAccess(_ task: AgentTask) -> Bool {
-        TaskCapabilityResolver(task: task).allConnectors.contains { $0.isStanfordOutlookMail } ||
-            TaskCapabilityResolver(task: task).allLocalTools.contains { $0.command == StanfordOutlookMail.toolCommand }
+    private static func hasStanfordOutlookMailAccess(in capabilityScope: TaskCapabilityPromptScope) -> Bool {
+        capabilityScope.connectors.contains { $0.isStanfordOutlookMail } ||
+            capabilityScope.localTools.contains { $0.command == StanfordOutlookMail.toolCommand }
     }
 
     static func providerAllowedTools(
@@ -605,6 +608,58 @@ final class AgentRuntimeProcessRunner {
             let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
             return permission?.isEmpty == false ? permission : nil
         })).sorted()
+    }
+
+    static func providerAskFirstToolPermissions(
+        for runtime: AgentRuntimeID,
+        permissionManifest: RunPermissionManifest?
+    ) -> [String] {
+        guard let permissionManifest,
+              permissionManifest.providerID == runtime,
+              permissionManifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue else {
+            return []
+        }
+
+        switch runtime {
+        case .claudeCode:
+            return Array(Set(permissionManifest.providerRender.askFirstTools.compactMap(claudeProviderToolPermission))).sorted()
+        default:
+            return []
+        }
+    }
+
+    private static func claudeProviderToolPermission(_ tool: String) -> String? {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let openParen = trimmed.firstIndex(of: "("),
+           trimmed.hasSuffix(")") {
+            let rawTool = String(trimmed[..<openParen])
+            guard let canonicalTool = canonicalClaudeToolName(rawTool) else { return nil }
+            let patternStart = trimmed.index(after: openParen)
+            let pattern = String(trimmed[patternStart..<trimmed.index(before: trimmed.endIndex)])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: ":", with: " ")
+            return pattern.isEmpty ? canonicalTool : "\(canonicalTool)(\(pattern))"
+        }
+
+        return canonicalClaudeToolName(trimmed)
+    }
+
+    private static func canonicalClaudeToolName(_ tool: String) -> String? {
+        switch tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write", "create": return "Write"
+        case "edit": return "Edit"
+        case "multiedit", "multi_edit": return "MultiEdit"
+        case "bash", "shell": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return nil
+        }
     }
 
     static func ensureSubAgentPermissions(

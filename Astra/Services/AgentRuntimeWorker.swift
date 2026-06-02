@@ -369,11 +369,6 @@ final class AgentRuntimeWorker {
     ) async {
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         let launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
-        let nativeContinuationSessionID = Self.nativeContinuationSessionID(
-            for: task,
-            runtimeAdapter: runtimeAdapter,
-            phase: auditPhase
-        )
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
             "model": task.model,
@@ -391,9 +386,9 @@ final class AgentRuntimeWorker {
                 "history_output_chars": String(task.runs.reduce(0) { $0 + $1.output.count }),
                 "has_session_id": String(task.hasProviderSession),
                 "supports_native_continuation": String(runtimeAdapter.descriptor.supportsNativeContinuation),
-                "uses_native_continuation": String(nativeContinuationSessionID != nil),
-                "continuation_mode": nativeContinuationSessionID == nil ? "rebuilt_prompt" : "native_plus_rebuilt_prompt",
-                "native_session_prefix": nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                "uses_native_continuation": "pending",
+                "continuation_mode": "pending_launch_signature",
+                "native_session_prefix": task.sessionId.map { String($0.prefix(8)) } ?? "none",
                 "workspace_id": task.workspace?.id.uuidString ?? "none"
             ])
         }
@@ -558,6 +553,34 @@ final class AgentRuntimeWorker {
             }
             return
         }
+        let launchSignature = Self.providerLaunchSignature(for: task, manifest: manifest)
+        let nativeContinuationDecision = Self.nativeContinuationSessionID(
+            for: task,
+            currentRun: run,
+            runtimeAdapter: runtimeAdapter,
+            phase: auditPhase,
+            currentLaunchSignature: launchSignature
+        )
+        Self.recordProviderLaunchSignature(
+            launchSignature,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+        let nativeContinuationSessionID = nativeContinuationDecision.sessionID
+        if auditPhase == "resume" {
+            AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
+                "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
+                "runtime": selectedRuntime.rawValue,
+                "supports_native_continuation": String(runtimeAdapter.descriptor.supportsNativeContinuation),
+                "uses_native_continuation": String(nativeContinuationSessionID != nil),
+                "continuation_mode": nativeContinuationSessionID == nil ? "rebuilt_prompt" : "native_plus_rebuilt_prompt",
+                "native_continuation_skip_reason": nativeContinuationDecision.skipReason,
+                "launch_signature_matched": String(nativeContinuationDecision.signatureMatched),
+                "native_session_prefix": nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                "workspace_id": task.workspace?.id.uuidString ?? "none"
+            ], level: nativeContinuationSessionID == nil ? .debug : .info)
+        }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
@@ -568,8 +591,9 @@ final class AgentRuntimeWorker {
                 for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath)
             )
         }
-        if !task.skills.isEmpty {
-            let skillNames = task.skills.map(\.name).joined(separator: ", ")
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        if !capabilityScope.behaviorSkills.isEmpty {
+            let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, type: "skill.active",
                 payload: "Active skills: \(skillNames)", run: run)
             modelContext.insert(skillEvent)
@@ -1282,6 +1306,7 @@ final class AgentRuntimeWorker {
 
     static let compactionThreshold = AgentEventCompactor.threshold
     static let compactionKeepCount = AgentEventCompactor.keepCount
+    private static let providerLaunchSignatureEventType = "astra.provider_launch_signature"
 
     @MainActor
     private func alignTaskModelWithSelectedRuntime(
@@ -1337,19 +1362,212 @@ final class AgentRuntimeWorker {
         ], level: .info)
     }
 
+    private struct NativeContinuationDecision {
+        let sessionID: String?
+        let skipReason: String
+        let signatureMatched: Bool
+    }
+
+    private struct ProviderLaunchSignaturePayload: Codable, Equatable {
+        let version: Int
+        let runtimeID: String
+        let model: String
+        let policyLevel: String
+        let policyScope: String
+        let providerAdapterVersion: Int
+        let permissionMode: String
+        let allowedTools: [String]
+        let askFirstTools: [String]
+        let deniedTools: [String]
+        let allowedShellPatterns: [String]
+        let askFirstShellPatterns: [String]
+        let deniedShellPatterns: [String]
+        let allowedURLPatterns: [String]
+        let deniedURLPatterns: [String]
+        let runtimeSupportTools: [String]
+        let scopedSkillIDs: [String]
+        let scopedSkillNames: [String]
+        let scopedConnectorDescriptors: [String]
+        let scopedLocalToolCommands: [String]
+        let environmentKeyNames: [String]
+        let credentialLabels: [String]
+        let mcpServerIDs: [String]
+        let browserAdapters: [String]
+        let promptSchemaVersion: String
+
+        var signatureValue: String {
+            [
+                "v=\(version)",
+                "runtime=\(runtimeID)",
+                "model=\(model)",
+                "policyLevel=\(policyLevel)",
+                "policyScope=\(policyScope)",
+                "adapter=\(providerAdapterVersion)",
+                "permission=\(permissionMode)",
+                "allowed=\(allowedTools.joined(separator: ","))",
+                "ask=\(askFirstTools.joined(separator: ","))",
+                "denied=\(deniedTools.joined(separator: ","))",
+                "allowShell=\(allowedShellPatterns.joined(separator: ","))",
+                "askShell=\(askFirstShellPatterns.joined(separator: ","))",
+                "denyShell=\(deniedShellPatterns.joined(separator: ","))",
+                "allowURL=\(allowedURLPatterns.joined(separator: ","))",
+                "denyURL=\(deniedURLPatterns.joined(separator: ","))",
+                "support=\(runtimeSupportTools.joined(separator: ","))",
+                "skillIDs=\(scopedSkillIDs.joined(separator: ","))",
+                "skillNames=\(scopedSkillNames.joined(separator: ","))",
+                "connectors=\(scopedConnectorDescriptors.joined(separator: ","))",
+                "tools=\(scopedLocalToolCommands.joined(separator: ","))",
+                "env=\(environmentKeyNames.joined(separator: ","))",
+                "credentials=\(credentialLabels.joined(separator: ","))",
+                "mcp=\(mcpServerIDs.joined(separator: ","))",
+                "browserAdapters=\(browserAdapters.joined(separator: ","))",
+                "prompt=\(promptSchemaVersion)"
+            ].joined(separator: "\u{1f}")
+        }
+    }
+
     @MainActor
     private static func nativeContinuationSessionID(
         for task: AgentTask,
+        currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeAdapter,
-        phase: String
-    ) -> String? {
+        phase: String,
+        currentLaunchSignature: ProviderLaunchSignaturePayload
+    ) -> NativeContinuationDecision {
         guard phase == "resume",
-              runtimeAdapter.descriptor.supportsNativeContinuation,
-              let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionID.isEmpty else {
-            return nil
+              runtimeAdapter.descriptor.supportsNativeContinuation else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)
         }
-        return sessionID
+
+        guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_session_id", signatureMatched: false)
+        }
+
+        if shouldSkipNativeContinuationAfterLastRun(task, currentRun: currentRun) {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "unsafe_previous_no_progress_run", signatureMatched: false)
+        }
+
+        guard let previousRun = priorRun(forNativeSessionID: sessionID, task: task, currentRun: currentRun) else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
+        }
+
+        guard let previousSignature = providerLaunchSignature(for: task, run: previousRun) else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
+        }
+
+        guard previousSignature.signatureValue == currentLaunchSignature.signatureValue else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
+        }
+
+        return NativeContinuationDecision(sessionID: sessionID, skipReason: "none", signatureMatched: true)
+    }
+
+    private static func shouldSkipNativeContinuationAfterLastRun(_ task: AgentTask, currentRun: TaskRun) -> Bool {
+        guard let lastRun = task.runs
+            .filter({ $0.id != currentRun.id })
+            .sorted(by: { $0.startedAt > $1.startedAt })
+            .first,
+              lastRun.status == .failed,
+              ["provider_no_semantic_progress", "provider_no_actionable_progress"].contains(lastRun.stopReason),
+              lastRun.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    private static func priorRun(forNativeSessionID sessionID: String, task: AgentTask, currentRun: TaskRun) -> TaskRun? {
+        task.runs
+            .filter { $0.id != currentRun.id }
+            .filter { $0.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) == sessionID }
+            .max { $0.startedAt < $1.startedAt }
+    }
+
+    @MainActor
+    private static func providerLaunchSignature(
+        for task: AgentTask,
+        manifest: RunPermissionManifest
+    ) -> ProviderLaunchSignaturePayload {
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
+            [
+                descriptor.name,
+                descriptor.providerNativePermission ?? "",
+                descriptor.allowedInputKeys.joined(separator: "+"),
+                descriptor.deniedInputKeys.joined(separator: "+")
+            ].joined(separator: ":")
+        }
+        let connectorDescriptors = scope.connectors.map { connector in
+            [
+                connector.id.uuidString,
+                connector.name,
+                connector.serviceType,
+                connector.baseURL
+            ].joined(separator: ":")
+        }
+        let localToolCommands = scope.localTools.compactMap { tool -> String? in
+            let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !command.isEmpty else { return nil }
+            return command
+        }
+        return ProviderLaunchSignaturePayload(
+            version: 1,
+            runtimeID: manifest.providerID.rawValue,
+            model: manifest.model,
+            policyLevel: manifest.policyLevel.rawValue,
+            policyScope: manifest.policyScope.rawValue,
+            providerAdapterVersion: manifest.providerRender.adapterVersion,
+            permissionMode: manifest.providerRender.permissionMode,
+            allowedTools: canonicalStrings(manifest.providerRender.allowedTools),
+            askFirstTools: canonicalStrings(manifest.providerRender.askFirstTools),
+            deniedTools: canonicalStrings(manifest.providerRender.deniedTools),
+            allowedShellPatterns: canonicalStrings(manifest.providerRender.allowedShellPatterns),
+            askFirstShellPatterns: canonicalStrings(manifest.providerRender.askFirstShellPatterns),
+            deniedShellPatterns: canonicalStrings(manifest.providerRender.deniedShellPatterns),
+            allowedURLPatterns: canonicalStrings(manifest.providerRender.allowedURLPatterns),
+            deniedURLPatterns: canonicalStrings(manifest.providerRender.deniedURLPatterns),
+            runtimeSupportTools: canonicalStrings(supportTools),
+            scopedSkillIDs: canonicalStrings(scope.behaviorSkills.map { $0.id.uuidString }),
+            scopedSkillNames: canonicalStrings(scope.behaviorSkills.map(\.name)),
+            scopedConnectorDescriptors: canonicalStrings(connectorDescriptors),
+            scopedLocalToolCommands: canonicalStrings(localToolCommands),
+            environmentKeyNames: canonicalStrings(manifest.environmentKeyNames),
+            credentialLabels: canonicalStrings(manifest.credentialLabels),
+            mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
+            browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
+            promptSchemaVersion: "context_capsule_v2"
+        )
+    }
+
+    @MainActor
+    private static func recordProviderLaunchSignature(
+        _ signature: ProviderLaunchSignaturePayload,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        guard let data = try? JSONEncoder().encode(signature),
+              let payload = String(data: data, encoding: .utf8) else {
+            return
+        }
+        modelContext.insert(TaskEvent(task: task, type: providerLaunchSignatureEventType, payload: payload, run: run))
+    }
+
+    private static func providerLaunchSignature(for task: AgentTask, run: TaskRun) -> ProviderLaunchSignaturePayload? {
+        task.events
+            .filter { $0.type == providerLaunchSignatureEventType && $0.run?.id == run.id }
+            .sorted { $0.timestamp < $1.timestamp }
+            .compactMap { event -> ProviderLaunchSignaturePayload? in
+                guard let data = event.payload.data(using: .utf8) else { return nil }
+                return try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: data)
+            }
+            .last
+    }
+
+    private static func canonicalStrings(_ values: [String]) -> [String] {
+        Array(Set(values.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })).sorted()
     }
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {
@@ -1359,12 +1577,15 @@ final class AgentRuntimeWorker {
     @MainActor
     private static func logCapabilityResolution(for task: AgentTask, runtime: AgentRuntimeID, phase: String) {
         let resolver = TaskCapabilityResolver(task: task)
-        let connectors = resolver.allConnectors
-        let tools = resolver.allLocalTools
-        let skills = resolver.allBehaviorSkills
+        let scope = resolver.promptScope()
+        let connectors = scope.connectors
+        let tools = scope.localTools
+        let skills = scope.behaviorSkills
         AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
             "runtime": runtime.rawValue,
             "phase": phase,
+            "scope_pruned": String(scope.prunedForBrowserTask),
+            "scope_excluded_skill_names": compactNames(scope.excludedSkillNames),
             "workspace_id": task.workspace?.id.uuidString ?? "none",
             "workspace_enabled_capabilities_count": String(task.workspace?.enabledCapabilityIDs.count ?? 0),
             "workspace_enabled_capability_ids": CapabilityAudit.compactNames(task.workspace?.enabledCapabilityIDs ?? []),
@@ -1387,11 +1608,12 @@ final class AgentRuntimeWorker {
     @MainActor
     private func logGitHubCLIPreflightIfNeeded(for task: AgentTask, phase: String) async {
         let resolver = TaskCapabilityResolver(task: task)
-        let tools = resolver.allLocalTools
+        let scope = resolver.promptScope()
+        let tools = scope.localTools
         let hasGitHubTool = tools.contains { tool in
             tool.command.trimmingCharacters(in: .whitespacesAndNewlines) == "gh"
         }
-        let hasGitHubSkill = resolver.allBehaviorSkills.contains { skill in
+        let hasGitHubSkill = scope.behaviorSkills.contains { skill in
             let name = skill.name.lowercased()
             return name.contains("github") || name.contains("git hub")
         }
@@ -1479,7 +1701,7 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         step approvedStep: TaskPlanPayloadStep? = nil
     ) -> [String] {
-        var tools = Set(TaskCapabilityResolver(task: task).resolver.resolvedProviderAllowedTools)
+        var tools = Set(TaskCapabilityResolver(task: task).promptScope().resolver.resolvedProviderAllowedTools)
         let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
         for step in scopedSteps {
             for tool in step.likelyTools {
@@ -1536,6 +1758,7 @@ final class AgentRuntimeWorker {
         switch reason {
         case "provider_permission_denied_broad_permissions",
              "provider_permission_unresumable",
+             "provider_no_actionable_progress",
              "provider_no_semantic_progress":
             return true
         default:

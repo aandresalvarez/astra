@@ -832,7 +832,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     enum RuntimeProgressKind: String {
         case lifecycleMetadata = "lifecycle_metadata"
-        case semanticProgress = "semantic_progress"
+        case providerLiveness = "provider_liveness"
+        case visibleProgress = "visible_progress"
+        case actionableProgress = "actionable_progress"
         case accounting = "accounting"
         case terminal = "terminal"
         case diagnostic = "diagnostic"
@@ -876,6 +878,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var lastActivityTime = Date()
     private var lastAnyActivityTime = Date()
     private var hasSeenAnyActivity = false
+    private var hasSeenProviderLivenessActivity = false
     private var hasSeenProgressActivity = false
     private var watchdogRunning = false
 
@@ -910,7 +913,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
-        self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 90)
+        self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
         self.taskID = taskID
         self.policyGuard = policyGuard
     }
@@ -927,9 +930,12 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let now = Date()
         lastAnyActivityTime = now
         hasSeenAnyActivity = true
-        if Self.refreshesRuntimeActivity(parsed) {
+        let progressKind = Self.progressKind(for: parsed)
+        if Self.refreshesRuntimeActivity(progressKind) {
             lastActivityTime = now
             hasSeenProgressActivity = true
+        } else if progressKind == .providerLiveness || progressKind == .accounting {
+            hasSeenProviderLivenessActivity = true
         }
 
         if case .astraProtocol(.valid(.complete)) = parsed {
@@ -1754,6 +1760,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lastActivityTime = now
         lastAnyActivityTime = now
         hasSeenAnyActivity = true
+        hasSeenProviderLivenessActivity = true
         hasSeenProgressActivity = true
         lock.unlock()
     }
@@ -1771,48 +1778,88 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 Thread.sleep(forTimeInterval: checkInterval)
                 guard let self, processBox.isRunning else { return }
 
-                self.lock.lock()
-                let now = Date()
-                let idleDuration = now.timeIntervalSince(self.lastActivityTime)
-                let anyIdleDuration = now.timeIntervalSince(self.lastAnyActivityTime)
-                let hasMetadataOnlyActivity = self.hasSeenAnyActivity && !self.hasSeenProgressActivity
-                self.lock.unlock()
-
-                if hasMetadataOnlyActivity && idleDuration >= self.noSemanticProgressTimeoutSeconds {
-                    let reason = "provider_no_semantic_progress"
-                    let message = """
-                    ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
-                    Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
-                    """
-                    AppLogger.audit(.workerTimeout, category: "Worker", taskID: self.taskID, fields: [
-                        "reason": reason,
-                        "semantic_idle_seconds": String(Int(idleDuration)),
-                        "last_event_age_seconds": String(Int(anyIdleDuration)),
-                        "limit_seconds": String(Int(self.noSemanticProgressTimeoutSeconds))
-                    ], level: .error)
-                    self.lock.lock()
-                    if self._runtimeStopReason == nil {
-                        self._runtimeStopReason = reason
-                        self._runtimeStopMessage = message
-                    }
-                    self.lock.unlock()
-                    processBox.terminate()
-                    return
-                }
-
-                if idleDuration >= self.idleTimeoutSeconds {
-                    AppLogger.audit(.workerTimeout, category: "Worker", taskID: self.taskID, fields: [
-                        "idle_seconds": String(Int(idleDuration)),
-                        "limit_seconds": String(Int(self.idleTimeoutSeconds))
-                    ], level: .error)
-                    self.lock.lock()
-                    self._timedOut = true
-                    self.lock.unlock()
-                    processBox.terminate()
+                if self.evaluateWatchdogTimeout(terminate: { processBox.terminate() }) {
                     return
                 }
             }
         }
+    }
+
+    @discardableResult
+    func evaluateWatchdogTimeoutForTesting(process: AgentRuntimeProcessControl? = nil) -> Bool {
+        evaluateWatchdogTimeout(terminate: { process?.terminate() })
+    }
+
+    @discardableResult
+    private func evaluateWatchdogTimeout(terminate: () -> Void) -> Bool {
+        lock.lock()
+        let now = Date()
+        let idleDuration = now.timeIntervalSince(lastActivityTime)
+        let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
+        let hasMetadataOnlyActivity = hasSeenAnyActivity
+            && !hasSeenProviderLivenessActivity
+            && !hasSeenProgressActivity
+        let hasProviderLivenessOnlyActivity = hasSeenProviderLivenessActivity
+            && !hasSeenProgressActivity
+        lock.unlock()
+
+        if hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+            let reason = "provider_no_semantic_progress"
+            let message = """
+            ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
+            Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "semantic_idle_seconds": String(Int(idleDuration)),
+                "last_event_age_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+            let reason = "provider_no_actionable_progress"
+            let message = """
+            ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a file change, or a result.
+            Liveness-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "actionable_idle_seconds": String(Int(idleDuration)),
+                "last_event_age_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if idleDuration >= idleTimeoutSeconds {
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "idle_seconds": String(Int(idleDuration)),
+                "limit_seconds": String(Int(idleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            _timedOut = true
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        return false
     }
 
     static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {
@@ -1827,12 +1874,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return .terminal
         case .astraProtocol:
             return .terminal
-        case .text(let text), .thinking(let text):
-            return nonEmpty(text) == nil ? .diagnostic : .semanticProgress
+        case .text(let text):
+            return nonEmpty(text) == nil ? .diagnostic : .visibleProgress
+        case .thinking(let text):
+            return nonEmpty(text) == nil ? .diagnostic : .providerLiveness
         case .toolResult(_, let content):
-            return nonEmpty(content) == nil ? .diagnostic : .semanticProgress
+            return nonEmpty(content) == nil ? .diagnostic : .actionableProgress
         case .toolUse, .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage, .permissionDenied:
-            return .semanticProgress
+            return .actionableProgress
         }
     }
 
@@ -1864,10 +1913,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func refreshesRuntimeActivity(_ parsed: ParsedEvent) -> Bool {
-        switch progressKind(for: parsed) {
-        case .semanticProgress, .accounting, .terminal:
+        refreshesRuntimeActivity(progressKind(for: parsed))
+    }
+
+    private static func refreshesRuntimeActivity(_ progressKind: RuntimeProgressKind) -> Bool {
+        switch progressKind {
+        case .visibleProgress, .actionableProgress, .terminal:
             return true
-        case .lifecycleMetadata, .diagnostic:
+        case .lifecycleMetadata, .providerLiveness, .accounting, .diagnostic:
             return false
         }
     }

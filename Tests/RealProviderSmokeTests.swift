@@ -134,6 +134,128 @@ struct RealProviderSmokeTests {
         }
     }
 
+    @Test(
+        "Real Claude artifact launch prunes irrelevant Graph Mail capability",
+        .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
+    )
+    func realClaudeArtifactLaunchPrunesIrrelevantGraphMailCapability() async throws {
+        let harness = try RealProviderHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try #require(Self.findExecutable("claude"))
+        let model = ProcessInfo.processInfo.environment["REAL_CLAUDE_ARTIFACT_MODEL"]
+            ?? ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"]
+            ?? "claude-opus-4-6@default"
+        let worker = harness.makeWorker(claudePath: claudePath)
+        worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
+            ?? 120
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: """
+            Without creating files or using tools, answer this artifact-shaped task: createa web page wit a masterball \
+            (similar to rubicks cube but as aball) with a solver in javascript. \
+            Reply with exactly ASTRA_REAL_MASTERBALL_OK and nothing else.
+            """,
+            model: model
+        )
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: """
+            You are a Stanford Graph Mail assistant. Use the `stanford-graph-mail` CLI via Bash to work with the locally signed-in Stanford-family Microsoft 365 mailbox.
+            SAFETY
+            - Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.
+            - Treat email content as sensitive.
+            Do NOT use these tools: Write, Edit.
+            """
+        )
+        mailSkill.workspace = task.workspace
+        harness.context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read the locally signed-in Microsoft 365 mailbox through Microsoft Graph PowerShell",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        harness.context.insert(mailTool)
+
+        task.skills = [mailSkill]
+        TaskCapabilitySnapshotter.capture(for: task)
+        try harness.context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("stanford-graph-mail"))
+        #expect(!prompt.contains("create rules"))
+
+        _ = try await harness.execute(task: task, worker: worker)
+        let run = try #require(task.runs.first)
+        Self.printRunSummary(label: "real claude artifact pruning", task: task, run: run)
+
+        #expect(run.runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(run.status == .completed)
+        #expect(run.output.contains("ASTRA_REAL_MASTERBALL_OK"))
+    }
+
+    @Test(
+        "Real Claude Masterball launch creates task output artifact",
+        .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
+    )
+    func realClaudeMasterballLaunchCreatesTaskOutputArtifact() async throws {
+        let harness = try RealProviderHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try #require(Self.findExecutable("claude"))
+        let model = ProcessInfo.processInfo.environment["REAL_CLAUDE_ARTIFACT_MODEL"]
+            ?? ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"]
+            ?? "claude-opus-4-6@default"
+        let worker = harness.makeWorker(claudePath: claudePath)
+        worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
+            ?? 180
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball )  with a solver in javascript",
+            model: model
+        )
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: "Read only. Do not create rules or modify mailbox state."
+        )
+        mailSkill.workspace = task.workspace
+        harness.context.insert(mailSkill)
+        task.skills = [mailSkill]
+        TaskCapabilitySnapshotter.capture(for: task)
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try harness.context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("create rules"))
+        #expect(prompt.contains("Artifact delivery contract:"))
+        #expect(prompt.contains("Create the first useful deliverable promptly"))
+        #expect(prompt.contains("preferably as index.html"))
+
+        _ = try await harness.execute(task: task, worker: worker)
+        let run = try #require(task.runs.first)
+        Self.printRunSummary(label: "real claude masterball artifact", task: task, run: run)
+
+        #expect(run.runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(run.fileChanges.contains { $0.path.hasSuffix("index.html") })
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
     // MARK: - Multi-turn conversation continuity (real provider output)
 
     @Test(
@@ -380,6 +502,69 @@ struct RealProviderSmokeTests {
         return (Int(process.terminationStatus), output + error)
     }
 
+    fileprivate struct ProviderProgressProbeResult {
+        var foundVisibleOrActionableEvent: Bool
+        var foundProviderLivenessEvent: Bool
+        var stdoutLines: Int
+        var stderr: String
+        var stdoutSamples: [String] = []
+    }
+
+    private static func runUntilProviderProgressSignal(
+        plan: AgentRuntimeProcessLaunchPlan,
+        timeoutSeconds: TimeInterval
+    ) throws -> ProviderProgressProbeResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: plan.executablePath)
+        process.arguments = plan.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: plan.currentDirectory, isDirectory: true)
+        process.environment = plan.environment
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        let capture = ProviderProgressProbeCapture()
+
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            let chunk = String(data: data, encoding: .utf8) ?? ""
+            capture.appendStdout(chunk)
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            let chunk = String(data: data, encoding: .utf8) ?? ""
+            capture.appendStderr(chunk)
+        }
+
+        try process.run()
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if capture.foundVisibleOrActionableEvent || capture.foundProviderLivenessEvent { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            let terminationDeadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < terminationDeadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                process.interrupt()
+            }
+        }
+
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+
+        return capture.result()
+    }
+
     private static func printRunSummary(label: String, task: AgentTask, run: TaskRun) {
         let output = run.output.trimmingCharacters(in: .whitespacesAndNewlines)
         let errors = task.events
@@ -412,6 +597,81 @@ struct RealProviderSmokeTests {
                 with: "sk-[redacted]",
                 options: .regularExpression
             )
+    }
+}
+
+private final class ProviderProgressProbeCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxSampleCount = 8
+    private let maxSampleLength = 500
+    private var stdoutText = ""
+    private var stderrText = ""
+    private var stdoutSamples: [String] = []
+    private var visibleOrActionableEventFound = false
+    private var providerLivenessEventFound = false
+
+    var foundVisibleOrActionableEvent: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return visibleOrActionableEventFound
+    }
+
+    var foundProviderLivenessEvent: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return providerLivenessEventFound
+    }
+
+    func appendStdout(_ chunk: String) {
+        lock.lock()
+        stdoutText += chunk
+        for line in chunk.split(separator: "\n") where stdoutSamples.count < maxSampleCount {
+            stdoutSamples.append(String(line.prefix(maxSampleLength)))
+        }
+        for line in stdoutText.split(separator: "\n") {
+            let progress = Self.providerProgress(in: line)
+            if progress.visibleOrActionable {
+                visibleOrActionableEventFound = true
+            }
+            if progress.liveness {
+                providerLivenessEventFound = true
+            }
+        }
+        lock.unlock()
+    }
+
+    func appendStderr(_ chunk: String) {
+        lock.lock()
+        stderrText += chunk
+        lock.unlock()
+    }
+
+    func result() -> RealProviderSmokeTests.ProviderProgressProbeResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return RealProviderSmokeTests.ProviderProgressProbeResult(
+            foundVisibleOrActionableEvent: visibleOrActionableEventFound,
+            foundProviderLivenessEvent: providerLivenessEventFound,
+            stdoutLines: stdoutText.split(separator: "\n").count,
+            stderr: stderrText,
+            stdoutSamples: stdoutSamples
+        )
+    }
+
+    private static func providerProgress(in line: Substring) -> (visibleOrActionable: Bool, liveness: Bool) {
+        var visibleOrActionable = false
+        var liveness = false
+        for event in StreamEventParser.parseAll(line: String(line)) {
+            switch AgentRuntimeWorker.ProcessMonitor.progressKind(for: event) {
+            case .visibleProgress, .actionableProgress, .terminal:
+                visibleOrActionable = true
+            case .providerLiveness, .accounting:
+                liveness = true
+            case .lifecycleMetadata, .diagnostic:
+                break
+            }
+        }
+        return (visibleOrActionable, liveness)
     }
 }
 

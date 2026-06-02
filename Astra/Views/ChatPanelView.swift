@@ -1347,7 +1347,7 @@ struct ChatPanelView: View {
     }
 
     private func baseNewTaskSkillContext() -> String {
-        var skillCtx = selectedSkills.map { skill in
+        var skillCtx = scopedSelectedSkills(forTaskText: messageText, inputs: attachedFiles).map { skill in
             var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
             if !skill.connectors.isEmpty {
                 desc += "\nConnectors: \(skill.connectorSummary)"
@@ -1380,6 +1380,22 @@ struct ChatPanelView: View {
         }
 
         return skillCtx
+    }
+
+    private func scopedSelectedSkills(forTaskText taskText: String, inputs: [String] = []) -> [Skill] {
+        let trimmed = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !selectedSkills.isEmpty else { return selectedSkills }
+
+        let probe = AgentTask(
+            title: String(trimmed.prefix(60)),
+            goal: trimmed,
+            workspace: workspace
+        )
+        probe.inputs = inputs
+        probe.skills = selectedSkills
+        return TaskCapabilityResolver(task: probe)
+            .activationScope(contextText: trimmed)
+            .behaviorSkills
     }
 
     private func submitComposer() {
@@ -1534,10 +1550,11 @@ struct ChatPanelView: View {
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: input, inputs: attachedFiles).count),
             "message_length": String(input.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: input, inputs: attachedFiles)
         let task = AgentTask(
             title: String(input.prefix(60)),
             goal: input,
@@ -1548,7 +1565,7 @@ struct ChatPanelView: View {
         )
         task.status = .queued
         task.inputs = attachedFiles
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
@@ -1714,11 +1731,12 @@ struct ChatPanelView: View {
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles).count),
             "inputs_count": String(spec.inputs.count + attachedFiles.count),
             "criteria_count": String(spec.acceptanceCriteria.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles)
         let task = AgentTask(
             title: spec.title,
             goal: spec.goal,
@@ -1731,7 +1749,7 @@ struct ChatPanelView: View {
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
@@ -2491,7 +2509,7 @@ struct ChatPanelView: View {
             draft.model = model
             draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
@@ -2518,7 +2536,7 @@ struct ChatPanelView: View {
             draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize

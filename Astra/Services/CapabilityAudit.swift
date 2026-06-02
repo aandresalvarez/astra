@@ -91,14 +91,31 @@ enum CapabilityAudit {
         return fields
     }
 
-    static func taskContextFields(source: String, task: AgentTask) -> [String: String] {
+    static func taskContextFields(
+        source: String,
+        task: AgentTask,
+        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory
+    ) -> [String: String] {
         let resolver = TaskCapabilityResolver(task: task)
-        let connectors = resolver.allConnectors
-        let tools = resolver.allLocalTools
-        let skills = resolver.allBehaviorSkills
+        let fullConnectors = resolver.allConnectors
+        let fullTools = resolver.allLocalTools
+        let fullSkills = resolver.allBehaviorSkills
+        let resolvedScope = resolver.resolvedScope(requestedScope)
+        let connectors = resolvedScope.connectors
+        let tools = resolvedScope.localTools
+        let skills = resolvedScope.behaviorSkills
         var fields = workspaceFields(task.workspace)
         fields["source"] = source
         fields["runtime"] = task.resolvedRuntimeID.rawValue
+        fields["capability_scope"] = requestedScope.auditName
+        fields["scope_pruned"] = String(resolvedScope.prunedForBrowserTask)
+        fields["scope_excluded_skill_names"] = compactNames(resolvedScope.excludedSkillNames)
+        fields["configured_skill_count"] = String(fullSkills.count)
+        fields["configured_connector_count"] = String(fullConnectors.count)
+        fields["configured_local_tool_count"] = String(fullTools.count)
+        fields["configured_skill_names"] = compactNames(fullSkills.map(\.name))
+        fields["configured_connector_names"] = compactNames(fullConnectors.map(\.name))
+        fields["configured_local_tool_names"] = compactNames(fullTools.map(\.name))
         fields["task_skill_count"] = String(task.skills.count)
         fields["task_skill_snapshot_count"] = String(task.skillSnapshots.count)
         fields["resolved_skill_count"] = String(skills.count)

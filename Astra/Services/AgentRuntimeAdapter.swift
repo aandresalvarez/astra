@@ -966,8 +966,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope()
         let allowed = context.executionPolicy.allowedTools(
-            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+            default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
         let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
@@ -978,7 +979,17 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let nativeAllowedTools = Array(Set(providerAllowed + runtimeSupportTools)).sorted()
+        let askFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
+        let usesArtifactBootstrapProfile = TaskDeliverableExpectation.requiresStandaloneArtifact(context.task)
+        let nativeAllowedTools = Array(Set(providerAllowed + askFirstToolPermissions + runtimeSupportTools)).sorted()
+        let visibleTools = Self.visibleProviderTools(
+            from: nativeAllowedTools,
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy
+        )
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = [
             "-p",
@@ -993,8 +1004,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             AgentRuntimeProcessRunner.translatedModelForProvider(model),
             "--output-format",
             "stream-json",
+            "--include-partial-messages",
             "--verbose"
         ]
+        if usesArtifactBootstrapProfile {
+            args += ["--effort", "low"]
+        }
         args += effectivePermissionPolicy.cliArguments
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
@@ -1003,6 +1018,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         )
         if context.task.maxTurns > 0 {
             args += ["--max-turns", String(context.task.maxTurns)]
+        }
+        if !visibleTools.isEmpty {
+            args += ["--tools", visibleTools.joined(separator: ",")]
         }
         if !nativeAllowedTools.isEmpty {
             args += ["--allowedTools"] + nativeAllowedTools
@@ -1036,9 +1054,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "model": model,
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
+                "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
+                "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
                 "allowed_tools_count": String(providerAllowed.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
+                "ask_first_tool_count": String(askFirstToolPermissions.count),
+                "ask_first_tool_names": askFirstToolPermissions.joined(separator: ","),
+                "visible_tools_count": String(visibleTools.count),
+                "visible_tool_names": visibleTools.joined(separator: ","),
+                "uses_visible_tools_filter": String(!visibleTools.isEmpty),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
                 "max_turns": String(context.task.maxTurns),
@@ -1047,6 +1072,73 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
             ]
         )
+    }
+
+    private static func visibleProviderTools(
+        from nativeAllowedTools: [String],
+        task: AgentTask,
+        permissionPolicy: PermissionPolicy
+    ) -> [String] {
+        guard permissionPolicy != .autonomous else { return [] }
+
+        var visible = Set<String>()
+        for tool in nativeAllowedTools {
+            if let normalized = visibleProviderToolName(for: tool) {
+                visible.insert(normalized)
+            }
+        }
+
+        if task.useAgentTeam {
+            visible.formUnion([
+                "Task",
+                "TeamCreate",
+                "TeamDelete",
+                "TaskCreate",
+                "TaskGet",
+                "TaskList",
+                "TaskOutput",
+                "TaskStop",
+                "TaskUpdate"
+            ])
+        }
+
+        return visible.sorted()
+    }
+
+    private static func visibleProviderToolName(for rawTool: String) -> String? {
+        let trimmed = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let baseName = trimmed
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? trimmed
+        let normalized = baseName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch normalized {
+        case "bash", "shell":
+            return "Bash"
+        case "edit":
+            return "Edit"
+        case "glob":
+            return "Glob"
+        case "grep":
+            return "Grep"
+        case "multiedit":
+            return "MultiEdit"
+        case "notebookedit":
+            return "NotebookEdit"
+        case "read":
+            return "Read"
+        case "webfetch":
+            return "WebFetch"
+        case "websearch":
+            return "WebSearch"
+        case "write":
+            return "Write"
+        default:
+            return nil
+        }
     }
 
     func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
@@ -1515,8 +1607,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope()
         let allowed = context.executionPolicy.allowedTools(
-            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+            default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
         let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,

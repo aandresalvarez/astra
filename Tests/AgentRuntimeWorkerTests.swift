@@ -206,6 +206,16 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector keeps joined create article typo")
+    func artifactDetectorKeepsJoinedCreateArticleTypo() {
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball similar to rubicks cube but as aball with a solver in javascript"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
@@ -359,7 +369,40 @@ struct BuildPromptTests {
             #expect(prompt.contains("create them in this task output folder by default"))
             #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
+            #expect(prompt.contains("Artifact first-action requirement:"))
+            #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
+            #expect(prompt.contains("Artifact delivery contract:"))
+            #expect(prompt.contains("Create the first useful deliverable promptly"))
+            #expect(prompt.contains("preferably as index.html"))
+            #expect(prompt.contains("Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact"))
+            #expect(prompt.contains("If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning"))
+            if let actionRange = prompt.range(of: "Artifact first-action requirement:") {
+                #expect(prompt.distance(from: prompt.startIndex, to: actionRange.lowerBound) < 1_200)
+            } else {
+                Issue.record("Expected artifact first-action requirement near prompt start")
+            }
         }
+    }
+
+    @Test("Prompt omits artifact delivery contract for informational tasks")
+    func promptOmitsArtifactDeliveryContractForInformationalTasks() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-informational")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Explain JavaScript",
+            goal: "explain how javascript modules work",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Task Output Folder:"))
+        #expect(!prompt.contains("Artifact delivery contract:"))
+        #expect(!prompt.contains("Create the first useful deliverable promptly"))
     }
 
     @Test("Prompt keeps current task explicit before context and at current-goal section end")
@@ -906,8 +949,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("Use GitHub CLI for GitHub work."))
     }
 
-    @Test("Copied preview case has no pending prompt and dedupes duplicate capability behavior")
-    func copiedPreviewCaseHasNoPendingPromptAndDedupesDuplicateCapabilityBehavior() throws {
+    @Test("Copied preview case has no pending prompt and prunes irrelevant duplicate capability behavior")
+    func copiedPreviewCaseHasNoPendingPromptAndPrunesIrrelevantDuplicateCapabilityBehavior() throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let ws = Workspace(name: "Copied Preview", primaryPath: "/tmp/copied-preview")
@@ -941,7 +984,8 @@ struct BuildPromptTests {
 
         #expect(request.kind == .unavailable)
         #expect(request.unavailableReason?.contains("No provider prompt is pending") == true)
-        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 1)
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 0)
+        #expect(!prompt.contains("Use GitHub CLI for GitHub work."))
         #expect(prompt.contains("cognition-eval-smoke.md"))
         #expect(prompt.contains("/tmp/copied-preview/.astra/tasks/14DE8D76/current_state.json"))
     }
@@ -1176,6 +1220,41 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains("http://127.0.0.1:47831/"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+    }
+
+    @Test("Standalone artifact prompt omits hidden empty Shelf browser bridge")
+    func standaloneArtifactPromptOmitsHiddenEmptyShelfBrowserBridge() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-artifact-hidden-empty")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(!prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("ASTRA_BROWSER_URL"))
+        #expect(environment["ASTRA_BROWSER_URL"] == nil)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
     }
 
     @Test("Prompt hides Shelf browser bridge when disabled")

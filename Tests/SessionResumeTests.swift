@@ -4,11 +4,10 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-/// ASTRA maintains multi-turn continuity by replaying the full conversation
-/// context inside a freshly built prompt (`AgentPromptBuilder.buildFreshFollowUpPrompt`),
-/// not by passing a provider-native `--resume <sessionId>` flag to the CLI.
-/// These tests lock in that contract so production code and this suite stay aligned.
-@Suite("Session resume contract (prompt replay)")
+/// ASTRA always rebuilds the authoritative follow-up prompt. Provider-native
+/// continuation is optional and must be passed explicitly by the worker after
+/// launch-signature safety checks; adapters never infer it from `task.sessionId`.
+@Suite("Session resume contract")
 @MainActor
 struct SessionResumeTests {
 
@@ -27,8 +26,8 @@ struct SessionResumeTests {
         return url.path
     }
 
-    @Test("Follow-up launch plans never pass a provider-native --resume flag")
-    func followUpsNeverUseProviderNativeResumeFlag() throws {
+    @Test("Adapter follow-up launch plans never infer provider-native resume")
+    func adapterFollowUpsNeverInferProviderNativeResumeFlag() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try Self.makeContainer()
@@ -76,7 +75,7 @@ struct SessionResumeTests {
 
             #expect(
                 !plan.arguments.contains("--resume"),
-                "\(runtimeCase.runtime.rawValue) must not pass a native --resume flag; continuity is prompt replay."
+                "\(runtimeCase.runtime.rawValue) must not pass a native --resume flag without a vetted native continuation id."
             )
             #expect(
                 !plan.arguments.contains { $0.contains(priorSessionToken) },

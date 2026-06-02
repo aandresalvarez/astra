@@ -43,6 +43,25 @@ public struct StreamAssistantEvent: Decodable {
     public let message: StreamMessage?
 }
 
+public struct StreamPartialEventEnvelope: Decodable {
+    public let type: String
+    public let event: StreamPartialEvent?
+}
+
+public struct StreamPartialEvent: Decodable {
+    public let type: String
+    public let message: StreamMessage?
+    public let content_block: StreamContentBlock?
+    public let delta: StreamPartialDelta?
+    public let usage: StreamUsage?
+}
+
+public struct StreamPartialDelta: Decodable {
+    public let type: String?
+    public let text: String?
+    public let thinking: String?
+}
+
 public struct StreamToolResultBlock: Decodable {
     public let type: String
     public let tool_use_id: String?
@@ -220,51 +239,11 @@ public enum StreamEventParser {
             var events: [ParsedEvent] = []
             var firstThinking: ParsedEvent?
             for block in content {
-                switch block.type {
-                case "thinking":
-                    if firstThinking == nil, let text = block.thinking {
-                        firstThinking = .thinking(text: text)
-                    }
-                case "text":
-                    if let text = block.text {
-                        events.append(.text(text: text))
-                    }
-                case "tool_use":
-                    if let name = block.name, let id = block.id {
-                        let inputDict = block.input?.mapValues { $0.value }
-                        switch name {
-                        case "TeamCreate":
-                            let teamName = inputDict?["team_name"] as? String ?? ""
-                            let desc = inputDict?["description"] as? String ?? ""
-                            events.append(.teamCreated(name: teamName, description: desc))
-                            continue
-                        case "TeamDelete":
-                            let teamName = inputDict?["team_name"] as? String ?? ""
-                            events.append(.teamDeleted(name: teamName))
-                            continue
-                        case "SendMessage":
-                            let to = inputDict?["to"] as? String ?? inputDict?["recipient"] as? String ?? ""
-                            let msgContent: String
-                            if let msg = inputDict?["message"] as? String {
-                                msgContent = msg
-                            } else if let content = inputDict?["content"] as? String {
-                                msgContent = content
-                            } else {
-                                msgContent = inputDict?["summary"] as? String ?? ""
-                            }
-                            let msgType = inputDict?["type"] as? String ?? "message"
-                            if msgType == "shutdown_request" {
-                                events.append(.toolUse(name: name, id: id, input: inputDict))
-                            } else {
-                                events.append(.teamMessage(from: "lead", to: to, content: msgContent))
-                            }
-                            continue
-                        default:
-                            events.append(.toolUse(name: name, id: id, input: inputDict))
-                        }
-                    }
-                default:
-                    break
+                let blockEvents = parsedEvents(from: block, includeThinking: false)
+                if blockEvents.isEmpty, firstThinking == nil, block.type == "thinking", let text = block.thinking {
+                    firstThinking = .thinking(text: text)
+                } else {
+                    events.append(contentsOf: blockEvents)
                 }
             }
             if events.isEmpty, let firstThinking {
@@ -275,6 +254,13 @@ public enum StreamEventParser {
                 events.append(usageEvent)
             }
             return events
+
+        case "stream_event":
+            guard let envelope = try? JSONDecoder().decode(StreamPartialEventEnvelope.self, from: data),
+                  let event = envelope.event else {
+                return []
+            }
+            return parsedEvents(from: event)
 
         case "user":
             let lower = line.lowercased()
@@ -328,6 +314,77 @@ public enum StreamEventParser {
 
         default:
             return [.unknown(type: baseEvent.type)]
+        }
+    }
+
+    private static func parsedEvents(from event: StreamPartialEvent) -> [ParsedEvent] {
+        switch event.type {
+        case "message_start":
+            guard let usage = event.message?.usage,
+                  let usageEvent = parsedUsageEvent(from: usage) else { return [] }
+            return [usageEvent]
+        case "message_delta":
+            guard let usage = event.usage,
+                  let usageEvent = parsedUsageEvent(from: usage) else { return [] }
+            return [usageEvent]
+        case "content_block_start":
+            return []
+        case "content_block_delta":
+            guard let delta = event.delta else { return [] }
+            if let text = delta.text, !text.isEmpty {
+                return [.thinking(text: text)]
+            }
+            if let thinking = delta.thinking, !thinking.isEmpty {
+                return [.thinking(text: thinking)]
+            }
+            return []
+        default:
+            return []
+        }
+    }
+
+    private static func parsedEvents(from block: StreamContentBlock, includeThinking: Bool) -> [ParsedEvent] {
+        switch block.type {
+        case "thinking":
+            guard includeThinking, let text = block.thinking, !text.isEmpty else { return [] }
+            return [.thinking(text: text)]
+        case "text":
+            guard let text = block.text, !text.isEmpty else { return [] }
+            return [.text(text: text)]
+        case "tool_use":
+            guard let name = block.name, let id = block.id else { return [] }
+            return [parsedToolUseEvent(name: name, id: id, input: block.input?.mapValues { $0.value })]
+        default:
+            return []
+        }
+    }
+
+    private static func parsedToolUseEvent(name: String, id: String, input: [String: Any]?) -> ParsedEvent {
+        switch name {
+        case "TeamCreate":
+            let teamName = input?["team_name"] as? String ?? ""
+            let desc = input?["description"] as? String ?? ""
+            return .teamCreated(name: teamName, description: desc)
+        case "TeamDelete":
+            let teamName = input?["team_name"] as? String ?? ""
+            return .teamDeleted(name: teamName)
+        case "SendMessage":
+            let to = input?["to"] as? String ?? input?["recipient"] as? String ?? ""
+            let msgContent: String
+            if let msg = input?["message"] as? String {
+                msgContent = msg
+            } else if let content = input?["content"] as? String {
+                msgContent = content
+            } else {
+                msgContent = input?["summary"] as? String ?? ""
+            }
+            let msgType = input?["type"] as? String ?? "message"
+            if msgType == "shutdown_request" {
+                return .toolUse(name: name, id: id, input: input)
+            }
+            return .teamMessage(from: "lead", to: to, content: msgContent)
+        default:
+            return .toolUse(name: name, id: id, input: input)
         }
     }
 

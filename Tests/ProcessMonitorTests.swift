@@ -794,6 +794,78 @@ struct ProcessMonitorTests {
         #expect(first != nil)
     }
 
+    @Test("Claude partial thinking delta is provider liveness")
+    func claudePartialThinkingDeltaIsProviderLiveness() throws {
+        let line = """
+        {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants a Masterball page"}},"session_id":"s1","parent_tool_use_id":null,"uuid":"u1"}
+        """
+        let parsed = try #require(StreamEventParser.parse(line: line))
+
+        #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: parsed) == .providerLiveness)
+        #expect(AgentRuntimeWorker.ProcessMonitor.repetitionSignature(parsed) != nil)
+    }
+
+    @Test("Thinking-only provider activity stops as no actionable progress")
+    func thinkingOnlyProviderActivityStopsAsNoActionableProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKillEvent = monitor.processEvent(
+            .thinking(text: "The user wants a Masterball page"),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(shouldKillEvent == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_no_actionable_progress")
+        #expect(monitor.runtimeStopMessage?.contains("provider-side liveness") == true)
+    }
+
+    @Test("Default liveness-only timeout gives real providers a bounded action window")
+    func defaultLivenessOnlyTimeoutGivesRealProvidersBoundedActionWindow() {
+        let shortRun = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60
+        )
+        let artifactRun = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 240
+        )
+        let longRun = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 600
+        )
+
+        #expect(shortRun.noSemanticProgressTimeoutSeconds == 60)
+        #expect(artifactRun.noSemanticProgressTimeoutSeconds == 180)
+        #expect(longRun.noSemanticProgressTimeoutSeconds == 180)
+    }
+
+    @Test("Visible provider text prevents liveness-only stop")
+    func visibleProviderTextPreventsLivenessOnlyStop() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKillEvent = monitor.processEvent(
+            .text(text: "I'll create the file now."),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(shouldKillEvent == false)
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     // MARK: - ProcessResult
 
     @Test("ProcessResult defaults")
@@ -1069,6 +1141,43 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == true)
         #expect(monitor.policyApprovalRequired == false)
         #expect(monitor.policyViolationMessage?.contains("unsupported input keys: extra") == true)
+    }
+
+    @Test("Runtime support tool schema rejects action-like input aliases even when allowed")
+    func runtimeSupportToolSchemaRejectsActionLikeAliasesEvenWhenAllowed() {
+        let descriptor = ProviderRuntimeSupportToolDescriptor(
+            name: "report_intent",
+            purpose: "Report provider intent",
+            allowedInputKeys: ["intent", "endpoint"]
+        )
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .copilotCLI,
+            runtimeSupportTools: [descriptor]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "report_intent",
+                id: "t1",
+                input: [
+                    "intent": "Gather provider metadata",
+                    "endpoint": "https://example.test/internal"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("action-like input keys") == true)
+        #expect(monitor.policyViolationMessage?.contains("endpoint") == true)
     }
 
     @Test("Copilot task delegation is not treated as runtime support plumbing")
@@ -1384,6 +1493,74 @@ struct RuntimePolicyGuardTests {
 
         #expect(shouldKill == false)
         #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved shell path grant satisfies ask-first Bash across absolute workspace path")
+    func approvedShellPathGrantSatisfiesAskFirstAcrossAbsoluteWorkspacePath() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: [
+                "Read",
+                "Glob",
+                "Grep",
+                "Bash(ls dev/workspaces/test/.astra/tasks/bf0b91bc/ *)"
+            ],
+            askFirstTools: ["Bash"],
+            workspacePath: "/Users/alvaro1/Documents/Astra Dev/Workspaces/test"
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Bash",
+                id: "t1",
+                input: [
+                    "command": "ls /Users/alvaro1/Documents/Astra\\ Dev/Workspaces/test/.astra/tasks/BF0B91BC/"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Approved shell path grant does not satisfy a different task path")
+    func approvedShellPathGrantDoesNotSatisfyDifferentTaskPath() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: [
+                "Read",
+                "Glob",
+                "Grep",
+                "Bash(ls dev/workspaces/test/.astra/tasks/bf0b91bc/ *)"
+            ],
+            askFirstTools: ["Bash"],
+            workspacePath: "/Users/alvaro1/Documents/Astra Dev/Workspaces/test"
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Bash",
+                id: "t1",
+                input: [
+                    "command": "ls /Users/alvaro1/Documents/Astra\\ Dev/Workspaces/test/.astra/tasks/A292D7B4/"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
         #expect(monitor.policyViolation == false)
     }
 
@@ -1747,6 +1924,116 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolationMessage?.contains("outside the workspace paths") == true)
     }
 
+    @Test("Ask-first task output artifact write is allowed without approval")
+    func askFirstTaskOutputArtifactWriteIsAllowedWithoutApproval() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t1",
+                input: [
+                    "file_path": "\(workspacePath)/.astra/tasks/B405BA1D/index.html",
+                    "content": "<html></html>"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Ask-first task output artifact write allows private symlink path")
+    func askFirstTaskOutputArtifactWriteAllowsPrivateSymlinkPath() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = NSTemporaryDirectory() + "astra-policy-guard-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(
+            atPath: "\(workspacePath)/.astra/tasks/B405BA1D",
+            withIntermediateDirectories: true
+        )
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let canonicalWorkspacePath = workspacePath.hasPrefix("/private/")
+            ? workspacePath
+            : "/private" + workspacePath
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t1",
+                input: [
+                    "file_path": "\(canonicalWorkspacePath)/.astra/tasks/B405BA1D/index.html",
+                    "content": "<html></html>"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Ask-first workspace artifact write outside task output still asks")
+    func askFirstWorkspaceArtifactWriteOutsideTaskOutputStillAsks() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t1",
+                input: [
+                    "file_path": "\(workspacePath)/index.html",
+                    "content": "<html></html>"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyViolationMessage == nil)
+        #expect(monitor.policyApprovalMessage?.contains("Permission requested for tool: Write") == true)
+        #expect(monitor.policyApprovalMessage?.contains("ask-first") == true)
+    }
+
     @Test("Read outside allowed paths stops the provider when path is observable")
     func outsidePathReadStopsProvider() {
         let manifest = runtimePolicyManifest(allowedTools: ["Read"])
@@ -2004,7 +2291,8 @@ private func runtimePolicyManifest(
     policyLevel: AgentPolicyLevel = .review,
     usesBroadProviderPermissions: Bool = false,
     approvalGrants: [PermissionGrant] = [],
-    runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] = []
+    runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] = [],
+    taskID: UUID = UUID()
 ) -> RunPermissionManifest {
     let render = ProviderPolicyRender(
         providerID: providerID,
@@ -2028,7 +2316,6 @@ private func runtimePolicyManifest(
         diagnostics: [],
         usesBroadProviderPermissions: usesBroadProviderPermissions
     )
-    let taskID = UUID()
     return RunPermissionManifest(
         taskID: taskID,
         runID: UUID(),

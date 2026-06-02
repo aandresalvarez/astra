@@ -20,7 +20,9 @@ enum TaskDeliverableExpectation {
         let artifactActionPhrases = [
             "put this in files", "write this in files"
         ]
-        guard containsAnyWholeWord(text, artifactActionWords) || containsAny(text, artifactActionPhrases) else {
+        guard containsAnyWholeWord(text, artifactActionWords)
+                || containsJoinedArticleAction(text, artifactActionWords)
+                || containsAny(text, artifactActionPhrases) else {
             return false
         }
 
@@ -87,6 +89,16 @@ enum TaskDeliverableExpectation {
     private static func containsAnyWholeWord(_ text: String, _ words: [String]) -> Bool {
         let tokens = Set(text.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         return words.contains { tokens.contains($0) }
+    }
+
+    private static func containsJoinedArticleAction(_ text: String, _ words: [String]) -> Bool {
+        let tokens = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let joinedArticleWords = words.flatMap { word in
+            ["\(word)a", "\(word)an"]
+        }
+        return tokens.contains { token in
+            joinedArticleWords.contains(String(token))
+        }
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {

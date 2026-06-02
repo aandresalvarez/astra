@@ -1453,6 +1453,124 @@ struct HeadlessChatScenarioTests {
         #expect(runs.last?.output == "Approved curl completed")
     }
 
+    @Test("UI approval permits repeated Claude shell path request after resume")
+    func uiApprovalPermitsRepeatedClaudeShellPathRequestAfterResume() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-claude-path-approval-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Bash(ls dev/workspaces/test/.astra/tasks/bf0b91bc/ *)'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-path-approved","model":"claude-sonnet-4-6"}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_ls_approved","input":{"command":"ls /Users/alvaro1/Documents/Astra\\\\ Dev/Workspaces/test/.astra/tasks/BF0B91BC/"}}]}}'
+                  printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Approved ls completed"}]}}'
+                  printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Approved ls completed","usage":{"input_tokens":3,"output_tokens":5}}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-path-needs-approval","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_ls","input":{"command":"ls /Users/alvaro1/Documents/Astra\\\\ Dev/Workspaces/test/.astra/tasks/BF0B91BC/"}}]}}'
+                /bin/sleep 20
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "createa web page wit a masterball with a solver in javascript",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: claudePath,
+            copilotPath: nil,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 10,
+            validationModel: "claude-haiku-4-5-20251001"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+
+        await queue.executeTask(task, modelContext: harness.context)
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.first?.stopReason == "permission_approval_required")
+        let approvalEvent = try #require(task.events.first {
+            $0.type == "permission.approval.requested" && $0.payload.contains("Runtime grant: Bash(ls dev/workspaces/test/.astra/tasks/bf0b91bc/ *)")
+        })
+        let approvalPayload = try #require(PermissionApprovalEventPayload.decoded(from: approvalEvent.payload))
+        #expect(approvalPayload.grants.contains(.shellCommand(
+            executable: "ls",
+            pattern: "dev/workspaces/test/.astra/tasks/bf0b91bc/ *"
+        )))
+
+        coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(completed)
+        #expect(runs.count == 2)
+        #expect(runs.last?.stopReason == "completed")
+        #expect(runs.last?.output.contains("Approved ls completed") == true)
+        #expect(!task.events.contains {
+            $0.type == "permission.approval.requested"
+                && $0.run?.id == runs.last?.id
+        })
+    }
+
+    @Test("Claude Ask mode artifact write request pauses for approval instead of timing out")
+    func claudeAskModeArtifactWriteRequestPausesForApprovalInsteadOfTimingOut() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("claude-ask-write-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(
+                body: """
+                if ! printf '%s\\n' "$@" | grep -Fxq -- 'Write'; then
+                  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-write-not-visible","model":"claude-sonnet-4-6"}'
+                  sleep 60
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-write-visible","model":"claude-sonnet-4-6"}'
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Write","id":"toolu_write","input":{"file_path":".astra/tasks/requestable/index.html","content":"<html></html>"}}]}}'
+                sleep 20
+                exit 0
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "create a web page with a masterball solver in javascript",
+            model: "claude-sonnet-4-6",
+            tokenBudget: 200_000
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.timeoutSeconds = 3
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        let run = try #require(task.runs.first)
+        let approvalEvent = try #require(task.events.first { $0.type == "permission.approval.requested" })
+        let approvalPayload = try #require(PermissionApprovalEventPayload.decoded(from: approvalEvent.payload))
+
+        #expect(args.split(separator: "\n").contains { $0 == "Write" })
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "permission_approval_required")
+        #expect(run.stopReason != "provider_no_semantic_progress")
+        #expect(approvalPayload.providerID == .claudeCode)
+        #expect(approvalPayload.grants.contains(.filePath(path: ".astra/tasks/requestable/index.html", access: "write")))
+        #expect(approvalPayload.grants.contains(.providerTool(name: "Write")))
+    }
+
     @Test("UI approval ignores stale broad shell runtime grants")
     func uiApprovalIgnoresStaleBroadShellRuntimeGrants() async throws {
         let harness = try HeadlessChatHarness()
@@ -1513,7 +1631,7 @@ struct HeadlessChatScenarioTests {
             .map(String.init)
         #expect(completed)
         #expect(!args.contains("Bash(*)"))
-        #expect(!args.contains("Bash"))
+        #expect(args.contains("Bash"))
         #expect(!args.contains("--dangerously-skip-permissions"))
     }
 
@@ -1686,15 +1804,15 @@ struct HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(
                 body: """
-                if printf '%s\\n' "$@" | grep -Fxq -- 'Write'; then
+                if printf '%s\\n' "$@" | grep -Fxq -- 'Agent'; then
                   printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-approved-session","model":"claude-sonnet-4-6"}'
                   printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude continued after approval"}]}}'
                   printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude continued after approval","usage":{"input_tokens":3,"output_tokens":5}}'
                   exit 0
                 fi
-                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Permission denied for tool: Write. approval required"}]}}'
-                printf '%s\\n' '{"type":"result","subtype":"error","is_error":true,"duration_ms":12,"num_turns":1,"result":"Permission denied for tool: Write","usage":{"input_tokens":3,"output_tokens":5}}'
-                printf '%s\\n' 'Permission denied for tool: Write. approval required' >&2
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Permission denied for tool: Agent. approval required"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"error","is_error":true,"duration_ms":12,"num_turns":1,"result":"Permission denied for tool: Agent","usage":{"input_tokens":3,"output_tokens":5}}'
+                printf '%s\\n' 'Permission denied for tool: Agent. approval required' >&2
                 exit 1
                 """,
                 argsFile: argsURL
@@ -1725,14 +1843,14 @@ struct HeadlessChatScenarioTests {
             task: task,
             message: "The user approved the blocked permission.",
             worker: worker,
-            executionPolicy: .approvedRuntimePermission(runtime: .claudeCode, allowedTools: ["Write"])
+            executionPolicy: .approvedRuntimePermission(runtime: .claudeCode, allowedTools: ["Agent"])
         )
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(runs.count == 2)
         #expect(!args.contains("--dangerously-skip-permissions"))
-        #expect(args.contains("Write"))
+        #expect(args.contains("Agent"))
         #expect(task.status == .completed)
         #expect(runs[1].output == "Claude continued after approval")
     }
@@ -2868,6 +2986,177 @@ struct HeadlessChatScenarioTests {
         }
         #expect(task.runs.count == 2)
         #expect(task.status == .completed)
+    }
+
+    @Test("Claude follow-up skips native session when launch signature changes")
+    func claudeFollowUpSkipsNativeSessionWhenLaunchSignatureChanges() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-signature-change-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Investigate cache behavior", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "claude-session-1")
+
+        let cacheSkill = Skill(
+            name: "Cache Agent",
+            skillDescription: "Investigate cache behavior and cache policy",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Use cache-specific diagnostics when discussing cache behavior."
+        )
+        cacheSkill.workspace = task.workspace
+        harness.context.insert(cacheSkill)
+        task.skills = [cacheSkill]
+        try harness.context.save()
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "Continue after enabling the cache capability",
+            worker: worker
+        )
+
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(!args.contains("--resume"))
+        #expect(rawArgs.contains("Context Capsule v2:"))
+        #expect(rawArgs.contains("User's follow-up request:\nContinue after enabling the cache capability"))
+        #expect(task.events.filter { $0.type == "astra.provider_launch_signature" }.count == 2)
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
+    @Test("Claude no-progress follow-up starts a clean provider session")
+    func claudeNoProgressFollowUpStartsCleanProviderSession() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-clean-retry-args.txt")
+        let countFile = harness.rootURL.appendingPathComponent("claude-clean-retry-count")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            count=0
+            if [ -f '\(countFile.path)' ]; then
+              count=$(cat '\(countFile.path)')
+            fi
+            count=$((count + 1))
+            printf '%s\\n' "$count" > '\(countFile.path)'
+            if [ "$count" = "1" ]; then
+              printf '%s\\n' '{"type":"system","subtype":"init","session_id":"stuck-claude-session","model":"claude-sonnet-4-6"}'
+              sleep 60
+              exit 0
+            fi
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"clean-claude-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Recovered answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Recovered answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Create a standalone artifact", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        worker.timeoutSeconds = 2
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let failedRun = try #require(task.runs.first)
+        #expect(failedRun.status == .failed)
+        #expect(failedRun.stopReason == "provider_no_semantic_progress")
+        #expect(failedRun.output.isEmpty)
+        #expect(task.sessionId == "stuck-claude-session")
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "Continue with a clean retry",
+            worker: worker
+        )
+
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(!args.contains("--resume"))
+        #expect(rawArgs.contains("Context Capsule v2:"))
+        #expect(rawArgs.contains("User's follow-up request:\nContinue with a clean retry"))
+        #expect(task.sessionId == "clean-claude-session")
+        #expect(task.runs.count == 2)
+        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }.last?.output == "Recovered answer")
+        #expect(task.status == .completed)
+    }
+
+    @Test("Claude launch prompt prunes irrelevant Graph Mail capability for artifact task")
+    func claudeLaunchPromptPrunesIrrelevantGraphMailCapabilityForArtifactTask() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            all_args="$*"
+            case "$all_args" in
+              *"Stanford Graph Mail Agent"*|*"stanford-graph-mail"*|*"create rules"*)
+                printf '%s\\n' 'Prompt leaked irrelevant Graph Mail capability' >&2
+                exit 42
+                ;;
+            esac
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"clean-capability-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Created a clean Masterball solver page."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Created a clean Masterball solver page.","usage":{"input_tokens":7,"output_tokens":9}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            model: "claude-sonnet-4-6"
+        )
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: """
+            You are a Stanford Graph Mail assistant. Use the `stanford-graph-mail` CLI via Bash.
+            Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.
+            Do NOT use these tools: Write, Edit.
+            """
+        )
+        mailSkill.workspace = task.workspace
+        harness.context.insert(mailSkill)
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read the locally signed-in Microsoft 365 mailbox",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        harness.context.insert(mailTool)
+        task.skills = [mailSkill]
+        TaskCapabilitySnapshotter.capture(for: task)
+        try harness.context.save()
+
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.output == "Created a clean Masterball solver page.")
+        #expect(!task.events.contains { $0.type == "skill.active" && $0.payload.contains("Stanford Graph Mail Agent") })
     }
 
     @Test("Changing runtime from Copilot to Claude starts a clean provider run")
