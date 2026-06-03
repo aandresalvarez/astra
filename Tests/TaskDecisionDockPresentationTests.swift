@@ -29,7 +29,7 @@ struct TaskDecisionDockPresentationTests {
             verification: TaskVerificationPresentation(
                 title: "Not automatically verified",
                 summary: "Not automatically verified",
-                detail: "No validation contract or automated check was available for this task.",
+                detail: "No validation contract or automated check was available for this task. · Artifacts: none recorded · No automated verification evidence recorded.",
                 systemImage: "checkmark.circle",
                 tone: .attention
             ),
@@ -63,6 +63,9 @@ struct TaskDecisionDockPresentationTests {
             $0.id == "next-action" &&
                 $0.summary.contains("ask a follow-up")
         })
+        let verificationDetail = try #require(dock.details.first { $0.id == "verification" })
+        #expect(!verificationDetail.summary.contains("Artifacts: none recorded"))
+        #expect(verificationDetail.summary.contains("No automated verification evidence recorded."))
     }
 
     @Test("cancelled dock expands preserved state by default")

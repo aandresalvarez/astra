@@ -584,7 +584,7 @@ struct TaskDecisionDockPresentation: Equatable {
             appendIfPresent(TaskDecisionDockDetail(
                 id: "verification",
                 title: verification.title,
-                summary: verification.detail ?? verification.summary,
+                summary: verificationSummary(verification),
                 systemImage: verification.systemImage,
                 tone: tone(from: verification)
             ), to: &output)
@@ -595,6 +595,15 @@ struct TaskDecisionDockPresentation: Equatable {
         }
 
         return dedupedDetails(output)
+    }
+
+    private static func verificationSummary(_ verification: TaskVerificationPresentation) -> String {
+        let summary = verification.detail ?? verification.summary
+        let cleanedParts = summary
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "Artifacts: none recorded" }
+        return cleanedParts.isEmpty ? verification.summary : cleanedParts.joined(separator: " · ")
     }
 
     private static func taskStatusSummary(_ context: Context) -> String {

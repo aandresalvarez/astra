@@ -506,10 +506,10 @@ struct TaskMainView: View {
             loadSSHConnections()
             alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
-            refreshTaskContextState()
-            refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshPlanStateCache()
         }
         .onAppear {
             alignTaskModelWithRuntime()
@@ -518,10 +518,10 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
-            refreshTaskContextState()
-            refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
         }
@@ -542,6 +542,7 @@ struct TaskMainView: View {
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+            refreshTaskContextState()
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -599,6 +600,18 @@ struct TaskMainView: View {
 
     private func refreshTaskContextState() {
         TaskContextStateManager.refresh(task: task)
+        refreshCachedVerificationPresentationFromCurrentState()
+    }
+
+    private func refreshCachedVerificationPresentationFromCurrentState() {
+        guard let request = verificationLoadRequest else {
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            return
+        }
+        let verification = TaskContextStateManager.load(taskFolder: request.taskFolder)?.verification
+        cachedVerificationRequest = request
+        cachedVerificationPresentation = verification.map(TaskPresentationState.verificationPresentation(for:))
     }
 
     private func schedulePlanStateCacheRefresh() {

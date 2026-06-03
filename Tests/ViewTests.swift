@@ -4600,9 +4600,11 @@ struct AgentTaskPropertyTests {
 
         #expect(manualPresentation.summary == "Not automatically verified")
         #expect(manualPresentation.tone == .attention)
+        #expect(manualPresentation.detail?.contains("Artifacts: none recorded") != true)
         #expect(failedPresentation.summary == "Verification failed")
         #expect(failedPresentation.tone == .failed)
         #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
+        #expect(failedPresentation.detail?.contains("Artifacts: none recorded") != true)
     }
 
     @Test("verificationPresentation surfaces deliverable review quality")

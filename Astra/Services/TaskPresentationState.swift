@@ -226,7 +226,7 @@ enum TaskPresentationState {
             parts.append("Command: \(command)")
         }
         let artifactStatus = verification.artifactStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !artifactStatus.isEmpty, artifactStatus != "unknown" {
+        if !artifactStatus.isEmpty, artifactStatus != "unknown", artifactStatus != "none recorded" {
             parts.append("Artifacts: \(artifactStatus)")
         }
         if let deliverableLevel = verification.deliverableLevel?.trimmingCharacters(in: .whitespacesAndNewlines),
