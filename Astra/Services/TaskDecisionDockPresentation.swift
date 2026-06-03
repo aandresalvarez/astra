@@ -154,7 +154,7 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     private static func runningPresentation(_ context: Context) -> TaskDecisionDockPresentation {
-        TaskDecisionDockPresentation(
+        return TaskDecisionDockPresentation(
             id: "running",
             icon: "stop.circle.fill",
             tone: .running,
@@ -224,14 +224,21 @@ struct TaskDecisionDockPresentation: Equatable {
         _ context: Context,
         correction: MissionControlCorrection
     ) -> TaskDecisionDockPresentation {
-        TaskDecisionDockPresentation(
+        let correctionDetail = TaskDecisionDockDetail(
+            id: "correction",
+            title: "Fix",
+            summary: "\(correction.failedAssertionID): \(correction.suggestedRepair)",
+            systemImage: "wrench.and.screwdriver",
+            tone: .failed
+        )
+        return TaskDecisionDockPresentation(
             id: "correction-\(correction.correctiveStepID)",
             icon: "wrench.and.screwdriver.fill",
             tone: .failed,
             title: "Correction needed",
-            summary: "Assertion \(correction.failedAssertionID): \(correction.suggestedRepair)",
+            summary: "Fix \(correction.failedAssertionID), then rerun validation.",
             metrics: metrics(context),
-            details: details(context),
+            details: details(context, additional: [correctionDetail]),
             primaryAction: action(
                 .approveCorrection,
                 title: correction.status == "approved" ? "Approved" : "Approve",
@@ -240,10 +247,11 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: correction.status != "approved"
             ),
             secondaryActions: [
-                action(.createCorrectionTask, title: "Create task", systemImage: "plus.square", payload: correction.correctiveStepID),
-                action(.dismissCorrection, title: "Dismiss", systemImage: "xmark", payload: correction.correctiveStepID)
+                action(.createCorrectionTask, title: "Create task", systemImage: "plus.square", payload: correction.correctiveStepID)
             ],
-            overflowActions: closeOverflowActions(context, closeTitle: nil),
+            overflowActions: [
+                action(.dismissCorrection, title: "Dismiss", systemImage: "xmark", payload: correction.correctiveStepID)
+            ] + closeOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
     }
@@ -319,10 +327,12 @@ struct TaskDecisionDockPresentation: Equatable {
                 : nil,
             secondaryActions: [
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: closeOverflowActions(context, closeTitle: isMissingArtifact ? TaskPresentationState.closeAnywayActionTitle : nil),
+            overflowActions: supportAndCloseOverflowActions(
+                context,
+                closeTitle: isMissingArtifact ? TaskPresentationState.closeAnywayActionTitle : nil
+            ),
             prefersExpandedDetails: isBlocked || isMissingArtifact
         )
     }
@@ -362,10 +372,9 @@ struct TaskDecisionDockPresentation: Equatable {
                 context.canResume && context.hasProviderSession && context.canRetry
                     ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
                     : nil,
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: closeOverflowActions(context, closeTitle: nil),
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
     }
@@ -376,48 +385,38 @@ struct TaskDecisionDockPresentation: Equatable {
             icon: "doc.badge.exclamationmark",
             tone: .attention,
             title: "No usable result",
-            summary: "This finished run did not create the expected artifact. Retry or close it anyway.",
+            summary: "Expected artifact was not created.",
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
             secondaryActions: [
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: closeOverflowActions(context, closeTitle: TaskPresentationState.closeAnywayActionTitle),
+            overflowActions: supportAndCloseOverflowActions(
+                context,
+                closeTitle: TaskPresentationState.closeAnywayActionTitle
+            ),
             prefersExpandedDetails: true
         )
     }
 
     private static func completedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
-        let artifactCount = context.mission?.artifactCount ?? context.artifactPaths.count
         let verification = context.verification
-        let summary: String
-        if artifactCount > 0, verification?.tone == .attention {
-            summary = "ASTRA found \(artifactCount) \(artifactCount == 1 ? "artifact" : "artifacts"). No automated verification was run."
-        } else if let verification {
-            summary = verification.detail ?? verification.summary
-        } else if artifactCount > 0 {
-            summary = "ASTRA found \(artifactCount) \(artifactCount == 1 ? "artifact" : "artifacts"). Review the result before closing."
-        } else {
-            summary = context.review.decisionDetail
-        }
 
         return TaskDecisionDockPresentation(
             id: "completed",
             icon: "checkmark.circle.fill",
             tone: verification?.tone == .verified ? .verified : .attention,
-            title: "Result ready for review",
-            summary: summary,
+            title: "Result ready",
+            summary: compactEvidenceSummary(context, fallback: "Review the result before closing."),
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canToggleDone ? action(.closeTask, title: TaskPresentationState.closeTaskActionTitle, systemImage: "checkmark.circle") : nil,
             secondaryActions: [
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: [],
-            prefersExpandedDetails: verification?.tone == .failed || verification?.tone == .attention
+            overflowActions: supportOverflowActions(context),
+            prefersExpandedDetails: verification?.tone == .failed
         )
     }
 
@@ -427,16 +426,15 @@ struct TaskDecisionDockPresentation: Equatable {
             icon: "xmark.circle.fill",
             tone: .attention,
             title: "Run cancelled",
-            summary: "Review the partial result, then retry or close the task.",
+            summary: compactEvidenceSummary(context, prefix: "Partial result", fallback: "Review the partial result, then retry or close."),
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
             secondaryActions: [
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: closeOverflowActions(context, closeTitle: nil),
-            prefersExpandedDetails: true
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
+            prefersExpandedDetails: false
         )
     }
 
@@ -451,8 +449,7 @@ struct TaskDecisionDockPresentation: Equatable {
             details: details(context),
             primaryAction: context.canToggleDone ? action(.reopenTask, title: TaskPresentationState.reopenTaskActionTitle, systemImage: "arrow.uturn.backward") : nil,
             secondaryActions: [
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: false
@@ -472,61 +469,15 @@ struct TaskDecisionDockPresentation: Equatable {
             details: dockDetails,
             primaryAction: nil,
             secondaryActions: [
-                firstArtifactAction(context),
-                inferredVerificationAction(context)
+                firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: closeOverflowActions(context, closeTitle: nil),
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: false
         )
     }
 
-    private static func metrics(_ context: Context) -> [TaskDecisionDockMetric] {
-        var output: [TaskDecisionDockMetric] = []
-        if let mission = context.mission {
-            output.append(TaskDecisionDockMetric(
-                id: "validation",
-                title: "Verification",
-                value: verificationMetricValue(mission: mission, verification: context.verification),
-                tone: context.verification.map(tone(from:)) ?? tone(from: mission.tone)
-            ))
-            output.append(TaskDecisionDockMetric(
-                id: "files",
-                title: "Files",
-                value: "\(mission.changedFileCount) changed",
-                tone: mission.changedFileCount > 0 ? .neutral : .neutral
-            ))
-            output.append(TaskDecisionDockMetric(
-                id: "artifacts",
-                title: "Artifacts",
-                value: "\(mission.artifactCount)",
-                tone: mission.artifactCount > 0 ? .verified : .neutral
-            ))
-            output.append(TaskDecisionDockMetric(
-                id: "budget",
-                title: "Budget",
-                value: mission.budgetSummary,
-                tone: .neutral
-            ))
-            return output
-        }
-
-        if let verification = context.verification {
-            output.append(TaskDecisionDockMetric(
-                id: "verification",
-                title: "Verification",
-                value: verification.summary,
-                tone: tone(from: verification)
-            ))
-        }
-        if !context.artifactPaths.isEmpty {
-            output.append(TaskDecisionDockMetric(
-                id: "artifacts",
-                title: "Artifacts",
-                value: "\(context.artifactPaths.count)",
-                tone: .verified
-            ))
-        }
-        return output
+    private static func metrics(_ _: Context) -> [TaskDecisionDockMetric] {
+        []
     }
 
     private static func details(
@@ -537,16 +488,8 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if let mission = context.mission {
             appendIfPresent(TaskDecisionDockDetail(
-                id: "mission-control",
-                title: "Mission Control",
-                summary: "\(mission.statusTitle): \(mission.statusSummary)",
-                systemImage: missionControlIcon(for: mission.tone),
-                tone: tone(from: mission.tone)
-            ), to: &output)
-
-            appendIfPresent(TaskDecisionDockDetail(
-                id: "mission-objective",
-                title: "Objective",
+                id: "goal",
+                title: "Goal",
                 summary: mission.objective,
                 systemImage: "scope",
                 tone: .neutral
@@ -554,7 +497,7 @@ struct TaskDecisionDockPresentation: Equatable {
 
             if let activeStep = mission.activeStepTitle {
                 appendIfPresent(TaskDecisionDockDetail(
-                    id: "mission-active-step",
+                    id: "active-step",
                     title: "Active step",
                     summary: activeStep,
                     systemImage: "list.bullet.rectangle",
@@ -563,51 +506,29 @@ struct TaskDecisionDockPresentation: Equatable {
             }
 
             appendIfPresent(TaskDecisionDockDetail(
-                id: "mission-validation",
-                title: "Validation",
-                summary: mission.validationSummary,
-                systemImage: "checklist.checked",
-                tone: tone(from: mission.tone)
+                id: "proof",
+                title: "Proof",
+                summary: proofSummary(context),
+                systemImage: proofIcon(context),
+                tone: proofTone(context)
+            ), to: &output)
+        } else if context.verification != nil || !context.artifactPaths.isEmpty {
+            appendIfPresent(TaskDecisionDockDetail(
+                id: "proof",
+                title: "Proof",
+                summary: proofSummary(context),
+                systemImage: proofIcon(context),
+                tone: proofTone(context)
             ), to: &output)
         }
 
         appendIfPresent(TaskDecisionDockDetail(
-            id: "task-status",
-            title: "Task status",
-            summary: taskStatusSummary(context),
+            id: "run",
+            title: "Run",
+            summary: runSummary(context),
             systemImage: taskStatusIcon(for: context.status, isClosed: context.isClosed),
             tone: taskStatusTone(context)
         ), to: &output)
-
-        if let handoff = context.mission?.latestHandoffSummary {
-            appendIfPresent(TaskDecisionDockDetail(
-                id: "handoff",
-                title: "Latest handoff",
-                summary: handoff,
-                systemImage: "arrowshape.turn.up.right",
-                tone: .neutral
-            ), to: &output)
-        }
-
-        if let nextAction = context.mission?.nextAction {
-            appendIfPresent(TaskDecisionDockDetail(
-                id: "next-action",
-                title: "Next action",
-                summary: nextAction,
-                systemImage: "arrow.right.circle",
-                tone: .neutral
-            ), to: &output)
-        }
-
-        if let verification = context.verification {
-            appendIfPresent(TaskDecisionDockDetail(
-                id: "verification",
-                title: verification.title,
-                summary: verificationSummary(verification),
-                systemImage: verification.systemImage,
-                tone: tone(from: verification)
-            ), to: &output)
-        }
 
         for detail in additional {
             appendIfPresent(detail, to: &output)
@@ -625,9 +546,173 @@ struct TaskDecisionDockPresentation: Equatable {
         return cleanedParts.isEmpty ? verification.summary : cleanedParts.joined(separator: " · ")
     }
 
+    private static func compactEvidenceSummary(
+        _ context: Context,
+        prefix: String? = nil,
+        fallback: String
+    ) -> String {
+        var parts: [String] = []
+        if let prefix {
+            parts.append(prefix)
+        }
+        parts.append(contentsOf: compactEvidenceParts(context))
+        return parts.isEmpty ? fallback : parts.joined(separator: " · ")
+    }
+
+    private static func compactEvidenceParts(_ context: Context) -> [String] {
+        var parts: [String] = []
+        let artifacts = artifactCount(context)
+        if artifacts > 0 {
+            parts.append("\(artifacts) \(artifacts == 1 ? "artifact" : "artifacts")")
+        }
+        if let changedFiles = context.mission?.changedFileCount, changedFiles > 0 {
+            parts.append("\(changedFiles) \(changedFiles == 1 ? "file changed" : "files changed")")
+        }
+        appendIfPresent(compactProofStatus(context), to: &parts)
+        return parts
+    }
+
+    private static func compactProofStatus(_ context: Context) -> String {
+        if let verification = context.verification {
+            switch verification.tone {
+            case .verified:
+                return verificationMentionsSyntax(verification) ? "syntax checked" : "verified"
+            case .failed:
+                return "verification failed"
+            case .attention, .neutral:
+                return "not verified"
+            }
+        }
+
+        guard let mission = context.mission else { return "" }
+        let validation = mission.validationSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !validation.isEmpty, validation != "No validation contract" else {
+            return "not verified"
+        }
+
+        switch mission.tone {
+        case .verified:
+            return "verified"
+        case .failed:
+            return "verification failed"
+        case .attention, .neutral, .running:
+            return humanizedValidationSummary(validation)
+        }
+    }
+
+    private static func proofSummary(_ context: Context) -> String {
+        let artifactSentence = artifactEvidenceSentence(context)
+        if let verification = context.verification {
+            switch verification.tone {
+            case .verified:
+                if verificationMentionsSyntax(verification) {
+                    let artifacts = artifactCount(context)
+                    if artifacts > 0 {
+                        return "Syntax checked for \(artifacts) \(artifacts == 1 ? "artifact" : "artifacts")."
+                    }
+                }
+                return firstNonEmpty(verifiedProofSummary(artifactSentence), verificationSummary(verification))
+            case .attention, .neutral:
+                if context.mission?.validationSummary == "No validation contract" {
+                    return firstNonEmpty(
+                        ["No validation contract.", artifactSentence].compactMap { $0 }.joined(separator: " "),
+                        "No validation contract."
+                    )
+                }
+                return verificationSummary(verification)
+            case .failed:
+                return verificationSummary(verification)
+            }
+        }
+
+        if let mission = context.mission {
+            let validation = mission.validationSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if validation.isEmpty || validation == "No validation contract" {
+                return firstNonEmpty(
+                    ["No validation contract.", artifactSentence].compactMap { $0 }.joined(separator: " "),
+                    "No validation contract."
+                )
+            }
+            if mission.tone == .verified {
+                return firstNonEmpty(verifiedProofSummary(artifactSentence), humanizedValidationSummary(validation))
+            }
+            return humanizedValidationSummary(validation)
+        }
+
+        return artifactSentence ?? "No structured proof is recorded yet."
+    }
+
+    private static func proofIcon(_ context: Context) -> String {
+        if let verification = context.verification {
+            return verification.systemImage
+        }
+        return context.mission?.tone == .verified ? "checkmark.seal.fill" : "checklist.checked"
+    }
+
+    private static func proofTone(_ context: Context) -> TaskDecisionDockTone {
+        if let verification = context.verification {
+            return tone(from: verification)
+        }
+        if let mission = context.mission {
+            return tone(from: mission.tone)
+        }
+        return artifactCount(context) > 0 ? .attention : .neutral
+    }
+
+    private static func runSummary(_ context: Context) -> String {
+        var parts = [taskStatusSummary(context)]
+        if let mission = context.mission {
+            let missionStatus = "\(mission.statusTitle): \(mission.statusSummary)"
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !missionStatus.isEmpty, missionStatus != parts[0] {
+                parts.append(missionStatus)
+            }
+            appendIfPresent(mission.nextAction, to: &parts)
+        }
+        return parts.joined(separator: ". ")
+    }
+
+    private static func artifactCount(_ context: Context) -> Int {
+        max(context.mission?.artifactCount ?? 0, context.artifactPaths.count)
+    }
+
+    private static func artifactEvidenceSentence(_ context: Context) -> String? {
+        let count = artifactCount(context)
+        guard count > 0 else { return nil }
+        return "ASTRA found \(count) \(count == 1 ? "artifact" : "artifacts")."
+    }
+
+    private static func verifiedProofSummary(_ artifactSentence: String?) -> String {
+        if let artifactSentence {
+            return "Verified. \(artifactSentence)"
+        }
+        return "Verified."
+    }
+
+    private static func verificationMentionsSyntax(_ verification: TaskVerificationPresentation) -> Bool {
+        let text = [verification.title, verification.summary, verification.detail]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .lowercased()
+        return text.contains("syntax")
+    }
+
+    private static func humanizedValidationSummary(_ summary: String) -> String {
+        let lowercased = summary.lowercased()
+        if lowercased.contains("passed") {
+            return "verified"
+        }
+        if lowercased.contains("failed") {
+            return "verification failed"
+        }
+        return summary.replacingOccurrences(of: "_", with: " ")
+    }
+
     private static func inferredVerificationAction(_ context: Context) -> TaskDecisionDockAction? {
-        guard context.canAddVerification,
+        guard !context.isClosed,
+              context.canAddVerification,
               !context.artifactPaths.isEmpty,
+              context.verification?.tone != .verified,
               context.mission?.validationSummary == "No validation contract" else {
             return nil
         }
@@ -637,6 +722,17 @@ struct TaskDecisionDockPresentation: Equatable {
             systemImage: "checklist.checked",
             help: "Create safe proof rules from the current artifact and run them now."
         )
+    }
+
+    private static func supportOverflowActions(_ context: Context) -> [TaskDecisionDockAction] {
+        [inferredVerificationAction(context)].compactMap { $0 }
+    }
+
+    private static func supportAndCloseOverflowActions(
+        _ context: Context,
+        closeTitle: String?
+    ) -> [TaskDecisionDockAction] {
+        supportOverflowActions(context) + closeOverflowActions(context, closeTitle: closeTitle)
     }
 
     private static func taskStatusSummary(_ context: Context) -> String {
@@ -766,6 +862,12 @@ struct TaskDecisionDockPresentation: Equatable {
     private static func appendIfPresent(_ detail: TaskDecisionDockDetail, to output: inout [TaskDecisionDockDetail]) {
         guard !detail.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         output.append(detail)
+    }
+
+    private static func appendIfPresent(_ value: String?, to output: inout [String]) {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return }
+        output.append(trimmed)
     }
 
     private static func dedupedDetails(_ values: [TaskDecisionDockDetail]) -> [TaskDecisionDockDetail] {

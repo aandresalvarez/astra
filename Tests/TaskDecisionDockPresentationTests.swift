@@ -3,8 +3,8 @@ import Testing
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
-    @Test("dock keeps Mission Control and task status details")
-    func dockKeepsMissionControlAndTaskStatusDetails() throws {
+    @Test("dock summarizes result evidence and groups status details")
+    func dockSummarizesResultEvidenceAndGroupsStatusDetails() throws {
         let mission = MissionControlPresentation(
             objective: "Create Masterball puzzle web solver",
             statusTitle: "Completed",
@@ -37,43 +37,41 @@ struct TaskDecisionDockPresentationTests {
         ))
 
         let dock = try #require(presentation)
-        #expect(dock.metrics.map(\.id) == ["validation", "files", "artifacts", "budget"])
+        #expect(dock.title == "Result ready")
+        #expect(dock.summary == "1 artifact · 1 file changed · not verified")
+        #expect(dock.metrics.isEmpty)
         #expect(dock.details.contains {
-            $0.id == "mission-control" &&
-                $0.title == "Mission Control" &&
-                $0.summary == "Completed: No validation contract recorded"
-        })
-        #expect(dock.details.contains {
-            $0.id == "mission-objective" &&
+            $0.id == "goal" &&
+                $0.title == "Goal" &&
                 $0.summary == "Create Masterball puzzle web solver"
         })
         #expect(dock.details.contains {
-            $0.id == "mission-validation" &&
-                $0.summary == "No validation contract"
+            $0.id == "proof" &&
+                $0.title == "Proof" &&
+                $0.summary == "No validation contract. ASTRA found 1 artifact."
         })
         #expect(dock.details.contains {
-            $0.id == "task-status" &&
-                $0.summary == "Run finished - Needs review"
+            $0.id == "run" &&
+                $0.title == "Run" &&
+                $0.summary.contains("Run finished - Needs review")
         })
         #expect(dock.details.contains {
-            $0.id == "handoff" &&
-                $0.summary.contains("Review the result")
-        })
-        #expect(dock.details.contains {
-            $0.id == "next-action" &&
+            $0.id == "run" &&
                 $0.summary.contains("ask a follow-up")
         })
-        #expect(dock.secondaryActions.contains {
+        #expect(!dock.secondaryActions.contains {
+            $0.kind == .addVerification
+        })
+        #expect(dock.overflowActions.contains {
             $0.kind == .addVerification &&
                 $0.title == "Add verification"
         })
-        let verificationDetail = try #require(dock.details.first { $0.id == "verification" })
-        #expect(!verificationDetail.summary.contains("Artifacts: none recorded"))
-        #expect(verificationDetail.summary.contains("No automated verification evidence recorded."))
+        let proofDetail = try #require(dock.details.first { $0.id == "proof" })
+        #expect(!proofDetail.summary.contains("Artifacts: none recorded"))
     }
 
-    @Test("cancelled dock expands preserved state by default")
-    func cancelledDockExpandsPreservedStateByDefault() throws {
+    @Test("cancelled dock keeps partial result compact by default")
+    func cancelledDockKeepsPartialResultCompactByDefault() throws {
         let mission = MissionControlPresentation(
             objective: "Create Masterball puzzle web solver",
             statusTitle: "Needs attention",
@@ -100,10 +98,11 @@ struct TaskDecisionDockPresentationTests {
 
         let dock = try #require(presentation)
         #expect(dock.title == "Run cancelled")
-        #expect(dock.prefersExpandedDetails)
-        #expect(dock.details.contains { $0.id == "mission-control" })
-        #expect(dock.details.contains { $0.id == "task-status" && $0.summary == "Run cancelled - Needs review" })
-        #expect(dock.metrics.contains { $0.id == "artifacts" && $0.value == "1" })
+        #expect(dock.summary == "Partial result · 1 artifact · 1 file changed · not verified")
+        #expect(!dock.prefersExpandedDetails)
+        #expect(dock.details.contains { $0.id == "goal" })
+        #expect(dock.details.contains { $0.id == "run" && $0.summary.contains("Run cancelled - Needs review") })
+        #expect(dock.metrics.isEmpty)
     }
 
     @Test("dock does not offer inferred verification when contract already exists")
@@ -134,6 +133,90 @@ struct TaskDecisionDockPresentationTests {
 
         let dock = try #require(presentation)
         #expect(!dock.secondaryActions.contains { $0.kind == .addVerification })
+        #expect(!dock.overflowActions.contains { $0.kind == .addVerification })
+    }
+
+    @Test("dock does not offer inferred verification after deliverable verification passes")
+    func dockDoesNotOfferInferredVerificationAfterDeliverableVerificationPasses() throws {
+        let mission = MissionControlPresentation(
+            objective: "Create Masterball puzzle web solver",
+            statusTitle: "Completed",
+            statusSummary: "No validation contract recorded",
+            tone: .attention,
+            activeStepTitle: nil,
+            validationSummary: "No validation contract",
+            assertionRows: [],
+            latestHandoffSummary: "Review the result.",
+            blockerCount: 0,
+            artifactCount: 1,
+            changedFileCount: 1,
+            budgetSummary: "42.1k used / unlimited",
+            nextAction: "Review the result.",
+            correction: nil,
+            sourcePointerCount: 9
+        )
+
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            mission: mission,
+            verification: TaskVerificationPresentation(
+                title: "Verification passed",
+                summary: "Verified",
+                detail: "passed via deliverable_verification · Artifacts: 1 current · Deliverable quality: syntax_verified · Deliverable syntax verified for 1 artifact.",
+                systemImage: "checkmark.seal.fill",
+                tone: .verified
+            ),
+            artifactPaths: ["/tmp/index.html"]
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.summary == "1 artifact · 1 file changed · syntax checked")
+        #expect(dock.details.contains { $0.id == "proof" && $0.summary == "Syntax checked for 1 artifact." })
+        #expect(!dock.secondaryActions.contains { $0.kind == .addVerification })
+        #expect(!dock.overflowActions.contains { $0.kind == .addVerification })
+    }
+
+    @Test("correction dock keeps one primary action and moves dismiss to overflow")
+    func correctionDockKeepsOnePrimaryActionAndMovesDismissToOverflow() throws {
+        let mission = MissionControlPresentation(
+            objective: "Create Masterball puzzle web solver",
+            statusTitle: "Needs attention",
+            statusSummary: "browser-check failed",
+            tone: .failed,
+            activeStepTitle: "Repair browser behavior",
+            validationSummary: "failed: browser-check",
+            assertionRows: [],
+            latestHandoffSummary: "Fix the browser-visible behavior.",
+            blockerCount: 1,
+            artifactCount: 1,
+            changedFileCount: 1,
+            budgetSummary: "52.7k used / unlimited",
+            nextAction: "Approve the correction or create a separate task.",
+            correction: MissionControlCorrection(
+                correctiveStepID: "repair-browser",
+                failedAssertionID: "browser-check",
+                status: "proposed",
+                suggestedRepair: "Fix the browser-visible behavior or update the expected evidence, then rerun validation."
+            ),
+            sourcePointerCount: 9
+        )
+
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            mission: mission,
+            artifactPaths: ["/tmp/index.html"]
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.title == "Correction needed")
+        #expect(dock.summary == "Fix browser-check, then rerun validation.")
+        #expect(dock.primaryAction?.kind == .approveCorrection)
+        #expect(dock.secondaryActions.map(\.kind) == [.createCorrectionTask])
+        #expect(dock.overflowActions.contains { $0.kind == .dismissCorrection })
+        #expect(dock.details.contains {
+            $0.id == "correction" &&
+                $0.summary.contains("Fix the browser-visible behavior")
+        })
     }
 
     private func context(

@@ -6,19 +6,15 @@ struct TaskDecisionDockView: View {
     var onAction: (TaskDecisionDockAction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            header
+        VStack(alignment: .leading, spacing: isExpanded ? 8 : 5) {
+            summaryRow
 
-            if !presentation.metrics.isEmpty {
-                metricsRow
-            }
-
-            if presentation.hasDetails {
-                detailsDisclosure
+            if presentation.hasDetails, isExpanded {
+                expandedDetails
             }
         }
         .padding(.horizontal, TaskComposerPresentation.decisionRowHorizontalPadding)
-        .padding(.vertical, TaskComposerPresentation.decisionRowVerticalPadding)
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
         .overlay(alignment: .leading) {
             Capsule()
@@ -31,51 +27,112 @@ struct TaskDecisionDockView: View {
         .accessibilityIdentifier("TaskDecisionDock")
     }
 
-    private var header: some View {
+    private var summaryRow: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: TaskComposerPresentation.decisionRowSpacing) {
-                headerText
-                Spacer(minLength: 8)
-                actionsView
+            HStack(alignment: .top, spacing: TaskComposerPresentation.decisionRowSpacing) {
+                leadingStatus
+                Spacer(minLength: 12)
+                if presentation.hasActions {
+                    actionsView
+                        .padding(.top, 1)
+                }
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                headerText
-                HStack {
-                    Spacer(minLength: 0)
-                    actionsView
+            VStack(alignment: .leading, spacing: 7) {
+                leadingStatus
+                if presentation.hasActions {
+                    HStack {
+                        Spacer(minLength: 0)
+                        actionsView
+                    }
                 }
             }
         }
     }
 
-    private var headerText: some View {
-        HStack(alignment: .top, spacing: TaskComposerPresentation.decisionRowSpacing) {
-            Image(systemName: presentation.icon)
-                .font(Stanford.ui(TaskComposerPresentation.decisionIconFontSize, weight: .semibold))
-                .foregroundStyle(toneColor)
-                .frame(
-                    width: TaskComposerPresentation.decisionIconFrame,
-                    height: TaskComposerPresentation.decisionIconFrame
-                )
+    private var leadingStatus: some View {
+        HStack(alignment: .top, spacing: 10) {
+            statusIcon
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(presentation.title)
-                    .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                    .lineLimit(1)
-                Text(presentation.summary)
-                    .font(Stanford.caption(TaskComposerPresentation.decisionDetailFontSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                titleAndSummary
+                if presentation.hasDetails, !isExpanded {
+                    detailsToggle
+                        .padding(.top, 1)
+                }
             }
             .layoutPriority(1)
         }
     }
 
+    private var statusIcon: some View {
+        Image(systemName: presentation.icon)
+            .font(Stanford.ui(TaskComposerPresentation.decisionIconFontSize, weight: .semibold))
+            .foregroundStyle(toneColor)
+            .frame(
+                width: TaskComposerPresentation.decisionIconFrame,
+                height: TaskComposerPresentation.decisionIconFrame
+            )
+    }
+
+    private var titleAndSummary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(presentation.title)
+                .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+                .lineLimit(1)
+            Text(presentation.summary)
+                .font(Stanford.caption(TaskComposerPresentation.decisionDetailFontSize))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var expandedDetails: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            detailsToggle
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(presentation.details) { detail in
+                    detailRow(detail)
+                }
+            }
+            .accessibilityIdentifier("TaskDecisionDockDetails")
+        }
+        .padding(.leading, TaskComposerPresentation.decisionIconFrame + 10)
+        .transition(.opacity.combined(with: .offset(y: -4)))
+    }
+
+    private var detailsToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .frame(width: 11)
+                Text(isExpanded ? "Hide details" : detailsToggleTitle)
+                    .font(Stanford.caption(11).weight(.semibold))
+                Text(detailSummary)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if isExpanded {
+                    Spacer(minLength: 0)
+                }
+            }
+            .foregroundStyle(toneColor)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("TaskDecisionDockDetailsToggle")
+    }
+
     private var actionsView: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ForEach(presentation.secondaryActions) { action in
                 actionButton(action, isPrimary: false)
             }
@@ -89,71 +146,6 @@ struct TaskDecisionDockView: View {
             }
         }
         .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var metricsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(presentation.metrics) { metric in
-                    metricView(metric)
-                }
-            }
-        }
-        .scrollClipDisabled()
-        .accessibilityIdentifier("TaskDecisionDockMetrics")
-    }
-
-    private func metricView(_ metric: TaskDecisionDockMetric) -> some View {
-        HStack(spacing: 5) {
-            Text(metric.title)
-                .font(Stanford.caption(10).weight(.semibold))
-                .foregroundStyle(.tertiary)
-            Text(metric.value)
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(metricColor(metric.tone))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(metricColor(metric.tone).opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-
-    private var detailsDisclosure: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .frame(width: 12)
-                    Text(isExpanded ? "Hide details" : detailsToggleTitle)
-                        .font(Stanford.caption(11).weight(.semibold))
-                    Text(detailSummary)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(toneColor)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("TaskDecisionDockDetailsToggle")
-
-            if isExpanded {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(presentation.details) { detail in
-                        detailRow(detail)
-                    }
-                }
-                .transition(.opacity.combined(with: .offset(y: -4)))
-                .accessibilityIdentifier("TaskDecisionDockDetails")
-            }
-        }
     }
 
     private func detailRow(_ detail: TaskDecisionDockDetail) -> some View {
@@ -175,15 +167,27 @@ struct TaskDecisionDockView: View {
         }
     }
 
+    @ViewBuilder
     private func actionButton(_ action: TaskDecisionDockAction, isPrimary: Bool) -> some View {
         Button {
             onAction(action)
         } label: {
             Label(action.title, systemImage: action.systemImage)
+                .font(Stanford.caption(isPrimary ? 13 : 12).weight(.semibold))
                 .labelStyle(.titleAndIcon)
+                .foregroundStyle(buttonForeground(isPrimary: isPrimary, isEnabled: action.isEnabled))
+                .padding(.horizontal, isPrimary ? 13 : 10)
+                .padding(.vertical, isPrimary ? 7 : 6)
+                .background(
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .fill(buttonBackground(isPrimary: isPrimary, isEnabled: action.isEnabled))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
+                        .stroke(buttonStroke(isPrimary: isPrimary, isEnabled: action.isEnabled), lineWidth: 1)
+                )
         }
-        .buttonStyle(StanfordButtonStyle(isPrimary: isPrimary, color: isPrimary ? toneColor : Stanford.lagunita))
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .disabled(!action.isEnabled)
         .help(action.help ?? action.title)
         .accessibilityIdentifier(accessibilityIdentifier(for: action))
@@ -204,21 +208,22 @@ struct TaskDecisionDockView: View {
             Image(systemName: "ellipsis")
                 .font(Stanford.ui(13, weight: .semibold))
                 .foregroundStyle(Stanford.coolGrey)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(Color.primary.opacity(0.035)))
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.primary.opacity(0.025)))
                 .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 30, height: 30)
+        .frame(width: 28, height: 28)
         .help("More task decisions")
         .accessibilityLabel("More task decisions")
     }
 
     private var detailSummary: String {
         let titles = presentation.details.reduce(into: [String]()) { output, detail in
-            guard !output.contains(detail.title) else { return }
-            output.append(detail.title)
+            let title = compactDetailTitle(detail.title)
+            guard !output.contains(title) else { return }
+            output.append(title)
         }
         guard !titles.isEmpty else { return "" }
         let visible = Array(titles.prefix(2))
@@ -230,14 +235,43 @@ struct TaskDecisionDockView: View {
     }
 
     private var detailsToggleTitle: String {
-        if presentation.details.contains(where: { ["mission-control", "task-status"].contains($0.id) }) {
-            return "Mission & status"
-        }
-        return "Review details"
+        "Details"
     }
 
     private var toneColor: Color {
         metricColor(presentation.tone)
+    }
+
+    private func buttonForeground(isPrimary: Bool, isEnabled: Bool) -> Color {
+        if !isEnabled {
+            return Stanford.coolGrey.opacity(0.7)
+        }
+        return isPrimary ? .white : Stanford.black.opacity(0.84)
+    }
+
+    private func buttonBackground(isPrimary: Bool, isEnabled: Bool) -> Color {
+        if !isEnabled {
+            return Stanford.fog.opacity(0.8)
+        }
+        return isPrimary ? toneColor : Color.primary.opacity(0.025)
+    }
+
+    private func buttonStroke(isPrimary: Bool, isEnabled: Bool) -> Color {
+        if !isEnabled {
+            return Color.secondary.opacity(0.12)
+        }
+        return isPrimary ? toneColor.opacity(0) : Color.secondary.opacity(0.18)
+    }
+
+    private func compactDetailTitle(_ title: String) -> String {
+        switch title {
+        case "Active step":
+            "Step"
+        case "Permission scope":
+            "Scope"
+        default:
+            title
+        }
     }
 
     private func metricColor(_ tone: TaskDecisionDockTone) -> Color {
