@@ -983,8 +983,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let usesArtifactBootstrapProfile = TaskDeliverableExpectation.requiresStandaloneArtifact(context.task)
-        let nativeAllowedTools = Array(Set(providerAllowed + askFirstToolPermissions + runtimeSupportTools)).sorted()
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy,
+            providerAllowedTools: providerAllowed,
+            askFirstTools: askFirstToolPermissions
+        )
+        let nativeAllowedTools = Array(Set(
+            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools
+        )).sorted()
+        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
         let visibleTools = Self.visibleProviderTools(
             from: nativeAllowedTools,
             task: context.task,
@@ -1057,10 +1065,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
                 "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
                 "allowed_tools_count": String(providerAllowed.count),
+                "provider_launch_allowed_tool_count": String(nativeAllowedTools.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "ask_first_tool_count": String(askFirstToolPermissions.count),
                 "ask_first_tool_names": askFirstToolPermissions.joined(separator: ","),
+                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
+                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
                 "visible_tools_count": String(visibleTools.count),
                 "visible_tool_names": visibleTools.joined(separator: ","),
                 "uses_visible_tools_filter": String(!visibleTools.isEmpty),
@@ -1621,9 +1632,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionManifest: context.permissionManifest
         )
         let askFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
-        let artifactBootstrapTools = Self.artifactBootstrapTools(
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
             permissionPolicy: effectivePermissionPolicy,
+            providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools)).sorted()
@@ -1721,28 +1733,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
             ]
         )
-    }
-
-    private static func artifactBootstrapTools(
-        task: AgentTask,
-        permissionPolicy: PermissionPolicy,
-        askFirstTools: [String]
-    ) -> [String] {
-        guard permissionPolicy == .restricted,
-              TaskDeliverableExpectation.requiresStandaloneArtifact(task),
-              askFirstTools.contains(where: isFileMutationTool) else {
-            return []
-        }
-        return ["Write"]
-    }
-
-    private static func isFileMutationTool(_ tool: String) -> Bool {
-        let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "write"
-            || normalized == "create"
-            || normalized == "edit"
-            || normalized == "multiedit"
-            || normalized == "multi_edit"
     }
 
     private static func argumentList(_ arguments: [String], after flag: String) -> [String] {

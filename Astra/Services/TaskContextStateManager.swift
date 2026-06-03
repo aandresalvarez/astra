@@ -819,30 +819,59 @@ enum TaskContextStateManager {
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile]
     ) -> [TaskContextState.ArtifactReference] {
-        var references = task.artifacts
-            .sorted { $0.createdAt < $1.createdAt }
-            .map { artifact in
-                TaskContextState.ArtifactReference(
-                    type: artifact.type,
-                    path: artifact.path,
-                    version: artifact.version,
-                    isStale: artifact.isStale,
-                    sourcePointers: [
-                        sourcePointer(kind: "artifact", id: artifact.id.uuidString, path: artifact.path, summary: "Generated artifact")
-                    ]
-                )
+        var references: [TaskContextState.ArtifactReference] = []
+        var indexByPath: [String: Int] = [:]
+
+        for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let key = artifactReferenceKey(artifact.path)
+            guard !key.isEmpty else { continue }
+
+            let pointer = sourcePointer(
+                kind: "artifact",
+                id: artifact.id.uuidString,
+                path: artifact.path,
+                summary: "Generated artifact"
+            )
+            let incoming = TaskContextState.ArtifactReference(
+                type: artifact.type,
+                path: artifact.path,
+                version: artifact.version,
+                isStale: artifact.isStale,
+                sourcePointers: [pointer]
+            )
+
+            if let index = indexByPath[key] {
+                let mergedSources = dedupeSourcePointers(references[index].sourcePointers + incoming.sourcePointers)
+                if incoming.version >= references[index].version {
+                    references[index] = TaskContextState.ArtifactReference(
+                        type: incoming.type,
+                        path: incoming.path,
+                        version: incoming.version,
+                        isStale: incoming.isStale,
+                        sourcePointers: mergedSources
+                    )
+                } else {
+                    references[index].sourcePointers = mergedSources
+                }
+            } else {
+                indexByPath[key] = references.count
+                references.append(incoming)
             }
-        var indexByPath = Dictionary(uniqueKeysWithValues: references.enumerated().map { ($0.element.path, $0.offset) })
+        }
+
         for file in discoveredFiles {
+            let key = artifactReferenceKey(file.path)
+            guard !key.isEmpty else { continue }
+
             let pointer = sourcePointer(
                 kind: "task_output_file",
                 path: file.path,
                 summary: "Discovered task output artifact \(file.relativePath)"
             )
-            if let index = indexByPath[file.path] {
+            if let index = indexByPath[key] {
                 references[index].sourcePointers = dedupeSourcePointers(references[index].sourcePointers + [pointer])
             } else {
-                indexByPath[file.path] = references.count
+                indexByPath[key] = references.count
                 references.append(TaskContextState.ArtifactReference(
                     type: file.type,
                     path: file.path,
@@ -1785,6 +1814,13 @@ enum TaskContextStateManager {
             if output.count >= limit { break }
         }
         return output
+    }
+
+    private static func artifactReferenceKey(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard trimmed.hasPrefix("/") else { return trimmed }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
     }
 
     private static func dedupeFacts(

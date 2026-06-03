@@ -487,6 +487,50 @@ struct TaskContextStateTests {
         #expect(prompt.contains("html v1 stale"))
     }
 
+    @Test("context capsule merges duplicate persisted artifact paths")
+    func contextCapsuleMergesDuplicatePersistedArtifactPaths() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Duplicate Artifacts", primaryPath: root)
+        let task = AgentTask(
+            title: "Duplicate artifact state",
+            goal: "Render current state without crashing when artifacts share a path",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let artifactPath = (root as NSString).appendingPathComponent("index.html")
+        try "<html>current</html>".write(toFile: artifactPath, atomically: true, encoding: .utf8)
+        let first = Artifact(task: task, type: "html", path: artifactPath, version: 1)
+        first.createdAt = Date(timeIntervalSince1970: 1)
+        let second = Artifact(task: task, type: "html", path: artifactPath, version: 2)
+        second.createdAt = Date(timeIntervalSince1970: 2)
+        context.insert(first)
+        context.insert(second)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Generated the artifact twice for the same path."
+        run.completedAt = Date()
+        task.status = .completed
+        context.insert(run)
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Refresh current state")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let references = state.artifacts.filter { $0.path == artifactPath }
+        #expect(references.count == 1)
+        let reference = try #require(references.first)
+        #expect(reference.version == 2)
+        #expect(!reference.isStale)
+        #expect(reference.sourcePointers.filter { $0.kind == "artifact" }.count == 2)
+        #expect(state.verification.artifactStatus == "1 current")
+    }
+
     @Test("context capsule discovers task output files when provider metadata is missing")
     func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
         let root = try temporaryRoot()

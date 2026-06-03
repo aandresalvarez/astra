@@ -122,8 +122,8 @@ enum TaskPresentationState {
                 composerIcon: "eye.fill",
                 composerHelp: "The run finished. Review the result, then close the task when no action remains.",
                 tone: .attention,
-                decisionTitle: "Ready to close?",
-                decisionDetail: "Close this task when the current result no longer needs action."
+                decisionTitle: "Result ready for review",
+                decisionDetail: "Review the result and evidence, then close this task when no action remains."
             )
         case .failed:
             return TaskReviewPresentation(
@@ -177,8 +177,8 @@ enum TaskPresentationState {
 
         if status == "manual_completion" {
             return TaskVerificationPresentation(
-                title: "No automated verification",
-                summary: "No automated verification",
+                title: "Not automatically verified",
+                summary: "Not automatically verified",
                 detail: detail,
                 systemImage: "checkmark.circle",
                 tone: .attention
@@ -216,7 +216,11 @@ enum TaskPresentationState {
 
     private static func verificationDetail(for verification: TaskContextState.Verification) -> String? {
         var parts: [String] = []
-        parts.append("\(verification.status) via \(verification.strategy)")
+        if verification.status.lowercased() == "manual_completion" {
+            parts.append("ASTRA found the result, but no validation contract or automated check was available for this task.")
+        } else {
+            parts.append("\(verification.status) via \(verification.strategy)")
+        }
         if let command = verification.command?.trimmingCharacters(in: .whitespacesAndNewlines),
            !command.isEmpty {
             parts.append("Command: \(command)")

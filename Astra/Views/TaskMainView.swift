@@ -207,6 +207,7 @@ struct TaskMainView: View {
     @State private var isPlanning = false
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
+    @State private var isTaskDecisionDetailsExpanded = false
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
@@ -1219,16 +1220,6 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        if let missionControlPresentation {
-            MissionControlPanelView(
-                presentation: missionControlPresentation,
-                onApproveCorrection: { approveMissionCorrection($0) },
-                onDismissCorrection: { dismissMissionCorrection($0) },
-                onCreateCorrectionTask: { createMissionCorrectionTask($0) }
-            )
-            .padding(.horizontal, 14)
-        }
-
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
             agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
                 .padding(.horizontal, 14)
@@ -1256,7 +1247,6 @@ struct TaskMainView: View {
                 .id(item.id)
         }
 
-        threadStatusDisclosure
     }
 
     @ViewBuilder
@@ -3371,6 +3361,133 @@ struct TaskMainView: View {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
 
+    private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
+        let plan = executableApprovedPlan
+        let nextStep = plan.flatMap { TaskPlanService.nextExecutableStep(in: $0) }
+        let planActionTitle = plan == nil ? nil : (skipPermissions ? "Run remaining plan" : "Approve next step")
+        let planActionDetail = plan.map { nextStep.map { "Next: \($0.title)" } ?? $0.title }
+        let planModeLabel = plan == nil
+            ? nil
+            : (skipPermissions
+                ? "Auto mode runs every remaining step."
+                : "Ask mode runs one approved step, then pauses again.")
+
+        return TaskDecisionDockPresentation.build(TaskDecisionDockPresentation.Context(
+            status: task.status,
+            isClosed: task.isDone,
+            review: taskReviewPresentation,
+            mission: missionControlPresentation,
+            verification: currentVerificationPresentation,
+            pendingReviewState: pendingTaskReviewState,
+            hasRuntimePermissionRequest: hasOpenRuntimePermissionApprovalRequest,
+            runtimePermissionTitle: pendingRuntimePermissionDecision?.title,
+            runtimePermissionSummary: pendingRuntimePermissionDecision?.summary,
+            runtimePermissionScope: pendingRuntimePermissionDecision?.scope,
+            runtimePermissionCommandPreview: pendingRuntimePermissionDecision?.commandPreview,
+            runtimePermissionAllowSimilarLabel: pendingRuntimePermissionDecision?.allowSimilarLabel,
+            canApproveSimilarRuntimePermission: canApproveSimilarRuntimePermissionForTask,
+            hasExecutableApprovedPlan: plan != nil,
+            planActionTitle: planActionTitle,
+            planActionDetail: planActionDetail,
+            planModeLabel: planModeLabel,
+            canOpenPlan: onOpenPlan != nil,
+            isPlanCanvasVisible: isPlanCanvasVisible,
+            canRunApprovedPlan: taskQueue != nil,
+            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
+            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            canCancel: onCancelTask != nil,
+            canRun: onRunTask != nil,
+            canApprove: onApproveTask != nil,
+            canRetry: onRetryTask != nil,
+            canResume: task.hasProviderSession && onResumeTask != nil,
+            canToggleDone: canToggleTaskDoneFromDecisionDock,
+            hasProviderSession: task.hasProviderSession,
+            failureReason: failureReason,
+            artifactPaths: taskDecisionArtifactPaths,
+            extraDetails: taskDecisionExtraDetails
+        ))
+    }
+
+    private var taskDecisionArtifactPaths: [String] {
+        dedupePaths(threadViewModel.generatedFilePaths + task.artifacts.filter { !$0.isStale }.map(\.path))
+    }
+
+    private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
+        var details: [TaskDecisionDockDetail] = []
+        if task.status == .running {
+            details.append(TaskDecisionDockDetail(
+                id: "runtime-health",
+                title: runtimeHealth.message,
+                summary: runtimeHealth.detail ?? runtimeHealth.message,
+                systemImage: runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
+                tone: runtimeHealth.isAttentionState ? .attention : .running
+            ))
+        }
+
+        if shouldShowPendingApprovalStatus && !hasOpenRuntimePermissionApprovalRequest {
+            details.append(TaskDecisionDockDetail(
+                id: "pending-approval",
+                title: "Waiting for your approval",
+                summary: pendingApprovalStatusDetail,
+                systemImage: "person.crop.circle.badge.questionmark",
+                tone: .attention
+            ))
+        }
+
+        if isCreatingScheduleForCurrentTask {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-creating",
+                title: "Creating routine",
+                summary: "ASTRA is creating the routine for this task.",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .running
+            ))
+        }
+
+        if isGeneratingRecap {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-generating",
+                title: "Generating recap",
+                summary: "ASTRA is summarizing the task conversation.",
+                systemImage: "doc.text.magnifyingglass",
+                tone: .running
+            ))
+        }
+
+        if let msg = recapStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-message",
+                title: "Recap needs attention",
+                summary: msg,
+                systemImage: "exclamationmark.triangle",
+                tone: .attention
+            ))
+        }
+
+        if let statusMsg = currentScheduleStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-status",
+                title: isScheduleStatusError ? "Routine needs attention" : "Routine created",
+                summary: statusMsg,
+                systemImage: isScheduleStatusError ? "exclamationmark.triangle" : "checkmark.circle",
+                tone: isScheduleStatusError ? .attention : .verified
+            ))
+        }
+
+        return details
+    }
+
+    private func dedupePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for path in paths {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            output.append(trimmed)
+        }
+        return output
+    }
+
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
         if task.status == .failed, let run = latestRun {
             let activity = currentThreadSnapshot.activity(for: run)
@@ -3659,24 +3776,7 @@ struct TaskMainView: View {
     }
 
     private var shouldShowTaskDecisionDock: Bool {
-        let reviewState = pendingTaskReviewState
-        switch task.status {
-        case .running:
-            return onCancelTask != nil
-        case .pendingUser:
-            return hasOpenRuntimePermissionApprovalRequest ||
-                executableApprovedPlan != nil ||
-                reviewState.dismissalReason != nil ||
-                (!reviewState.isDismissed && onApproveTask != nil)
-        case .queued:
-            return executableApprovedPlan != nil || onRunTask != nil || canToggleTaskDoneFromDecisionDock
-        case .failed, .budgetExceeded:
-            return executableApprovedPlan != nil || onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
-        case .completed, .cancelled:
-            return executableApprovedPlan != nil || canToggleTaskDoneFromDecisionDock
-        case .draft:
-            return executableApprovedPlan != nil
-        }
+        taskDecisionDockPresentation != nil
     }
 
     private var latestRunHasNoUsableResult: Bool {
@@ -3763,40 +3863,55 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var taskDecisionDock: some View {
-        let reviewState = pendingTaskReviewState
-        if task.status == .running, let onCancel = onCancelTask {
-            taskDecisionSurface(
-                icon: "stop.circle.fill",
-                color: Stanford.cardinalRed,
-                title: "Task running",
-                detail: "The agent is working. Stop it here if you need to change direction."
-            ) {
-                Button {
-                    onCancel(task)
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.cardinalRed))
-                .controlSize(.small)
-                .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityIdentifier("CancelTaskButton")
-                .accessibilityLabel("Stop task")
+        if let presentation = taskDecisionDockPresentation {
+            TaskDecisionDockView(
+                presentation: presentation,
+                isExpanded: $isTaskDecisionDetailsExpanded,
+                onAction: handleTaskDecisionDockAction
+            )
+            .onAppear {
+                isTaskDecisionDetailsExpanded = presentation.prefersExpandedDetails
             }
-        } else if task.status == .pendingUser, hasOpenRuntimePermissionApprovalRequest {
-            pendingReviewDecisionDock
-        } else if let plan = executableApprovedPlan {
-            planDecisionDock(plan)
-        } else if task.status == .pendingUser, !reviewState.isDismissed || reviewState.dismissalReason != nil {
-            pendingReviewDecisionDock
-        } else if completedTaskNeedsArtifactAttention {
-            completedNoUsableResultDecisionDock
-        } else if task.status == .failed || task.status == .budgetExceeded {
-            failedDecisionDock
-        } else if task.status == .queued {
-            queuedDecisionDock
-        } else if task.status == .completed || task.status == .cancelled {
-            doneStateDecisionDock
+            .onChange(of: presentation.id) { _, _ in
+                isTaskDecisionDetailsExpanded = presentation.prefersExpandedDetails
+            }
+        }
+    }
+
+    private func handleTaskDecisionDockAction(_ action: TaskDecisionDockAction) {
+        switch action.kind {
+        case .stop:
+            onCancelTask?(task)
+        case .allowOnce, .approveResult, .dismissReview:
+            onApproveTask?(task)
+        case .allowSimilar:
+            approveSimilarRuntimePermissionForTask()
+        case .approveCorrection:
+            if let id = action.payload { approveMissionCorrection(id) }
+        case .createCorrectionTask:
+            if let id = action.payload { createMissionCorrectionTask(id) }
+        case .dismissCorrection:
+            if let id = action.payload { dismissMissionCorrection(id) }
+        case .openPlan:
+            onOpenPlan?(task)
+        case .runApprovedPlan:
+            guard let plan = executableApprovedPlan else { return }
+            runApprovedPlan(plan, mode: skipPermissions ? .fullPlan : .nextStep)
+        case .runTask:
+            onRunTask?(task)
+        case .retry:
+            onRetryTask?(task)
+        case .resume:
+            onResumeTask?(task)
+        case .openArtifact:
+            guard let path = action.payload else { return }
+            if let onOpenGeneratedFile {
+                onOpenGeneratedFile(path)
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            }
+        case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
+            toggleTaskDoneFromDecisionDock()
         }
     }
 

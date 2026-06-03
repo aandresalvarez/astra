@@ -4598,7 +4598,7 @@ struct AgentTaskPropertyTests {
         let manualPresentation = TaskPresentationState.verificationPresentation(for: manual)
         let failedPresentation = TaskPresentationState.verificationPresentation(for: failed)
 
-        #expect(manualPresentation.summary == "No automated verification")
+        #expect(manualPresentation.summary == "Not automatically verified")
         #expect(manualPresentation.tone == .attention)
         #expect(failedPresentation.summary == "Verification failed")
         #expect(failedPresentation.tone == .failed)
@@ -4660,8 +4660,8 @@ struct AgentTaskPropertyTests {
             taskFolder: folder
         )
 
-        #expect(presentation.title == "No automated verification")
-        #expect(presentation.summary == "No automated verification")
+        #expect(presentation.title == "Not automatically verified")
+        #expect(presentation.summary == "Not automatically verified")
         #expect(hiddenPresentation == nil)
     }
 }

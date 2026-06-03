@@ -502,6 +502,49 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.arguments.contains("report_intent"))
     }
 
+    @Test("Artifact bootstrap policy adds minimal write only for artifact tasks")
+    @MainActor
+    func artifactBootstrapPolicyAddsMinimalWriteOnlyForArtifactTasks() {
+        let workspace = Workspace(name: "Artifact Bootstrap", primaryPath: "/tmp/astra-artifact-bootstrap")
+        let artifactTask = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        let informationalTask = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Write"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .autonomous,
+            providerAllowedTools: ["Read"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: informationalTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+    }
+
     @Test("Copilot artifact launch grants bootstrap write without counting it as a task tool")
     @MainActor
     func copilotArtifactLaunchGrantsBootstrapWriteWithoutCountingAsTaskTool() throws {
@@ -689,6 +732,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["visible_tools_count"] == "4")
         #expect(plan.commandPlannedFields["visible_tool_names"] == "Bash,Edit,Read,Write")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "4")
         #expect(plan.commandPlannedFields["launch_effort"] == "low")
         let effortFlagIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
         #expect(plan.arguments[effortFlagIndex + 1] == "low")
