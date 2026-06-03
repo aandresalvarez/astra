@@ -208,6 +208,7 @@ struct TaskMainView: View {
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
     @State private var isTaskDecisionDetailsExpanded = false
+    @State private var isRunningInferredVerification = false
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
@@ -3413,6 +3414,7 @@ struct TaskMainView: View {
             canApprove: onApproveTask != nil,
             canRetry: onRetryTask != nil,
             canResume: task.hasProviderSession && onResumeTask != nil,
+            canAddVerification: canAddInferredVerification,
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
@@ -3487,7 +3489,23 @@ struct TaskMainView: View {
             ))
         }
 
+        if isRunningInferredVerification {
+            details.append(TaskDecisionDockDetail(
+                id: "verification-running",
+                title: "Adding verification",
+                summary: "ASTRA is creating safe proof rules from the current artifact and running them now.",
+                systemImage: "checklist.checked",
+                tone: .running
+            ))
+        }
+
         return details
+    }
+
+    private var canAddInferredVerification: Bool {
+        !isRunningInferredVerification &&
+            !taskDecisionArtifactPaths.isEmpty &&
+            TaskInferredValidationService.hasSuggestion(for: task)
     }
 
     private func dedupePaths(_ paths: [String]) -> [String] {
@@ -3923,8 +3941,25 @@ struct TaskMainView: View {
             } else {
                 NSWorkspace.shared.open(URL(fileURLWithPath: path))
             }
+        case .addVerification:
+            addInferredVerification()
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
+        }
+    }
+
+    private func addInferredVerification() {
+        guard !isRunningInferredVerification else { return }
+        isRunningInferredVerification = true
+        Task { @MainActor in
+            defer {
+                isRunningInferredVerification = false
+            }
+            _ = await TaskInferredValidationService.run(task: task, modelContext: modelContext)
+            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            threadViewModel.refreshSnapshot(for: task)
+            refreshTaskContextState()
         }
     }
 

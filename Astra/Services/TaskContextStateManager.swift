@@ -889,11 +889,21 @@ enum TaskContextStateManager {
         task: AgentTask,
         planState: TaskPlanState
     ) -> TaskContextState.ValidationContractSummary? {
-        guard let plan = planState.plan,
-              let contract = plan.validationContract,
-              !contract.assertions.isEmpty else {
-            return nil
+        if let plan = planState.plan,
+           let contract = plan.validationContract,
+           !contract.assertions.isEmpty {
+            return validationContractState(task: task, plan: plan, contract: contract)
         }
+
+        return validationContractStateFromEvents(task: task)
+    }
+
+    private static func validationContractState(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        contract: TaskValidationContract
+    ) -> TaskContextState.ValidationContractSummary? {
+        guard !contract.assertions.isEmpty else { return nil }
 
         let assertionEvents = latestAssertionEventsByID(task: task, planID: plan.planID)
         var requiredPassed = 0
@@ -989,6 +999,75 @@ enum TaskContextStateManager {
                 [sourcePointer(kind: "plan", id: plan.planID.uuidString, summary: "Validation contract")]
                     + eventPointers
             )
+        )
+    }
+
+    private static func validationContractStateFromEvents(
+        task: AgentTask
+    ) -> TaskContextState.ValidationContractSummary? {
+        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard [TaskValidationEventTypes.contractCreated,
+                   TaskValidationEventTypes.contractUpdated,
+                   TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
+                  let payload = decodeContractPayload(event.payload) else {
+                return nil
+            }
+            return (event, payload)
+        }
+        guard let latest = contractEvents.sorted(by: { $0.event.timestamp > $1.event.timestamp }).first else {
+            return nil
+        }
+
+        let planID = latest.payload.planID
+        let assertionEvents = latestAssertionEventsByID(task: task, planID: planID)
+        let assertions = assertionEvents.values
+            .sorted { lhs, rhs in
+                lhs.payload.assertionID.localizedStandardCompare(rhs.payload.assertionID) == .orderedAscending
+            }
+            .map { pair in
+                let payload = pair.payload
+                var sources = [eventSource(pair.event, summary: "Validation assertion \(payload.status)")]
+                if let evidence = payload.evidence,
+                   evidence.hasPrefix("/") {
+                    sources.append(sourcePointer(
+                        kind: "validation_evidence",
+                        id: payload.assertionID,
+                        path: evidence,
+                        summary: "Validation evidence artifact"
+                    ))
+                }
+                return TaskContextState.ValidationAssertionSummary(
+                    id: payload.assertionID,
+                    scope: payload.scope.rawValue,
+                    stepID: payload.stepID,
+                    method: payload.method.rawValue,
+                    required: payload.required,
+                    description: boundedInline(payload.summary, maxCharacters: 320),
+                    status: payload.status,
+                    summary: payload.summary,
+                    sourcePointers: dedupeSourcePointers(sources)
+                )
+            }
+        let status = switch latest.event.type {
+        case TaskValidationEventTypes.contractPassed:
+            "passed"
+        case TaskValidationEventTypes.contractFailed:
+            "failed"
+        case TaskValidationEventTypes.contractOverridden:
+            "overridden"
+        default:
+            latest.payload.status
+        }
+
+        return TaskContextState.ValidationContractSummary(
+            status: status,
+            assertionCount: max(assertions.count, latest.payload.requiredTotal),
+            requiredPassed: latest.payload.requiredPassed,
+            requiredTotal: latest.payload.requiredTotal,
+            assertions: assertions,
+            sourcePointers: [eventSource(latest.event, summary: "Validation contract event \(latest.event.type)")]
         )
     }
 

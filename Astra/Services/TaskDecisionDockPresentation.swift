@@ -24,6 +24,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case retry
     case resume
     case openArtifact
+    case addVerification
     case closeTask
     case closeAnyway
     case closeWithoutRunningPlan
@@ -85,6 +86,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var canApprove: Bool
         var canRetry: Bool
         var canResume: Bool
+        var canAddVerification: Bool
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
@@ -317,7 +319,8 @@ struct TaskDecisionDockPresentation: Equatable {
                 : nil,
             secondaryActions: [
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
-                firstArtifactAction(context)
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
             ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: isMissingArtifact ? TaskPresentationState.closeAnywayActionTitle : nil),
             prefersExpandedDetails: isBlocked || isMissingArtifact
@@ -359,7 +362,8 @@ struct TaskDecisionDockPresentation: Equatable {
                 context.canResume && context.hasProviderSession && context.canRetry
                     ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
                     : nil,
-                firstArtifactAction(context)
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
             ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
@@ -376,7 +380,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
+            ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: TaskPresentationState.closeAnywayActionTitle),
             prefersExpandedDetails: true
         )
@@ -405,7 +412,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canToggleDone ? action(.closeTask, title: TaskPresentationState.closeTaskActionTitle, systemImage: "checkmark.circle") : nil,
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
+            ].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: verification?.tone == .failed || verification?.tone == .attention
         )
@@ -421,7 +431,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
+            ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
@@ -437,7 +450,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canToggleDone ? action(.reopenTask, title: TaskPresentationState.reopenTaskActionTitle, systemImage: "arrow.uturn.backward") : nil,
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
+            ].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: false
         )
@@ -455,7 +471,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: dockDetails,
             primaryAction: nil,
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                firstArtifactAction(context),
+                inferredVerificationAction(context)
+            ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: false
         )
@@ -604,6 +623,20 @@ struct TaskDecisionDockPresentation: Equatable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0 != "Artifacts: none recorded" }
         return cleanedParts.isEmpty ? verification.summary : cleanedParts.joined(separator: " · ")
+    }
+
+    private static func inferredVerificationAction(_ context: Context) -> TaskDecisionDockAction? {
+        guard context.canAddVerification,
+              !context.artifactPaths.isEmpty,
+              context.mission?.validationSummary == "No validation contract" else {
+            return nil
+        }
+        return action(
+            .addVerification,
+            title: "Add verification",
+            systemImage: "checklist.checked",
+            help: "Create safe proof rules from the current artifact and run them now."
+        )
     }
 
     private static func taskStatusSummary(_ context: Context) -> String {

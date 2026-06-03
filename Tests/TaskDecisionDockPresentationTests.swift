@@ -63,6 +63,10 @@ struct TaskDecisionDockPresentationTests {
             $0.id == "next-action" &&
                 $0.summary.contains("ask a follow-up")
         })
+        #expect(dock.secondaryActions.contains {
+            $0.kind == .addVerification &&
+                $0.title == "Add verification"
+        })
         let verificationDetail = try #require(dock.details.first { $0.id == "verification" })
         #expect(!verificationDetail.summary.contains("Artifacts: none recorded"))
         #expect(verificationDetail.summary.contains("No automated verification evidence recorded."))
@@ -102,11 +106,42 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.metrics.contains { $0.id == "artifacts" && $0.value == "1" })
     }
 
+    @Test("dock does not offer inferred verification when contract already exists")
+    func dockDoesNotOfferInferredVerificationWhenContractAlreadyExists() throws {
+        let mission = MissionControlPresentation(
+            objective: "Create Masterball puzzle web solver",
+            statusTitle: "Verified",
+            statusSummary: "1/1 required proofs passed",
+            tone: .verified,
+            activeStepTitle: nil,
+            validationSummary: "passed: 1/1 required, 1 assertions",
+            assertionRows: [],
+            latestHandoffSummary: "Review the result.",
+            blockerCount: 0,
+            artifactCount: 1,
+            changedFileCount: 1,
+            budgetSummary: "42.1k used / unlimited",
+            nextAction: "Review the result.",
+            correction: nil,
+            sourcePointerCount: 9
+        )
+
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            mission: mission,
+            artifactPaths: ["/tmp/index.html"]
+        ))
+
+        let dock = try #require(presentation)
+        #expect(!dock.secondaryActions.contains { $0.kind == .addVerification })
+    }
+
     private func context(
         status: TaskStatus,
         mission: MissionControlPresentation? = nil,
         verification: TaskVerificationPresentation? = nil,
-        artifactPaths: [String] = []
+        artifactPaths: [String] = [],
+        canAddVerification: Bool = true
     ) -> TaskDecisionDockPresentation.Context {
         TaskDecisionDockPresentation.Context(
             status: status,
@@ -136,6 +171,7 @@ struct TaskDecisionDockPresentationTests {
             canApprove: true,
             canRetry: true,
             canResume: false,
+            canAddVerification: canAddVerification,
             canToggleDone: true,
             hasProviderSession: false,
             failureReason: nil,

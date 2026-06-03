@@ -275,6 +275,8 @@ struct TaskDecisionDockView: View {
             "ResumeTaskButton"
         case .openArtifact:
             "OpenArtifactButton"
+        case .addVerification:
+            "AddVerificationButton"
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan:
             "CloseTaskButton"
         case .reopenTask:
