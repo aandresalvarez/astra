@@ -290,12 +290,33 @@ enum TaskDeliverableExpectation {
         let url = normalizedPath.hasPrefix("/")
             ? URL(fileURLWithPath: normalizedPath)
             : root.appendingPathComponent(normalizedPath)
-        guard let relative = relativePath(of: url, taskFolder: root) else { return false }
-        return !isRuntimeDiagnosticRelativePath(relative)
+        if let relative = relativePath(of: url, taskFolder: root) {
+            return !isRuntimeDiagnosticRelativePath(relative)
+        }
+
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        if !workspacePath.isEmpty {
+            let workspaceRoot = URL(fileURLWithPath: workspacePath)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
+                return !isRuntimeDiagnosticRelativePath(workspaceRelative)
+            }
+        }
+
+        return true
     }
 
     private static func isRuntimeDiagnosticRelativePath(_ relative: String) -> Bool {
-        relative == "diagnostics" || relative.hasPrefix("diagnostics/")
+        let normalized = relative
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return normalized == "diagnostics"
+            || normalized.hasPrefix("diagnostics/")
+            || normalized == "cache/projects.json"
+            || normalized.hasPrefix(".astra/")
+            || normalized.hasPrefix(".agentflow/")
+            || normalized.hasPrefix(".claude/")
     }
 
     private static func relativeDepth(of relative: String) -> Int {

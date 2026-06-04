@@ -23,6 +23,7 @@ struct TaskValidationContractEvaluation: Sendable, Equatable {
 
 enum ValidationService {
     private static let maximumTextContainsBytes: UInt64 = 2 * 1024 * 1024
+    static var textContainsFileSizeProbe: (String) -> UInt64? = defaultFileSize
 
     /// Run tests in the task's workspace using the configured test command.
     static func runTests(task: AgentTask) async -> ValidationResult {
@@ -641,7 +642,18 @@ enum ValidationService {
             )
         }
 
-        if let byteCount = fileSize(atPath: existingPath), byteCount > maximumTextContainsBytes {
+        guard let byteCount = textContainsFileSizeProbe(existingPath) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains artifact size could not be determined safely.",
+                path: existingPath,
+                reason: "artifact_size_unknown"
+            )
+        }
+
+        if byteCount > maximumTextContainsBytes {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -1174,7 +1186,7 @@ enum ValidationService {
         }
     }
 
-    private static func fileSize(atPath path: String) -> UInt64? {
+    private static func defaultFileSize(atPath path: String) -> UInt64? {
         guard let value = try? FileManager.default.attributesOfItem(atPath: path)[.size] else {
             return nil
         }

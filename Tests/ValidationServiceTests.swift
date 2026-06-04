@@ -532,6 +532,59 @@ struct ValidationServiceTests {
         })
     }
 
+    @Test("validation contract text contains rejects unknown file size before reading")
+    func validationContractTextContainsRejectsUnknownFileSize() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Text Contract", primaryPath: root)
+        let task = AgentTask(title: "Validate text contract", goal: "Reject unknown-size text assertion", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        try "<html><body><h1>Index page names Med13</h1></body></html>".write(
+            toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let plan = TaskPlanPayload(
+            title: "Unknown size text proof",
+            goal: "Reject text_contains when file size cannot be determined",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "index-med13",
+                    description: "Index page names Med13",
+                    method: .textContains,
+                    path: "index.html",
+                    evidenceQuery: "Med13"
+                )
+            ])
+        )
+
+        let originalProbe = ValidationService.textContainsFileSizeProbe
+        ValidationService.textContainsFileSizeProbe = { _ in nil }
+        defer { ValidationService.textContainsFileSizeProbe = originalProbe }
+
+        let result = await ValidationService.runContract(task: task, plan: plan, run: run, modelContext: context)
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(result.failedRequiredAssertionIDs == ["index-med13"])
+        #expect(task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed &&
+                $0.payload.contains("artifact_size_unknown")
+        })
+        #expect(!task.events.contains {
+            $0.type == TaskValidationEventTypes.assertionPassed &&
+                $0.payload.contains("index-med13")
+        })
+    }
+
     @Test("validation contract rejects artifact paths outside task scope")
     func validationContractRejectsArtifactPathsOutsideTaskScope() async throws {
         let root = try temporaryRoot()

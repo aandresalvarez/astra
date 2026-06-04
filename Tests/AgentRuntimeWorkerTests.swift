@@ -289,6 +289,35 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
     }
 
+    @Test("Artifact detector counts workspace scoped deliverable file changes")
+    func artifactDetectorCountsWorkspaceScopedDeliverableFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-workspace-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Workspace Deliverable", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create report", goal: "write report.md in the workspace", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let reportPath = (workspacePath as NSString).appendingPathComponent("report.md")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: reportPath,
+            changeType: .write,
+            content: "Report",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+    }
+
     @Test("Artifact scan respects explicit entry and depth caps")
     func artifactScanRespectsExplicitCaps() throws {
         let container = try makeContainer()
