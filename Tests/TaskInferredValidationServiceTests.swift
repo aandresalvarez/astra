@@ -90,6 +90,102 @@ struct TaskInferredValidationServiceTests {
         #expect(TaskInferredValidationService.suggestion(for: fixture.task) == nil)
     }
 
+    @Test("automatic baseline records inferred verification for completed manual artifacts")
+    func automaticBaselineRecordsInferredVerificationForCompletedManualArtifacts() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        try "Masterball notes".write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("notes.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+
+        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
+            task: fixture.task,
+            modelContext: fixture.context
+        )
+
+        #expect(result.didRun)
+        #expect(result.canComplete)
+        #expect(fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractCreated })
+        #expect(fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+    }
+
+    @Test("automatic baseline skips when a validation contract already exists")
+    func automaticBaselineSkipsWhenValidationContractAlreadyExists() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        try "Masterball notes".write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("notes.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            type: TaskValidationEventTypes.contractCreated,
+            payload: "{}"
+        ))
+
+        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
+            task: fixture.task,
+            modelContext: fixture.context
+        )
+
+        #expect(!result.didRun)
+        #expect(!fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+    }
+
+    @Test("automatic baseline skips after terminal deliverable verification")
+    func automaticBaselineSkipsAfterTerminalDeliverableVerification() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        try "Masterball notes".write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("notes.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            type: TaskDeliverableVerificationEventTypes.passed,
+            payload: "{}"
+        ))
+
+        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
+            task: fixture.task,
+            modelContext: fixture.context
+        )
+
+        #expect(!result.didRun)
+        #expect(!fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+    }
+
+    @Test("automatic baseline can strengthen deliverable review-needed evidence")
+    func automaticBaselineCanStrengthenDeliverableReviewNeededEvidence() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        try "Masterball notes".write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("notes.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            type: TaskDeliverableVerificationEventTypes.reviewNeeded,
+            payload: "{}"
+        ))
+
+        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
+            task: fixture.task,
+            modelContext: fixture.context
+        )
+
+        #expect(result.didRun)
+        #expect(result.canComplete)
+        #expect(fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+    }
+
     private func makeFixture() throws -> (
         root: String,
         context: ModelContext,

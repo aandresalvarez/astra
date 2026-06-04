@@ -850,12 +850,19 @@ final class AgentRuntimeWorker {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     switch task.validationStrategy {
                     case .manual:
-                        Self.applyManualCompletion(
+                        let completedManually = Self.applyManualCompletion(
                             task: task,
                             run: run,
                             modelContext: modelContext,
                             successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
                         )
+                        if completedManually {
+                            await Self.applyAutomaticBaselineVerificationIfNeeded(
+                                task: task,
+                                run: run,
+                                modelContext: modelContext
+                            )
+                        }
                     case .runTests:
                         let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
@@ -905,12 +912,19 @@ final class AgentRuntimeWorker {
                         }
                     }
                 } else {
-                    Self.applyManualCompletion(
+                    let completedManually = Self.applyManualCompletion(
                         task: task,
                         run: run,
                         modelContext: modelContext,
                         successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
                     )
+                    if completedManually {
+                        await Self.applyAutomaticBaselineVerificationIfNeeded(
+                            task: task,
+                            run: run,
+                            modelContext: modelContext
+                        )
+                    }
                 }
             }
         } else if Self.shouldPauseForRuntimePermissionApproval(
@@ -1108,12 +1122,52 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
+    private static func applyAutomaticBaselineVerificationIfNeeded(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) async {
+        let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
+            task: task,
+            modelContext: modelContext
+        )
+        guard result.didRun else { return }
+
+        AppLogger.audit(
+            result.canComplete ? .validationContractPassed : .validationContractFailed,
+            category: "Validation",
+            taskID: task.id,
+            fields: [
+                "run_id": run.id.uuidString,
+                "source": "automatic_inferred_baseline",
+                "can_complete": String(result.canComplete),
+                "failed_required_assertion_count": String(result.failedRequiredAssertionIDs.count)
+            ],
+            level: result.canComplete ? .info : .warning
+        )
+
+        guard result.canComplete else {
+            run.status = .failed
+            run.stopReason = "inferred_validation_failed"
+            task.status = .pendingUser
+            task.completedAt = nil
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "error",
+                payload: "Automatic verification failed: \(result.summary)",
+                run: run
+            ))
+            return
+        }
+    }
+
+    @MainActor
     private static func applyManualCompletion(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         successPayload: String
-    ) {
+    ) -> Bool {
         if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
            !TaskDeliverableExpectation.hasArtifact(for: task, run: run) {
             run.status = .failed
@@ -1127,12 +1181,13 @@ final class AgentRuntimeWorker {
                 run: run
             )
             modelContext.insert(event)
-            return
+            return false
         }
 
         task.status = .completed
         let event = TaskEvent(task: task, type: "task.completed", payload: successPayload, run: run)
         modelContext.insert(event)
+        return true
     }
 
     @MainActor

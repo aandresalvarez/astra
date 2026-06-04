@@ -24,7 +24,6 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case retry
     case resume
     case openArtifact
-    case addVerification
     case closeTask
     case closeAnyway
     case closeWithoutRunningPlan
@@ -93,8 +92,6 @@ struct TaskDecisionDockPresentation: Equatable {
         var canApprove: Bool
         var canRetry: Bool
         var canResume: Bool
-        var canAddVerification: Bool
-        var isRunningInferredVerification: Bool = false
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
@@ -429,12 +426,28 @@ struct TaskDecisionDockPresentation: Equatable {
 
     private static func completedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
         let verification = context.verification
+        let title: String
+        let icon: String
+        let tone: TaskDecisionDockTone
+        if verification?.tone == .verified {
+            title = "Result verified"
+            icon = verification?.systemImage ?? "checkmark.seal.fill"
+            tone = .verified
+        } else if verification?.tone == .failed {
+            title = "Verification failed"
+            icon = verification?.systemImage ?? "exclamationmark.triangle.fill"
+            tone = .failed
+        } else {
+            title = "Result ready"
+            icon = "checkmark.circle.fill"
+            tone = .attention
+        }
 
         return TaskDecisionDockPresentation(
             id: "completed",
-            icon: "checkmark.circle.fill",
-            tone: verification?.tone == .verified ? .verified : .attention,
-            title: "Result ready",
+            icon: icon,
+            tone: tone,
+            title: title,
             summary: compactEvidenceSummary(context, fallback: "Review the result before closing."),
             metrics: metrics(context),
             details: details(context),
@@ -442,7 +455,7 @@ struct TaskDecisionDockPresentation: Equatable {
             secondaryActions: [
                 firstArtifactAction(context)
             ].compactMap { $0 },
-            overflowActions: supportOverflowActions(context),
+            overflowActions: [],
             prefersExpandedDetails: verification?.tone == .failed
         )
     }
@@ -735,34 +748,11 @@ struct TaskDecisionDockPresentation: Equatable {
         return summary.replacingOccurrences(of: "_", with: " ")
     }
 
-    private static func inferredVerificationAction(_ context: Context) -> TaskDecisionDockAction? {
-        guard !context.isClosed,
-              context.canAddVerification,
-              !context.artifactPaths.isEmpty,
-              context.verification?.tone != .verified,
-              context.mission?.validationSummary == "No validation contract" else {
-            return nil
-        }
-        return action(
-            .addVerification,
-            title: context.isRunningInferredVerification ? "Verifying..." : "Add verification",
-            systemImage: context.isRunningInferredVerification ? "arrow.triangle.2.circlepath" : "checklist.checked",
-            help: context.isRunningInferredVerification
-                ? "ASTRA is running inferred proof rules against the current artifact."
-                : "Create safe proof rules from the current artifact and run them now.",
-            isEnabled: !context.isRunningInferredVerification
-        )
-    }
-
-    private static func supportOverflowActions(_ context: Context) -> [TaskDecisionDockAction] {
-        [inferredVerificationAction(context)].compactMap { $0 }
-    }
-
     private static func supportAndCloseOverflowActions(
         _ context: Context,
         closeTitle: String?
     ) -> [TaskDecisionDockAction] {
-        supportOverflowActions(context) + closeOverflowActions(context, closeTitle: closeTitle)
+        closeOverflowActions(context, closeTitle: closeTitle)
     }
 
     private static func taskStatusSummary(_ context: Context) -> String {
@@ -924,7 +914,7 @@ struct TaskDecisionDockPresentation: Equatable {
 private extension TaskDecisionDockActionKind {
     var isDecisionDockUtility: Bool {
         switch self {
-        case .openArtifact, .addVerification, .openPlan:
+        case .openArtifact, .openPlan:
             true
         case .stop,
              .allowOnce,

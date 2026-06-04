@@ -398,6 +398,46 @@ struct HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
     }
 
+    @Test("Manual artifact completion automatically records inferred baseline verification")
+    func manualArtifactCompletionAutomaticallyRecordsInferredBaselineVerification() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "create a notes.txt file summarizing a masterball solver",
+            model: "gpt-5"
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("notes.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            mkdir -p \(Self.shQuote(taskFolder))
+            printf '%s\\n' 'Masterball solver notes' > \(Self.shQuote(artifactURL.path))
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created notes.txt with the Masterball solver summary."}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        let state = try #require(TaskContextStateManager.load(taskFolder: taskFolder))
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(task.events.contains { $0.type == TaskDeliverableVerificationEventTypes.reviewNeeded })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractCreated })
+        #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
+        #expect(state.validationContract?.status == "passed")
+        #expect(state.verification.status == "passed")
+        #expect(state.verification.strategy == "validation_contract")
+    }
+
     @Test("Broken deliverable syntax blocks fake provider completion")
     func brokenDeliverableSyntaxBlocksFakeProviderCompletion() async throws {
         let harness = try HeadlessChatHarness()

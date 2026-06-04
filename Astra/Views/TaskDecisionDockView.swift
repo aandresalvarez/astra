@@ -322,7 +322,6 @@ struct TaskDecisionDockView: View {
              .retry,
              .resume,
              .openArtifact,
-             .addVerification,
              .reopenTask:
             false
         }
@@ -374,8 +373,6 @@ struct TaskDecisionDockView: View {
             "ResumeTaskButton"
         case .openArtifact:
             "OpenArtifactButton"
-        case .addVerification:
-            "AddVerificationButton"
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan:
             "CloseTaskButton"
         case .reopenTask:

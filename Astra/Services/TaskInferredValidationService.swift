@@ -92,6 +92,30 @@ enum TaskInferredValidationService {
         return result
     }
 
+    @MainActor
+    static func shouldRunAutomaticBaseline(for task: AgentTask) -> Bool {
+        guard task.status == .completed,
+              task.validationStrategy == .manual,
+              !hasValidationContractEvidence(for: task),
+              !hasTerminalDeliverableVerification(for: task),
+              suggestion(for: task) != nil else {
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    @discardableResult
+    static func runAutomaticBaselineIfNeeded(
+        task: AgentTask,
+        modelContext: ModelContext
+    ) async -> TaskValidationContractEvaluation {
+        guard shouldRunAutomaticBaseline(for: task) else {
+            return .notRequired
+        }
+        return await run(task: task, modelContext: modelContext)
+    }
+
     private static func preferredFile(from files: [TaskOutputDiscoveredFile]) -> TaskOutputDiscoveredFile {
         files.first { $0.relativePath == "index.html" } ??
             files.first { $0.type == "html" } ??
@@ -149,6 +173,25 @@ enum TaskInferredValidationService {
     @MainActor
     private static func latestRun(for task: AgentTask) -> TaskRun? {
         task.runs.max(by: { $0.startedAt < $1.startedAt })
+    }
+
+    private static func hasValidationContractEvidence(for task: AgentTask) -> Bool {
+        let validationContractEvents: Set<String> = [
+            TaskValidationEventTypes.contractCreated,
+            TaskValidationEventTypes.contractUpdated,
+            TaskValidationEventTypes.contractPassed,
+            TaskValidationEventTypes.contractFailed,
+            TaskValidationEventTypes.contractOverridden
+        ]
+        return task.events.contains { validationContractEvents.contains($0.type) }
+    }
+
+    private static func hasTerminalDeliverableVerification(for task: AgentTask) -> Bool {
+        let terminalDeliverableEvents: Set<String> = [
+            TaskDeliverableVerificationEventTypes.passed,
+            TaskDeliverableVerificationEventTypes.failed
+        ]
+        return task.events.contains { terminalDeliverableEvents.contains($0.type) }
     }
 
     @MainActor

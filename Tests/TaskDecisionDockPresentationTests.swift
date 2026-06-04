@@ -59,15 +59,9 @@ struct TaskDecisionDockPresentationTests {
             $0.id == "run" &&
                 $0.summary.contains("ask a follow-up")
         })
-        #expect(!dock.secondaryActions.contains {
-            $0.kind == .addVerification
-        })
-        #expect(dock.overflowActions.contains {
-            $0.kind == .addVerification &&
-                $0.title == "Add verification"
-        })
+        #expect(!actionTitles(dock).contains { $0.localizedCaseInsensitiveContains("verification") })
         #expect(dock.usesOverflowMenu == false)
-        #expect(dock.utilityActions.map(\.kind) == [.addVerification])
+        #expect(dock.utilityActions.isEmpty)
         #expect(dock.secondaryDecisionActions.isEmpty)
         let proofDetail = try #require(dock.details.first { $0.id == "proof" })
         #expect(!proofDetail.summary.contains("Artifacts: none recorded"))
@@ -106,7 +100,7 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.details.contains { $0.id == "goal" })
         #expect(dock.details.contains { $0.id == "run" && $0.summary.contains("Run cancelled - Needs review") })
         #expect(dock.metrics.isEmpty)
-        #expect(dock.utilityActions.map(\.kind) == [.addVerification])
+        #expect(dock.utilityActions.isEmpty)
         #expect(dock.secondaryDecisionActions.map(\.kind) == [.closeTask])
     }
 
@@ -137,40 +131,6 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.utilityActions.map(\.kind).contains(.openArtifact))
     }
 
-    @Test("inferred verification action stays visible while running")
-    func inferredVerificationActionStaysVisibleWhileRunning() throws {
-        let mission = MissionControlPresentation(
-            objective: "Create Masterball puzzle web solver",
-            statusTitle: "Completed",
-            statusSummary: "No validation contract recorded",
-            tone: .attention,
-            activeStepTitle: nil,
-            validationSummary: "No validation contract",
-            assertionRows: [],
-            latestHandoffSummary: "Review the result.",
-            blockerCount: 0,
-            artifactCount: 1,
-            changedFileCount: 1,
-            budgetSummary: "42.1k used / unlimited",
-            nextAction: "Review the result.",
-            correction: nil,
-            sourcePointerCount: 9
-        )
-
-        let presentation = TaskDecisionDockPresentation.build(context(
-            status: .completed,
-            mission: mission,
-            artifactPaths: ["/tmp/index.html"],
-            isRunningInferredVerification: true
-        ))
-
-        let dock = try #require(presentation)
-        let action = try #require(dock.utilityActions.first { $0.kind == .addVerification })
-        #expect(action.title == "Verifying...")
-        #expect(action.isEnabled == false)
-    }
-
-
     @Test("dock does not offer inferred verification when contract already exists")
     func dockDoesNotOfferInferredVerificationWhenContractAlreadyExists() throws {
         let mission = MissionControlPresentation(
@@ -198,8 +158,7 @@ struct TaskDecisionDockPresentationTests {
         ))
 
         let dock = try #require(presentation)
-        #expect(!dock.secondaryActions.contains { $0.kind == .addVerification })
-        #expect(!dock.overflowActions.contains { $0.kind == .addVerification })
+        #expect(!actionTitles(dock).contains { $0.localizedCaseInsensitiveContains("verification") })
     }
 
     @Test("dock does not offer inferred verification after deliverable verification passes")
@@ -238,8 +197,7 @@ struct TaskDecisionDockPresentationTests {
         let dock = try #require(presentation)
         #expect(dock.summary == "1 artifact · 1 file changed · syntax checked")
         #expect(dock.details.contains { $0.id == "proof" && $0.summary == "Syntax checked for 1 artifact." })
-        #expect(!dock.secondaryActions.contains { $0.kind == .addVerification })
-        #expect(!dock.overflowActions.contains { $0.kind == .addVerification })
+        #expect(!actionTitles(dock).contains { $0.localizedCaseInsensitiveContains("verification") })
     }
 
     @Test("correction dock keeps one primary action and moves dismiss to overflow")
@@ -293,8 +251,6 @@ struct TaskDecisionDockPresentationTests {
         mission: MissionControlPresentation? = nil,
         verification: TaskVerificationPresentation? = nil,
         artifactPaths: [String] = [],
-        canAddVerification: Bool = true,
-        isRunningInferredVerification: Bool = false,
         visibleThreadAffordances: Set<TaskThreadAffordance>? = nil
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
@@ -329,8 +285,6 @@ struct TaskDecisionDockPresentationTests {
             canApprove: true,
             canRetry: true,
             canResume: false,
-            canAddVerification: canAddVerification,
-            isRunningInferredVerification: isRunningInferredVerification,
             canToggleDone: true,
             hasProviderSession: false,
             failureReason: nil,
@@ -351,5 +305,14 @@ struct TaskDecisionDockPresentationTests {
             affordances.insert(.artifactOpen)
         }
         return affordances
+    }
+
+    private func actionTitles(_ dock: TaskDecisionDockPresentation) -> [String] {
+        ([dock.primaryAction].compactMap { $0 } +
+            dock.secondaryActions +
+            dock.overflowActions +
+            dock.utilityActions +
+            dock.secondaryDecisionActions)
+            .map(\.title)
     }
 }
