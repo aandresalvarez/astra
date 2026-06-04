@@ -166,31 +166,31 @@ struct TaskValidationContract: Codable, Sendable, Equatable, Hashable {
 }
 
 enum TaskValidationEventTypes {
-    static let contractCreated = "validation.contract.created"
-    static let contractUpdated = "validation.contract.updated"
-    static let assertionDefined = "validation.assertion.defined"
-    static let assertionStarted = "validation.assertion.started"
-    static let assertionPassed = "validation.assertion.passed"
-    static let assertionFailed = "validation.assertion.failed"
-    static let assertionSkipped = "validation.assertion.skipped"
-    static let assertionReviewed = "validation.assertion.reviewed"
-    static let contractPassed = "validation.contract.passed"
-    static let contractFailed = "validation.contract.failed"
-    static let contractOverridden = "validation.contract.override"
-    static let evidence = "validation.evidence"
+    static let contractCreated = TaskEventTypes.Validation.contractCreated.rawValue
+    static let contractUpdated = TaskEventTypes.Validation.contractUpdated.rawValue
+    static let assertionDefined = TaskEventTypes.Validation.assertionDefined.rawValue
+    static let assertionStarted = TaskEventTypes.Validation.assertionStarted.rawValue
+    static let assertionPassed = TaskEventTypes.Validation.assertionPassed.rawValue
+    static let assertionFailed = TaskEventTypes.Validation.assertionFailed.rawValue
+    static let assertionSkipped = TaskEventTypes.Validation.assertionSkipped.rawValue
+    static let assertionReviewed = TaskEventTypes.Validation.assertionReviewed.rawValue
+    static let contractPassed = TaskEventTypes.Validation.contractPassed.rawValue
+    static let contractFailed = TaskEventTypes.Validation.contractFailed.rawValue
+    static let contractOverridden = TaskEventTypes.Validation.contractOverridden.rawValue
+    static let evidence = TaskEventTypes.Validation.evidence.rawValue
 }
 
 enum TaskVerifierEventTypes {
-    static let started = "verifier.started"
-    static let completed = "verifier.completed"
-    static let failed = "verifier.failed"
+    static let started = TaskEventTypes.Verifier.started.rawValue
+    static let completed = TaskEventTypes.Verifier.completed.rawValue
+    static let failed = TaskEventTypes.Verifier.failed.rawValue
 }
 
 enum TaskValidationBehaviorEventTypes {
-    static let started = "validation.behavior.started"
-    static let passed = "validation.behavior.passed"
-    static let failed = "validation.behavior.failed"
-    static let evidenceAttached = "validation.behavior.evidence.attached"
+    static let started = TaskEventTypes.Validation.behaviorStarted.rawValue
+    static let passed = TaskEventTypes.Validation.behaviorPassed.rawValue
+    static let failed = TaskEventTypes.Validation.behaviorFailed.rawValue
+    static let evidenceAttached = TaskEventTypes.Validation.behaviorEvidenceAttached.rawValue
 }
 
 struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {

@@ -257,7 +257,7 @@ final class TaskQueue {
                 } else {
                     let event = TaskEvent(
                         task: task,
-                        type: "system.info",
+                        eventType: TaskEventTypes.System.info,
                         payload: "Original same-thread task was not found. This run stayed as an independent task."
                     )
                     modelContext.insert(event)
@@ -288,7 +288,7 @@ final class TaskQueue {
     ) {
         let sourceMessage = TaskEvent(
             task: sourceTask,
-            type: "user.message",
+            eventType: TaskEventTypes.Conversation.userMessage,
             payload: Self.sameThreadSchedulePrompt(schedule: schedule, fallbackGoal: scheduledTask.goal)
         )
         sourceMessage.timestamp = latestRun?.startedAt ?? Date()

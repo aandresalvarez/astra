@@ -32,7 +32,12 @@ enum AgentRuntimeBudgetPolicy {
 
         if budgetEnforcementMode == .warning {
             let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
-            modelContext.insert(TaskEvent(task: task, type: "budget.warning", payload: message, run: run))
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Budget.warning,
+                payload: message,
+                run: run
+            ))
             AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .warning)
             return true
         }
@@ -44,7 +49,12 @@ enum AgentRuntimeBudgetPolicy {
         task.updatedAt = Date()
         task.markUnreadForCurrentStatus(at: task.updatedAt)
         let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
-        modelContext.insert(TaskEvent(task: task, type: "budget.exceeded", payload: message, run: run))
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Budget.exceeded,
+            payload: message,
+            run: run
+        ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .error)
         try? modelContext.save()
         return false
@@ -82,7 +92,7 @@ enum AgentRuntimeBudgetPolicy {
         }
         modelContext.insert(TaskEvent(
             task: task,
-            type: "budget.warning",
+            eventType: TaskEventTypes.Budget.warning,
             payload: message,
             run: run
         ))

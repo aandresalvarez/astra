@@ -88,9 +88,9 @@ struct TaskDeliverableVerificationEventPayload: Codable, Sendable, Equatable {
 }
 
 enum TaskDeliverableVerificationEventTypes {
-    static let passed = "deliverable.verification.passed"
-    static let reviewNeeded = "deliverable.verification.review_needed"
-    static let failed = "deliverable.verification.failed"
+    static let passed = TaskEventTypes.Deliverable.verificationPassed.rawValue
+    static let reviewNeeded = TaskEventTypes.Deliverable.verificationReviewNeeded.rawValue
+    static let failed = TaskEventTypes.Deliverable.verificationFailed.rawValue
 }
 
 enum JavaScriptSyntaxCheckResult: Sendable, Equatable {

@@ -29,48 +29,50 @@ final class TaskEvent {
         self.category = Self.categoryFor(type: type)
     }
 
-    static func categoryFor(type: String) -> String {
-        switch type {
-        case "task.started", "task.completed", "task.cancelled", "task.interrupted", "task.retried",
-             "task.resumed", "task.approved", "task.dismissed", "task.checkpoint", "activity.compacted",
-             "plan.created", "plan.updated", "plan.approved", "plan.cancelled",
-             "plan.execution.started", "plan.execution.completed", "plan.execution.failed",
-             "validation.contract.created", "validation.contract.updated",
-             "validation.contract.passed", "validation.contract.failed", "validation.contract.override",
-             "validation.behavior.started", "validation.behavior.passed",
-             "validation.behavior.failed", "validation.behavior.evidence.attached",
-             "deliverable.verification.passed", "deliverable.verification.review_needed",
-             "deliverable.verification.failed",
-             "verifier.started", "verifier.completed", "verifier.failed",
-             "handoff.created", "handoff.updated", "handoff.missing",
-             "corrective.step.created", "corrective.step.approved",
-             "corrective.step.dismissed", "corrective.task.created",
-             "resource.lock.requested", "resource.lock.waiting",
-             "resource.lock.acquired", "resource.lock.released",
-             "mission.action.approved", "mission.action.dismissed",
-             "mission.action.retry_requested", "mission.action.correction_created",
-             "mission.milestone.created", "mission.milestone.completed",
-             "mission.checkpoint.created", "mission.audit_bundle.created",
-             "role.profile.selected", "role.profile.changed":
-            return "lifecycle"
-        case "user.message", "agent.response", "agent.thinking",
-             "plan.user.message", "plan.assistant.message":
-            return "conversation"
-        case "tool.use", "permission.denied",
-             "plan.step.started", "plan.step.completed", "plan.step.blocked",
-             "plan.step.skipped",
-             "validation.assertion.defined", "validation.assertion.started",
-             "validation.assertion.passed", "validation.assertion.failed",
-             "validation.assertion.skipped", "validation.assertion.reviewed":
-            return "tool"
-        case "error", "budget.exceeded", "budget.warning", "task.stats", "task.chained":
-            return "system"
-        case let t where t.hasPrefix("astra."):
-            return "system"
-        case let t where t.hasPrefix("team."):
-            return "team"
-        default:
-            return "system"
+    convenience init(task: AgentTask, eventType: TaskEventType, payload: String = "", run: TaskRun? = nil,
+                     agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
+        self.init(
+            task: task,
+            type: eventType.rawValue,
+            payload: payload,
+            run: run,
+            agentName: agentName,
+            agentId: agentId,
+            teamName: teamName
+        )
+    }
+
+    var eventType: TaskEventType? {
+        TaskEventType(rawValue: type)
+    }
+
+    var typedCategory: TaskEventCategory {
+        TaskEventTypes.category(forRawValue: type)
+    }
+
+    func hasType(_ eventType: TaskEventType) -> Bool {
+        type == eventType.rawValue
+    }
+
+    func decodePayload<T: Decodable>(
+        as type: T.Type,
+        expecting expectedType: TaskEventType? = nil,
+        decoder: JSONDecoder = JSONDecoder()
+    ) -> Result<T, TaskEventPayloadDecodeError> {
+        if let expectedType, self.type != expectedType.rawValue {
+            return .failure(.typeMismatch(expected: expectedType.rawValue, actual: self.type))
         }
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try decoder.decode(T.self, from: data))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
+    }
+
+    static func categoryFor(type: String) -> String {
+        TaskEventTypes.category(forRawValue: type).rawValue
     }
 }

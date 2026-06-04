@@ -13,10 +13,10 @@ enum TaskResourceAccessMode: String, Codable, CaseIterable, Sendable, Equatable,
 }
 
 enum TaskResourceLockEventTypes {
-    static let requested = "resource.lock.requested"
-    static let waiting = "resource.lock.waiting"
-    static let acquired = "resource.lock.acquired"
-    static let released = "resource.lock.released"
+    static let requested = TaskEventTypes.ResourceLock.requested.rawValue
+    static let waiting = TaskEventTypes.ResourceLock.waiting.rawValue
+    static let acquired = TaskEventTypes.ResourceLock.acquired.rawValue
+    static let released = TaskEventTypes.ResourceLock.released.rawValue
 }
 
 struct TaskResourceLockPayload: Codable, Sendable, Equatable {

@@ -82,7 +82,7 @@ enum AgentTaskForkService {
 
         let checkpointEvent = TaskEvent(
             task: forked,
-            type: "task.checkpoint",
+            eventType: TaskEventTypes.Task.checkpoint,
             payload: "Forked checkpoint from task \(source.id.uuidString) after source run \(cutoffIndex + 1). Later source runs are not authoritative for this branch.",
             run: forkedRunsBySourceID[targetRun.id]
         )

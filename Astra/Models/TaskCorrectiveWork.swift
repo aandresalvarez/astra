@@ -1,10 +1,10 @@
 import Foundation
 
 enum TaskCorrectiveEventTypes {
-    static let stepCreated = "corrective.step.created"
-    static let stepApproved = "corrective.step.approved"
-    static let stepDismissed = "corrective.step.dismissed"
-    static let taskCreated = "corrective.task.created"
+    static let stepCreated = TaskEventTypes.Corrective.stepCreated.rawValue
+    static let stepApproved = TaskEventTypes.Corrective.stepApproved.rawValue
+    static let stepDismissed = TaskEventTypes.Corrective.stepDismissed.rawValue
+    static let taskCreated = TaskEventTypes.Corrective.taskCreated.rawValue
 }
 
 struct TaskCorrectiveStepPayload: Codable, Sendable, Equatable {

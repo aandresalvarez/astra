@@ -16,10 +16,10 @@ enum TaskRunInterruptionSource {
         }
     }
 
-    var eventType: String {
+    var eventType: TaskEventType {
         switch self {
-        case .appRestart, .supersededByNewRun: return "task.interrupted"
-        case .userAction, .queueStopped: return "task.cancelled"
+        case .appRestart, .supersededByNewRun: return TaskEventTypes.Task.interrupted
+        case .userAction, .queueStopped: return TaskEventTypes.Task.cancelled
         }
     }
 
@@ -222,7 +222,7 @@ enum TaskRunLifecycleService {
             task.updatedAt = finishedAt
             let event = TaskEvent(
                 task: task,
-                type: source.eventType,
+                eventType: source.eventType,
                 payload: source.eventPayload,
                 run: runningRuns.last
             )

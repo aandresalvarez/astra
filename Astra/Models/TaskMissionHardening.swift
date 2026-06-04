@@ -1,10 +1,10 @@
 import Foundation
 
 enum TaskMissionEventTypes {
-    static let milestoneCreated = "mission.milestone.created"
-    static let milestoneCompleted = "mission.milestone.completed"
-    static let checkpointCreated = "mission.checkpoint.created"
-    static let auditBundleCreated = "mission.audit_bundle.created"
+    static let milestoneCreated = TaskEventTypes.Mission.milestoneCreated.rawValue
+    static let milestoneCompleted = TaskEventTypes.Mission.milestoneCompleted.rawValue
+    static let checkpointCreated = TaskEventTypes.Mission.checkpointCreated.rawValue
+    static let auditBundleCreated = TaskEventTypes.Mission.auditBundleCreated.rawValue
 }
 
 struct TaskMissionCheckpointPayload: Codable, Equatable, Sendable {

@@ -75,7 +75,7 @@ final class TaskLifecycleCoordinator {
         task.updatedAt = Date()
         task.completedAt = nil
         task.markRead()
-        let event = TaskEvent(task: task, type: "task.retried", payload: "Task re-queued for retry.")
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.retried, payload: "Task re-queued for retry.")
         modelContext.insert(event)
         if interruptionSummary.runsUpdated > 0 {
             AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
@@ -100,7 +100,7 @@ final class TaskLifecycleCoordinator {
         task.updatedAt = Date()
         task.completedAt = nil
         task.markRead()
-        let event = TaskEvent(task: task, type: "task.resumed", payload: "Resuming previous session — continuing where the agent left off.")
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         Task {
@@ -134,7 +134,7 @@ final class TaskLifecycleCoordinator {
         task.markRead()
         let event = TaskEvent(
             task: task,
-            type: "task.approved",
+            eventType: TaskEventTypes.Task.approved,
             payload: recordedValidationOverride
                 ? "Task approved by user despite a failed required validation contract."
                 : "Task approved by user."
@@ -157,7 +157,7 @@ final class TaskLifecycleCoordinator {
         )
         modelContext.insert(TaskEvent(
             task: task,
-            type: TaskValidationEventTypes.contractOverridden,
+            eventType: TaskEventTypes.Validation.contractOverridden,
             payload: Self.encode(payload)
         ))
         return true
@@ -203,7 +203,7 @@ final class TaskLifecycleCoordinator {
         task.markRead()
         let event = TaskEvent(
             task: task,
-            type: "task.dismissed",
+            eventType: TaskEventTypes.Task.dismissed,
             payload: "Task dismissed by user without marking it completed.",
             run: latestRun
         )
@@ -243,7 +243,7 @@ final class TaskLifecycleCoordinator {
         task.markRead()
         let event = TaskEvent(
             task: task,
-            type: "task.approved",
+            eventType: TaskEventTypes.Task.approved,
             payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
         )
         modelContext.insert(event)
@@ -281,7 +281,7 @@ final class TaskLifecycleCoordinator {
         task.markRead()
         let event = TaskEvent(
             task: task,
-            type: "task.approved",
+            eventType: TaskEventTypes.Task.approved,
             payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
         )
         modelContext.insert(event)

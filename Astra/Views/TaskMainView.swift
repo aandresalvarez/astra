@@ -4859,7 +4859,7 @@ struct TaskMainView: View {
                         recapStatusMessage = "Recap came back empty. Try again."
                         return
                     }
-                    let event = TaskEvent(task: task, type: "recap.result", payload: trimmed)
+                    let event = TaskEvent(task: task, eventType: TaskEventTypes.System.recapResult, payload: trimmed)
                     modelContext.insert(event)
                     // Force a save so the inverse relationship (task.events) fires
                     // observation immediately — otherwise the bubble can lag behind
@@ -5101,7 +5101,7 @@ struct TaskMainView: View {
             let memoryText = String(trimmed.dropFirst("/remember ".count)).trimmingCharacters(in: .whitespaces)
             if !memoryText.isEmpty {
                 task.workspace?.memories.append(memoryText)
-                let confirmEvent = TaskEvent(task: task, type: "system.info", payload: "💾 Memory saved: \"\(memoryText)\"")
+                let confirmEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "💾 Memory saved: \"\(memoryText)\"")
                 modelContext.insert(confirmEvent)
             }
             messageText = ""
@@ -5155,9 +5155,9 @@ struct TaskMainView: View {
         if task.status == .queued {
             task.status = .draft
             task.updatedAt = Date()
-            let systemEvent = TaskEvent(task: task, type: "task.started", payload: "Moved back to draft for editing.")
+            let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
-            let userEvent = TaskEvent(task: task, type: "user.message", payload: msg)
+            let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             modelContext.insert(userEvent)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
@@ -5187,7 +5187,7 @@ struct TaskMainView: View {
                 await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
         } else {
-            let event = TaskEvent(task: task, type: "user.message", payload: msg)
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             modelContext.insert(event)
         }
     }

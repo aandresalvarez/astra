@@ -68,8 +68,8 @@ struct TaskRoleProfileSelection: Equatable, Sendable {
 }
 
 enum TaskRoleProfileEventTypes {
-    static let selected = "role.profile.selected"
-    static let changed = "role.profile.changed"
+    static let selected = TaskEventTypes.RoleProfile.selected.rawValue
+    static let changed = TaskEventTypes.RoleProfile.changed.rawValue
 }
 
 struct TaskRoleProfileEventPayload: Codable, Equatable, Sendable {

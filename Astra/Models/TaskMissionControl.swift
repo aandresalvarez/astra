@@ -1,10 +1,10 @@
 import Foundation
 
 enum TaskMissionActionEventTypes {
-    static let approved = "mission.action.approved"
-    static let dismissed = "mission.action.dismissed"
-    static let retryRequested = "mission.action.retry_requested"
-    static let correctionCreated = "mission.action.correction_created"
+    static let approved = TaskEventTypes.Mission.actionApproved.rawValue
+    static let dismissed = TaskEventTypes.Mission.actionDismissed.rawValue
+    static let retryRequested = TaskEventTypes.Mission.actionRetryRequested.rawValue
+    static let correctionCreated = TaskEventTypes.Mission.actionCorrectionCreated.rawValue
 }
 
 struct TaskMissionActionPayload: Codable, Sendable, Equatable {
