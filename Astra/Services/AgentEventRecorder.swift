@@ -65,10 +65,8 @@ enum AgentEventRecorder {
             )
 
         case .text(let text):
-            run.output += text
-            appendConversationChunk(
-                type: "agent.response",
-                text: text,
+            appendResponseText(
+                text,
                 to: task,
                 run: run,
                 modelContext: modelContext,
@@ -256,10 +254,8 @@ enum AgentEventRecorder {
                 recordingState: recordingState
             )
         case .text(let text):
-            run.output += text
-            appendConversationChunk(
-                type: "agent.response",
-                text: text,
+            appendResponseText(
+                text,
                 to: task,
                 run: run,
                 modelContext: modelContext,
@@ -398,10 +394,8 @@ enum AgentEventRecorder {
             )
 
         case .text(let text):
-            run.output += text
-            appendConversationChunk(
-                type: "agent.response",
-                text: text,
+            appendResponseText(
+                text,
                 to: task,
                 run: run,
                 modelContext: modelContext,
@@ -519,6 +513,41 @@ enum AgentEventRecorder {
     private static func normalizedPermissionTool(_ tool: String) -> String {
         let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "unknown" : trimmed
+    }
+
+    @MainActor
+    private static func appendResponseText(
+        _ text: String,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState?
+    ) {
+        let textToAppend = responseTextToAppend(text, after: run.output)
+        guard !textToAppend.isEmpty else { return }
+        run.output += textToAppend
+        appendConversationChunk(
+            type: "agent.response",
+            text: textToAppend,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    private static func responseTextToAppend(_ incomingText: String, after existingOutput: String) -> String {
+        guard !incomingText.isEmpty else { return "" }
+        guard !existingOutput.isEmpty else { return incomingText }
+        if incomingText == existingOutput {
+            return ""
+        }
+        if incomingText.count > existingOutput.count,
+           incomingText.hasPrefix(existingOutput) {
+            let suffixStart = incomingText.index(incomingText.startIndex, offsetBy: existingOutput.count)
+            return String(incomingText[suffixStart...])
+        }
+        return incomingText
     }
 
     @MainActor

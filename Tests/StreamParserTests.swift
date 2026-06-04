@@ -117,11 +117,11 @@ struct StreamParserTests {
         #expect(text == "The user wants a web page")
     }
 
-    @Test("Partial text delta parses as progress-only thinking")
-    func partialTextDeltaParsesAsProgressOnlyThinking() throws {
+    @Test("Partial text delta parses as visible text")
+    func partialTextDeltaParsesAsVisibleText() throws {
         let parsed = StreamEventParser.parse(line: partialTextDeltaJSON)
-        guard case .thinking(let text) = parsed else {
-            Issue.record("Expected .thinking, got \(String(describing: parsed))")
+        guard case .text(let text) = parsed else {
+            Issue.record("Expected .text, got \(String(describing: parsed))")
             return
         }
         #expect(text == "I will create the requested page.")

@@ -12,31 +12,25 @@ enum AsyncProcessRunner {
         let stderr: String
     }
 
-    private final class RunState: @unchecked Sendable {
+    final class RunState: @unchecked Sendable {
         private let lock = NSLock()
         private var completed = false
         private var timedOut = false
 
-        func markTimedOut() -> Bool {
+        func markTimedOutIfRunning(_ process: Process) -> Bool {
             lock.lock()
             defer { lock.unlock() }
-            guard !completed else { return false }
+            guard !completed, process.isRunning else { return false }
             timedOut = true
             return true
         }
 
-        func markCompleted() -> Bool {
+        func markCompleted() -> (didComplete: Bool, didTimeOut: Bool) {
             lock.lock()
             defer { lock.unlock() }
-            guard !completed else { return false }
+            guard !completed else { return (false, timedOut) }
             completed = true
-            return true
-        }
-
-        var didTimeOut: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return timedOut
+            return (true, timedOut)
         }
     }
 
@@ -50,7 +44,10 @@ enum AsyncProcessRunner {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 process.terminationHandler = { proc in
-                    let timedOut = state.didTimeOut
+                    let completion = state.markCompleted()
+                    guard completion.didComplete else { return }
+                    let timedOut = completion.didTimeOut
+
                     let stdoutStr: String
                     if timedOut {
                         stdoutStr = ""
@@ -72,7 +69,6 @@ enum AsyncProcessRunner {
                         stderrStr = ""
                     }
 
-                    guard state.markCompleted() else { return }
                     continuation.resume(returning: Output(
                         exitCode: timedOut ? -1 : Int(proc.terminationStatus),
                         stdout: stdoutStr.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -88,7 +84,7 @@ enum AsyncProcessRunner {
                         state: state
                     )
                 } catch {
-                    guard state.markCompleted() else { return }
+                    guard state.markCompleted().didComplete else { return }
                     continuation.resume(returning: Output(exitCode: -1, stdout: "", stderr: error.localizedDescription))
                 }
             }
@@ -105,7 +101,7 @@ enum AsyncProcessRunner {
         guard let timeoutSeconds, timeoutSeconds > 0 else { return }
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
-            guard state.markTimedOut() else { return }
+            guard state.markTimedOutIfRunning(process) else { return }
             terminateProcessTree(process)
         }
     }

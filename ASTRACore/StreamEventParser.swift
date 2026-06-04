@@ -332,7 +332,7 @@ public enum StreamEventParser {
         case "content_block_delta":
             guard let delta = event.delta else { return [] }
             if let text = delta.text, !text.isEmpty {
-                return [.thinking(text: text)]
+                return [.text(text: text)]
             }
             if let thinking = delta.thinking, !thinking.isEmpty {
                 return [.thinking(text: thinking)]

@@ -605,7 +605,7 @@ enum ValidationService {
             )
         }
 
-        let expected = firstNonEmpty(assertion.evidenceQuery, assertion.description)
+        let expected = assertion.evidenceQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !expected.isEmpty else {
             return assertionPayload(
                 assertion: assertion,
