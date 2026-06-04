@@ -437,7 +437,7 @@ struct BrowserAnalysis {
         controls.first { $0.controlID == id }
     }
 
-    func controlRef(for control: BrowserControl, debug: Bool = false) -> BrowserControlRef {
+    func controlRef(for control: BrowserControl, debug _: Bool = false) -> BrowserControlRef {
         BrowserControlRef(
             control: control,
             accessibilityNode: accessibilitySnapshot?.matchingNode(for: control)
