@@ -1957,6 +1957,74 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Ask-first ASTRA state output write is blocked instead of approved")
+    func askFirstAstraStateOutputWriteIsBlockedInsteadOfApproved() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "create",
+                id: "t1",
+                input: [
+                    "path": "\(workspacePath)/.astra/tasks/B405BA1D/outputs/turn_002.md",
+                    "content": "hidden answer"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("ASTRA-owned task runtime state") == true)
+    }
+
+    @Test("Ask-first ASTRA current state patch is blocked instead of approved")
+    func askFirstAstraCurrentStatePatchIsBlockedInsteadOfApproved() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let patch = """
+        *** Begin Patch
+        *** Update File: \(workspacePath)/.astra/tasks/B405BA1D/current_state.md
+        @@
+        +tampered
+        *** End Patch
+        """
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "apply_patch", id: "t1", input: ["summary": patch]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("ASTRA-owned task runtime state") == true)
+    }
+
     @Test("Ask-first task output artifact write allows private symlink path")
     func askFirstTaskOutputArtifactWriteAllowsPrivateSymlinkPath() throws {
         let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))

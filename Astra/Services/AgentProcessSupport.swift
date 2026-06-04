@@ -1603,7 +1603,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
         switch effectiveToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "read", "view", "write", "edit", "multiedit", "multi_edit", "webfetch", "websearch":
+        case "read", "view", "write", "create", "edit", "multiedit", "multi_edit", "apply_patch", "webfetch", "websearch":
             return true
         default:
             return false

@@ -66,6 +66,9 @@ struct TaskDecisionDockPresentationTests {
             $0.kind == .addVerification &&
                 $0.title == "Add verification"
         })
+        #expect(dock.usesOverflowMenu == false)
+        #expect(dock.utilityActions.map(\.kind) == [.addVerification])
+        #expect(dock.secondaryDecisionActions.isEmpty)
         let proofDetail = try #require(dock.details.first { $0.id == "proof" })
         #expect(!proofDetail.summary.contains("Artifacts: none recorded"))
     }
@@ -103,7 +106,70 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.details.contains { $0.id == "goal" })
         #expect(dock.details.contains { $0.id == "run" && $0.summary.contains("Run cancelled - Needs review") })
         #expect(dock.metrics.isEmpty)
+        #expect(dock.utilityActions.map(\.kind) == [.addVerification])
+        #expect(dock.secondaryDecisionActions.map(\.kind) == [.closeTask])
     }
+
+    @Test("artifact open is suppressed when thread already shows artifact card")
+    func artifactOpenIsSuppressedWhenThreadAlreadyShowsArtifactCard() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            artifactPaths: ["/tmp/index.html"],
+            visibleThreadAffordances: [.artifactOpen, .runDetails]
+        ))
+
+        let dock = try #require(presentation)
+        #expect(!dock.utilityActions.contains { $0.kind == .openArtifact })
+        #expect(!dock.secondaryDecisionActions.contains { $0.kind == .openArtifact })
+        #expect(dock.details.contains { $0.id == "proof" })
+        #expect(dock.details.contains { $0.id == "run" })
+    }
+
+    @Test("artifact open remains available when thread has no visible artifact card")
+    func artifactOpenRemainsAvailableWhenThreadHasNoVisibleArtifactCard() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            artifactPaths: ["/tmp/index.html"],
+            visibleThreadAffordances: [.runDetails]
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.utilityActions.map(\.kind).contains(.openArtifact))
+    }
+
+    @Test("inferred verification action stays visible while running")
+    func inferredVerificationActionStaysVisibleWhileRunning() throws {
+        let mission = MissionControlPresentation(
+            objective: "Create Masterball puzzle web solver",
+            statusTitle: "Completed",
+            statusSummary: "No validation contract recorded",
+            tone: .attention,
+            activeStepTitle: nil,
+            validationSummary: "No validation contract",
+            assertionRows: [],
+            latestHandoffSummary: "Review the result.",
+            blockerCount: 0,
+            artifactCount: 1,
+            changedFileCount: 1,
+            budgetSummary: "42.1k used / unlimited",
+            nextAction: "Review the result.",
+            correction: nil,
+            sourcePointerCount: 9
+        )
+
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .completed,
+            mission: mission,
+            artifactPaths: ["/tmp/index.html"],
+            isRunningInferredVerification: true
+        ))
+
+        let dock = try #require(presentation)
+        let action = try #require(dock.utilityActions.first { $0.kind == .addVerification })
+        #expect(action.title == "Verifying...")
+        #expect(action.isEnabled == false)
+    }
+
 
     @Test("dock does not offer inferred verification when contract already exists")
     func dockDoesNotOfferInferredVerificationWhenContractAlreadyExists() throws {
@@ -213,6 +279,9 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.primaryAction?.kind == .approveCorrection)
         #expect(dock.secondaryActions.map(\.kind) == [.createCorrectionTask])
         #expect(dock.overflowActions.contains { $0.kind == .dismissCorrection })
+        #expect(dock.utilityActions.isEmpty)
+        #expect(dock.secondaryDecisionActions.map(\.kind).contains(.createCorrectionTask))
+        #expect(dock.secondaryDecisionActions.map(\.kind).contains(.dismissCorrection))
         #expect(dock.details.contains {
             $0.id == "correction" &&
                 $0.summary.contains("Fix the browser-visible behavior")
@@ -224,9 +293,15 @@ struct TaskDecisionDockPresentationTests {
         mission: MissionControlPresentation? = nil,
         verification: TaskVerificationPresentation? = nil,
         artifactPaths: [String] = [],
-        canAddVerification: Bool = true
+        canAddVerification: Bool = true,
+        isRunningInferredVerification: Bool = false,
+        visibleThreadAffordances: Set<TaskThreadAffordance>? = nil
     ) -> TaskDecisionDockPresentation.Context {
-        TaskDecisionDockPresentation.Context(
+        let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
+            mission: mission,
+            artifactPaths: artifactPaths
+        )
+        return TaskDecisionDockPresentation.Context(
             status: status,
             isClosed: false,
             review: TaskPresentationState.reviewPresentation(status: status, isClosed: false),
@@ -255,10 +330,26 @@ struct TaskDecisionDockPresentationTests {
             canRetry: true,
             canResume: false,
             canAddVerification: canAddVerification,
+            isRunningInferredVerification: isRunningInferredVerification,
             canToggleDone: true,
             hasProviderSession: false,
             failureReason: nil,
-            artifactPaths: artifactPaths
+            artifactPaths: artifactPaths,
+            visibleThreadAffordances: affordances
         )
+    }
+
+    private func defaultVisibleThreadAffordances(
+        mission: MissionControlPresentation?,
+        artifactPaths: [String]
+    ) -> Set<TaskThreadAffordance> {
+        var affordances: Set<TaskThreadAffordance> = [.runDetails]
+        if mission != nil {
+            affordances.insert(.missionControlDetails)
+        }
+        if !artifactPaths.isEmpty {
+            affordances.insert(.artifactOpen)
+        }
+        return affordances
     }
 }

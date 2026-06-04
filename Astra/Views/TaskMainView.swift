@@ -8,6 +8,10 @@ enum TaskComposerPresentation {
     static let usesForcedExpandedInputHeight = false
     static let decisionRowUsesNestedChrome = false
     static let decisionRowUsesNestedStroke = false
+    static let decisionDetailsUsePopover = true
+    static let decisionActionsUseOverflowMenu = false
+    static let decisionUtilitiesStayLeftAligned = true
+    static let decisionSummaryVisibleInCompactRow = false
     static let decisionDockHorizontalPadding: CGFloat = 14
     static let decisionDockTopPadding: CGFloat = 12
     static let decisionDockBottomPadding: CGFloat = 8
@@ -3415,12 +3419,28 @@ struct TaskMainView: View {
             canRetry: onRetryTask != nil,
             canResume: task.hasProviderSession && onResumeTask != nil,
             canAddVerification: canAddInferredVerification,
+            isRunningInferredVerification: isRunningInferredVerification,
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
             artifactPaths: taskDecisionArtifactPaths,
-            extraDetails: taskDecisionExtraDetails
+            extraDetails: taskDecisionExtraDetails,
+            visibleThreadAffordances: taskDecisionVisibleThreadAffordances
         ))
+    }
+
+    private var taskDecisionVisibleThreadAffordances: Set<TaskThreadAffordance> {
+        var affordances: Set<TaskThreadAffordance> = [.runDetails]
+        if !taskDecisionArtifactPaths.isEmpty {
+            affordances.insert(.artifactOpen)
+        }
+        if missionControlPresentation != nil {
+            affordances.insert(.missionControlDetails)
+        }
+        if isPlanCanvasVisible {
+            affordances.insert(.planDetails)
+        }
+        return affordances
     }
 
     private var taskDecisionArtifactPaths: [String] {
@@ -3503,8 +3523,7 @@ struct TaskMainView: View {
     }
 
     private var canAddInferredVerification: Bool {
-        !isRunningInferredVerification &&
-            !taskDecisionArtifactPaths.isEmpty &&
+        !taskDecisionArtifactPaths.isEmpty &&
             TaskInferredValidationService.hasSuggestion(for: task)
     }
 
@@ -3901,10 +3920,10 @@ struct TaskMainView: View {
                 onAction: handleTaskDecisionDockAction
             )
             .onAppear {
-                isTaskDecisionDetailsExpanded = presentation.prefersExpandedDetails
+                isTaskDecisionDetailsExpanded = false
             }
             .onChange(of: presentation.id) { _, _ in
-                isTaskDecisionDetailsExpanded = presentation.prefersExpandedDetails
+                isTaskDecisionDetailsExpanded = false
             }
         }
     }

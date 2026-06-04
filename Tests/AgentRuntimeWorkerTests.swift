@@ -240,6 +240,55 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
     }
 
+    @Test("Artifact detector ignores provider diagnostic file changes")
+    func artifactDetectorIgnoresProviderDiagnosticFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-diagnostics-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Deliverable Diagnostics", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create HTML", goal: "create an html file", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let diagnostics = URL(fileURLWithPath: taskFolder).appendingPathComponent("diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        let logURL = diagnostics.appendingPathComponent("antigravity-12345678.log")
+        try "RESOURCE_EXHAUSTED".write(to: logURL, atomically: true, encoding: .utf8)
+
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: "diagnostics/antigravity-12345678.log",
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: logURL.path,
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: (workspacePath as NSString).appendingPathComponent("cache/projects.json"),
+            changeType: .write,
+            content: "Provider cache",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+    }
+
     @Test("Artifact scan respects explicit entry and depth caps")
     func artifactScanRespectsExplicitCaps() throws {
         let container = try makeContainer()
@@ -268,6 +317,47 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanEntryLimit: 0))
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 0))
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 3))
+    }
+}
+
+@Suite("Agent File Change Detector")
+@MainActor
+struct AgentFileChangeDetectorTests {
+    @Test("Inferred file changes ignore provider cache files")
+    func inferredFileChangesIgnoreProviderCacheFiles() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "file-change-runtime-cache-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "File Change Detector", primaryPath: workspacePath)
+        let task = AgentTask(title: "Summarize", goal: "Summarize the repo", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let runStart = Date().addingTimeInterval(-1)
+        let cache = URL(fileURLWithPath: workspacePath).appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try "{}".write(to: cache.appendingPathComponent("projects.json"), atomically: true, encoding: .utf8)
+        let report = URL(fileURLWithPath: workspacePath).appendingPathComponent("report.md")
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+
+        AgentFileChangeDetector.appendInferredFileChanges(
+            to: run,
+            task: task,
+            modelContext: context,
+            workspacePath: workspacePath,
+            beforeGitStatus: [],
+            beforeDirtyFingerprints: [:],
+            runStart: runStart
+        )
+
+        #expect(run.fileChanges.map(\.path) == [report.path])
+        #expect(task.artifacts.map(\.path) == [report.path])
     }
 }
 
@@ -368,6 +458,9 @@ struct BuildPromptTests {
             #expect(prompt.contains("Task Output Folder:"))
             #expect(prompt.contains("create them in this task output folder by default"))
             #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+            #expect(prompt.contains("ASTRA owns state/history files in this folder"))
+            #expect(prompt.contains("outputs/turn_*.md"))
+            #expect(prompt.contains("do not create, edit, overwrite, or use them as deliverables"))
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
             #expect(prompt.contains("Artifact first-action requirement:"))
             #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
@@ -938,7 +1031,7 @@ struct BuildPromptTests {
         second.workspace = ws
         ctx.insert(first)
         ctx.insert(second)
-        let task = AgentTask(title: "T", goal: "List pull requests", workspace: ws)
+        let task = AgentTask(title: "T", goal: "List GitHub pull requests", workspace: ws)
         task.skills = [first, second]
         ctx.insert(task)
         try ctx.save()
@@ -1092,8 +1185,7 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("Available CLI/Script Tools"))
-        #expect(prompt.contains("Shelf Browser Control: `astra-browser`"))
+        #expect(prompt.contains("Use the provider-neutral `astra-browser` command"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))

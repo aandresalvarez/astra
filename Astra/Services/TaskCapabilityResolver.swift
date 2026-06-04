@@ -327,7 +327,10 @@ struct TaskCapabilityResolver {
         }
         let skills = allBehaviorSkills(connectors: connectors)
 
-        guard forcePrune || Self.shouldPruneCapabilitiesForTask(task: task, contextText: contextText) else {
+        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(task: task, contextText: contextText)
+            || Self.hasRuntimeScopedCapabilities(skills: skills, connectors: connectors, localTools: tools)
+
+        guard forcePrune || shouldPruneForRuntimeScope else {
             return makePromptScope(
                 skills: skills,
                 connectors: connectors,
@@ -533,6 +536,23 @@ struct TaskCapabilityResolver {
         return false
     }
 
+    private static func hasRuntimeScopedCapabilities(
+        skills: [Skill],
+        connectors: [Connector],
+        localTools: [LocalTool]
+    ) -> Bool {
+        if !connectors.isEmpty || !localTools.isEmpty {
+            return true
+        }
+
+        return skills.contains { skill in
+            !skill.allowedTools.isEmpty
+                || !skill.disallowedTools.isEmpty
+                || !skill.customTools.isEmpty
+                || !skill.environmentKeys.isEmpty
+        }
+    }
+
     private static func hasStandaloneArtifactIntent(_ text: String) -> Bool {
         let hasAction = artifactActionTerms.contains { text.contains($0) }
         let hasTarget = artifactTargetTerms.contains { text.contains($0) }
@@ -560,6 +580,9 @@ struct TaskCapabilityResolver {
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {
+        if Skill.isBuiltInName(skill.name) {
+            return true
+        }
         return matchesSkill(skill, taskText: taskText)
     }
 

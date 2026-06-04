@@ -2615,13 +2615,16 @@ struct TaskThreadSnapshotTests {
         let outputs = root.appendingPathComponent("outputs", isDirectory: true)
         let turns = root.appendingPathComponent("turns", isDirectory: true)
         let runtimeBin = root.appendingPathComponent(".runtime-bin", isDirectory: true)
+        let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
 
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: turns, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
         try "# Report".write(to: root.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
         try "details".write(to: nested.appendingPathComponent("details.txt"), atomically: true, encoding: .utf8)
+        try "provider log".write(to: diagnostics.appendingPathComponent("antigravity.log"), atomically: true, encoding: .utf8)
         try "state".write(to: root.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
         try "{}".write(to: root.appendingPathComponent("current_state.json"), atomically: true, encoding: .utf8)
         try "history".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
@@ -2656,6 +2659,8 @@ struct TaskThreadSnapshotTests {
         #expect(!paths.contains("turns"))
         #expect(!paths.contains("turns/turn_002.md"))
         #expect(!paths.contains(".runtime-bin/astra-browser"))
+        #expect(!paths.contains("diagnostics"))
+        #expect(!paths.contains("diagnostics/antigravity.log"))
     }
 
     @Test("Generated file preview prefers task index HTML")

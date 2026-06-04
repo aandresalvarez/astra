@@ -196,6 +196,11 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
 
+        if isMutationTool(toolName),
+           let violation = validateTaskOutputMutationOwnership(observed, toolName: toolName) {
+            return violation
+        }
+
         let matchesAllowedTool = toolMatches(
             toolName,
             command: observed.command,
@@ -419,7 +424,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         if isPatchMutationTool(toolName) {
             let paths = patchMutationPaths(from: observed)
             guard !paths.isEmpty,
-                  paths.allSatisfy(isPathInTaskOutput) else {
+                  paths.allSatisfy(isWritableTaskOutputFilePath) else {
                 return false
             }
             return toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
@@ -427,10 +432,31 @@ struct AgentRuntimePolicyGuard: Sendable {
 
         guard let path = observed.path?.trimmingCharacters(in: .whitespacesAndNewlines),
               !path.isEmpty,
-              isPathInTaskOutput(path) else {
+              isWritableTaskOutputFilePath(path) else {
             return false
         }
         return toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
+    }
+
+    private func validateTaskOutputMutationOwnership(
+        _ observed: PolicyObservedEvent,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        let paths = isPatchMutationTool(toolName)
+            ? patchMutationPaths(from: observed)
+            : [observed.path].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard let internalPath = paths.first(where: { path in
+            guard isPathInTaskOutput(path) else { return false }
+            return !isWritableTaskOutputFilePath(path)
+        }) else {
+            return nil
+        }
+        return AgentRuntimePolicyViolation(
+            reason: "The file path is ASTRA-owned task runtime state and cannot be created or modified by the provider",
+            toolName: toolName,
+            detail: internalPath,
+            violationCategory: "runtime_state_path_mutation"
+        )
     }
 
     private func validatePatchMutationPaths(
@@ -536,6 +562,18 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isPathInTaskOutput(_ rawPath: String) -> Bool {
+        taskOutputRelativePath(rawPath) != nil
+    }
+
+    private func isWritableTaskOutputFilePath(_ rawPath: String) -> Bool {
+        guard let relativePath = taskOutputRelativePath(rawPath),
+              !relativePath.isEmpty else {
+            return false
+        }
+        return TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath)
+    }
+
+    private func taskOutputRelativePath(_ rawPath: String) -> String? {
         let candidate: String
         if rawPath.hasPrefix("/") {
             candidate = Self.standardizedAbsolutePath(rawPath)
@@ -543,9 +581,16 @@ struct AgentRuntimePolicyGuard: Sendable {
             candidate = Self.standardizedAbsolutePath((manifest.workspacePath as NSString).appendingPathComponent(rawPath))
         }
 
-        return taskOutputPathRoots.contains { root in
-            candidate == root || candidate.hasPrefix(root + "/")
+        for root in taskOutputPathRoots {
+            if candidate == root {
+                return ""
+            }
+            let prefix = root + "/"
+            if candidate.hasPrefix(prefix) {
+                return String(candidate.dropFirst(prefix.count))
+            }
         }
+        return nil
     }
 
     private func requiresApproval(toolName: String, command: String?) -> Bool {

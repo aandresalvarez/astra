@@ -905,7 +905,7 @@ struct RunPermissionManifestTests {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Manifest", primaryPath: "/tmp/manifest-workspace")
-        let task = AgentTask(title: "Manifest", goal: "Persist manifest", workspace: workspace)
+        let task = AgentTask(title: "Manifest", goal: "Use the Env Skill to persist manifest", workspace: workspace)
         let skill = Skill(
             name: "Env Skill",
             allowedTools: ["Read"],

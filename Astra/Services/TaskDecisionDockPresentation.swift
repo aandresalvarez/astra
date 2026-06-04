@@ -31,6 +31,13 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case reopenTask
 }
 
+enum TaskThreadAffordance: Hashable {
+    case artifactOpen
+    case runDetails
+    case missionControlDetails
+    case planDetails
+}
+
 struct TaskDecisionDockAction: Equatable, Identifiable {
     var id: String { "\(kind.rawValue):\(payload ?? ""):\(title)" }
     var kind: TaskDecisionDockActionKind
@@ -87,11 +94,13 @@ struct TaskDecisionDockPresentation: Equatable {
         var canRetry: Bool
         var canResume: Bool
         var canAddVerification: Bool
+        var isRunningInferredVerification: Bool = false
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
+        var visibleThreadAffordances: Set<TaskThreadAffordance> = []
     }
 
     var id: String
@@ -108,6 +117,23 @@ struct TaskDecisionDockPresentation: Equatable {
 
     var hasDetails: Bool { !details.isEmpty }
     var hasActions: Bool { primaryAction != nil || !secondaryActions.isEmpty || !overflowActions.isEmpty }
+    var utilityActions: [TaskDecisionDockAction] {
+        flattenedSupportActions.filter(\.kind.isDecisionDockUtility)
+    }
+    var secondaryDecisionActions: [TaskDecisionDockAction] {
+        flattenedSupportActions.filter { !$0.kind.isDecisionDockUtility }
+    }
+    var usesOverflowMenu: Bool { false }
+
+    private var flattenedSupportActions: [TaskDecisionDockAction] {
+        var seen = Set<String>()
+        var result: [TaskDecisionDockAction] = []
+        for action in secondaryActions + overflowActions {
+            guard seen.insert(action.id).inserted else { continue }
+            result.append(action)
+        }
+        return result
+    }
 
     static func build(_ context: Context) -> TaskDecisionDockPresentation? {
         if context.isClosed {
@@ -247,8 +273,9 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: correction.status != "approved"
             ),
             secondaryActions: [
+                firstArtifactAction(context),
                 action(.createCorrectionTask, title: "Create task", systemImage: "plus.square", payload: correction.correctiveStepID)
-            ],
+            ].compactMap { $0 },
             overflowActions: [
                 action(.dismissCorrection, title: "Dismiss", systemImage: "xmark", payload: correction.correctiveStepID)
             ] + closeOverflowActions(context, closeTitle: nil),
@@ -718,9 +745,12 @@ struct TaskDecisionDockPresentation: Equatable {
         }
         return action(
             .addVerification,
-            title: "Add verification",
-            systemImage: "checklist.checked",
-            help: "Create safe proof rules from the current artifact and run them now."
+            title: context.isRunningInferredVerification ? "Verifying..." : "Add verification",
+            systemImage: context.isRunningInferredVerification ? "arrow.triangle.2.circlepath" : "checklist.checked",
+            help: context.isRunningInferredVerification
+                ? "ASTRA is running inferred proof rules against the current artifact."
+                : "Create safe proof rules from the current artifact and run them now.",
+            isEnabled: !context.isRunningInferredVerification
         )
     }
 
@@ -812,6 +842,7 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     private static func firstArtifactAction(_ context: Context) -> TaskDecisionDockAction? {
+        guard !context.visibleThreadAffordances.contains(.artifactOpen) else { return nil }
         guard let path = context.artifactPaths.first else { return nil }
         return action(
             .openArtifact,
@@ -887,5 +918,31 @@ struct TaskDecisionDockPresentation: Equatable {
             if !trimmed.isEmpty { return trimmed }
         }
         return ""
+    }
+}
+
+private extension TaskDecisionDockActionKind {
+    var isDecisionDockUtility: Bool {
+        switch self {
+        case .openArtifact, .addVerification, .openPlan:
+            true
+        case .stop,
+             .allowOnce,
+             .allowSimilar,
+             .approveResult,
+             .dismissReview,
+             .approveCorrection,
+             .createCorrectionTask,
+             .dismissCorrection,
+             .runApprovedPlan,
+             .runTask,
+             .retry,
+             .resume,
+             .closeTask,
+             .closeAnyway,
+             .closeWithoutRunningPlan,
+             .reopenTask:
+            false
+        }
     }
 }

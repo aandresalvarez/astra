@@ -16,6 +16,10 @@ struct ComposerPresentationTests {
     func taskDecisionDockStaysCompact() {
         #expect(TaskComposerPresentation.decisionRowUsesNestedChrome == false)
         #expect(TaskComposerPresentation.decisionRowUsesNestedStroke == false)
+        #expect(TaskComposerPresentation.decisionDetailsUsePopover == true)
+        #expect(TaskComposerPresentation.decisionActionsUseOverflowMenu == false)
+        #expect(TaskComposerPresentation.decisionUtilitiesStayLeftAligned == true)
+        #expect(TaskComposerPresentation.decisionSummaryVisibleInCompactRow == false)
         #expect(TaskComposerPresentation.decisionRowHorizontalPadding == 12)
         #expect(TaskComposerPresentation.decisionRowVerticalPadding == 10)
         #expect(TaskComposerPresentation.decisionAccentWidth == 3)

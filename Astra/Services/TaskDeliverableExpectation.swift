@@ -280,13 +280,17 @@ enum TaskDeliverableExpectation {
     private static func isUserArtifactPath(_ path: String, task: AgentTask) -> Bool {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard !taskFolder.isEmpty else { return true }
+        let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
+        if !normalizedPath.hasPrefix("/"), isRuntimeDiagnosticRelativePath(normalizedPath) {
+            return false
+        }
         let root = URL(fileURLWithPath: taskFolder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        let url = URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        guard let relative = relativePath(of: url, taskFolder: root) else { return true }
+        let url = normalizedPath.hasPrefix("/")
+            ? URL(fileURLWithPath: normalizedPath)
+            : root.appendingPathComponent(normalizedPath)
+        guard let relative = relativePath(of: url, taskFolder: root) else { return false }
         return !isRuntimeDiagnosticRelativePath(relative)
     }
 

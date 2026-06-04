@@ -65,8 +65,9 @@ enum AgentFileChangeDetector {
             paths.formUnion(recentlyModifiedFiles(workspacePath: workspacePath, since: runStart))
         }
 
+        let userPaths = paths.filter { !isIgnoredRuntimePath($0, workspacePath: workspacePath) }
         let existing = Set(run.fileChanges.map(\.path))
-        for path in paths.subtracting(existing).sorted().prefix(50) {
+        for path in userPaths.subtracting(existing).sorted().prefix(50) {
             let change = FileChange(
                 path: path,
                 changeType: .edit,
@@ -150,7 +151,7 @@ enum AgentFileChangeDetector {
                 .standardizedFileURL
             guard itemURL.path.hasPrefix(rootPath) else { continue }
             let rel = String(itemURL.path.dropFirst(rootPath.count))
-            if rel.hasPrefix(".git/") || rel.hasPrefix(".astra/") || rel.hasPrefix("node_modules/") || rel.hasPrefix(".build/") {
+            if isIgnoredRuntimeRelativePath(rel) {
                 continue
             }
             if let normalizedCandidates, !normalizedCandidates.contains(itemURL.path) {
@@ -166,5 +167,32 @@ enum AgentFileChangeDetector {
             if result.count >= 50 { break }
         }
         return result
+    }
+
+    private static func isIgnoredRuntimePath(_ path: String, workspacePath: String) -> Bool {
+        let workspaceURL = URL(fileURLWithPath: workspacePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = workspaceURL.path.hasSuffix("/") ? workspaceURL.path : workspaceURL.path + "/"
+        let normalized = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        guard normalized.hasPrefix(rootPath) else { return false }
+        let rel = String(normalized.dropFirst(rootPath.count))
+        return isIgnoredRuntimeRelativePath(rel)
+    }
+
+    private static func isIgnoredRuntimeRelativePath(_ relativePath: String) -> Bool {
+        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
+        return rel.hasPrefix(".git/")
+            || rel.hasPrefix(".astra/")
+            || rel.hasPrefix(".agentflow/")
+            || rel.hasPrefix(".codex/")
+            || rel.hasPrefix(".claude/")
+            || rel.hasPrefix(".gemini/")
+            || rel.hasPrefix("node_modules/")
+            || rel.hasPrefix(".build/")
+            || rel == "cache/projects.json"
     }
 }
